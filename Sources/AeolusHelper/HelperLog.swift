@@ -36,37 +36,25 @@ import os
 /// would train whoever reads the log to ignore it.
 struct HelperLog: Sendable {
 
-    /// The two levels the fan lines below choose between. Only those lines, deliberately —
-    /// see `fanLineSink`.
-    enum FanLineLevel: Sendable, Hashable {
-        /// Persisted, and the level an operator goes looking at.
-        case error
-        /// Not persisted by default. What a repeat of an already-reported condition costs.
-        case debug
-    }
-
     private let log: Logger
 
-    /// A sink the **fan** lines are also handed to, with their level, so a test can assert
-    /// which level one was emitted at.
+    /// A sink every line is also handed to, with its level, so a test can read both back.
     ///
-    /// Shaped after `SafetyLog.init(recording:)`, and narrow on purpose. Most lines in this
-    /// type interpolate a client-supplied string under a deliberate `privacy:` annotation,
-    /// and funnelling those through one already-rendered `String` would move the redaction
-    /// decision out of `os_log` — a change to what a shipping helper discloses, made for a
-    /// test's benefit. The fan lines interpolate an `Int` and an error description this
-    /// module produced, so mirroring them redacts nothing differently.
+    /// Shaped after `SafetyLog.init(recording:)`. Every interpolation in this type is
+    /// `privacy: .public`, so rendering a line into one `String` and logging that `.public`
+    /// discloses exactly what the per-field form did. That is what lets every line take the one
+    /// route below. This was only the two fan lines until the review of #349.
     ///
     /// `nil` in every shipping build: `AeolusHelperMain` calls `init(subsystem:category:)`,
     /// which cannot set it.
-    private let fanLineSink: (@Sendable (FanLineLevel, String) -> Void)?
+    private let sink: (@Sendable (Level, String) -> Void)?
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "XPCBoundary") {
         log = Logger(subsystem: subsystem, category: category)
-        fanLineSink = nil
+        sink = nil
     }
 
-    /// A log whose fan lines a test can read back, level included.
+    /// A log whose lines a test can read back, level included.
     ///
     /// The level is the whole assertion: `fanModeUnreadable` reports a condition that is
     /// *normal* on an entire architecture family, so whether the tenth occurrence is an
@@ -78,11 +66,23 @@ struct HelperLog: Sendable {
     init(
         subsystem: String = "dev.aeolus.AeolusHelper",
         category: String = "XPCBoundary",
-        recordingFanLines sink: @escaping @Sendable (FanLineLevel, String) -> Void
+        recording sink: @escaping @Sendable (Level, String) -> Void
     ) {
         log = Logger(subsystem: subsystem, category: category)
-        fanLineSink = sink
+        self.sink = sink
     }
+
+    /// The one route to the unified log: one level, written there and handed to the sink.
+    /// `HelperLogTests.everyLineTakesTheOneRoute` holds this file to it.
+    private func emit(_ level: Level, _ message: String) {
+        log.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
+        sink?(level, message)
+    }
+
+    private func info(_ message: String) { emit(.info, message) }
+    private func notice(_ message: String) { emit(.notice, message) }
+    private func error(_ message: String) { emit(.error, message) }
+    private func fault(_ message: String) { emit(.fault, message) }
 
     // MARK: - Connections
 
@@ -91,11 +91,11 @@ struct HelperLog: Sendable {
     /// Note what this does *not* say: nothing about who connected. At this point nothing
     /// has been verified — see this type's documentation, fact 1.
     func acceptedConnection(_ connection: ConnectionID, teamIdentifier: String) {
-        log.notice(
+        notice(
             """
-            Connection \(connection.logDescription, privacy: .public) accepted with the \
+            Connection \(connection.logDescription) accepted with the \
             client code-signing requirement applied (team \
-            \(teamIdentifier, privacy: .public)). Nothing about this peer is verified yet: \
+            \(teamIdentifier)). Nothing about this peer is verified yet: \
             the requirement is enforced per message, not at accept time.
             """
         )
@@ -104,9 +104,9 @@ struct HelperLog: Sendable {
     /// A connection was refused before it was ever configured, because this helper is
     /// refusing every connection.
     func refusedConnection(_ refusal: ClientAuthorisationRefusal) {
-        log.error(
+        error(
             """
-            Refused an XPC connection: \(refusal.description, privacy: .public)
+            Refused an XPC connection: \(refusal.description)
             """
         )
     }
@@ -124,10 +124,10 @@ struct HelperLog: Sendable {
         let state =
             handshake.map { "handshaken as \($0.logDescription)" } ?? "never handshaken"
         guard messagesDelivered > 0 else {
-            log.info(
+            info(
                 """
-                Connection \(connection.logDescription, privacy: .public) invalidated \
-                (\(state, privacy: .public)) with no message ever delivered. That is what a \
+                Connection \(connection.logDescription) invalidated \
+                (\(state)) with no message ever delivered. That is what a \
                 code-signing requirement refusal looks like from this side, and it is also \
                 what a client that disconnects before its first message looks like. The two \
                 are indistinguishable by design; libxpc does not report who was refused.
@@ -135,11 +135,11 @@ struct HelperLog: Sendable {
             )
             return
         }
-        log.info(
+        info(
             """
-            Connection \(connection.logDescription, privacy: .public) invalidated \
-            (\(state, privacy: .public)) after \
-            \(messagesDelivered, privacy: .public) message(s).
+            Connection \(connection.logDescription) invalidated \
+            (\(state)) after \
+            \(messagesDelivered) message(s).
             """
         )
     }
@@ -147,8 +147,8 @@ struct HelperLog: Sendable {
     /// The transport was interrupted. Distinct from invalidation: the connection object
     /// survives and may carry further messages.
     func connectionInterrupted(_ connection: ConnectionID) {
-        log.info(
-            "Connection \(connection.logDescription, privacy: .public) was interrupted."
+        info(
+            "Connection \(connection.logDescription) was interrupted."
         )
     }
 
@@ -157,11 +157,11 @@ struct HelperLog: Sendable {
     /// A handshake succeeded. The description is the client's own account of itself,
     /// validated but not verified — see this type's documentation.
     func handshakeCompleted(_ connection: ConnectionID, client: NegotiatedClient) {
-        log.notice(
+        notice(
             """
-            Connection \(connection.logDescription, privacy: .public) completed its \
-            handshake at protocol version \(client.protocolVersion, privacy: .public). The \
-            client describes itself as "\(client.clientDescription, privacy: .public)" — \
+            Connection \(connection.logDescription) completed its \
+            handshake at protocol version \(client.protocolVersion). The \
+            client describes itself as "\(client.clientDescription)" — \
             self-described, not verified.
             """
         )
@@ -170,21 +170,44 @@ struct HelperLog: Sendable {
     /// A message was refused. `detail` is never client-supplied text: every
     /// `AeolusXPCFault` detail describes the violation rather than quoting the value.
     func refusedMessage(_ connection: ConnectionID, message: String, fault: AeolusXPCFault) {
-        log.info(
+        info(
             """
-            Connection \(connection.logDescription, privacy: .public) was refused \
-            \(message, privacy: .public): \(fault.wireCode, privacy: .public).
+            Connection \(connection.logDescription) was refused \
+            \(message): \(fault.wireCode).
             """
         )
     }
 
-    /// The panic path ran.
-    func restoredAllToAutomatic(connection: ConnectionID) {
-        log.notice(
+    /// The panic path ran. It says what the helper did and no more: it used to add *"every fan
+    /// was already under the system's control"*, which no build can know.
+    func restoredAllToAutomatic(connection: ConnectionID, machineWide: MachineWideRestore) {
+        let restore =
+            switch machineWide {
+            case .noWritePath:
+                "no machine-wide restore was issued, because the plane reports no SMC write path"
+            case .notIssued:
+                "no machine-wide restore was issued; this authority issues none"
+            case .accepted:
+                "the firmware accepted the machine-wide restore, and accepted is not automatic"
+            case .refused:
+                "the machine-wide restore was refused (the fault line before this one)"
+            }
+        notice(
             """
-            Connection \(connection.logDescription, privacy: .public) asked for every fan \
-            to be restored to automatic. This build has no write path, so every fan was \
-            already under the system's control and nothing had to change.
+            Connection \(connection.logDescription) asked for every fan \
+            to be restored to automatic. Every lease was released, and \(restore).
+            """
+        )
+    }
+
+    /// § 7's machine-wide restore threw (`detail` is this module's own error). `fault`, as the
+    /// only report of a force key left set, which has no snapshot field (ADR 0014 D5).
+    func panicRestoreRefused(connection: ConnectionID, detail: String) {
+        fault(
+            """
+            The machine-wide restore that connection \(connection.logDescription) asked for was \
+            refused (\(detail)). Fans may still be off automatic control and the force key set; \
+            every lease was released. Run fanctl reset --all again, or see docs/RECOVERY.md.
             """
         )
     }
@@ -192,10 +215,10 @@ struct HelperLog: Sendable {
     // MARK: - Sensors
 
     func discoveredSensors(count: Int, duration: Duration) {
-        log.notice(
+        notice(
             """
-            Discovered \(count, privacy: .public) sensor keys in \
-            \(duration.milliseconds, privacy: .public) ms. This is the only full SMC \
+            Discovered \(count) sensor keys in \
+            \(duration.milliseconds) ms. This is the only full SMC \
             enumeration the helper performs; every snapshot after it is a subset read.
             """
         )
@@ -212,11 +235,11 @@ struct HelperLog: Sendable {
     /// out a machine that slept mid-walk: the alarm's clock is continuous. What a client sees
     /// meanwhile is a snapshot that never answers.
     func discoveryWalkOverran(alarm: Duration) {
-        log.fault(
+        fault(
             """
             The SMC sensor discovery walk has not returned after \
-            \(alarm.milliseconds, privacy: .public) ms (longest measured under contention: \
-            \(SMCReadScheduler.longestContendedDiscoveryWalk.milliseconds, privacy: .public) \
+            \(alarm.milliseconds) ms (longest measured under contention: \
+            \(SMCReadScheduler.longestContendedDiscoveryWalk.milliseconds) \
             ms). It is not cancelled. If an SMC call is wedged, every SMC read in the helper \
             is waiting behind it, including the safety supervisors', and snapshots will not \
             answer; if a connection rebuild is wedged, the walk is waiting behind that. See \
@@ -226,18 +249,18 @@ struct HelperLog: Sendable {
     }
 
     func sensorDiscoveryFailed(reason: String) {
-        log.error(
+        error(
             """
-            Sensor discovery failed (\(reason, privacy: .public)). This snapshot carries no \
+            Sensor discovery failed (\(reason)). This snapshot carries no \
             sensors; the next one will try discovery again.
             """
         )
     }
 
     func sensorRefreshFailed(reason: String) {
-        log.error(
+        error(
             """
-            Sensor refresh failed (\(reason, privacy: .public)). This snapshot carries no \
+            Sensor refresh failed (\(reason)). This snapshot carries no \
             sensors.
             """
         )
@@ -248,11 +271,13 @@ struct HelperLog: Sendable {
     /// `F<n>Md` did not answer for one fan, so the snapshot could not say who owns it.
     ///
     /// The wire has no way to report "not known" at protocol version 1 — see
-    /// `ReadOnlyFanReport.controlMode(_:)` — so this line is the only place the gap is
-    /// visible. It is `error` rather than `info` for that reason: what reaches the client is
-    /// a fallback, and an operator diagnosing "why does Aeolus say this fan is automatic"
-    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a
-    /// bitmask rather than as this key.
+    /// `ReadOnlyFanReport.controlMode(_:)` — so the fan's mode reaches the client as a
+    /// fallback, `automatic`. On a helper that can write, the availability beside it says
+    /// `supervisorBlind` (#360); on one that cannot, every build that has shipped, this line is
+    /// the only place the gap is visible. It is `error` rather than `info` for that reason: an
+    /// operator diagnosing "why does Aeolus say this fan is automatic", or "why is it blind",
+    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a bitmask
+    /// rather than as this key.
     ///
     /// **Which is exactly why only the first occurrence per fan is an error.** `snapshot()`
     /// is on a 1 Hz path, so an unthrottled line here is about 86,400 error-level entries per
@@ -262,33 +287,36 @@ struct HelperLog: Sendable {
     /// they go to `.debug`, which is not persisted by default. The wording is identical
     /// either way: the level carries the distinction, not the prose. The caller owns the
     /// "have I said this about this fan before" state, because this type is a value and holds
-    /// none — `ObservedFanModes.reportedUnreadable`.
+    /// none — `ObservedFanModes.reportedUnreadable`, which forgets a fan once its read answers,
+    /// so a later episode is an error again.
     func fanModeUnreadable(fanIndex: Int, reason: String, alreadyReported: Bool) {
-        // Rendered once and logged `.public` whole, rather than interpolated per field: both
-        // fields are the helper's own — an index it enumerated and an error it produced —
-        // so there is nothing here for `os_log` to redact, and the mirror below must see the
-        // same text the unified log gets.
-        let message = """
-            Fan \(fanIndex)'s mode key could not be read (\(reason)). This snapshot reports \
-            it as automatic, which is a fallback and not an observation: the wire has no way \
-            to say "not known" at protocol version 1.
+        emit(
+            alreadyReported ? .debug : .error,
             """
-        if alreadyReported {
-            log.debug("\(message, privacy: .public)")
-            fanLineSink?(.debug, message)
-        } else {
-            log.error("\(message, privacy: .public)")
-            fanLineSink?(.error, message)
-        }
+            Fan \(fanIndex)'s mode key could not be read (\(reason)). This snapshot reports \
+            its mode as automatic, which is a fallback and not an observation: the wire has no \
+            way to say "not known" at protocol version 1. A helper that can write reports its \
+            manual control as supervisorBlind, unless Aeolus is holding or handing back the fan.
+            """
+        )
     }
 
     // MARK: - Lifecycle
 
-    func listening(machServiceName: String, build: String) {
-        log.notice(
+    /// The service is advertised. What the line says about writing comes from the plane's own
+    /// `writeCapability`, asked at the call site: it read *"No SMC write path exists in this
+    /// build"* as a literal until the delta review of #349, which a build that can write would
+    /// still have printed.
+    func listening(machServiceName: String, build: String, writeCapability: FanWriteCapability) {
+        let writes =
+            switch writeCapability {
+            case .notBuilt: "No SMC write path exists in this build."
+            case .built: "This build has an SMC write path."
+            }
+        notice(
             """
-            AeolusHelper \(build, privacy: .public) listening on \
-            \(machServiceName, privacy: .public). No SMC write path exists in this build.
+            AeolusHelper \(build) listening on \
+            \(machServiceName). \(writes)
             """
         )
     }
@@ -302,10 +330,10 @@ struct HelperLog: Sendable {
     /// shutdown is entitled to know that the helper refused it *on purpose*, which is the
     /// one thing the generic `helperFailed` code on the wire cannot say.
     func refusedDuringTeardown(_ connection: ConnectionID, message: String) {
-        log.info(
+        info(
             """
-            Connection \(connection.logDescription, privacy: .public) was refused \
-            \(message, privacy: .public): the helper is shutting down and is handing every \
+            Connection \(connection.logDescription) was refused \
+            \(message): the helper is shutting down and is handing every \
             fan back to the system.
             """
         )
@@ -313,7 +341,7 @@ struct HelperLog: Sendable {
 
     /// A second orderly signal arrived while the first was still being served.
     func teardownAlreadyRunning() {
-        log.notice(
+        notice(
             """
             A second orderly signal arrived while the teardown was still running. It is \
             ignored: the teardown in flight restores every fan and ends the process.
@@ -326,10 +354,10 @@ struct HelperLog: Sendable {
     /// `fault` level, because this is the line that says fans may still be off automatic
     /// control — the failure `docs/SAFETY.md` opens with.
     func teardownRestoreFailed(detail: String) {
-        log.fault(
+        fault(
             """
             The orderly teardown could not restore every fan to automatic control \
-            (\(detail, privacy: .public)). The helper will exit non-zero so that launchd \
+            (\(detail)). The helper will exit non-zero so that launchd \
             starts it again and reconciliation can clear anything left in manual.
             """
         )
@@ -342,7 +370,7 @@ struct HelperLog: Sendable {
     /// act on. It is logged rather than passed over in silence because it is also the line
     /// that explains a zero exit on a helper that wrote nothing.
     func teardownFoundNothingToRestore() {
-        log.notice(
+        notice(
             """
             The orderly teardown's machine-wide restore was refused: this build has no SMC \
             write path, so no fan can be off automatic control because of Aeolus. The helper \
@@ -353,10 +381,10 @@ struct HelperLog: Sendable {
 
     /// The last line the process writes.
     func teardownFinished(outcome: TeardownOutcome) {
-        log.notice(
+        notice(
             """
-            Orderly teardown finished (\(String(describing: outcome), privacy: .public)); \
-            exiting \(outcome.exitCode, privacy: .public). Every lease was released and a \
+            Orderly teardown finished (\(String(describing: outcome))); \
+            exiting \(outcome.exitCode). Every lease was released and a \
             machine-wide restore was attempted.
             """
         )

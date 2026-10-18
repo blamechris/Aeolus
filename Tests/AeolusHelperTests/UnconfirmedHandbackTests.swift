@@ -53,22 +53,21 @@ struct UnconfirmedHandbackTests {
     /// again after `.didWake` with the restore still parked; the second is what says the
     /// refusal is not the sleep seal wearing another name.
     ///
-    /// **Fan 1 is enumerated, never leased, and grantable throughout**, which is the invariant
-    /// `handbackUnconfirmed` is documented to hold: it is a subset of the fans whose restore
-    /// was actually issued. A one-fan machine cannot tell that set from "every fan this helper
-    /// knows about".
+    /// **Fan 1 is enumerated and never leased, so never unconfirmed**: the set is a subset of the
+    /// fans whose restore was issued, which one fan cannot tell from all. It was "grantable
+    /// throughout" until #364 held the machine-wide restore seal for § 4's whole teardown; it is
+    /// refused `.releaseInProgress` while that is parked — the #364 decision, not a test fix.
     ///
     /// The lease's own fan is what wedges here, not the keystone, which is why `restoreScopes`
     /// is `[.fan(0)]` rather than `[.everyFan]` — the keystone is not reached until the wedge
     /// lets go, which is the honest shape of a stale `io_connect_t` under a live lease.
     ///
-    /// **Mutation A:** in `handBackEveryFan()`, move `await leases.releaseEveryLease()` below
-    /// the `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on the
-    /// lease count.
+    /// **Mutation A:** in `handBackEveryFan()`, move `await leases.releaseEveryLease()` below the
+    /// `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on lease count.
     /// **Mutation B:** delete the `guard unconfirmed.isEmpty` block from
     /// `LeaseAuthority.acquireLease`. Run: red.
-    /// **Mutation C:** in `LeaseAuthority.recordUnconfirmedHandbacks()`, union every
-    /// enumerated fan rather than `releasing.keys`. Run: red on fan 1.
+    /// **Mutation C:** in `HandbackRegisters.recordUnconfirmedHandbacks()`, union every fan the
+    /// plane has, `Set(releasing.keys).union(0..<2)`, not `releasing.keys`. Run: red on fan 1.
     @Test("A wedged handback drops the lease first and leaves the fan unconfirmed")
     func aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed() async throws {
         let plane = WedgedRestorePlane(SystemPowerTests.machine(fanCount: 2))
@@ -90,6 +89,7 @@ struct UnconfirmedHandbackTests {
         #expect(await helper.leases.leaseCount == 1)
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        await yieldUntil("fan 0's restore to park") { await plane.restoreScopes == [.fan(0)] }
         try await observer.didAcknowledge.wait()
 
         #expect(
@@ -108,14 +108,13 @@ struct UnconfirmedHandbackTests {
 
         await Self.expectUnconfirmed(helper.leases, fan: 0, whenAsking: "while parked")
 
-        // The machine wakes with the restore still parked. The seal is gone; the refusal is
-        // not, and it is still the same refusal — which is what makes it a fact about this
-        // fan rather than about the sleep window.
+        // The machine wakes with the restore still parked. The sleep seal is gone; the refusal
+        // is not, and is the same refusal — a fact about this fan rather than the sleep window.
         try await observer.deliver(.didWake)
         await Self.expectUnconfirmed(helper.leases, fan: 0, whenAsking: "after the wake")
 
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [1]), from: ConnectionID())
+        let fanOne = await AvailabilityFixture.refusalForGrant(over: 1, from: helper.leases)
+        #expect(fanOne == .releaseInProgress, "fan 1 after the wake came back \(fanOne)")
         #expect(
             await helper.leases.fansWithUnconfirmedHandbacks == [0],
             """
@@ -125,9 +124,11 @@ struct UnconfirmedHandbackTests {
             """)
         await Self.expectUnconfirmedIsMidHandback(helper.leases)
 
-        // Nothing is left parked behind the test.
+        // Nothing is left parked behind the test, and fan 1 is granted once it has returned.
         await plane.release()
         await delivery.value
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [1]), from: ConnectionID())
     }
 
     /// A restore that lands late clears the refusal it left behind.
@@ -142,8 +143,8 @@ struct UnconfirmedHandbackTests {
     /// the fan left `handbackUnconfirmed`; it does not prove it was ever in it, and it does
     /// not prove it stayed out of `restoreAbandoned`.
     ///
-    /// **Mutation:** delete `handbackUnconfirmed.remove(fan)` from `LeaseAuthority.restore`'s
-    /// `defer`. Run: red.
+    /// **Mutation:** delete `handbackUnconfirmed.remove(fan)` from
+    /// `HandbackRegisters.endHandback(ofFan:)`, which `restore`'s `defer` calls. Run: red.
     @Test("A handback that lands after the budget makes the fan grantable again")
     func aLateHandbackClearsTheUnconfirmedRefusal() async throws {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
@@ -201,9 +202,9 @@ struct UnconfirmedHandbackTests {
     /// a refusal. `BoundedFanRestorer` then spends `RestoreLimits.attemptBudget` on it — three
     /// attempts, no inter-attempt wait by design — before reporting the fan abandoned.
     ///
-    /// **Mutation:** delete `restoreAbandoned.formUnion(await restorer.restoreToAutomatic(…))`
-    /// from `LeaseAuthority.restore`, awaiting the restorer without recording its answer.
-    /// Run: red.
+    /// **Mutation:** delete `restoreAbandoned.formUnion(abandoned)` from
+    /// `HandbackRegisters.recordRestore(of:abandoned:)`, so `LeaseAuthority.restore` awaits the
+    /// restorer without recording its answer. Run: red.
     @Test("A handback the firmware refuses after the budget is refused durably")
     func aLateRefusalConvertsTheUnconfirmedStateToTheDurableOne() async throws {
         let plane = WedgedThenRefusingRestorePlane(SystemPowerTests.machine())
@@ -254,9 +255,9 @@ struct UnconfirmedHandbackTests {
 
     /// The subset `fansAeolusIsAccountableFor` rests on — it omits the unconfirmed register
     /// because every fan in it is mid-handback — asserted rather than trusted. **Mutation:**
-    /// `releasing.removeAll()` at the end of `recordUnconfirmedHandbacks()`. Run: red here in
-    /// the parked test, whose other assertions pass; the two late-outcome tests go red too,
-    /// because a fan with no `releasing` entry is never cleared when its restore returns.
+    /// `releasing.removeAll()` at the end of `HandbackRegisters.recordUnconfirmedHandbacks()`.
+    /// Run: red here in the parked test, whose other assertions pass; the two late-outcome tests
+    /// go red too: a fan with no `releasing` entry is never cleared when its restore returns.
     private static func expectUnconfirmedIsMidHandback(_ leases: LeaseAuthority) async {
         let unconfirmed = await leases.fansWithUnconfirmedHandbacks
         let midHandback = await leases.fansMidHandback

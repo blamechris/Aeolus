@@ -140,10 +140,15 @@ struct HelperClientDeadlineLiteralTests {
     ]
 
     /// The product's bound per verb, read off the shipping value rather than restated.
+    ///
+    /// `applyPerFan` is a term rather than a verb — `apply` waits `gatedVerb` plus it for each fan
+    /// it names — and it is held to the same rule: a test that passes one tighter than the product
+    /// is cutting `apply` off sooner than a user's client would.
     private static let product: [String: Duration] = [
         "gatedVerb": HelperClientDeadlines.default.gatedVerb,
         "panicVerb": HelperClientDeadlines.default.panicVerb,
         "handshakeVerb": HelperClientDeadlines.default.handshakeVerb,
+        "applyPerFan": HelperClientDeadlines.default.applyPerFan,
     ]
 
     /// **Mutation:** in `HelperClientTeardownTests.thePanicPathSurvivesATimedOutVerb`, put

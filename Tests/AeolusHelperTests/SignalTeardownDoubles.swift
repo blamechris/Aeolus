@@ -169,8 +169,17 @@ actor JournallingPlane: FanControlPlane {
         try await wrapped.reconnect()
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
+    /// The engagement's ticket, forwarded: synchronous, so it costs no hop.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        wrapped.beginEngagement(fanAt: index)
+    }
+
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await wrapped.engageManualControl(of: fan)
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await wrapped.prepareWritePath(enumerating: fans)
     }
 
     @discardableResult

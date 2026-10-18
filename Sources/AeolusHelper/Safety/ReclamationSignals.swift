@@ -6,10 +6,11 @@ import FanKit
 //
 // Split from `ReclamationWatchdog.swift` for `ReclamationLimits.swift`'s reason, and it is
 // the same reason that bounds what may follow them here: both are `static` and pure, so
-// neither reads or writes the actor's `held` registry and moving them costs none of the
-// read-then-mutate reasoning that keeps `examine(fanAt:)` checkable. Everything still in
-// that file either touches `held` or is `held` — see the `- Note:` on the actor, and
-// [#128](https://github.com/blamechris/Aeolus/issues/128) for the rest of this space.
+// neither reads or writes § 5's registry and moving them costs none of the read-then-mutate
+// reasoning that keeps `examine(fanAt:inBound:)` checkable. Since
+// [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass their caller is
+// `HeldFan.judge(_:)`, and what is left in that file awaits, re-fetches or acts — see the
+// `- Note:` on the actor.
 //
 // They stay `static` members of `ReclamationWatchdog` rather than becoming a free namespace
 // so that `Self.primaryDivergence(of:against:)` still reads as § 5 asking § 5 a question,
@@ -48,9 +49,11 @@ extension ReclamationWatchdog {
             // Nothing has been commanded on this fan yet — it came off automatic control
             // and no target followed. The mode check above is the whole of what can be said.
             guard let commanded else { return nil }
-            guard abs(readBack - commanded.rpm) > ReclamationLimits.targetToleranceRPM
-            else { return nil }
-            return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
+            // `<=` and not `>`, so a target that is not a number diverges rather than converges.
+            guard abs(readBack - commanded.rpm) <= ReclamationLimits.targetToleranceRPM else {
+                return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
+            }
+            return nil
         }
     }
 

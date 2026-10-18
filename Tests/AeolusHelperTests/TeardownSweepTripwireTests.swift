@@ -78,13 +78,15 @@ struct TeardownSweepTripwireTests {
             }
         }
 
-        // Coverage, not decoration. A regex that stopped matching, a renamed file or a brace
-        // walk that fell over would leave `offenders` empty over source nobody read — which is
-        // exactly how a tripwire passes for the life of a defect. Both numbers are floors set AT
-        // what the file holds as this lands — four loops, six restore call sites — so a change
-        // that ADDS either need not come back here, while one that stops a currently-detected
-        // site from matching does. A floor one below the true count is the same hole, one notch
-        // smaller: a whole expected site can go undetected and still read as coverage.
+        // Coverage, not decoration. A regex that stopped matching, a renamed file or a brace walk
+        // that fell over would leave `offenders` empty over source nobody read — which is exactly
+        // how a tripwire passes for the life of a defect. Both numbers are floors set AT what the
+        // file holds — four loops, and seven restore call sites since #357's
+        // `revokeLease(id:forFan:because:)`, whose per-fan `self.restore(` rewrite a floor of six
+        // let through (#361's panel) — so a change that ADDS either need not come back here, while
+        // one that stops a currently-detected site from matching does. A floor one below the true
+        // count is the same hole, one notch smaller: a whole expected site can go undetected and
+        // still read as coverage.
         #expect(
             loops >= 4,
             """
@@ -93,9 +95,9 @@ struct TeardownSweepTripwireTests {
             `restore(_:because:)` itself, so the assertion below is green over nothing.
             """)
         #expect(
-            code.components(separatedBy: Self.restoreCall).count - 1 >= 6,
+            code.components(separatedBy: Self.restoreCall).count - 1 >= 7,
             """
-            \(Self.leaseCoreFile) names `\(Self.restoreCall)` fewer than six times. Either the \
+            \(Self.leaseCoreFile) names `\(Self.restoreCall)` fewer than seven times. Either the \
             teardown paths no longer restore — which is docs/SAFETY.md § 1's whole substance — \
             or this scan is not reading the lease core.
             """)
@@ -124,10 +126,16 @@ struct TeardownSweepTripwireTests {
     /// loops. A tripwire that fires on the prose explaining the rule is a tripwire nobody keeps
     /// — `PanicPathScopeTripwireTests` records the same finding.
     private static func strippedLeaseCore() throws -> String {
+        SeamScanner.strippingComments(try Self.leaseCoreSource())
+    }
+
+    /// `LeaseAuthority.swift` as written. Internal, with `bracedBody(in:after:)`, so
+    /// `TeardownCountTripwireTests` reads the same file the same way.
+    static func leaseCoreSource() throws -> String {
         let url = try #require(
             try SeamScanner.swiftFiles().first { $0.lastPathComponent == Self.leaseCoreFile },
             "\(Self.leaseCoreFile) is not in the source tree")
-        return SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
     /// The next `for … in …` header at or after `from`, or `nil` when there is none.
@@ -150,7 +158,7 @@ struct TeardownSweepTripwireTests {
     /// Local for `PanicPathScopeTripwireTests.functionBody`'s reason: `SeamScanner` owns the
     /// primitives more than one suite has to agree on, and a one-caller brace walk is not one
     /// of them.
-    private static func bracedBody(
+    static func bracedBody(
         in code: String, after index: String.Index
     ) -> Range<String.Index>? {
         guard let open = code.range(of: "{", range: index..<code.endIndex) else { return nil }

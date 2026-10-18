@@ -75,6 +75,14 @@ no SMC write path yet, so it answers this message as a no-op — see
 it becomes the real thing the moment the write path lands; until then, if the fans are wrong,
 go to step 5.
 
+**On a build that can write, the helper can also log a fault the command does not print.** If
+the firmware refuses the machine-wide restore, the helper still answers *accepted* and logs a
+fault saying fans may still be off automatic control and the force key may still be set; look
+for it with `log show --predicate 'subsystem == "dev.aeolus.AeolusHelper"' --last 5m`. Run
+`fanctl reset --all` once more; if the line comes back, go to step 5, then step 7, and step 8 if
+the fault returns; that a restart clears the force key is unverified (ADR 0014 U11). No build
+today can write, so this line cannot appear yet.
+
 **Exit 1 — "The helper did not confirm the reset request."** Followed by the reason, and by
 step 5's `bootout` line. The reasons worth knowing in advance:
 
@@ -130,8 +138,9 @@ that resolves this from a client; it is a property of what the firmware reported
 fan.
 
 **`reclaimedBySystem`** — The system has taken this fan back from manual control and Aeolus
-is not driving it right now. There is no user action; it returns to Aeolus's control if the
-system yields the fan again.
+is not driving it right now. Current helpers report this as the *Reclaimed by system* flag, not
+as a refusal. On a build that can write, asking again is allowed, and a refusal names its own
+reason.
 
 **`leaseHeldByAnotherClient`** — Another Aeolus client already holds the manual-control
 lease. It becomes available again once that lease ends or is released.
@@ -139,9 +148,12 @@ lease. It becomes available again once that lease ends or is released.
 **`selfRenewalNotBuilt`** — A self-renewing (always-alive) lease was requested and this
 build does not implement one. Ask for a lease without self-renewal instead.
 
-**`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the
-write that returns it to automatic control has not completed yet. Retry in a moment; this
-normally clears in milliseconds.
+**`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the write
+that returns it to automatic control has not completed yet, or a restore of every fan at once is
+still running — `fanctl reset --all`, `fanctl auto`, or the handback the helper makes before the
+Mac sleeps, which can still be running just after it wakes. Retry in a moment; this normally
+clears in milliseconds. If it does not clear within a few seconds, that restore has not
+returned; go to step 5.
 
 **`handbackUnconfirmed`** — Aeolus asked for this fan back and stopped waiting for an answer
 before one arrived, so it does not yet know what mode the fan is in. The outstanding restore
@@ -170,9 +182,15 @@ safely watch a fan under manual control and refuses new leases entirely. There i
 do from here; it clears when the SMC answers again, and retrying does not speed that up. If
 it does not clear, go to step 5.
 
-**`supervisorBlind`** — Aeolus cannot currently read this one fan's own control state, so it
-cannot tell whether something else has taken it back, and refuses a new lease over it. This
-may clear on its own if the connection recovers; if it does not, go to step 5.
+**`supervisorBlind`** — Aeolus could not confirm this one fan's own control state, so it
+cannot tell whether something else is holding it, and refuses a new lease over it. If a
+request was just refused this way, a read failed at that moment: retry. If the app or
+`fanctl status` keeps showing it, there are two causes. Either the helper cannot read the
+fan's mode now — a snapshot on a helper that can write says so when its own read of the fan
+did not answer — or it could not confirm the fan back under automatic control at start-up:
+its mode would not read, read manual after the restore, or was never reached. The first
+clears when the read answers; the second stands until the helper restarts (step 5). If it never
+clears, which cause it is does not matter: go to step 5 and restart the helper.
 
 **`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
 firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop

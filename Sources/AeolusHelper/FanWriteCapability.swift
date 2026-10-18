@@ -13,21 +13,21 @@
 /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s adjudication decided the shape:
 /// *"the read-only path survives as a capability gate on the seam, not a literal."* The
 /// answer therefore comes from the conformer that would have to perform the write —
-/// `SMCFanControlPlane` answers `.notBuilt` because `SMCConnection.write(_:to:)` is
-/// SPI-gated and throws and no write selector exists anywhere in `Sources`, and
+/// `SMCFanControlPlane` answers `.notBuilt` because it holds no route to
+/// `SMCConnection.write(_:to:)`, which is SPI-gated and called by nothing in the helper, and
 /// `ScriptedControlPlane` answers `.built` because its scripted firmware really does take
 /// writes.
 ///
 /// **One line moves, and it is not the only one — say so rather than imply otherwise.** The
 /// day E3/E4 supply the three method bodies, `SMCFanControlPlane.writeCapability` flips and
 /// every gate that *reads* it flips with it: `LeaseAuthority.acquireLease` is the one that
-/// matters, and it is the reason a lease is refused today. But
-/// `ReadOnlyFanReport.availability(whenLedgerSays:)` still writes
-/// `.unavailable(.writePathNotBuilt)` as a literal, so flipping the seam alone would grant
-/// leases while every fan in the snapshot reported manual control unavailable — a client
-/// told two different things by one helper, which is `CLAUDE.md` rule 6 arriving through the
-/// read path. [#194](https://github.com/blamechris/Aeolus/issues/194) holds that second
-/// literal open and must land in the same change as the flip.
+/// matters, and it is the reason a lease is refused today. The snapshot's half was a literal
+/// too: `ReadOnlyFanReport`'s availability wrote `.unavailable(.writePathNotBuilt)` out, so
+/// flipping the seam alone would have granted leases while every fan in the snapshot reported
+/// manual control unavailable — a client told two different things by one helper, which is
+/// `CLAUDE.md` rule 6 arriving through the read path.
+/// [#194](https://github.com/blamechris/Aeolus/issues/194) sourced it from this seam, in
+/// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`.
 enum FanWriteCapability: Sendable, Hashable {
 
     /// The conformer has a write path. Every write verb on it may still refuse — a firmware

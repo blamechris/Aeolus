@@ -131,14 +131,16 @@ struct LeaseReleaseTests {
     /// It pins nothing about a machine-wide restore, and the sentence here asserted one until
     /// [#228](https://github.com/blamechris/Aeolus/issues/228).
     /// `restoreAllToAutomatic`'s contract specifies `restoreToAutomatic(.everyFan)` on top of
-    /// this; the shipped handler issues no such call, so nothing here may be read as evidence
-    /// that the force key is cleared. `SupervisedFanAuthority.restoreAllToAutomatic` holds that
-    /// decision and `PanicPathScopeTripwireTests` is what keeps this comment from drifting back
-    /// out of step with it.
+    /// this, and the handler issues it itself — after this returns, and only on a plane that can
+    /// write — so nothing here may be read as evidence that the force key is cleared.
+    /// `PanicVerbMachineWideRestoreTests` drives that half.
+    /// `SupervisedFanAuthority.restoreAllToAutomatic` holds the decision and
+    /// `PanicPathScopeTripwireTests` is what keeps this comment from drifting back out of step
+    /// with it.
     ///
     /// **"Every fan a dropped lease covered" is no longer the whole sweep**, since
     /// [#189](https://github.com/blamechris/Aeolus/issues/189): the pass also names every fan in
-    /// `LeaseAuthority.restoreAbandoned`, which is empty here because nothing in this test
+    /// the lease core's `restoreAbandoned`, which is empty here because nothing in this test
     /// refuses a write. `AbandonedHandbackRecoveryTests` is where that half is driven. The
     /// single recorded restore is also #188's shape — one call for the sweep, not one per entry
     /// — and is unchanged by it only because the table holds one entry.

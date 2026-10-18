@@ -56,6 +56,8 @@ actor LeaseGrantingAuthority: FanAuthority {
 
     private let lease: Lease
     private let snapshotGate: AsyncSignal?
+    private let applyGate: AsyncSignal?
+    private let renewGate: AsyncSignal?
     private(set) var applied: [FanSetting] = []
     private(set) var released: [UUID] = []
 
@@ -70,13 +72,30 @@ actor LeaseGrantingAuthority: FanAuthority {
     /// than inferred from a sleep.
     private(set) var hasBeenAskedForSnapshot = false
 
+    /// Set before `apply` parks, for the same reason.
+    private(set) var hasBeenAskedToApply = false
+
+    /// Set before `renewLease` parks, for the same reason.
+    private(set) var hasBeenAskedToRenew = false
+
     /// - Parameters:
     ///   - lease: the lease every `acquireLease` and `renewLease` answers with.
     ///   - snapshotGate: when given, `snapshot` parks on it — so a test can hold a gated
     ///     verb open on a connection whose lease it is watching.
-    init(lease: Lease, snapshotGate: AsyncSignal? = nil) {
+    ///   - applyGate: when given, `apply` parks on it after recording its settings — an `apply`
+    ///     the helper accepted and is still working on, which is the state `apply`'s own
+    ///     deadline is the bound for.
+    ///   - renewGate: when given, `renewLease` parks on it — a heartbeat the helper accepted and
+    ///     has not answered. The helper does not sequence `renewLease` (#229), so it parks beside
+    ///     a held `apply` rather than behind it, which is what lets a test hold both at once.
+    init(
+        lease: Lease, snapshotGate: AsyncSignal? = nil, applyGate: AsyncSignal? = nil,
+        renewGate: AsyncSignal? = nil
+    ) {
         self.lease = lease
         self.snapshotGate = snapshotGate
+        self.applyGate = applyGate
+        self.renewGate = renewGate
     }
 
     func snapshot() async throws -> SystemSnapshot {
@@ -91,7 +110,11 @@ actor LeaseGrantingAuthority: FanAuthority {
         lease
     }
 
-    func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease { lease }
+    func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease {
+        hasBeenAskedToRenew = true
+        if let renewGate { try? await renewGate.wait() }
+        return lease
+    }
 
     func releaseLease(id: UUID, from connection: ConnectionID) async throws {
         released.append(id)
@@ -101,6 +124,8 @@ actor LeaseGrantingAuthority: FanAuthority {
         _ settings: [FanSetting], leaseID: UUID, from connection: ConnectionID
     ) async throws {
         applied = settings
+        hasBeenAskedToApply = true
+        if let applyGate { try? await applyGate.wait() }
     }
 
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {}

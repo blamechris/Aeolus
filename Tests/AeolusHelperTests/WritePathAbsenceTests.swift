@@ -3,8 +3,13 @@ import Testing
 
 @testable import AeolusHelper
 
-/// E2's strongest safety property is structural: **it cannot fail open into a write,
-/// because there is no write to fail into.**
+/// The helper's strongest safety property on this branch is structural: **it cannot fail
+/// open into a write, because nothing in it calls one.**
+///
+/// `SMCConnection.write(_:to:)` has a body on `e4/bring-up`: one `WRITE_BYTES` round trip.
+/// The helper's write path is still not built — no helper file calls that body, and the
+/// plane answers `.notBuilt` — so what is asserted here is where the write may be named and
+/// which command codes exist, not that no write exists anywhere.
 ///
 /// That is a property of the source tree, not of a code path, so it is asserted against
 /// the source tree. Reading the files via `#filePath` rather than a test-bundle resource
@@ -12,12 +17,12 @@ import Testing
 /// that actually ships.
 ///
 /// This is a tripwire, not a proof. It cannot see a write reached by arithmetic on a
-/// selector, and it is not trying to — what it catches is the realistic regression, which
-/// is somebody adding `kSMCWriteBytes = 6` "ready for E5" and nobody noticing until the
-/// helper is signed and installed. The real guard is that `SMCConnection.write(_:to:)`
-/// stays behind the `FanWrite` SPI group and still throws, and that E5 does not exist.
-/// `WriteSeamAccessTests` guards the access level itself; this suite guards the calls.
-@Suite("No write path exists in this tree")
+/// selector, and it is not trying to — what it catches is the realistic regression: a
+/// second command constant nobody reviewed, or a helper file that starts calling the write.
+/// The real guard is that `SMCConnection.write(_:to:)` stays behind the `FanWrite` SPI group
+/// and that the helper does not call it. `WriteSeamAccessTests` guards the access level
+/// itself; this suite guards the calls.
+@Suite("The helper has no write path in this tree")
 struct WritePathAbsenceTests {
 
     /// The enumerator lives in `SeamScanner` now, so this suite and
@@ -27,11 +32,18 @@ struct WritePathAbsenceTests {
         try SeamScanner.swiftFiles()
     }
 
-    /// The SMC's read selectors are 5 (`READ_BYTES`), 8 (`READ_INDEX`) and 9
-    /// (`READ_KEYINFO`). Anything defining another selector constant is defining a write.
-    @Test("No source file declares an SMC selector other than the three read selectors")
-    func noWriteSelectorConstantExists() throws {
-        let allowed: Set<String> = ["5", "8", "9"]
+    /// The SMC's command codes this tree may declare are the three reads — 5 (`READ_BYTES`),
+    /// 8 (`READ_INDEX`), 9 (`READ_KEYINFO`) — and the one write, 6 (`WRITE_BYTES`), which
+    /// `SMCConnection.write(_:to:)` alone uses and which nothing in the helper calls (the test
+    /// below). Any other code is a command nobody reviewed.
+    ///
+    /// This is a **coverage pin**, not only an allowlist. The declared codes must be exactly
+    /// `[5, 6, 8, 9]`, each once: an unknown code fails, a second `6` fails, and so does the
+    /// write's constant disappearing from the scan — the shape of a selector written inline
+    /// as a literal, which an allowlist alone reports as clean.
+    @Test("Sources declares exactly the SMC selectors 5, 6, 8 and 9, and one write selector")
+    func theSelectorConstantsAreTheThreeReadsAndOneWrite() throws {
+        let allowed: Set<String> = ["5", "6", "8", "9"]
         let pattern = try NSRegularExpression(
             pattern: #"selector[A-Za-z]*\s*:\s*UInt8\s*=\s*(\d+)"#)
 
@@ -42,22 +54,34 @@ struct WritePathAbsenceTests {
         let files = try Self.swiftFiles()
         #expect(!files.isEmpty, "the project's sources were not found")
 
+        var declared: [String] = []
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             for match in pattern.matches(in: text, range: range) {
                 guard let valueRange = Range(match.range(at: 1), in: text) else { continue }
                 let value = String(text[valueRange])
+                declared.append(value)
                 #expect(
                     allowed.contains(value),
                     """
-                    \(file.lastPathComponent) declares SMC selector \(value). The read \
-                    selectors are 5, 8 and 9; anything else is a write, and no write may \
-                    exist before E5.
+                    \(file.lastPathComponent) declares SMC selector \(value). The commands \
+                    are 5, 8 and 9 (reads) and 6 (the write); anything else is a command \
+                    nobody reviewed.
                     """
                 )
             }
         }
+
+        #expect(
+            declared.sorted() == ["5", "6", "8", "9"],
+            """
+            Sources declares the SMC selectors \(declared.sorted()), not exactly \
+            ["5", "6", "8", "9"]. There is one write selector, 6, declared once in \
+            SMCConnection.swift; a missing one means the write's code is no longer where \
+            this scan can see it, and a duplicate is a second write.
+            """
+        )
     }
 
     /// The one file permitted to *name* the write seam. Everything else in the helper may

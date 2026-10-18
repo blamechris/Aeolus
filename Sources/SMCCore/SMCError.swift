@@ -35,7 +35,16 @@ public enum SMCError: Error, Sendable, Equatable {
     /// which means the value did not fit: this means the code is not written. Refusing
     /// is the only safe answer — a guessed encoding writes a wrong RPM to real hardware.
     case encodingNotImplemented(type: SMCKeyType)
-    /// The caller lacks the privileges required for the operation. Writes need root.
+    /// SMCCore refused, by its own rule and before any round trip, to write or to encode:
+    /// - `SMCConnection.write(_:to:)` with a payload that is empty or longer than the 32-byte
+    ///   `SMCKeyData_t` field;
+    /// - `SMCKeyType.encode(scalar:byteOrder:)` with a value the type cannot represent
+    ///   exactly — a `ui8` that is not an integer in `0...255`, a `flt` that is not finite as
+    ///   a `Float` — or a `flt` with no resolved byte order.
+    ///
+    /// Nothing reached the firmware or the kernel. A refusal *by* either arrives as
+    /// `firmware(code:)` or `connectionFailed(kernReturn:)` instead. This case used to mean
+    /// that every write was refused, while the write had no body.
     case notPermitted
     /// The key declares itself unreadable via attribute bit `0x80`. Observed on 52 keys
     /// on `Mac16,5`. Distinct from `firmware(code:)`: this is caught client-side, before

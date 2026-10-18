@@ -153,7 +153,7 @@ struct ReclamationWatchdogTests {
     /// lost manual control, and both the log and `isReclaimedBySystem` blamed the OS.
     ///
     /// Every assertion below is one of the four things that must now not happen. Route the
-    /// shortfall back through `diverged(_:fanAt:)` and all four go red.
+    /// shortfall back through `diverged(_:fanAt:heldUnder:)` and all four go red.
     @Test("A sustained shortfall reports, and never reaches the terminal action")
     func aSustainedShortfallOnlyReports() async throws {
         let machine = ReclamationMachine(
@@ -237,7 +237,7 @@ struct ReclamationWatchdogTests {
         #expect(machine.safetyLog.lines(containing: "**not** recording it as reclaimed").count == 1)
         // **This is the assertion that discriminates**, and the one above cannot.
         // Mutation-checked: re-adding `ledger.markReclaimed` to the pre-empted branch left
-        // the ledger assertion above green, because `restoreAndForget(fanAt:)` ends
+        // the ledger assertion above green, because `restoreAndForget(fanAt:heldUnder:)` ends
         // with `ledger.clearReclaimed(fanAt:)` — the same call path marks the fan and then
         // erases the mark, so the end state is identical either way. What survives the
         // round trip is the `.fault` line `markReclaimed`'s transition report fires on the
@@ -258,10 +258,11 @@ struct ReclamationWatchdogTests {
     ///
     /// The re-assert is to 2,000 RPM against a fan turning at 1,800, so the recovered state
     /// converges on **both** signals: the target reads back exactly, and the 200 RPM lag is
-    /// inside `actualToleranceFraction`. A scenario whose fan could never satisfy the
-    /// secondary signal would leave the ledger legitimately marked and would be asserting
-    /// the wrong thing — the flag follows what the mechanism believes, and a sustained
-    /// shortfall is still a belief that something is wrong.
+    /// inside `actualToleranceFraction`. The secondary signal does not decide the clear: the mark
+    /// follows the primary, so a re-asserted fan still short of its target is cleared on the same
+    /// cycle (#366), which `ReclamationEpisodeMarkTests` holds. A sustained shortfall is a fan the
+    /// firmware is holding for Aeolus that is not reaching its speed, and reporting it as
+    /// reclaimed would be a false statement about who holds it.
     @Test("A fan that converges again stops being reported as reclaimed")
     func convergenceClearsTheLedger() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
@@ -315,5 +316,34 @@ struct ReclamationWatchdogTests {
         await machine.watchdog.cycle()
 
         #expect(await machine.attempts.isEmpty)
+    }
+
+    /// Blind and readable cycles alternating never add up to persistent blindness: each
+    /// readable cycle zeroes the count, so the reconnect-and-restore in
+    /// `ReclamationWatchdogRecoveryTests` needs `blindCyclesBeforeDivergence` blind cycles **in a
+    /// row**. Nothing asserted that until #128's review deleted the reset with the suite green.
+    ///
+    /// **Mutation:** delete `registry.resetReadFailures(ofFan: index)` from
+    /// `examine(fanAt:inBound:)`. Run: red.
+    @Test("Alternating blind and readable cycles never add up to persistent blindness")
+    func alternatingBlindnessNeverEscalates() async throws {
+        let rounds = ReclamationLimits.blindCyclesBeforeDivergence + 1
+        let alternating: [ScriptedControlPlane.Stage] = [.blind(), .nominal()]
+        let machine = ReclamationMachine(
+            stages: Array(repeating: alternating, count: rounds).flatMap { $0 },
+            fans: [0: .held(at: 2_400)])
+        try await machine.lease(fans: [0])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<(2 * rounds) {
+            await machine.watchdog.cycle()
+            await machine.plane.advance()
+        }
+
+        #expect(
+            await machine.didRestore(fan: 0) == false,
+            "blind cycles separated by readable ones were counted as one blind episode")
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        #expect(machine.safetyLog.lines(containing: "can read fan 0 again").count == rounds)
     }
 }

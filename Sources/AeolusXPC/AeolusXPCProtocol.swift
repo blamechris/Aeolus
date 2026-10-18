@@ -65,11 +65,12 @@ import Foundation
 /// **dispatched** the moment it arrives and is never queued behind another message, so a
 /// `snapshot` still in flight, or an operation that never returns at all, cannot hold it in
 /// a queue. What that buys is promptness, not a bounded reply: the restore's own body drops
-/// every lease and writes the fans they covered back to automatic through the same control
-/// plane, so on the wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately
-/// and its completion is still the plane's to give. "Each fan" read as every fan on the
-/// machine until [#228](https://github.com/blamechris/Aeolus/issues/228); the scope is the
-/// declaration's own paragraph below, and the argument about promptness is unaffected by it.
+/// every lease, writes the fans they covered back to automatic and, on a helper that can
+/// write, issues the machine-wide restore, all through the same control plane, so on the
+/// wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately and its
+/// completion is still the plane's to give. "Each fan" read as every fan on the machine until
+/// [#228](https://github.com/blamechris/Aeolus/issues/228); the scope is the declaration's own
+/// paragraph below, and the argument about promptness is unaffected by it.
 /// A client may therefore send it at any time, including on a connection it has already
 /// pipelined work onto, and it is answered on its own schedule rather than the queue's. Its
 /// reply is the one that may arrive out of order.
@@ -83,9 +84,8 @@ import Foundation
 /// earlier replies first; the exemption buys promptness, not ordering.
 /// [#180](https://github.com/blamechris/Aeolus/issues/180) built the helper's backstop for that
 /// interleaving — a fan held with no live lease is handed back at the next supervisor cycle —
-/// and it is dormant until a caller registers fans with that supervisor, which nothing in this
-/// build does. The check at `apply`'s own write arrives with the write path, which does not
-/// exist yet; until it does, this ordering is the client's to manage.
+/// and it watches only fans level 6's `apply` registered, which no shipped build can: a `.notBuilt`
+/// plane grants no lease. `apply` asks its lease before each write; ordering is the client's.
 ///
 /// **What ordering costs a client that pipelines.** One message at a time is one message at
 /// a time in both directions: while a sequenced message N is being handled, the sequenced
@@ -285,7 +285,9 @@ import Foundation
     /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
     func releaseLease(id: String, reply: @escaping @Sendable (Error?) -> Void)
 
-    /// Applies fan settings under an active lease.
+    /// Applies fan settings under an active lease. A refused re-apply may already have
+    /// re-commanded fans an earlier `apply` engaged, so a refused client re-reads the snapshot,
+    /// whose `targetRPM` is a fan's target only while the same snapshot shows it held (#410).
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.
@@ -303,13 +305,16 @@ import Foundation
     /// it was written as plain present indicative until
     /// [#228](https://github.com/blamechris/Aeolus/issues/228). Read as a statement about
     /// today's binary it is false in the one direction that matters to a user reaching for
-    /// this verb because the fans are stuck: the shipped handler drops every lease and hands
-    /// back the fans those leases covered, and issues no machine-wide
-    /// `restoreToAutomatic(.everyFan)` — so the force key is never cleared, and a fan another
-    /// tool pinned under no lease is not touched. `SupervisedFanAuthority.restoreAllToAutomatic`
-    /// is where the decision and its reason live; `docs/SAFETY.md` § 7 is the user-facing
-    /// consequence. The contract stays frozen at v1 and the machine-wide restore arrives with
-    /// E3/E4's write path, behind it rather than before it.
+    /// this verb because the fans are stuck. The handler drops every lease and hands back the
+    /// fans those leases covered, and then issues the machine-wide
+    /// `restoreToAutomatic(.everyFan)` — which clears the force key and reaches a fan another
+    /// tool pinned under no lease — **only on a helper that can write**, and no build on `main`
+    /// can yet.
+    /// So on today's binary the key is never cleared and a foreign-held fan is not touched.
+    /// `SupervisedFanAuthority.restoreAllToAutomatic` is where the decision and its reason live;
+    /// `docs/SAFETY.md` § 7 is the user-facing consequence. A refused machine-wide restore is
+    /// the helper's to log, and the reply is still success, so the contract stays frozen at v1:
+    /// what remains is E3/E4's write path, behind it rather than before it.
     ///
     /// **Exempt from the handshake gate** — never from the authorisation gate — **and from
     /// the per-connection ordering above**, and its semantics are frozen at v1 permanently.

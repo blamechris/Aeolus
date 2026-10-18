@@ -10,8 +10,9 @@ import Testing
 ///
 /// ## What the issue described, and what was actually there
 ///
-/// #189 named `LeaseAuthority.restoreAbandoned` as append-only and `docs/SAFETY.md` § 7's panic
-/// pass as the first path that would need a clearing rule — *"if a previously-abandoned fan's
+/// #189 named the lease core's `restoreAbandoned` — a store of `LeaseAuthority.HandbackRegisters`
+/// since #128's lease-core pass — as append-only and `docs/SAFETY.md` § 7's panic pass as the
+/// first path that would need a clearing rule — *"if a previously-abandoned fan's
 /// mode write is accepted on that pass, the helper has confirmation the fan went back"*. The
 /// pass could not accept such a write, because it never issued one: `releaseEveryLease()`
 /// restored the fans of dropped table entries, an entry exists only because `acquireLease`
@@ -99,14 +100,15 @@ struct AbandonedHandbackRecoveryTests {
     ///
     /// `panicPass(_:)` makes the two lease-core calls
     /// `SupervisedFanAuthority.restoreAllToAutomatic` makes, rather than going through it —
-    /// `PanicPathScopeTripwireTests` is what holds that body to those two calls.
+    /// `PanicPathScopeTripwireTests` is what holds that body to those two calls, with the
+    /// plane's machine-wide restore between them.
     ///
     /// **Mutation:** delete `restoreAbandoned.subtract(recovered)` from
-    /// `LeaseAuthority.confirmAcceptedHandbacks`. Run: red — the fan is still refused after a
-    /// handback the firmware took and a read confirmed.
+    /// `HandbackRegisters.liftRefusals(readingAutomatic:)`. Run: red — the fan is still refused
+    /// after a handback the firmware took and a read confirmed.
     /// **Mutation:** restore `releaseEveryLease()`'s old seed, `reduce(into: Set<Int>())`
-    /// rather than `reduce(into: restoreAbandoned)`. Run: red on the attempt count and on the
-    /// grant — the pass never names fan 0, which is the state the issue was filed against.
+    /// rather than `reduce(into: registers.abandonedHandbacks)`. Run: red on the attempt count and
+    /// on the grant — the pass never names fan 0, which is the state the issue was filed against.
     @Test("A fan abandoned, then handed back on § 7's pass, is leasable again")
     func aConfirmedRestoreOnThePanicPassMakesTheFanLeasableAgain() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
@@ -186,12 +188,13 @@ struct AbandonedHandbackRecoveryTests {
     /// count proves the pass genuinely ran and genuinely asked: twice the budget, six writes,
     /// all refused.
     ///
-    /// **Mutation:** in `LeaseAuthority.restore`, make the signal the sweep rather than the
-    /// report — `let accepted = restoreAbandoned.intersection(fans)`, dropping
-    /// `.subtracting(abandoned)`. Run: red here and in `onlyTheFanTheFirmwareTookBackIsCleared`,
-    /// while the acceptance test stays green, which is what makes this one discriminate rather
-    /// than echo it. (Mutating `formUnion(accepted)` instead is shielded here by the
-    /// `guard !accepted.isEmpty` above it, and was run: red in the per-fan test only.)
+    /// **Mutation:** in `HandbackRegisters.recordRestore(of:abandoned:)`, make the signal the
+    /// sweep rather than the report — `let accepted = restoreAbandoned.intersection(fans)`,
+    /// dropping `.subtracting(abandoned)`. Run: red here and in
+    /// `onlyTheFanTheFirmwareTookBackIsCleared`, while the acceptance test stays green, which is
+    /// what makes this one discriminate rather than echo it. (Mutating `formUnion(accepted)`
+    /// instead is shielded here by the `guard !accepted.isEmpty` above it, and was run: red in the
+    /// per-fan test only.)
     ///
     /// **The two simpler mutants do not show that, and both were run.** Subtracting `fans`
     /// instead of `recovered` is shielded by the `guard !recovered.isEmpty` above it — with the
@@ -223,7 +226,7 @@ struct AbandonedHandbackRecoveryTests {
     /// blanket reset of the register the first time any fan in a sweep came back.
     ///
     /// **Mutation:** `restoreAbandoned.removeAll()` in place of
-    /// `restoreAbandoned.subtract(recovered)` in `confirmAcceptedHandbacks`. Run: red **here
+    /// `restoreAbandoned.subtract(recovered)` in `liftRefusals(readingAutomatic:)`. Run: red **here
     /// only** — every other test in the suite abandons a single fan, so a blanket reset and a
     /// per-fan clear are the same act to them.
     @Test("Only the fan the firmware took back is cleared")
@@ -251,8 +254,8 @@ struct AbandonedHandbackRecoveryTests {
     /// and this test checks it did not ask at all.
     ///
     /// **Mutation:** in `LeaseAuthority.restore`, call `await confirmAcceptedHandbacks()` after
-    /// `handbackAcceptedUnconfirmed.formUnion(accepted)`. Run: red — the refusal is lifted by
-    /// the teardown the keystone waits on.
+    /// `guard !accepted.isEmpty else { return }`, where the fan was just marked owed. Run: red —
+    /// the refusal is lifted by the teardown the keystone waits on.
     @Test("The lease teardown sleep and SIGTERM wait on reads nothing back and lifts nothing")
     func theTeardownAloneLiftsNothing() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
@@ -278,7 +281,7 @@ struct AbandonedHandbackRecoveryTests {
     /// read that follows finds it automatic. Lifting the refusal then would lift it over a fan
     /// whose latest write was refused.
     ///
-    /// **Mutation:** in `LeaseAuthority.restore`, delete
+    /// **Mutation:** in `HandbackRegisters.recordRestore(of:abandoned:)`, delete
     /// `handbackAcceptedUnconfirmed.subtract(abandoned)`. Run: red — the refusal is lifted.
     @Test("A fan owed a read-back whose next restore is refused stays refused")
     func aRefusalAfterAnAcceptedHandbackIsNotLifted() async throws {
@@ -342,9 +345,9 @@ struct AbandonedHandbackRecoveryTests {
     /// covered and fan 0 is not, and is the direct expression of #188's own remedy — *"register
     /// every entry's fans in `releasing` before the first restore is awaited"*.
     ///
-    /// **Mutation:** split `releaseEveryLease()` into `await restore(restoreAbandoned, …)`
-    /// followed by a per-entry loop. Run: red on both — `fansMidHandback` is `[0]`, and fan 1 is
-    /// granted.
+    /// **Mutation:** split `releaseEveryLease()` into `await restore(registers.abandonedHandbacks,
+    /// …)` followed by a per-entry loop. Run: red on both — `fansMidHandback` is `[0]`, and fan 1
+    /// is granted.
     /// **Mutation:** the other order, the per-entry loop first and the register after it. Run:
     /// red on `fansMidHandback`, which is `[1]`; the refusal stays green, which is why it is not
     /// the only assertion.

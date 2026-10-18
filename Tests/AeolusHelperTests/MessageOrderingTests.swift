@@ -222,7 +222,8 @@ struct MessageOrderingTests {
     ///
     /// **A count is all this is, and any four verbs satisfy it.** *Which* four take which route
     /// is asserted by `LeaseHeartbeatStarvationTests.theSequencedVerbsAreTheOnesAClientPipelines`,
-    /// because a swap reopens #90 or #229 and leaves every number here unchanged.
+    /// because a swap reopens #90 or #229, or takes `apply` off the queue that keeps a client's two
+    /// applies off `LeaseApplier`'s claim (#405), and leaves every number here unchanged.
     ///
     /// **Mutation:** add `sequencer.enqueue { }` to any file under `Sources/AeolusHelper`.
     /// Run: red, naming the file. **Second mutation:** change one existing closure's body to

@@ -94,11 +94,18 @@ enum SafeState {
     ///   `restoreToAutomaticUnconfirmed`, `systemSleeping`, `unknown` (which the type says is
     ///   never to be treated as available) and `supervisorBlind`. A blind fan's state is
     ///   *unknown*, not manual, so it is 8 and not 9 even though reconciliation can leave it so
-    ///   for the life of the process.
+    ///   for the life of the process. A snapshot carries it for that reconciliation refusal
+    ///   and, on a helper that can write, for a fan whose mode did not read on that snapshot
+    ///   ([#360](https://github.com/blamechris/Aeolus/issues/360)); never for § 5's ledger
+    ///   (#355). So a fan § 5 gave up blind that is *still* unreadable reads `automatic` (#178's
+    ///   fallback) with `supervisorBlind` beside it, and `auto` sends its restore and exits 8
+    ///   rather than 0, which ADR 0013 rejects under "Exit 0 on the mode alone". On a helper
+    ///   that cannot write, such a fan reads `writePathNotBuilt`, which is silent: #178's gap.
     /// - **`silent`** — the reasons about manual control being *granted*, not about the fan:
     ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
     ///   `leaseHeldByAnotherClient` (a lease is judged from `activeLease`),
-    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem`.
+    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem` (which no helper
+    ///   on `main` publishes as an availability; `isReclaimedBySystem` carries the fact).
     ///
     /// **Exhaustive, with no `default:` arm,** so a reason added to the vocabulary is a compile
     /// error here rather than a quiet "silent": the classification decides whether to wait at

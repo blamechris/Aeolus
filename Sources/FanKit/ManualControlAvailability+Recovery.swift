@@ -52,7 +52,9 @@ extension ManualControlAvailability.Reason {
                 + "implement one."
         case .releaseInProgress:
             return "This fan is mid-handback: a previous lease just ended and the write that "
-                + "returns it to automatic control has not completed yet."
+                + "returns it to automatic control has not completed yet, or a restore of every "
+                + "fan at once is still running — `fanctl reset --all`, `fanctl auto`, or the "
+                + "handback before the Mac sleeps."
         case .handbackUnconfirmed:
             return "Aeolus asked for this fan back and stopped waiting for an answer before "
                 + "one arrived, so it does not yet know what mode the fan is in."
@@ -70,8 +72,8 @@ extension ManualControlAvailability.Reason {
             return "Aeolus cannot currently read a critical temperature, so it cannot safely "
                 + "watch a fan under manual control."
         case .supervisorBlind:
-            return "Aeolus cannot currently read this fan's own control state, so it cannot "
-                + "tell whether something else has taken it back."
+            return "Aeolus could not confirm this fan's own control state: a read of it failed, "
+                + "or start-up could not confirm it back under automatic control."
         case .foreignManualControl:
             return "Something other than Aeolus has put this fan under manual control."
         case .unknown:
@@ -95,14 +97,15 @@ extension ManualControlAvailability.Reason {
             return "There is no user action that resolves this from this client; it is a "
                 + "property of what the firmware reported for this fan's bounds."
         case .reclaimedBySystem:
-            return "There is no user action; it returns to Aeolus's control if the system "
-                + "yields the fan again."
+            return "Current helpers report this as the fan's Reclaimed by system flag, not as "
+                + "a refusal: asking again is allowed, and a refusal names its own reason."
         case .leaseHeldByAnotherClient:
             return "It becomes available again once that lease ends or is released."
         case .selfRenewalNotBuilt:
             return "Ask for a lease without self-renewal instead."
         case .releaseInProgress:
-            return "Retry in a moment; this normally clears in milliseconds."
+            return "Retry in a moment; this normally clears in milliseconds. If it does not "
+                + "clear within a few seconds, a restore has not returned; see docs/RECOVERY.md."
         case .handbackUnconfirmed:
             return "The outstanding restore is still running; retry shortly, or watch "
                 + "connection health. A helper restart is not the first action — only reach "
@@ -120,8 +123,11 @@ extension ManualControlAvailability.Reason {
             return "There is nothing to do from here; it clears when the SMC answers again, "
                 + "and retrying does not speed that up."
         case .supervisorBlind:
-            return "It may clear on its own if the connection recovers; if it does not, see "
-                + "docs/RECOVERY.md."
+            return "If a request was just refused this way, a read failed at that moment: "
+                + "retry. If it keeps being reported, the helper either cannot read this fan "
+                + "now or could not confirm it back under automatic control at start-up. The "
+                + "first clears when a read answers; the second stands until the helper "
+                + "restarts. See docs/RECOVERY.md."
         case .foreignManualControl:
             return "Quit or stop the other program that is driving this fan."
         case .unknown:

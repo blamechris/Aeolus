@@ -115,6 +115,22 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
+    /// The fans' examination gate: **one instance**, held by § 5 and by level 6 (ADR 0014's A6
+    /// amendments). Two gates would be two exclusions that exclude nothing from each other.
+    /// Stored so that a composed test can hold a pass on it; `ExaminationGateRouteTests` holds
+    /// where it may be named and entered, and that both § 5 and level 6 wait on this one.
+    let examinationGate: FanExaminationGate
+
+    /// Level 6's `apply`: **one instance**, which the authority holds as `LeaseApplying` (ADR
+    /// 0014's A6 PR-3 amendment), built from the one gate, the § 5 the supervisor cycles, the
+    /// lease core and § 3. Stored so a composed test can pin its driver's level by property;
+    /// nothing in `Sources/` calls its verb but the authority, which `LeaseApplyingTripwireTests`
+    /// holds.
+    let leaseApplier: LeaseApplier<Plane>
+
+    /// Where the write path's preparation step reports what it found (ADR 0014 D5).
+    let safetyLog: SafetyLog
+
     let thermalSupervisor: ThermalSupervisor<Plane>
     let reclamationSupervisor: ReclamationSupervisor<Plane>
 
@@ -195,8 +211,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// The order below is A1's, and it is the order of the dependencies rather than a
     /// preference: plane, then the latch and the ledger both the snapshot and the mechanisms
     /// read, then the sightings cache, then the restorer, then reconciliation, then the
-    /// lease core, then the two safety actors, then the loops, then the authority, then the
-    /// power responder, then the teardown.
+    /// lease core, then the two safety actors, then the loops, then level 6 and the authority
+    /// that holds it, then the power responder, then the teardown.
     ///
     /// `snapshotProvider` is the reader the client-facing snapshot takes its turns from, and
     /// it is the one parameter worth a paragraph. The fan read and the `F<n>Md` read are both
@@ -262,6 +278,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         self.connectionHealth = connectionHealth
         self.gateMonitor = gateMonitor
         self.powerObserver = powerObserver
+        self.safetyLog = safetyLog
 
         // Built as locals and then handed round, because each is read by several mechanisms
         // and written by one, and because a stored property cannot be read while the rest of
@@ -335,6 +352,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             writeCapability: plane,
             telemetry: sightings,
             foreignControl: reconciliation,
+            envelopes: plane,
             thermalEmergency: latch,
             clock: clock,
             log: leaseLog)
@@ -351,12 +369,26 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
             handbackReadBack: reconciliation,
             log: safetyLog)
+        // The one examination gate, on the lease core's clock: § 5 takes it before each
+        // examination and level 6 for each step; no restore path, § 3, driver or plane holds it.
+        let examinationGate = FanExaminationGate(clock: clock, log: safetyLog)
+        self.examinationGate = examinationGate
+        // § 5's writer, shared with the driver it engages through: the driver's step verb and
+        // its undo are this writer's. The level the arbiter is asked about is the driver's own,
+        // § 5's. The driver registers every fan it engages with § 3 (#181), so it is built after
+        // § 3.
+        let reclamationWriter = SafetyActorWriter(plane: plane, level: .reclamationWatchdog)
         let reclamationWatchdog = ReclamationWatchdog(
             sensing: plane,
-            writer: SafetyActorWriter(plane: plane, level: .reclamationWatchdog),
+            writer: reclamationWriter,
+            engagement: EngagementDriver(
+                writer: reclamationWriter, leases: leases, latch: latch,
+                emergency: thermalEmergency, clock: clock, level: .reclamationWatchdog,
+                log: safetyLog),
             leases: leases,
             latch: latch,
             ledger: ledger,
+            gate: examinationGate,
             log: safetyLog)
         self.thermalEmergency = thermalEmergency
         self.reclamationWatchdog = reclamationWatchdog
@@ -372,8 +404,35 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
+        // Level 6's `apply` (ADR 0014's A6 PR-3 amendment), the authority's `control` and nothing
+        // wider: the one gate, the § 5 the supervisor cycles, the lease core and § 3. Its driver is
+        // its own, at `.controlLoop`; the writer it steps through carries `.leaseExpiry` as
+        // provenance nothing reads, the lease being what level 6 writes under.
+        let leaseApplier = LeaseApplier(
+            writer: GovernedFanWriter(plane: plane),
+            engagement: EngagementDriver(
+                writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), leases: leases,
+                latch: latch, emergency: thermalEmergency, clock: clock, level: .controlLoop,
+                log: safetyLog),
+            gate: examinationGate, envelopes: plane, reclamation: reclamationWatchdog,
+            leases: leases, latch: latch, writeCapability: plane, log: safetyLog)
+        self.leaseApplier = leaseApplier
+
+        // § 7's two roles of the plane, and never the plane (ADR 0014 D5): the keystone, at the
+        // `.panicRestore` level every other machine-wide restore is issued at, and the same
+        // capability seam the lease core and the snapshot read. The level is provenance only:
+        // nothing reads `SafetyActorWriter.level` (see the restorer's note above). The writer
+        // can command a fan; the authority holds it only as `KeystoneRestoring`, which cannot.
+        // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
+        // `telemetry` is the one cache the lease core proves grants against (#269), so the
+        // snapshot's blindness and the grant's are one reading, and a cold one is read once.
+        // `reclamation` is the § 5 its supervisor cycles and level 6 reports to, as the one-getter
+        // role, so the target the snapshot states is the one § 5 holds (#410).
         let authority = SupervisedFanAuthority(
-            reading: reading, leases: leases, reconciliation: reconciliation, log: log)
+            reading: reading, leases: leases, reconciliation: reconciliation,
+            keystone: SafetyActorWriter(plane: plane, level: .panicRestore),
+            writeCapability: plane, telemetry: sightings, control: leaseApplier,
+            reclamation: reclamationWatchdog, log: log)
         self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other
@@ -439,6 +498,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///    advertised service can be handed one to release. `HelperFanRestorer` explains why
     ///    the binding is late at all — the graph is circular, and this is the edge that is
     ///    safest to close last.
+    /// 1½. **Prepare the write path** — ADR 0014 D5. After the bind, before reconciliation:
+    ///    it records what a machine-wide restore needs, and clears a force key a dead helper
+    ///    left set. A no-op on a plane that cannot write.
     /// 2. **Startup reconciliation** — `#164`, E5.4b. Between the bind and the supervisors,
     ///    because a fan restored by reconciliation must not be read by § 5's first cycle as
     ///    a reclamation, and because the restore it performs needs the registries bound.
@@ -492,6 +554,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await watchdog.arm()
 
         await bindSafetyRegistries()
+        await prepareWritePath()
         await reconcileFans()
 
         // Another circular edge, closed for `bindSafetyRegistries()`'s reason: the
@@ -564,6 +627,19 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await restorer.bind(
             thermalEmergency: thermalEmergency, reclamationWatchdog: reclamationWatchdog)
         await leases.bind(emergencyRestores: thermalEmergency)
+    }
+
+    /// The write path's preparation step ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
+    /// D5), over the composition's own enumeration — `reading`, the one reconciliation and
+    /// `acquireLease` use.
+    ///
+    /// After the bind, because its machine-wide restore needs the registries bound; before
+    /// reconciliation, because it clears what reconciliation's per-fan pass cannot see — a force
+    /// key a dead helper left set with every fan already automatic. It never blocks serving, and
+    /// on a plane that cannot write it does nothing and nothing is logged.
+    func prepareWritePath() async {
+        guard let report = await plane.prepareWritePath(enumerating: reading) else { return }
+        safetyLog.writePathPrepared(report)
     }
 
     /// `docs/SAFETY.md` § 6's one-shot pass, over the fans this machine enumerates.

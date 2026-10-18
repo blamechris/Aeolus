@@ -192,6 +192,41 @@ final class AnonymousListenerHarness {
         return (await firstReply.answer(), await secondReply.answer())
     }
 
+    /// Sends two acknowledgement-shaped messages back to back on one connection **without
+    /// awaiting the first reply**, and hands back both latches unawaited, so a test can look at
+    /// what has been answered while the first message is still being handled.
+    ///
+    /// `pipelinedPayloadMessages`' shape for the verbs that answer with an error alone, `apply`
+    /// among them. Each reply block appends its message's label to `replies` as it runs, `first`
+    /// or `second`, so which had been answered by a given instant is a value a test can read
+    /// without awaiting either.
+    func pipelinedAcknowledgements(
+        _ first: (any AeolusXPCProtocol, @escaping @Sendable (Error?) -> Void) -> Void,
+        _ second: (any AeolusXPCProtocol, @escaping @Sendable (Error?) -> Void) -> Void,
+        recordingInto replies: OrderRecord<String>
+    ) -> (first: PendingReply<Error?>, second: PendingReply<Error?>) {
+        let firstReply = PendingReply<Error?>(ifNothingArrives: NoReplyArrived())
+        let secondReply = PendingReply<Error?>(ifNothingArrives: NoReplyArrived())
+        do {
+            let proxy = try proxy { error in
+                firstReply.deliver(error)
+                secondReply.deliver(error)
+            }
+            first(proxy) { error in
+                replies.append("first")
+                firstReply.deliver(error)
+            }
+            second(proxy) { error in
+                replies.append("second")
+                secondReply.deliver(error)
+            }
+        } catch {
+            firstReply.deliver(error)
+            secondReply.deliver(error)
+        }
+        return (firstReply, secondReply)
+    }
+
     /// Sends an acknowledgement-shaped message and waits for the answer. `nil` means the
     /// helper said it succeeded.
     func acknowledgementMessage(

@@ -206,7 +206,7 @@ struct ReadOnlyFanAuthorityModeTests {
     /// `alreadyReported: false` unconditionally. Run: red here, on both fans.
     @Test("An unreadable mode is an error once per fan, and a debug line every time after")
     func unreadableModeIsReportedOncePerFanAtErrorLevel() async throws {
-        let recorder = RecordedHelperFanLines()
+        let recorder = RecordedHelperLines()
         // Two fans and no `F<n>Md` for either: every mode read fails, on every snapshot.
         let provider = fanProvider(fanCount: 2)
         let authority = ReadOnlyFanAuthority(
@@ -215,7 +215,7 @@ struct ReadOnlyFanAuthorityModeTests {
             log: HelperLog(
                 subsystem: "dev.aeolus.AeolusHelperTests",
                 category: "Mode",
-                recordingFanLines: { recorder.append($0, $1) }),
+                recording: { recorder.append($0, $1) }),
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
             writeCapability: LeaseFixture.writePathNotBuilt(),
@@ -229,13 +229,88 @@ struct ReadOnlyFanAuthorityModeTests {
         #expect(recorder.levels(containing: "Fan 1's mode key") == [.error, .debug, .debug])
     }
 
-    /// The other half of #148's title, and the one that stays a literal — deliberately.
+    /// A fan whose mode reads again is forgotten by the throttle, so its next episode is an error
+    /// again rather than a `.debug` line nothing persists (#360's review).
     ///
-    /// `FanState.targetRPM` is documented as *"the speed the helper is currently asking
-    /// for"*, and this build asks for nothing: `SMCConnection.write(_:to:)` is `package` and
-    /// throws, and no write selector exists anywhere in `Sources`. So `nil` here is a
-    /// build-level fact of the same kind as `activeLease: nil`, not an unconfirmed
-    /// observation. Sourcing it from `F<n>Tg` would report the firmware's own target — set by
+    /// On a helper that can write, an unread mode is refused `.supervisorBlind`; a second episode
+    /// logged only at `.debug` would leave that refusal with nothing in the persisted log saying
+    /// why. The firmware's own stages drive it — unanswered, unanswered, answered, unanswered —
+    /// read through `PlaneBackedProvider`, so the answer in between is a real read.
+    ///
+    /// **Mutation:** delete `reportedUnreadable.remove(index)` from
+    /// `ObservedFanModes.modes(ofFans:)`. Run: red — the last level is `.debug`.
+    @Test("A fan whose mode reads again is reported at error level on its next failure")
+    func aRecoveredModeIsReportedAgainAtErrorLevel() async throws {
+        let unanswered = ScriptedControlPlane.Stage(unreadableModes: [0])
+        let (provider, recorder) = try await Self.snapshots(
+            of: [0], through: [unanswered, unanswered, .nominal(), unanswered])
+
+        #expect(await provider.answeredModeReads == 1, "the read in between never answered")
+        #expect(recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .error])
+    }
+
+    /// The reset is **per fan**: one fan's read answering forgets that fan, and only that fan.
+    ///
+    /// Fan 1 recovers, as fan 0 does above; fan 0 never answers, as every fan on an Intel Mac
+    /// never does. A reset that forgot every fan, or a fixed one, would re-arm fan 0 each time
+    /// fan 1 answered: on a machine where one fan flickers, an error line a second for the fan
+    /// that never answers, which is the flood the throttle exists to stop. The recovering fan is
+    /// fan 1 so that a reset hard-coded to fan 0 is caught in both directions — fan 0 re-armed,
+    /// fan 1 not.
+    ///
+    /// **Mutation:** replace `reportedUnreadable.remove(index)` with
+    /// `reportedUnreadable.removeAll()`. Run: red on fan 0. **Mutation:** replace it with
+    /// `reportedUnreadable.remove(0)`. Run: red on both fans.
+    @Test("One fan's mode reading again does not re-arm another fan that never answers")
+    func aRecoveredModeForgetsOnlyItsOwnFan() async throws {
+        let both = ScriptedControlPlane.Stage(unreadableModes: [0, 1])
+        let onlyFanZero = ScriptedControlPlane.Stage(unreadableModes: [0])
+        let (provider, recorder) = try await Self.snapshots(
+            of: [0, 1], through: [both, both, onlyFanZero, both])
+
+        #expect(await provider.answeredModeReads == 1, "fan 1's read in between never answered")
+        #expect(
+            recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .debug, .debug],
+            "a fan that never answers was re-armed by another fan's recovery")
+        #expect(recorder.levels(containing: "Fan 1's mode key") == [.error, .debug, .error])
+    }
+
+    /// One snapshot per stage of `stages`, over the scripted firmware with `fans` in it and its
+    /// `F<n>Md` read through `PlaneBackedProvider`, recording every log line with its level.
+    private static func snapshots(
+        of fans: [Int], through stages: [ScriptedControlPlane.Stage]
+    ) async throws -> (PlaneBackedProvider, RecordedHelperLines) {
+        let recorder = RecordedHelperLines()
+        let firmware = ScriptedControlPlane(
+            fans: Dictionary(uniqueKeysWithValues: fans.map { ($0, .automatic(at: 2_400)) }),
+            stages: stages)
+        let provider = PlaneBackedProvider(over: firmware, fanCount: fans.count)
+        let authority = ReadOnlyFanAuthority(
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
+            log: HelperLog(
+                subsystem: "dev.aeolus.AeolusHelperTests",
+                category: "Mode",
+                recording: { recorder.append($0, $1) }),
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt(),
+            now: { Date(timeIntervalSince1970: 1_000_000) }
+        )
+        for _ in stages {
+            _ = try await authority.snapshot()
+            await firmware.advance()
+        }
+        return (provider, recorder)
+    }
+
+    /// The other half of #148's title, and the one that stays a literal on the read path —
+    /// deliberately.
+    ///
+    /// The read path is not where a target is stated: on a `.notBuilt` seam no fan is ever
+    /// commanded, and on a `.built` one the supervised snapshot states the target § 5 holds for
+    /// the live lease (ADR 0014's #410 snapshot-target amendment, `HeldTargetCompositionTests`).
+    /// Sourcing it here from `F<n>Tg` would report the firmware's own target — set by
     /// Apple's thermal manager on an automatic fan — as something Aeolus is asking for, which
     /// changes what a v1 field *means* and is a protocol bump by
     /// `AeolusXPCVersion`'s own policy.
@@ -250,7 +325,8 @@ struct ReadOnlyFanAuthorityModeTests {
     }
 }
 
-/// A `HelperLog` fan-line sink a test can read back, **with the level**.
+/// A `HelperLog` sink a test can read back, **with the level** — every line's, since the review
+/// of #349 routed them all through one place.
 ///
 /// `NSLock` rather than an actor so an assertion can read it without an `await`, matching
 /// `RecordedLog` in `CriticalSensorSetTests.swift`, which does the same job for `SafetyLog`.
@@ -259,11 +335,11 @@ struct ReadOnlyFanAuthorityModeTests {
 /// normal for an entire architecture family, so whether the tenth occurrence is an error or a
 /// debug line is the difference between a diagnostic and a denial of service against whoever
 /// reads the log — and before this sink existed that choice was a claim no test could observe.
-final class RecordedHelperFanLines: @unchecked Sendable {
+final class RecordedHelperLines: @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: [(level: HelperLog.FanLineLevel, line: String)] = []
+    private var recorded: [(level: HelperLog.Level, line: String)] = []
 
-    func append(_ level: HelperLog.FanLineLevel, _ line: String) {
+    func append(_ level: HelperLog.Level, _ line: String) {
         lock.withLock { recorded.append((level, line)) }
     }
 
@@ -272,7 +348,7 @@ final class RecordedHelperFanLines: @unchecked Sendable {
     /// Substring matching on a phrase only the intended line can produce: asserting a whole
     /// prose line is a test that fails on a comma, and matching text a *different* line could
     /// also satisfy is a test that passes for the wrong reason.
-    func levels(containing needle: String) -> [HelperLog.FanLineLevel] {
+    func levels(containing needle: String) -> [HelperLog.Level] {
         lock.withLock { recorded.filter { $0.line.contains(needle) }.map(\.level) }
     }
 }

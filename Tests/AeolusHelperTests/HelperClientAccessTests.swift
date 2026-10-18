@@ -71,8 +71,10 @@ struct HelperClientAccessTests {
 
     /// Every mutable property this actor has, spelled as declared, and where it has to stay.
     ///
-    /// All seven, because unlike the connection session there is no line to draw here: this
-    /// *is* the client's state, and each of the seven is an input to a guard that reads it.
+    /// All eight, because unlike the connection session there is no line to draw here: this
+    /// *is* the client's state, and each of the eight is an input to a guard that reads it.
+    /// The eighth is a `let` whose object is the state: `inFlight` holds every message in
+    /// flight, and is the only thing that starts and ends their deadlines.
     ///
     /// - `connection`, `negotiatedReply` and `handshake` are what "is there a live,
     ///   handshaken connection" is answered from. A sibling file that could write
@@ -91,6 +93,11 @@ struct HelperClientAccessTests {
     ///   directly skips both the comparison and the observers: the signal would report a
     ///   state nothing had been told about, which is `CLAUDE.md` rule 6 in the one place this
     ///   target exists to serve it. `observers` is the registry that yield walks.
+    /// - `inFlight` decides when each message's deadline starts, and answers every message
+    ///   still in flight when a connection is discarded (#413). A sibling file holding it could
+    ///   settle a message the helper has not answered, which starts the deadline of the
+    ///   sequenced message behind it early: the false cut-off #413 removed, reachable again
+    ///   without touching this file.
     ///
     /// **Spelled as declared**, so a respelling has to be re-stated here. That is the
     /// list-rot half: `MemberAccessScan.declaration(of:in:from:)` requires the fragment to
@@ -114,6 +121,7 @@ struct HelperClientAccessTests {
         "var generation: UInt64 = 0",
         "var currentHealth: HelperConnectionHealth = .idle",
         "var observers: [UUID: AsyncStream<HelperConnectionHealth>.Continuation] = [:]",
+        "let inFlight: InFlightMessages",
     ]
 
     /// Every property of `HelperClient` that is not `private`, and why.
@@ -124,11 +132,15 @@ struct HelperClientAccessTests {
     /// as much of an event as a new internal one, so the list pins the whole exported surface
     /// and a widening cannot hide by being a bigger one.
     ///
-    /// All three are **get-only computed views** of private storage, which is the property
+    /// All four are **get-only computed views** of private storage, which is the property
     /// worth stating: `negotiated` and `health` are the public read API — the second is ADR
     /// 0006's switch for the app — and `currentGeneration` is `internal` for the suite, for
     /// the reason the source gives, that the generation is the parameter every late-handler
-    /// guard turns on and a test unable to name it could only assert them by accident. **A
+    /// guard turns on and a test unable to name it could only assert them by accident.
+    /// `deadlinesRunning` is `internal` for the suite too (#418's review): a deadline's instant
+    /// is read when its timer first runs, so a test moving a hand-wound clock has to know how
+    /// many deadlines are running before it can know they have all parked. It reads a count off
+    /// `inFlight` and can settle nothing. **A
     /// stored property appearing in this list is the failure to argue about**, because that
     /// is the shape that hands a caller an assignment; a computed one can only re-derive what
     /// something in the declaring file still owns.
@@ -141,6 +153,7 @@ struct HelperClientAccessTests {
         "negotiated",
         "health",
         "currentGeneration",
+        "deadlinesRunning",
     ]
 
     /// Every method of `HelperClient` that is not `private`, and what each is.
@@ -176,11 +189,12 @@ struct HelperClientAccessTests {
     /// to stay inside the line limit. They concatenate to the exact key the scan produces;
     /// the test fails naming both sides if they ever do not.
     ///
-    /// **Mutation:** drop the `private` from
-    /// `private func discardConnection(_ generation: UInt64, as health: HelperConnectionHealth)`
-    /// — chosen because it is exactly what moving `translate(_:on:)` to a sibling file would
-    /// cost. Run: red on `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
-    /// `discardConnection(_: UInt64, as: HelperConnectionHealth)`.
+    /// **Mutation:** drop the `private` from `private func discardConnection(`, whose signature
+    /// is `(_ generation: UInt64, as health: HelperConnectionHealth, answering verdict:
+    /// HelperClientError)` since #413 — chosen because it is exactly what moving
+    /// `translate(_:on:)` to a sibling file would cost. Run: red on
+    /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
+    /// `discardConnection(_: UInt64, as: HelperConnectionHealth, answering: HelperClientError)`.
     ///
     /// **A limit found by trying it, recorded because it is load-bearing and is not this
     /// suite's doing:** `private func exchange<Answer: Sendable>` cannot be widened at all.
@@ -200,9 +214,10 @@ struct HelperClientAccessTests {
         "restoreAllToAutomatic()",
         "disconnect()",
         "healthUpdates()",
-        "withHandshakenProxy(_: (any AeolusXPCProtocol, @escaping @Sendable "
+        "withHandshakenProxy(_: HelperMessage, within: (HelperClientDeadlines) -> Duration, "
+            + "_: (any AeolusXPCProtocol, @escaping @Sendable "
             + "(Result<Answer, Error>) -> Void) -> Void)",
-        "withProxy(_: (any AeolusXPCProtocol, @escaping @Sendable "
+        "withProxy(_: HelperMessage, _: (any AeolusXPCProtocol, @escaping @Sendable "
             + "(Result<Void, Error>) -> Void) -> Void)",
         "translate(_: Error, on: UInt64)",
         "connectionWasInterrupted(_: UInt64)",
@@ -266,7 +281,7 @@ struct HelperClientAccessTests {
                 declaration.hasPrefix("private "),
                 """
                 `\(declaration)` is no longer private. Every guard in this client turns on \
-                one of these seven, and one that is writable from every file in \
+                one of these eight, and one that is reachable from every file in \
                 AeolusXPCClient can be satisfied from outside the code that decides it — see \
                 HelperClient.swift's own account of why the split #242 asked for was \
                 declined, which is the same rule read forwards.

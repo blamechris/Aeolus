@@ -57,9 +57,14 @@ struct SnapshotAvailabilityTests {
     /// out, no arrangement of machine, ledger or lease core could produce `.available` from this
     /// helper at all — so the vocabulary's one affirmative answer was unreachable and untested.
     ///
-    /// **Mutation:** in `ReadOnlyFanReport.availability(whenLedgerSays:writeCapabilityIs:
-    /// bounds:)`, replace the body with
-    /// `.unavailable(.writePathNotBuilt)` — the literal #194 removed. Run: red.
+    /// **Mutation:** in `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, replace the
+    /// body with `.unavailable(.writePathNotBuilt)` — the literal #194 removed. Run: red.
+    ///
+    /// **And it is the readable half of #360's rung.** The snapshot reads fan 0's `F0Md` from the
+    /// firmware (`PlaneBackedProvider`), automatic, so step 5 leaves it alone. **Mutation:** in
+    /// `SupervisedFanAuthority.snapshot()`, pass `observedMode: nil`. Run: red. **Mutation:** in
+    /// `reportingForeignControl`, fold the `.automatic` arm into the `nil` arm, as
+    /// `case .automatic, nil:`. Run: red.
     @Test("A fan on a seam that can write, with nothing else against it, reads available")
     func aFanThatClearsEveryGateOnABuiltSeamReadsAvailable() async throws {
         let helper = Fixture.composed()
@@ -104,50 +109,58 @@ struct SnapshotAvailabilityTests {
                 == .unavailable(.writePathNotBuilt))
     }
 
-    /// A `.built` seam does not shortcut § 2's bounds gate.
+    /// A `.built` seam does not shortcut § 2's bounds gate, and the grant refuses the fan for
+    /// the reason the snapshot states ([#270](https://github.com/blamechris/Aeolus/issues/270)).
     ///
     /// #194's third acceptance criterion, and the reason the capability could not simply be
     /// mapped to `.available`: a fan whose declared maximum is ~1e14 — the shape of a
     /// byte-swapped `flt` — has no envelope to clamp into, so no target could ever be minted
-    /// for it however capable the build is.
+    /// for it however capable the build is. Until #270 only the snapshot said so, and the grant
+    /// handed out a lease nothing could use. The firmware scripts `F0Mx` once, and the
+    /// snapshot's provider and the grant's `readEnvelope(ofFan:)` both read that value.
     ///
-    /// **Mutation:** in `availability(whenLedgerSays:writeCapabilityIs:bounds:)`, delete the
-    /// `bounds` arm so a `.built` seam falls straight through to `.available`. Run: red.
-    @Test("A bounds-implausible fan is refused for its bounds even on a seam that can write")
+    /// **Mutation:** in `availability(writeCapabilityIs:bounds:)`, delete the `bounds` arm so a
+    /// `.built` seam falls straight through to `.available`. Run: red on the agreement.
+    /// **Mutation:** delete `try await refuseIfBoundsImplausible(connection, wanting:
+    /// wanting.subtracting(exempted))` from `LeaseAuthority.acquireLease`. Run: red — "the grant
+    /// path granted a lease over fan 0 rather than refusing".
+    @Test("A bounds-implausible fan is refused for its bounds by the snapshot and the grant")
     func aBoundsImplausibleFanIsStillRefusedOnABuiltSeam() async throws {
         let helper = Fixture.composed(
-            fanCount: 1,
-            extraKeys: [
-                SMCFanEnumeration.maximumKey(forFan: 0): .reading(
-                    SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
-            ])
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.plane.advance()
 
         let snapshot = try await helper.authority.snapshot()
+        let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
 
+        #expect(refusal == .boundsImplausible)
         #expect(
-            try Fixture.availability(ofFanAt: 0, in: snapshot)
-                == .unavailable(.boundsImplausible),
+            try Fixture.availability(ofFanAt: 0, in: snapshot) == .unavailable(refusal),
             """
-            a fan whose firmware bounds cannot be trusted is being offered for manual control \
-            on the strength of the build alone. Nothing could ever mint a target for it.
+            a fan whose firmware bounds cannot be trusted is offered for manual control by one \
+            side while the other refuses it. Nothing could ever mint a target for it.
             """)
     }
 
-    /// A fan the system has taken back is not offered for manual control on a `.built` seam.
+    /// A fan § 5's ledger records as reclaimed is flagged, and reads what the grant answers.
     ///
-    /// #140 left `.reclaimedBySystem` unpublished as an availability, because on every build
-    /// that has shipped the honest answer was `.writePathNotBuilt` and `isReclaimedBySystem`
-    /// carried the fact. Sourcing the capability makes the fall-through reachable, and a bare
-    /// fall-through would answer `.available` for a fan macOS is holding — the exact inversion
-    /// #194 was filed about, one gate further down.
+    /// **Inverted by [#355](https://github.com/blamechris/Aeolus/issues/355), deliberately.**
+    /// This test used to require `.unavailable(.reclaimedBySystem)` here, on the argument that a
+    /// bare fall-through would offer a fan macOS is holding. But `acquireLease` never reads the
+    /// ledger: it reads the fan fresh and grants it, so that availability refused a lease the
+    /// helper grants, and nothing a compliant client could do would clear it. The ledger is
+    /// history and is reported as a fact, on `isReclaimedBySystem`; the availability is current
+    /// evidence, and agrees with the grant. `TerminalActionAvailabilityTests` asks the same
+    /// question after a real terminal action.
     ///
-    /// **Mutation:** delete the `cause == .systemReclaimed` arm from
-    /// `availability(whenLedgerSays:writeCapabilityIs:bounds:)`. Run: red — and note the fan
-    /// still reports `isReclaimedBySystem`, so a test reading only that field agrees with the
-    /// mutant.
-    @Test("A reclaimed fan is not reported available on a seam that can write")
-    func aReclaimedFanIsNotReportedAvailable() async throws {
+    /// **Mutation:** re-add `if cause == .systemReclaimed { return
+    /// .unavailable(.reclaimedBySystem) }` to `availability(writeCapabilityIs:bounds:)`, with
+    /// the ledger cause passed back in. Run: red — and note the fan still reports
+    /// `isReclaimedBySystem`, so a test reading only that field agrees with the mutant.
+    @Test("A reclaimed fan is flagged as reclaimed and reads available, as the grant answers")
+    func aReclaimedFanReadsWhatTheGrantAnswers() async throws {
         let helper = Fixture.composed()
+        await helper.bindSafetyRegistries()
         await helper.ledger.markReclaimed(fanAt: 0)
 
         let snapshot = try await helper.authority.snapshot()
@@ -155,8 +168,10 @@ struct SnapshotAvailabilityTests {
 
         #expect(fan.isReclaimedBySystem, "the ledger is not reaching the snapshot at all")
         #expect(
-            fan.manualControlAvailability == .unavailable(.reclaimedBySystem),
-            "a fan the operating system is holding is being offered for manual control")
+            fan.manualControlAvailability == .available,
+            "the snapshot refuses a fan the grant path grants, on the strength of § 5's history")
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
     }
 
     // MARK: - #187: the lease core's refusals, in the read path
@@ -173,9 +188,9 @@ struct SnapshotAvailabilityTests {
     /// `BoundedFanRestorer` spends `RestoreLimits.attemptBudget` and reports the fan as one it
     /// could not hand back.
     ///
-    /// **Mutation:** delete the `abandonedHandbacks` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red — the snapshot says
-    /// `.available` while the grant path refuses.
+    /// **Mutation:** delete the `abandonedHandbacks` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red — the
+    /// snapshot says `.available` while the grant path refuses.
     @Test("An abandoned handback reads the same reason the grant path throws")
     func anAbandonedHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.composed(writes: Fixture.firmwareRefusesTheModeWrite)
@@ -194,11 +209,11 @@ struct SnapshotAvailabilityTests {
     /// A fan whose restore is on the wire reads the reason the grant path throws for it.
     ///
     /// The transient half. `CycleWedgingRestorePlane` parks the restore, so the window
-    /// `LeaseAuthority.releasing` exists to describe is held open for as long as the assertions
+    /// the lease core's `releasing` exists to describe is held open for as long as the assertions
     /// need — which is the only way to observe a state that is otherwise milliseconds wide.
     ///
-    /// **Mutation:** delete the `handbacksInFlight` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red.
+    /// **Mutation:** delete the `handbacksInFlight` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red.
     @Test("A fan mid-handback reads the same reason the grant path throws")
     func aFanMidHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.wedging()
@@ -221,10 +236,10 @@ struct SnapshotAvailabilityTests {
     /// that register alone would tell a client "retry in a moment" about a restore that has
     /// already outlived a five-second budget.
     ///
-    /// **Mutation:** delete the `unconfirmedHandbacks` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red — and the failure is the
-    /// *wrong reason*, `.releaseInProgress`, not `.available`, which is what makes the ordering
-    /// rather than the presence of the arm the thing under test.
+    /// **Mutation:** delete the `unconfirmedHandbacks` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red — and the
+    /// failure is the *wrong reason*, `.releaseInProgress`, not `.available`, which is what makes
+    /// the ordering rather than the presence of the rung the thing under test.
     @Test("An unconfirmed handback reads the same reason the grant path throws")
     func anUnconfirmedHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.wedging()
@@ -245,11 +260,11 @@ struct SnapshotAvailabilityTests {
     /// One fan's handback does not speak for its neighbour.
     ///
     /// The per-fan half, which every field on this path has needed its own test for — see
-    /// `ReadOnlyFanAuthorityLatchTests.blindnessIsReportedPerFan`. A re-statement keyed on
+    /// `ReadOnlyFanAuthorityLatchTests.reclamationIsReportedPerFan`. A re-statement keyed on
     /// "any fan is in the register" would disable the control for a whole machine because one
     /// fan's handback failed.
     ///
-    /// **Mutation:** in `handbackRefusal(forFanAt:given:)`, replace
+    /// **Mutation:** in `firstRefusal(of:observedMode:given:reconciliation:)`, replace
     /// `leases.abandonedHandbacks.contains(index)` with
     /// `!leases.abandonedHandbacks.isEmpty`. Run: red on fan 1 while the test above stays green.
     @Test("An abandoned handback does not make the neighbour fan unavailable")
@@ -269,13 +284,13 @@ struct SnapshotAvailabilityTests {
 
     /// Every fan in a handback register is one Aeolus is accountable for.
     ///
-    /// The invariant that lets `ReadOnlyFanReport`'s two re-statements compose in either order,
+    /// The invariant that keeps the ladder's step 5, above the handback registers as the grant's
+    /// foreign read is above its straight-line region, from ever answering for a register's fan,
     /// asserted rather than described.
-    /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` returns an
-    /// accountable fan untouched, so while this holds the foreign-control rule and the handback
-    /// rule can never speak about the same fan — and the day it stops holding, the composition
-    /// order in `restatingAvailability(of:given:reconciliation:)` starts deciding which reason a user sees,
-    /// silently.
+    /// `reportingForeignControl(of:observedMode:heldByAeolus:awaitingConfirmation:reconciliation:)`
+    /// returns an accountable fan untouched, so while this holds the foreign-control rule and the
+    /// handback rule can never speak about the same fan — and the day it stops holding, step 5
+    /// answers first and a user is told another program holds a fan Aeolus pinned, silently.
     ///
     /// **Mutation:** drop `.union(restoreAbandoned)` from
     /// `LeaseAuthority.fansAeolusIsAccountableFor`. Run: red.

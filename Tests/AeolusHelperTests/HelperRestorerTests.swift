@@ -47,28 +47,39 @@ struct HelperRestorerTests {
     /// paraphrased composition is the defect #163 exists to end, and it would be a strange
     /// place to reintroduce it.
     ///
-    /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`.** That fixture
-    /// meant "the firmware reports fan 0 in manual", which since #164 is a statement with
-    /// consequences: startup reconciliation restores such a fan, and `acquireLease` refuses
-    /// one it did not put there as `.foreignManualControl`. Every test here acquires a lease
-    /// *after* calling `engage(fan:in:)`, which is the reverse of the real order — E3
-    /// acquires first and engages second — so a manual fan in the fixture would be
-    /// indistinguishable from another program holding it, and correctly refused. Starting
-    /// automatic keeps the fixture's meaning ("Aeolus is about to hold this fan") rather
-    /// than accidentally asserting the opposite. The target and actual RPM stay where they
-    /// were: `F<n>Tg` carries whatever Apple's thermal manager last asked for.
+    /// `safetyLog` and `afterwards` are the same kind of parameter, for
+    /// `FinaliseReleaseLedgerTests` (#346): it reads what § 5 logged about the ledger, and its
+    /// blind scenario moves the firmware to a stage that stops answering once the lease is held.
+    /// The nominal stage is always first, so a grant's sightedness proof is unaffected.
+    ///
+    /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`.** That fixture meant "the
+    /// firmware reports fan 0 in manual", which since #164 is a statement with consequences:
+    /// startup reconciliation restores such a fan, and `acquireLease` refuses one it did not put
+    /// there as `.foreignManualControl`. Every test here acquires before `engage(fan:in:under:)`,
+    /// E3's order and since #357 the only one § 5 accepts, so a manual fan in the fixture would be
+    /// indistinguishable at grant time from another program holding it, and correctly refused.
+    /// Starting automatic keeps the fixture's meaning ("Aeolus is about to hold this fan") rather
+    /// than accidentally asserting the opposite. The target and actual RPM stay where they were:
+    /// `F<n>Tg` carries whatever Apple's thermal manager last asked for.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         clock: some MonotonicClock = SystemMonotonicClock(),
-        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1)
+        // `nil` is the firmware's own `F0Md`, through `PlaneBackedProvider` (#360): a snapshot
+        // that could not read the mode the plane answers would be judging another machine.
+        snapshotProvider: (any SensorProvider)? = nil,
+        safetyLog: SafetyLog = HelperRestorerTests.safetyLog,
+        afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
-        HelperComposition(
-            plane: ScriptedControlPlane(
-                fans: [0: .automatic(at: 2_400)],
-                stages: [
-                    .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
-                ]),
-            snapshotProvider: snapshotProvider,
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400)],
+            stages: [
+                .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
+            ] + afterwards)
+        let reader: any SensorProvider =
+            snapshotProvider ?? PlaneBackedProvider(over: firmware, fanCount: 1)
+        return HelperComposition(
+            plane: firmware,
+            snapshotProvider: reader,
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
@@ -81,20 +92,33 @@ struct HelperRestorerTests {
             teardown: TeardownSeams(sources: RecordingSignalSources()))
     }
 
-    /// Puts fan 0 into both registries, the way E3's control plane will once it exists.
+    /// Puts fan 0 into both registries under `lease`, as E3's control plane will: acquire first,
+    /// because § 5 refuses a registration under a lease that is not live (#357).
     ///
-    /// Both calls take a `CommandableFan`, so this cannot register a fan whose declared
-    /// bounds would have failed #37's gate — see `ReclamationWatchdog.manualControlEngaged(_:)`
-    /// for why the parameter is the permit rather than an index.
+    /// Both calls take a `CommandableFan`, so this cannot register a fan whose declared bounds
+    /// would have failed #37's gate — see `ReclamationWatchdog.manualControlEngaged(_:under:)` for
+    /// why the parameter is the permit rather than an index.
     static func engage<Plane: FanControlPlane>(
-        fan index: Int, in helper: HelperComposition<Plane>
+        fan index: Int, in helper: HelperComposition<Plane>, under lease: UUID
     ) async throws {
         let permit = try commandableFan(index, declaring: .held(at: 2_400))
-        await helper.reclamationWatchdog.manualControlEngaged(permit)
+        try await helper.reclamationWatchdog.manualControlEngaged(permit, under: lease)
         await helper.thermalEmergency.manualControlEngaged(permit)
     }
 
-    /// Acquires a lease over fan 0 and releases it, which is the ordinary teardown path.
+    /// Acquires a lease over fan 0, engages it under that lease, and releases it — the
+    /// ordinary teardown path, in E3's order.
+    private static func engageUnderALeaseAndRelease<Plane: FanControlPlane>(
+        in helper: HelperComposition<Plane>
+    ) async throws {
+        let connection = ConnectionID()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        try await Self.engage(fan: 0, in: helper, under: lease.id)
+        try await helper.leases.releaseLease(id: lease.id, from: connection)
+    }
+
+    /// Acquires a lease over fan 0 and releases it, engaging nothing.
     private static func acquireAndRelease<Plane: FanControlPlane>(
         in helper: HelperComposition<Plane>
     ) async throws {
@@ -165,10 +189,13 @@ struct HelperRestorerTests {
     func theWatchdogIsToldWhenALeaseEnds() async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
-        try await Self.engage(fan: 0, in: helper)
+        let connection = ConnectionID()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        try await Self.engage(fan: 0, in: helper, under: lease.id)
         #expect(await helper.reclamationWatchdog.fansUnderManualControl == [0])
 
-        try await Self.acquireAndRelease(in: helper)
+        try await helper.leases.releaseLease(id: lease.id, from: connection)
 
         #expect(
             await helper.reclamationWatchdog.fansUnderManualControl.isEmpty,
@@ -192,9 +219,9 @@ struct HelperRestorerTests {
     func theWatchdogAsksTheSameLeaseCore() async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
-        _ = try await helper.leases.acquireLease(
+        let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
-        try await Self.engage(fan: 0, in: helper)
+        try await Self.engage(fan: 0, in: helper, under: lease.id)
 
         await helper.reclamationWatchdog.cycle()
 
@@ -222,10 +249,13 @@ struct HelperRestorerTests {
     func theThermalRegistryIsToldWhenALeaseEnds() async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
-        try await Self.engage(fan: 0, in: helper)
+        let connection = ConnectionID()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        try await Self.engage(fan: 0, in: helper, under: lease.id)
         #expect(await helper.thermalEmergency.fansUnderManualControl == [0])
 
-        try await Self.acquireAndRelease(in: helper)
+        try await helper.leases.releaseLease(id: lease.id, from: connection)
 
         #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
         #expect(
@@ -248,11 +278,11 @@ struct HelperRestorerTests {
 
     /// A fan the firmware refused to hand back **stays** in § 3's registry, and leaves § 5's.
     ///
-    /// This is the whole reason the two deregistrations are not one loop. An abandoned fan is
-    /// still off automatic control, possibly pinned low, so it is precisely the fan a thermal
-    /// emergency must be able to bridge to maximum — while § 5, whose budget is spent and
-    /// whose own `finaliseRelease(fanAt:because:)` drops a fan *"regardless"*, has nothing
-    /// left to do about it.
+    /// This is the whole reason the two deregistrations are not one loop. An abandoned fan is still
+    /// off automatic control, possibly pinned low, so it is precisely the fan a thermal emergency
+    /// must be able to bridge to maximum — while § 5, whose budget is spent and whose own
+    /// `finaliseRelease(fanAt:heldUnder:because:)` drops a fan *"regardless"*, has nothing left to
+    /// do about it.
     ///
     /// **And it is not even marked owed a read-back** (#295). Since #295 the restorer no longer
     /// removes anything from § 3, so "stays registered" alone could no longer fail: the
@@ -266,9 +296,8 @@ struct HelperRestorerTests {
     func anAbandonedFanStaysWhereItCanStillBeBridged() async throws {
         let helper = Self.composed(writes: .refused(reason: "the firmware refused the mode write"))
         await helper.bindSafetyRegistries()
-        try await Self.engage(fan: 0, in: helper)
 
-        try await Self.acquireAndRelease(in: helper)
+        try await Self.engageUnderALeaseAndRelease(in: helper)
 
         #expect(
             await helper.thermalEmergency.fansUnderManualControl == [0],
@@ -286,10 +315,10 @@ struct HelperRestorerTests {
 
     /// The refusal is durable, which is what makes the abandoned set worth returning.
     ///
-    /// `LeaseAuthority.restoreAbandoned` is append-only, so the next `acquireLease` over that
-    /// fan is refused `.restoreToAutomaticFailed` rather than being told to retry a window
-    /// that has closed. Asserted here rather than in the lease suite because this is the
-    /// first composition in `Sources/` that can actually produce an abandoned fan.
+    /// The lease core's `restoreAbandoned` is durable, so the next `acquireLease` over that fan is
+    /// refused `.restoreToAutomaticFailed` rather than being told to retry a window that has
+    /// closed. Asserted here rather than in the lease suite because this is the first composition
+    /// in `Sources/` that can actually produce an abandoned fan.
     ///
     /// **Mutation:** return `[]` from `HelperFanRestorer.restoreToAutomatic(fans:because:)`.
     /// Run: red.
@@ -347,9 +376,8 @@ struct HelperRestorerTests {
             reclamationWatchdog: helper.reclamationWatchdog,
             thermalEmergency: helper.thermalEmergency)
         await helper.bindSafetyRegistries()
-        try await Self.engage(fan: 0, in: helper)
 
-        try await Self.acquireAndRelease(in: helper)
+        try await Self.engageUnderALeaseAndRelease(in: helper)
 
         let observed = try #require(
             await plane.observations.first, "the keystone write never reached the firmware")

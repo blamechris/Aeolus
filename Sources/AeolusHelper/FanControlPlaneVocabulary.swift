@@ -31,6 +31,16 @@ enum FirmwareFanMode: Sendable, Hashable {
     case manual
 }
 
+/// What one step of an engagement achieved ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
+/// D2): the plane's step verb performs one step and reports progress, and `EngagementDriver`
+/// owns the cadence between steps. A refusal is a throw, never a third case.
+enum EngagementStep: Sendable, Hashable {
+    /// The mode write was accepted and read back raw `1` in the same turn (D3 step 2).
+    case engaged
+    /// The firmware is still holding the fan; the driver asks again after its poll interval.
+    case awaitingYield
+}
+
 /// One fan's firmware-declared envelope, as read.
 struct FanEnvelope: Sendable, Hashable {
     let index: Int
@@ -168,15 +178,70 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// The firmware refused the control write. On Apple Silicon this is the expected answer
     /// while the thermal manager is holding the fans; see `SMCError.isCommandRejection` for
     /// why the response code alone does not identify that condition.
+    ///
+    /// Also what an engagement step throws for a write the firmware did not answer at all
+    /// (`FirmwareWriteAnswer.unanswered`). Either way the write was issued and may have taken
+    /// effect (ADR 0014's #410 refused-hand-back amendment, "issued, not landed"), so it is never
+    /// retried, and the driver undoes it: the fan's mode at once, and a force key it may have set
+    /// once no engaged fan depends on the key (D5's gate; ADR 0014's B1 amendment).
     case firmwareRefusedControl(detail: String)
+
+    /// A target command's in-turn read-back of `F<n>Tg` fell outside
+    /// `ReclamationLimits.targetToleranceRPM` of the target it wrote
+    /// ([ADR 0004](../../docs/ADR/0004-float-byte-order.md); ADR 0014 D7 and U4): the firmware did
+    /// not hold the target, so nothing is returned to report it as commanded. Thrown after the
+    /// write, which was issued and may have taken effect, so every caller routes it as it routes a
+    /// refused command. Its answer at the boundary is `notConfirmed`'s `helperFailed`, which v1
+    /// clients already render.
+    case targetNotConfirmed(index: Int, commandedRPM: Double, readBackRPM: Double)
 
     /// This build has no SMC write path at all.
     ///
     /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated
-    /// and throws, no write selector exists anywhere in `Sources`, and E5 is the epic that
-    /// gates E3 and E4 rather than the one that pre-empts them. Every write verb on
-    /// `SMCFanControlPlane` answers with this until those epics land.
+    /// and nothing in the helper calls it, and E5 is the epic that gates E3 and E4 rather
+    /// than the one that pre-empts them. Every write verb on `SMCFanControlPlane` answers
+    /// with this until those epics land.
     case controlPathNotBuilt
+
+    /// A restore was requested after this engagement's first step, so it writes nothing more (ADR
+    /// 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one included
+    /// — or its ticket predates a restore, or the plane is sealed for exit (ADR 0014's #410
+    /// ticket-and-seal amendment). Thrown only at an admission, before anything is read or written:
+    /// a step's, or, once sealed, a target command's (`PlaneWriteLedger.admitCommand()`). The same
+    /// discovery after a write is `.supersededAfterWrite`.
+    case superseded
+
+    /// A restore was requested during this step's turn, **after its mode write was issued** —
+    /// D3 step 3's re-check before `Ftst = 1` — so the force key is not written. The mode write
+    /// may have landed: unlike `.superseded`, this is never retried and always undone.
+    case supersededAfterWrite
+
+    /// The fan's raw `F<n>Md` was not `0` before the first write, so the plane does not take it (D3
+    /// step 1). Nothing was written. Thrown only by a first step. The plane does not say whose the
+    /// fan is: level 6 reads the raw value against its own account (ADR 0014's #410
+    /// refused-hand-back amendment), and with none it is `foreignManualControl`.
+    case notAutomatic(index: Int, rawMode: UInt8)
+
+    /// An engagement's first step was admitted, then failed before it issued any write: its
+    /// pre-state read of `F<n>Md`, or a read the mode write needs, did not answer (ADR 0014's #410
+    /// refused-hand-back amendment). Nothing was written, so nothing is undone. Thrown only by a
+    /// first step: once a step has been answered the engagement has written, and a later step's
+    /// failure is thrown as it is. A write that was issued and refused is
+    /// `.firmwareRefusedControl`, never this.
+    case failedBeforeFirstWrite(index: Int, detail: String)
+
+    /// The mode write was accepted and raw `F<n>Md` did not read back `1` (D3 step 2): `0` is
+    /// accepted-not-applied ([#291](https://github.com/blamechris/Aeolus/issues/291)); any
+    /// other value is outside the hypothesis and goes back to the architect.
+    case engagementNotConfirmed(index: Int, rawMode: UInt8)
+
+    /// A machine-wide restore wrote what it knew and could not know the rest (ADR 0014 D5).
+    ///
+    /// The bring-up enumeration failed, so `.everyFan` wrote the fans this process touched and
+    /// the force key — every write attempted — and fans this process never touched were not
+    /// written. `refusedWrite` describes the first of those writes the firmware refused, if
+    /// any did. Every caller treats it as a keystone that did not land.
+    case fanSetUnknown(refusedWrite: String?)
 }
 
 // MARK: - The one finiteness rule
@@ -206,6 +271,13 @@ enum FanControlPlaneValue {
                         + "fault; see docs/SMC-RESEARCH.md"))
         }
         return .success(value)
+    }
+
+    /// `value` as whole RPM for a log line, total over every `Double`. `Int(_:)` traps on a value
+    /// that is not a number or does not fit, which in a root daemon is the helper dying on a log
+    /// line; this names such a value instead, and never as zero.
+    static func wholeRPM(_ value: Double) -> String {
+        Int(exactly: value.rounded()).map(String.init) ?? describe(value)
     }
 
     private static func describe(_ value: Double) -> String {

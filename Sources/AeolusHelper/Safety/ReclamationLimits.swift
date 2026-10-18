@@ -19,10 +19,10 @@
 /// defect: it let a sustained actual-RPM shortfall travel the same path as a genuine
 /// reclamation and reach restore-plus-revoke on a fan whose `F<n>Tg` read back exactly what
 /// Aeolus commanded. Reaching the secondary signal at all *means* the firmware is holding our
-/// target — `ReclamationWatchdog.examine(fanAt:)` returns early on any primary divergence —
-/// so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
-/// `ReclamationWatchdog.reportShortfall(_:fanAt:)` carries it, it emits its own log line,
-/// and it never constructs one of these. Removing the case is what stops the two ever
+/// target — `ReclamationWatchdog.examine(fanAt:inBound:)` returns early on any primary
+/// divergence — so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
+/// `ReclamationWatchdog.HeldFan.judge(_:)` carries it, the actor emits its own log line,
+/// and neither constructs one of these. Removing the case is what stops the two ever
 /// sharing a path again.
 enum ReclamationDivergence: Sendable, Hashable {
 
@@ -36,30 +36,31 @@ enum ReclamationDivergence: Sendable, Hashable {
     /// `F<n>Tg` reads back something other than what was commanded. § 5's primary signal.
     case targetDiverged(commanded: Double, readBack: Double)
 
-    /// No live lease covers this fan, so Aeolus is no longer entitled to hold it.
+    /// The lease this fan was registered under is no longer live, or no longer covers it, so
+    /// Aeolus is no longer entitled to hold it — whatever lease covers the fan now (#357).
     ///
     /// [ADR 0009](../../../docs/ADR/0009-precedence-at-the-write.md) D2, and the one case that
     /// is **not a firmware finding**: it comes from asking the lease table, in
-    /// `ReclamationWatchdog.examine(fanAt:)`, after the control-state read and before either
-    /// signal is computed from it. Its only action is restore-and-forget. It never reaches
-    /// `diverged(_:fanAt:)`, the ledger's reclaimed set or the terminal action, because the
-    /// system did not take this fan — Aeolus stopped being entitled to it, and reporting
-    /// `isReclaimedBySystem` would be `CLAUDE.md` rule 6 claiming a loss nobody caused.
+    /// `ReclamationWatchdog.examine(fanAt:inBound:)`, after the control-state read and before
+    /// either signal is computed from it. Its only action is restore-and-forget. It never reaches
+    /// `diverged(_:fanAt:heldUnder:)`, the ledger's reclaimed set or the terminal action,
+    /// because the system did not take this fan — Aeolus stopped being entitled to it, and
+    /// reporting `isReclaimedBySystem` would be `CLAUDE.md` rule 6 claiming a loss nobody caused.
     case leaseLapsed
 
     /// One line for a log, and the reason this type is not a `String` in the first place.
     var summary: String {
         switch self {
         case .leaseLapsed:
-            return "no live lease covers it"
+            return "the lease it was registered under is no longer live"
         case .modeReclaimed:
             return "the firmware reports it on automatic control"
         case .targetUnreadable(let reason):
             return "its target could not be read (\(reason))"
         case .targetDiverged(let commanded, let readBack):
             return """
-                its target reads back \(Int(readBack.rounded())) RPM against the \
-                \(Int(commanded.rounded())) RPM last commanded
+                its target reads back \(FanControlPlaneValue.wholeRPM(readBack)) RPM against the \
+                \(FanControlPlaneValue.wholeRPM(commanded)) RPM last commanded
                 """
         }
     }
@@ -108,7 +109,7 @@ enum ReclamationLimits {
     /// load-bearing.** It said a ramp is separated from a reclamation by "the primary signal
     /// converging", which suppresses nothing: the primary converging is the *precondition*
     /// for the secondary being evaluated at all, since
-    /// `ReclamationWatchdog.examine(fanAt:)` returns early on primary divergence. A
+    /// `ReclamationWatchdog.examine(fanAt:inBound:)` returns early on primary divergence. A
     /// correctly-reading `F<n>Tg` is what gets you here, not what protects you.
     ///
     /// What this dwell actually buys is that a fan briefly short of its target — a ramp, a
@@ -149,13 +150,13 @@ enum ReclamationLimits {
     /// automatic control with the user told, not in a contest it cannot win —
     /// `ScriptedControlPlane.WriteBehaviour.reverted` is exactly that machine.
     ///
-    /// **It counts writes attempted, not sweeps entered.** `ReclamationWatchdog` spends an
-    /// attempt at the point it decides to re-assert, which is before the envelope read that
-    /// suspends, so an exit taken between the two has to give it back or the budget starts
-    /// measuring something else. The cancellation guard in
-    /// `ReclamationWatchdog.reassert(_:fanAt:attempt:)` is the only such exit and it refunds;
-    /// every other early return there has either already written or has resolved the fan.
-    /// The distinction is what stops repeated sleep/wake stop-starts exhausting a budget
+    /// **It counts writes attempted, not sweeps entered.** `ReclamationWatchdog` spends an attempt
+    /// at the point it decides to re-assert, which is before the envelope read that suspends, so an
+    /// exit taken between the two has to give it back or the budget starts measuring something
+    /// else. The cancellation guard in
+    /// `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)` is the only such exit
+    /// and it refunds; every other early return there has either already written or has resolved
+    /// the fan. The distinction is what stops repeated sleep/wake stop-starts exhausting a budget
     /// without a single `F<n>Md` reaching the firmware.
     static let reassertAttemptBudget = 3
 
@@ -167,13 +168,13 @@ enum ReclamationLimits {
     /// the luxury of waiting that § 3 does not: § 3 is watching a temperature that can rise
     /// in three seconds, and this is watching a fan that is already where it was put.
     ///
-    /// **Two consumers, one question.** `ReclamationWatchdog.cycleCouldNotSee(fanAt:detail:)`
-    /// counts cycles that could not read the fan at all;
-    /// `ReclamationWatchdog.gracedBeforeItsFirstCommand(_:of:fanAt:)` counts cycles that read
-    /// it but could not yet see it as manual-with-a-target, in the window between
-    /// `engageManualControl` and the first `F<n>Tg` write. Both are "this mechanism cannot
-    /// confirm the fan is ours", and both spend the same currency — a fan held for a bounded
-    /// number of seconds before it is restored and reported — so a second constant would be
-    /// two numbers answering one question, free to drift apart.
+    /// **Two consumers, one question.**
+    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:heldUnder:detail:)` counts cycles that could not
+    /// read the fan at all; `ReclamationWatchdog.HeldFan.judge(_:)`'s registration grace counts
+    /// cycles that read it but could not yet see it as manual-with-a-target, in the window between
+    /// `engageManualControl` and the first `F<n>Tg` write. Both are "this mechanism cannot confirm
+    /// the fan is ours", and both spend the same currency — a fan held for a bounded number of
+    /// seconds before it is restored and reported — so a second constant would be two numbers
+    /// answering one question, free to drift apart.
     static let blindCyclesBeforeDivergence = 3
 }

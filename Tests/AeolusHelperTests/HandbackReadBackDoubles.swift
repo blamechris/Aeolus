@@ -96,11 +96,18 @@ actor ControlStateGatePlane: FanControlPlane {
     /// Mode reads parked right now.
     private(set) var heldModeReads = 0
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// - Parameters:
+    ///   - wrapped: The scripted firmware every verb but the mode read goes straight to.
+    ///   - capability: What the plane reports, fixed for its life as it is for any executable.
+    ///     `.notBuilt` is how a composed test asks the graph the question the production plane
+    ///     answers today, with the firmware's record still there to read; every write is still
+    ///     forwarded, so a write a `.notBuilt` graph should never issue is recorded if it is.
+    init(_ wrapped: ScriptedControlPlane, capability: FanWriteCapability = .built) {
         self.wrapped = wrapped
+        self.writeCapability = capability
     }
 
-    nonisolated var writeCapability: FanWriteCapability { .built }
+    nonisolated let writeCapability: FanWriteCapability
 
     /// Sets what mode reads do from now on. Leaving `.held` releases any read parked there.
     func modeReads(_ behaviour: ModeReads) {
@@ -155,8 +162,17 @@ actor ControlStateGatePlane: FanControlPlane {
         try await wrapped.restoreToAutomatic(scope)
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
+    /// The engagement's ticket, forwarded: synchronous, so it costs no hop.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        wrapped.beginEngagement(fanAt: index)
+    }
+
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await wrapped.engageManualControl(of: fan)
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await wrapped.prepareWritePath(enumerating: fans)
     }
 
     @discardableResult

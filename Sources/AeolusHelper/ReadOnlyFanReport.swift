@@ -13,11 +13,11 @@ import SMCCore
 /// `private` state module-visible, which is the trade `SnapshotSensorReads` refused for the
 /// same reason and [#128](https://github.com/blamechris/Aeolus/issues/128) records.
 ///
-/// **The availability ladder is in `AvailabilityRestatement.swift`**, which holds the two
+/// **The availability ladder is in `AvailabilityRestatement.swift`**, which holds the
 /// re-statements `SupervisedFanAuthority.snapshot()` makes over this file's answer and states
 /// the full order in one place. Read it before changing
-/// `availability(whenLedgerSays:writeCapabilityIs:bounds:)` below: that method produces five of
-/// the ladder's nine answers and the other four can overwrite them.
+/// `availability(writeCapabilityIs:bounds:)` below: that method produces three of the ladder's
+/// eight rows and the other five can overwrite them.
 enum ReadOnlyFanReport {
 
     /// One enumerated fan as the wire reports it.
@@ -51,11 +51,8 @@ enum ReadOnlyFanReport {
             actualRPM: reading(for: fan.actual),
             minimumRPM: minimumRPM,
             maximumRPM: maximumRPM,
-            // "No target is set" rather than "the target could not be read": this helper is
-            // asking for nothing, and that is an answer — a build-level fact of the same kind
-            // as `activeLease: nil`, not an unconfirmed observation. `SMCConnection.write` is
-            // SPI-gated and throws and no write selector exists in `Sources`, so there is no
-            // configuration of this executable in which it asks a fan for a speed.
+            // Not this path's to state: on a `.notBuilt` seam no fan is ever commanded, and on a
+            // `.built` one the supervised snapshot states the target § 5 holds for the live lease.
             //
             // Deliberately **not** sourced from `F<n>Tg`, which #148 raised alongside the
             // mode. That register carries whatever Apple's thermal manager last asked for on
@@ -74,9 +71,12 @@ enum ReadOnlyFanReport {
             // that went blind on the fan, which is not a statement about the operating
             // system at all, and this field's contract — rendered verbatim as "Reclaimed by
             // system" — cannot carry it. #140.
+            //
+            // **And this is the only place the ledger reaches the wire** (#355). The
+            // availability below does not read it: a reclamation is a fact about what already
+            // happened, and the grant path never asks it.
             isReclaimedBySystem: cause == .systemReclaimed,
             manualControlAvailability: availability(
-                whenLedgerSays: cause,
                 writeCapabilityIs: writeCapability,
                 bounds: FanState.controlEnvelope(
                     declaredMinimum: minimumRPM, declaredMaximum: maximumRPM))
@@ -84,7 +84,7 @@ enum ReadOnlyFanReport {
     }
 
     /// What the **machine and the build** say about whether this fan could be leased: steps
-    /// 4 and 6–9 of the ladder in `AvailabilityRestatement.swift`.
+    /// 6, 8 and 9 of the ladder in `AvailabilityRestatement.swift`.
     ///
     /// ## `.writePathNotBuilt` comes from the seam, and that is
     /// [#194](https://github.com/blamechris/Aeolus/issues/194)
@@ -110,43 +110,42 @@ enum ReadOnlyFanReport {
     /// `FanState.controlEnvelope` — E5's § 2 gate, whose failures all map to
     /// `.boundsImplausible` through `FanBoundsImplausibility.manualControlAvailability`, so no
     /// second vocabulary is invented here. It was deliberately not consulted while the answer
-    /// above was unconditional.
+    /// above was unconditional. Since [#270](https://github.com/blamechris/Aeolus/issues/270)
+    /// `acquireLease` reads the same two keys afresh and judges them with the same static
+    /// `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)`, so the grant refuses what
+    /// this reports.
     ///
-    /// - Warning: `acquireLease` has **no** bounds gate, so on a `.built` build a
-    ///   bounds-implausible fan is reported unavailable here and would nonetheless be granted a
-    ///   lease — a divergence from this type's own agreement rule, in the safe direction
-    ///   (claiming less control than the helper has). It is not resolved by dropping the check:
-    ///   such a fan has no envelope, so `apply` could never mint an `AuthorisedFanTarget` for
-    ///   it and the lease could never be used. The grant path is the half that should move, and
-    ///   that is [#270](https://github.com/blamechris/Aeolus/issues/270)'s.
+    /// ## § 5's ledger is history, and is not read here
     ///
-    /// ## Blindness outranks the build, and a reclamation does not
+    /// [#355](https://github.com/blamechris/Aeolus/issues/355). Until it, this method read the
+    /// ledger: `.supervisorBlind` for a fan § 5 gave up blind, on any seam, and
+    /// `.reclaimedBySystem` for one the system took, on a `.built` one. `acquireLease` never
+    /// consults the ledger, and since #354 the terminal action keeps its entry, so after a
+    /// terminal action the snapshot refused — for the life of the process — a lease the helper
+    /// would grant. Only an engagement or a release clears the entry, and both need that lease:
+    /// #189's register that seals its own exit.
     ///
-    /// **Blindness is the exception, and it is not one of those per-fan facts.** It is § 5
-    /// saying it gave a fan up because it could not see it — a claim about the supervisor,
-    /// not about what stands between a client and a lease, so it cannot imply that anything
-    /// would grant control. It is also the only honest thing the snapshot can say about
-    /// such a fan, `isReclaimedBySystem` having said it wrongly as a system reclamation. In
-    /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
-    /// nothing can go blind — and what changed is where the answer comes from.
+    /// The ladder's rule settles it: an availability is computed from current evidence the
+    /// grant path consults. What the ledger holds is a diagnosis of something that already
+    /// happened, and it is reported as one — a system reclamation on `isReclaimedBySystem`,
+    /// beside this field, and § 5's blindness in its fault lines and in the revocation that
+    /// ended the lease. #140's rule is unchanged: blindness is never `isReclaimedBySystem`.
+    /// Blindness was also the wrong tense here. "Cannot currently read" was false whenever the
+    /// reconnect § 5 attempts before giving up had worked.
     ///
-    /// **A system reclamation sits below the build fact, and that asymmetry is #140's.** In
-    /// this build it produces no availability of its own — a reclaimed fan is still
-    /// `.writePathNotBuilt` — which is why
-    /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` consults
-    /// `FanState.isReclaimedBySystem` rather than switching on what this returns, and that stays
-    /// true. What #194 adds is the answer for a build that *can* write: `.reclaimedBySystem`,
-    /// rather than the `.available` a bare fall-through would produce. Blindness needs the
-    /// availability because no other field can carry it; a reclamation does not, because
-    /// `isReclaimedBySystem` carries it on the same fan.
+    /// **What this leaves, and where it is answered.** A fan § 5 gave up blind that is *still*
+    /// unreadable reads `.available` here, while the grant's fresh read refuses it
+    /// `.supervisorBlind`. That is the gap every unreadable fan has at this step (see
+    /// `controlMode(_:)` and [#178](https://github.com/blamechris/Aeolus/issues/178)). Since
+    /// [#360](https://github.com/blamechris/Aeolus/issues/360) it is closed one step later, on a
+    /// seam that can write: step 5 judges the snapshot's own `F<n>Md` answer as the grant judges
+    /// its read, and states `.supervisorBlind` for such a fan unless Aeolus is accountable for
+    /// it. On a `.notBuilt` seam the fan reads `.writePathNotBuilt`, as every grant there does.
     private static func availability(
-        whenLedgerSays cause: ReclamationLedger.Cause?,
         writeCapabilityIs capability: FanWriteCapability,
         bounds: Result<FanControlEnvelope, FanBoundsImplausibility>
     ) -> ManualControlAvailability {
-        if cause == .supervisorBlind { return .unavailable(.supervisorBlind) }
         guard capability == .built else { return .unavailable(.writePathNotBuilt) }
-        if cause == .systemReclaimed { return .unavailable(.reclaimedBySystem) }
         if case .failure(let implausibility) = bounds {
             return implausibility.manualControlAvailability
         }
@@ -185,6 +184,14 @@ enum ReadOnlyFanReport {
     /// the reason for every fan it could not read — `HelperLog.fanModeUnreadable` — so the
     /// gap is visible in `log show` rather than only here, and
     /// [#178](https://github.com/blamechris/Aeolus/issues/178) holds it open.
+    ///
+    /// **On a seam that can write, the availability beside it says so**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)). Step 5 of the ladder is handed
+    /// the read this fold discards — `ReadOnlyFanAuthority.observe()` — and states
+    /// `.supervisorBlind`, the grant's own answer, for an unread fan Aeolus is not accountable
+    /// for. The fold itself is unchanged, because it is the wire's limit rather than the
+    /// ladder's. On a `.notBuilt` seam, every build that has shipped, nothing beside this field
+    /// says the mode is not known, and that is still #178's.
     ///
     /// Note the asymmetry with `FirmwareFanMode(declaredByFirmware:)`, which resolves an
     /// *ambiguous value* toward manual. That is a different question: there, the machine

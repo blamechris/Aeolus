@@ -35,7 +35,7 @@
 /// `ThermalEmergencyLatch` states in full: *log the transition, not the state*. These
 /// return whether a transition happened rather than leaving each caller to remember the
 /// previous value.
-actor ReclamationLedger {
+actor ReclamationLedger: ReclamationLedgerRole {
 
     /// Why a fan is no longer Aeolus's to command.
     ///
@@ -63,6 +63,14 @@ actor ReclamationLedger {
         /// `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, a reconnect
         /// was attempted, and the fan went back to automatic control anyway. ADR 0007's
         /// hole 2. Nothing here is a statement about the operating system.
+        ///
+        /// **Nothing in production reads this cause for its own sake** since
+        /// [#355](https://github.com/blamechris/Aeolus/issues/355). The snapshot asks only
+        /// whether a fan's cause is `.systemReclaimed`, so a blind entry's one effect on the
+        /// wire is that it is not that: by "last diagnosis wins" it displaces a reclamation.
+        /// The episode is reported by the fault line § 5 logs and by the lease it ends, never
+        /// as an availability; `supervisorBlindFans` and `isSupervisorBlind(fanAt:)` are for
+        /// tests and diagnostics.
         case supervisorBlind
     }
 
@@ -131,10 +139,15 @@ actor ReclamationLedger {
     /// stopped asking for it. Clears whichever cause was recorded, because a fan in either
     /// of those states is neither reclaimed nor one this mechanism is blind on.
     ///
-    /// Called when a re-assert lands and when a fan is released to automatic control on
-    /// purpose. **Not** called by a cycle that merely failed to read: a fan whose state
-    /// cannot be seen is not a fan known to be fine, and clearing on an unreadable cycle
-    /// would flip the user's display back to "in control" on exactly the machine that has
+    /// Called on every readable cycle whose primary signal converges, `.short` included,
+    /// because the firmware is then holding Aeolus's target (#119, #366); on an accepted
+    /// engagement, except a re-apply under the fan's own lease while § 5's episode for it is in
+    /// flight, which leaves the mark to that episode; and when a fan is released to automatic
+    /// control on purpose. **Not** when a re-assert's write returns: a returned write is not
+    /// the firmware holding it — `.reverted` firmware accepts writes and discards them — so the
+    /// next readable cycle decides. **Not** called by a cycle that merely failed to read: a fan
+    /// whose state cannot be seen is not a fan known to be fine, and clearing on an unreadable
+    /// cycle would flip the user's display back to "in control" on exactly the machine that has
     /// stopped answering. That is `ThermalEmergency`'s failure asymmetry — a mechanism that
     /// cannot see never releases — applied to the reporting bit.
     ///

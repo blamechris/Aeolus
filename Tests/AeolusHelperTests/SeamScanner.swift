@@ -222,15 +222,6 @@ enum SeamScanner {
         return found
     }
 
-    /// Every `async` write verb whose name matches `namePattern`.
-    ///
-    /// `throws` is optional and the effects clause is required: it is what distinguishes a
-    /// verb that reaches the firmware from a pure producer of the value it carries. See
-    /// `everyTargetWriteVerbTakesAnAuthorisation` for what that buys and what it costs.
-    static func writeVerbs(named namePattern: String) throws -> [Declaration] {
-        try declarations(matching: #"func\s+"# + namePattern + #"\s*\([^)]*\)\s*async(\s+throws)?"#)
-    }
-
     /// The body of a `struct` declaration, for asserting access levels the compiler will not
     /// report and no runtime test can observe.
     static func structBody(of type: String, in file: String) throws -> String {
@@ -493,6 +484,13 @@ enum SeamScanner {
     /// scan does not match such a declaration **at all** — it goes silently uncounted rather
     /// than failing. `docs/ADR/0008` calls that out and
     /// [#120](https://github.com/blamechris/Aeolus/issues/120) asks for it to be parsed.
+    ///
+    /// A parenthesis inside a string literal is not counted, and a `\` inside one escapes the
+    /// character after it — as `copyDelimited` does for the comment stripper, so the two
+    /// agree on where a literal ends. Without that, a default of `"\")"` ended its literal at
+    /// the escaped quote, took the `)` after it for the list's close, and the verb dropped out
+    /// of the population ([#362](https://github.com/blamechris/Aeolus/issues/362)). A quote
+    /// counter and not a lexer: a `"` inside an interpolation still ends the literal early.
     static func closingParenthesis(
         in code: String, openingAt open: String.Index
     ) -> String.Index? {
@@ -503,7 +501,11 @@ enum SeamScanner {
         while index < code.endIndex {
             let character = code[index]
             if inStringLiteral {
-                if character == "\"" { inStringLiteral = false }
+                if character == "\\", code.index(after: index) < code.endIndex {
+                    index = code.index(after: index)
+                } else if character == "\"" {
+                    inStringLiteral = false
+                }
             } else {
                 switch character {
                 case "\"": inStringLiteral = true
@@ -654,5 +656,59 @@ enum SeamScanner {
 
     static func collapsingWhitespace(_ text: String) -> String {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+}
+
+// MARK: - Member uses
+
+extension SeamScanner {
+
+    /// The receiver of every use of `member` in one file's code — a call, a call split across
+    /// lines (`writer\n    .member(of:`), one with a space before its parenthesis, an unapplied
+    /// method reference (`writer.member`), an optional-chained or force-unwrapped receiver
+    /// (`writer?.member`, `writer!.member`) and a parenthesised one (`(writer).member`) alike.
+    ///
+    /// Comments are stripped — trailing ones too — and whitespace around each `.`, `?.` and
+    /// `!.` removed first, so the spelling of a use cannot hide it: a scan anchored on
+    /// `receiver.member(` missed every one of these shapes. A declaration (`func member(`) has
+    /// no receiver and is not a use.
+    ///
+    /// **A use whose receiver is not a word is not attributed**: a call result
+    /// (`makeWriter().member`), a subscript (`writers[0].member`), and a bare `member(of:)` inside
+    /// the type that declares it have no `word.` in front. `mentions(of:inSource:)` counts those,
+    /// and a caller that must not miss one compares the two.
+    static func receivers(of member: String, inSource source: String) throws -> [String] {
+        let stripped = strippingAllComments(source)
+        let code = try NSRegularExpression(pattern: #"\s*([?!]?)\s*\.\s*"#)
+            .stringByReplacingMatches(
+                in: stripped, range: NSRange(stripped.startIndex..., in: stripped),
+                withTemplate: "$1.")
+        let use = try NSRegularExpression(
+            pattern: #"(\w+)\s*\)?[?!]?\."# + member + #"(?![A-Za-z0-9_])"#)
+        return use.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap {
+            Range($0.range(at: 1), in: code).map { String(code[$0]) }
+        }
+    }
+
+    /// How many times `member` is named in one file's code other than in a declaration,
+    /// whatever stands in front of it.
+    ///
+    /// The receiver-agnostic count behind `receivers(of:inSource:)`. That scan needs a word and
+    /// a `.`; this one needs the identifier. A use on a call result, on a subscript, or with no
+    /// receiver at all is counted here and attributed there to nothing, so `mentions` minus
+    /// `receivers.count` is the number of uses a receiver scan cannot see. Comments are stripped
+    /// first, trailing ones included, and `func member` is a declaration and not a use.
+    ///
+    /// A mention inside a string literal counts, which errs loud: it can only add a failure
+    /// that names the file.
+    static func mentions(of member: String, inSource source: String) throws -> Int {
+        let code = strippingAllComments(source)
+        let range = NSRange(code.startIndex..., in: code)
+        let named = try NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])"# + member + #"(?![A-Za-z0-9_])"#)
+        let declared = try NSRegularExpression(
+            pattern: #"\bfunc\s+"# + member + #"(?![A-Za-z0-9_])"#)
+        return named.numberOfMatches(in: code, range: range)
+            - declared.numberOfMatches(in: code, range: range)
     }
 }

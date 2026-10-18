@@ -5,10 +5,10 @@ import Testing
 /// `docs/SAFETY.md` § 5 in the window that opens when a fan is registered and closes when
 /// the first target is commanded on it.
 ///
-/// A fourth suite next to `ReclamationWatchdogTests`, `…RecoveryTests` and
-/// `…StalenessTests`, split on subject the way those were: every test here drives a fan that
-/// `ReclamationWatchdog.manualControlEngaged(_:)` knows about and `commandedTarget(_:)` does
-/// not, which is a state with rules of its own rather than a corner of the signal suite.
+/// A fourth suite next to `ReclamationWatchdogTests`, `…RecoveryTests` and `…StalenessTests`, split
+/// on subject the way those were: every test here drives a fan that
+/// `ReclamationWatchdog.manualControlEngaged(_:under:)` knows about and `commandedTarget(_:under:)`
+/// does not, which is a state with rules of its own rather than a corner of the signal suite.
 ///
 /// **Why the window is a subject at all.** `manualControlEngaged(_:)` is called at the same
 /// point as the `F<n>Md` write, and its doc comment mandates which side: after. That leaves
@@ -19,9 +19,9 @@ import Testing
 /// as safe.
 ///
 /// The terminal action on the far side of these tests is not merely a fan restored, it is
-/// `finaliseRelease(fanAt:because:)` revoking **every lease on the machine** and a `.fault`
-/// line blaming the operating system. That is why the lease assertion, not the restore
-/// assertion, is the point of each one.
+/// `finaliseRelease(fanAt:heldUnder:because:)` revoking **the client's lease** — every lease on the
+/// machine until #353 — and a `.fault` line blaming the operating system. That is why the lease
+/// assertion, not the restore assertion, is the point of each one.
 @Suite("The reclamation watchdog's registration window")
 struct ReclamationRegistrationWindowTests {
 
@@ -33,11 +33,11 @@ struct ReclamationRegistrationWindowTests {
     /// commanded yet, because E3 writes `F<n>Tg` next. A supervisor cycle can land in it, and
     /// what it must do is nothing at all.
     ///
-    /// The lease assertion is the point. `finaliseRelease(fanAt:because:)` does not revoke
-    /// one lease, it revokes **every** lease on the machine, so a fan judged reclaimed inside
-    /// this window costs a client the control it was granted milliseconds earlier — and the
-    /// log blames the operating system for it. The *other* ordering produces exactly that,
-    /// and `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that
+    /// The lease assertion is the point. `finaliseRelease(fanAt:heldUnder:because:)` revokes the
+    /// lease the fan was registered under — every lease on the machine until #353 — so a fan judged
+    /// reclaimed inside this window costs a client the control it was granted milliseconds earlier
+    /// — and the log blames the operating system for it. The *other* ordering produces exactly
+    /// that, and `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that
     /// same registry entry read as `.automatic` instead.
     ///
     /// This is the `.targetDiverged` third of the window — the firmware answers manual with
@@ -59,7 +59,7 @@ struct ReclamationRegistrationWindowTests {
 
         // Asserted first, because everything below it is an absence. Without this the test
         // cannot tell "examined and found converged" from "never looked at the fan at all",
-        // and a tightened entry guard in `examine(fanAt:)` would pass it unnoticed.
+        // and a tightened entry guard in `examine(fanAt:inBound:)` would pass it unnoticed.
         #expect(
             await machine.attempts.contains(.readControlState(fan: 0)),
             "the fan was never examined, so the assertions below prove nothing")
@@ -74,21 +74,21 @@ struct ReclamationRegistrationWindowTests {
     /// **The half of the registration window `guard let commanded` never reached.**
     ///
     /// `primaryDivergence(of:against:)` answers `.targetUnreadable` before it looks at the
-    /// commanded target at all, so on a fan registered after its `F<n>Md` write and awaiting
-    /// its first `F<n>Tg` write, a single unreadable target read used to take the terminal
-    /// action on the spot: ledger marked, fan restored, and **every lease on the machine**
-    /// revoked — none of the tolerance `cycleCouldNotSee(fanAt:detail:)` grants a fan that
-    /// could not be read at all. Reproduced on this fixture before the fix, with a `.fault`
-    /// line telling an operator the system had taken a fan nothing had yet been commanded on.
+    /// commanded target at all, so on a fan registered after its `F<n>Md` write and awaiting its
+    /// first `F<n>Tg` write, a single unreadable target read used to take the terminal action on
+    /// the spot: ledger marked, fan restored, and **the client's lease** revoked — none of
+    /// the tolerance `cycleCouldNotSee(fanAt:heldUnder:detail:)` grants a fan that could not be
+    /// read at all. Reproduced on this fixture before the fix, with a `.fault` line telling an
+    /// operator the system had taken a fan nothing had yet been commanded on.
     ///
     /// `targetRPM: .nan` is how the mock spells an unreadable `F<n>Tg`:
     /// `ScriptedControlPlane` applies `FanControlPlaneValue.finite(_:describing:)`, the same
     /// rule the real seam applies, so the readback arrives as `.unreadable` rather than as a
     /// fabricated number.
     ///
-    /// Mutation-checked: deleting the `guard !gracedBeforeItsFirstCommand(…) else { return }`
-    /// line from `examine(fanAt:)` turns the lease, restore, registry and ledger assertions
-    /// red together.
+    /// Mutation-checked: making `HeldFan.judge(_:)` answer `.diverged(primary)` where it answers
+    /// `.graced(…)` — the grace removed, as deleting its guard from `examine(fanAt:inBound:)` once
+    /// did — turns the lease, restore, registry and ledger assertions red together.
     @Test("An unreadable target before the first command does not cost the client its lease")
     func anUnreadableTargetBeforeTheFirstCommandKeepsTheLease() async throws {
         let machine = ReclamationMachine(
@@ -100,7 +100,7 @@ struct ReclamationRegistrationWindowTests {
 
         #expect(
             await machine.leases.activeLease()?.id == lease.id,
-            "one unreadable target read cost the client every lease on the machine")
+            "one unreadable target read cost the client its lease")
         #expect(await machine.watchdog.fansUnderManualControl == [0])
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.ledger.reclaimedFans.isEmpty)
@@ -115,9 +115,9 @@ struct ReclamationRegistrationWindowTests {
     /// with the user told, exactly as the re-assert budget and the blindness threshold do.
     /// Driven `1...N` with the expectation derived per cycle, so the assertion is non-vacuous
     /// at every value of the constant — including 1, where it says the first divergent cycle
-    /// acts. Deleting `gracedBeforeItsFirstCommand`'s
-    /// `guard cycles < ReclamationLimits.blindCyclesBeforeDivergence` makes the grace
-    /// unbounded, and the final cycle's restore never happens.
+    /// acts. Deleting `HeldFan.judge(_:)`'s
+    /// `guard uncommandedDivergentCycles < ReclamationLimits.blindCyclesBeforeDivergence` makes
+    /// the grace unbounded, and the final cycle's restore never happens.
     ///
     /// The *upward* direction is
     /// `ReclamationLimitsTests.theBlindCycleThresholdIsBoundedAbove`, which is what stops
@@ -125,8 +125,8 @@ struct ReclamationRegistrationWindowTests {
     /// own bound from.
     ///
     /// One log line for the whole grace, not one per cycle: #124's constraint on a 1 Hz
-    /// supervisor, and the reason `gracedBeforeItsFirstCommand(_:of:fanAt:)` logs the
-    /// transition rather than the state.
+    /// supervisor, and the reason `HeldFan.judge(_:)` reports `firstCycle` and
+    /// `examine(fanAt:inBound:)` logs only that transition rather than the state.
     @Test("The grace before the first command runs out, and the fan is handed back")
     func theGraceBeforeTheFirstCommandIsBounded() async throws {
         let machine = ReclamationMachine(
@@ -155,10 +155,11 @@ struct ReclamationRegistrationWindowTests {
     /// **The budget is spent, not reset — and a clean cycle in the middle does not refill
     /// it.**
     ///
-    /// `examine(fanAt:)`'s converged branch resets the dwell and the re-assert attempts and
+    /// `HeldFan.judge(_:)`'s converged branch resets the dwell and the re-assert attempts and
     /// deliberately leaves `uncommandedDivergentCycles` alone. Nothing asserted that: adding
-    /// `held[index]?.uncommandedDivergentCycles = 0` beside those two left the whole suite
-    /// green, so the property was true of the code and unclaimed by the tests.
+    /// `uncommandedDivergentCycles = 0` beside those two (in `examine(fanAt:inBound:)`, before #128
+    /// moved the branch) left the whole suite green, so the property was true of the code and
+    /// unclaimed by the tests.
     ///
     /// It matters because the fan it describes is a real one. A `F<n>Tg` that is merely
     /// flaky — readable one second, unreadable the next — would refill the grace on every
@@ -241,8 +242,8 @@ struct ReclamationRegistrationWindowTests {
     /// Registration is idempotent now, so the cycle after the re-registration is the one
     /// that spends the last of the budget, exactly as it would have been without it.
     ///
-    /// Mutation-checked: restoring the unconditional `held[fan.index] = HeldFan()` turns the
-    /// restore, registry and lease assertions red together.
+    /// Mutation-checked: making `HeldFan.registering(_:over:)` return a fresh `HeldFan(lease:)`
+    /// unconditionally turns the restore, registry and lease assertions red together.
     @Test("Re-registering a held fan mid-grace does not refill the budget")
     func reRegisteringMidGraceDoesNotRefillIt() async throws {
         let machine = ReclamationMachine(
@@ -275,7 +276,7 @@ struct ReclamationRegistrationWindowTests {
     /// reaches `.targetDiverged` only behind `guard let commanded`, so a re-registration that
     /// wiped `commanded` left a fan whose `F<n>Tg` disagrees with what Aeolus wrote reading
     /// as *converged* — the strongest signal § 5 has, silenced until the next
-    /// `commandedTarget(_:)` arrives, on a fan that is pinned at a speed this mechanism has
+    /// `commandedTarget(_:under:)` arrives, on a fan that is pinned at a speed this mechanism has
     /// just forgotten it asked for. `CLAUDE.md` rule 6.
     ///
     /// The firmware here holds 2,400 while 3,000 was commanded, so the very next cycle must
@@ -283,9 +284,9 @@ struct ReclamationRegistrationWindowTests {
     /// `lastCommanded(ofFan:)` back is the point: what matters is that the signal still
     /// fires, not that a field survived.
     ///
-    /// Mutation-checked: restoring the unconditional `held[fan.index] = HeldFan()` leaves the
-    /// fan reading converged, so the stored command, the wire and the ledger all go red
-    /// together — measured, three issues on this test and none on any other.
+    /// Mutation-checked: making `HeldFan.registering(_:over:)` return a fresh `HeldFan(lease:)`
+    /// unconditionally leaves the fan reading converged, so the stored command, the wire and the
+    /// ledger all go red together — measured, three issues on this test and none on any other.
     @Test("Re-registering a held fan keeps what was commanded on it")
     func reRegisteringKeepsWhatWasCommanded() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])

@@ -39,7 +39,7 @@ struct ScriptedControlPlaneTests {
             stages: [.init(writes: .refused(reason: "firmware answered 0x82"))])
 
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(of: nominalFan)
+            try await plane.ticketedStep(of: nominalFan)
         }
         await #expect(throws: FanControlPlaneError.self) {
             _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
@@ -236,6 +236,45 @@ struct ScriptedControlPlaneTests {
         #expect(untouched.mode == .manual)
     }
 
+    // MARK: - The force key
+
+    /// The minimal force-key flag: `.everyFan` clears it when the firmware takes the write, and
+    /// nothing else does — not a per-fan restore, and not a machine-wide one the firmware
+    /// refused or discarded.
+    ///
+    /// The double's own rule has to be one a mutant can break here first: a flag cleared on every
+    /// call would make every consumer's "the key was cleared" pass for nothing.
+    ///
+    /// **Mutation:** in `ScriptedControlPlane.restoreToAutomatic(_:)`, clear the flag before
+    /// `applyWrite` rather than on `landed`. Run: red on the refused and the reverted case.
+    /// **Mutation:** clear it for every scope, not only `.everyFan`. Run: red on the per-fan case.
+    @Test("Only a machine-wide restore the firmware takes clears the force key")
+    func onlyALandedMachineWideRestoreClearsTheForceKey() async throws {
+        for (behaviour, scope, cleared) in [
+            (ScriptedControlPlane.WriteBehaviour.honoured, FanRestoreScope.everyFan, true),
+            (.honoured, .fan(0), false),
+            (.refused(reason: "firmware answered 0x82"), .everyFan, false),
+            (.reverted, .everyFan, false),
+        ] {
+            let plane = ScriptedControlPlane(
+                fans: [0: .init(mode: .manual)], stages: [.init(writes: behaviour)])
+            await plane.setForceKey(true)
+
+            do {
+                try await plane.restoreToAutomatic(scope)
+            } catch FanControlPlaneError.firmwareRefusedControl {
+                // The refused case's answer. Anything else thrown fails the test.
+            }
+
+            #expect(
+                await plane.isForceKeySet == !cleared,
+                "\(scope) under \(behaviour) left the force key \(cleared ? "set" : "clear")")
+            #expect(
+                await plane.attempts == [.restoreToAutomatic(scope)],
+                "setting the key recorded an attempt, or the restore was not recorded")
+        }
+    }
+
     // MARK: - Envelopes
 
     /// #37's gate needs to be handed the implausible declaration in order to refuse it, so
@@ -310,7 +349,7 @@ struct ScriptedControlPlaneTests {
             stages: [.init(writes: .refused(reason: "firmware answered 0x82"))])
 
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(of: nominalFan)
+            try await plane.ticketedStep(of: nominalFan)
         }
         await #expect(throws: FanControlPlaneError.self) {
             try await plane.restoreToAutomatic(.everyFan)
@@ -333,7 +372,7 @@ struct ScriptedControlPlaneTests {
     func aHonouredWriteLands() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], stages: [.nominal()])
 
-        try await plane.engageManualControl(of: nominalFan)
+        #expect(try await plane.ticketedStep(of: nominalFan) == .engaged)
         _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
 
         let state = try await plane.readControlState(ofFan: 0)
@@ -350,7 +389,7 @@ struct ScriptedControlPlaneTests {
             fans: [0: .nominal],
             stages: [.nominal(temperatures: ["TC0P": 55]), .nominal(temperatures: ["TC0P": 97])])
 
-        try await plane.engageManualControl(of: nominalFan)
+        #expect(try await plane.ticketedStep(of: nominalFan) == .engaged)
         _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
         await plane.advance()
 

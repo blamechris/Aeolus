@@ -129,15 +129,14 @@ actor ReclamationSupervisor<Plane: FanControlPlane> {
     /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the restart policy that
     /// makes it recoverable.
     ///
-    /// **Nothing is acquired on the way out.** `stop()` cancels without awaiting, so a
-    /// sweep suspended inside a read finishes after this returns —
-    /// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, where
-    /// that sweep could still take a fan *off* automatic control from a supervisor that had
-    /// stopped watching. `ReclamationWatchdog.reassert(_:fanAt:attempt:)` now checks
-    /// cancellation immediately before that write, so the outgoing sweep can read, log and
-    /// restore, and can no longer acquire. What it does **not** do is make `isRunning` wait
-    /// for that sweep: the handle is cleared here and the cycle may still be running when it
-    /// reads `false`.
+    /// **Nothing is acquired on the way out.** `stop()` cancels without awaiting, so a sweep
+    /// suspended inside a read finishes after this returns —
+    /// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, where that
+    /// sweep could still take a fan *off* automatic control from a supervisor that had stopped
+    /// watching. `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)` now checks
+    /// cancellation immediately before that write, so the outgoing sweep can read, log and restore,
+    /// and can no longer acquire. What it does **not** do is make `isRunning` wait for that sweep:
+    /// the handle is cleared here and the cycle may still be running when it reads `false`.
     func stop() {
         task?.cancel()
         task = nil

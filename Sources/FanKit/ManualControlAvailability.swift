@@ -45,6 +45,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// from "no such fan": the fan is right there and is refused anyway.
         case boundsImplausible
         /// The system has taken this fan back and is not currently yielding it.
+        ///
+        /// **No helper on `main` publishes this as an availability**
+        /// ([#355](https://github.com/blamechris/Aeolus/issues/355)): a reclamation is reported
+        /// as `FanState.isReclaimedBySystem`, a fact, and no grant is refused for it. The case
+        /// stays for wire stability — it is v1 vocabulary, and a client still renders it.
         case reclaimedBySystem
         /// Another client holds the manual-control lease.
         ///
@@ -61,15 +66,18 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// rather than granting a lease whose backstop has never been watched to work.
         /// See [ADR 0007](../../docs/ADR/0007-safety-composition.md).
         case selfRenewalNotBuilt
-        /// The fan is mid-handback: a previous lease has ended and the restore-to-automatic
-        /// write for this fan has not completed yet.
+        /// The fan is mid-handback: a previous lease has ended and its restore-to-automatic write
+        /// has not completed yet, or a restore of every fan is still running — `docs/SAFETY.md`
+        /// § 7's panic verb (`fanctl reset --all`, `fanctl auto`), or § 4's handback with no sleep
+        /// seal over it (under one, `systemSleeping`: #269). While one runs, every fan nothing else
+        /// refuses reads this, so its restore cannot undo a lease granted under it ([#350](https://github.com/blamechris/Aeolus/issues/350)).
         ///
-        /// Transient, and the shortest-lived reason here — `systemSleeping` is the other
-        /// transient one, and it lasts until the machine wakes. Granting during the window would
-        /// hand a client a lease over a fan that is about to be returned to the system
-        /// underneath it — the client writes a target, the in-flight restore lands, and the
-        /// client holds a live lease over a fan nothing is honouring. Refusing for a few
-        /// milliseconds is the honest answer; a client may simply retry.
+        /// Transient, and normally the shortest-lived reason here — milliseconds; `systemSleeping`
+        /// is the other transient one, and lasts until the machine wakes. Not always milliseconds:
+        /// a § 4 handback still running after its wake has outlived the five-second budget (#364),
+        /// so the advice escalates when this does not clear. Granting in the window would hand a
+        /// client a lease over a fan about to be returned to the system underneath it, which it
+        /// would hold with nothing honouring it. Refusing is the honest answer; a client may retry.
         case releaseInProgress
         /// The helper issued this fan's restore-to-automatic, stopped waiting for it, and
         /// nothing has confirmed what mode the fan is in.
@@ -165,13 +173,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// over it would be `CLAUDE.md` rule 6 — claiming control of a fan nothing has
         /// confirmed is listening.
         ///
-        /// The fan may still be pinned at a speed Aeolus is no longer tracking, and nothing
-        /// is watching it: every path that reaches this state clears `docs/SAFETY.md` § 5's
-        /// registry — `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before
-        /// it revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no
-        /// entry left to cycle over. That gap is
-        /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
-        /// re-registration.
+        /// The fan may still be pinned at a speed Aeolus is no longer tracking: every path that
+        /// reaches this state clears `docs/SAFETY.md` § 5's registry —
+        /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` empties it before it
+        /// revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no entry left
+        /// to cycle over. What can still watch it is § 3: since [#181](https://github.com/blamechris/Aeolus/issues/181)
+        /// a fan the engagement driver engaged stays in § 3's registry until a read confirms it
+        /// automatic, and § 3's next emergency bridges it. Every engagement goes through that
+        /// driver (ADR 0014's A6 contract), and below the ceiling nothing retries the restore on
+        /// its own — decided in [#343](https://github.com/blamechris/Aeolus/issues/343).
         ///
         /// **One route out short of a restart, since
         /// [#189](https://github.com/blamechris/Aeolus/issues/189)**, and only for the lease
@@ -214,7 +224,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// out.
         ///
         /// Hearing the two *out of order* used to produce the same symptom and is no longer
-        /// this case — see `LeaseAuthority.wakesAheadOfTheirSeal`
+        /// this case — see `LeaseAuthority.SleepSealPairing.seal(generation:)`
         /// ([#202](https://github.com/blamechris/Aeolus/issues/202) item 1).
         case systemSleeping
         /// The helper cannot currently see any critical temperature, so the mechanism
@@ -232,13 +242,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// retrying is not the advice — blindness lasts until the SMC answers again, and
         /// nothing the client does affects that.
         case noThermalTelemetry
-        /// The helper cannot read *this fan's* control state, so the mechanism that would
-        /// notice it being taken back is blind on it.
+        /// The helper cannot read *this fan's* control state, or could not confirm it back
+        /// under automatic control at start-up, so it cannot say what it would be granting.
         ///
         /// `.noThermalTelemetry`'s argument one cardinality down: that one is the machine's
-        /// temperature going unreadable, this one is a single fan's state going unreadable
-        /// for `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, after
-        /// which § 5 reconnects, restores the fan and revokes the lease. ADR 0007's hole 2,
+        /// temperature going unreadable, this one is a single fan's state. ADR 0007's hole 2,
         /// with [#68](https://github.com/blamechris/Aeolus/issues/68) — a stale
         /// `io_connect_t` after wake — as the motivating case.
         ///
@@ -249,14 +257,24 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// loss of control that nothing had established — `CLAUDE.md` rule 6 in the
         /// direction that is easy to miss.
         ///
-        /// **Two producers, and the second is not a cycle at all.** Startup reconciliation
-        /// runs on a bounded budget — see
-        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md) —
-        /// and a fan it never reached before the budget ran out is a fan nobody has looked
-        /// at — the sentence above, arrived at by a different route. The helper serves
-        /// clients anyway, because refusing to answer a snapshot helps nobody, and refuses
-        /// a lease over that fan for the life of the process: reconciliation is one-shot
-        /// and never runs again, so nothing will revise the answer.
+        /// **Two producers, both of which the grant path shares** (#355), **and a snapshot shows
+        /// both** ([#360](https://github.com/blamechris/Aeolus/issues/360)). The first is a read
+        /// of the fan's control state that throws: a grant is refused this way when its fresh read
+        /// throws, and on a helper that can write a snapshot says the same when its own read of
+        /// the fan's mode did not answer. A retry is reasonable, because the next read may answer.
+        /// The second is startup reconciliation, for a fan it could not confirm back under
+        /// automatic control: one it read back in manual after a write the firmware accepted, one
+        /// whose read-back threw, one whose mode would not read and whose restore was then
+        /// refused, or one its bounded budget never reached — see
+        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md). The
+        /// helper serves clients anyway, because refusing to answer a snapshot helps nobody,
+        /// and refuses a lease over that fan for the life of the process: reconciliation is
+        /// one-shot, so nothing will revise the answer.
+        ///
+        /// **§ 5's blindness is not a producer.** § 5 still gives up a fan it cannot read for
+        /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles, and that is history,
+        /// reported by its fault lines and the lease it ends — published here, it refused a
+        /// lease the helper would grant, after a reconnect that had often already worked.
         case supervisorBlind
         /// Something outside Aeolus is holding this fan in manual mode.
         ///
@@ -278,6 +296,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// Durable, and not in the way `.releaseInProgress` is transient: nothing in Aeolus
         /// will change it, because nothing in Aeolus put the fan there. It clears when the
         /// other writer hands the fan back.
+        ///
+        /// *2026-10-10:* one exception, on a plane that can write: `restoreAllToAutomatic`
+        /// includes the machine-wide restore (ADR 0014 D5), which can return a foreign-held fan
+        /// to automatic. How a durable refusal is then reported is
+        /// [#351](https://github.com/blamechris/Aeolus/issues/351).
         case foreignManualControl
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it

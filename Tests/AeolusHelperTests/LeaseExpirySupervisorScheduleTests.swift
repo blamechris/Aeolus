@@ -95,6 +95,7 @@ struct LeaseExpirySupervisorScheduleTests {
             writeCapability: LeaseFixture.writePathBuilt(),
             telemetry: LeaseFixture.sightedTelemetry(),
             foreignControl: LeaseFixture.automaticFans(),
+            envelopes: LeaseFixture.plausibleEnvelopes(),
             thermalEmergency: ThermalEmergencyLatch(),
             clock: clock,
             wallClock: TestWallClock().provider,

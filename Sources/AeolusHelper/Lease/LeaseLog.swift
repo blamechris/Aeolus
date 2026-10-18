@@ -513,6 +513,30 @@ extension LeaseLog {
         )
     }
 
+    /// A grant was refused because a requested fan's firmware bounds fail `docs/SAFETY.md`
+    /// § 2's plausibility gate, or did not read
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+    ///
+    /// `.notice`, for `refusedForeignManualControl`'s reason: it is the line a user reaches for
+    /// after finding the slider inert, and `.info` is not persisted. It names **which check
+    /// failed**, in `FanBoundsImplausibility`'s value-free vocabulary, so a byte-order fault and
+    /// firmware declaring a maximum below the floor can be told apart afterwards — and, for a
+    /// read that threw, what the read said.
+    func refusedImplausibleBounds(
+        _ connection: ConnectionID, fan: Int, failure: FanBoundsImplausibility, unread: String?
+    ) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control of fan \(fan, privacy: .public). Refused: boundsImplausible — \
+            \(failure.description, privacy: .public)\
+            \(unread.map { " (\($0))" } ?? "", privacy: .public). No target can be produced \
+            for a fan whose firmware bounds fail the plausibility gate, so no lease over it \
+            is granted — see docs/SAFETY.md § 2.
+            """
+        )
+    }
+
     /// A client asked for a fan while `docs/SAFETY.md` § 4's sleep window was open.
     ///
     /// `.notice`, and it is the line that distinguishes the two ways a lease can go missing
@@ -526,6 +550,22 @@ extension LeaseLog {
             control while the machine is going to sleep. Refused: every fan has already been \
             handed back for this sleep, and a lease granted now would engage manual control \
             on a machine that is about to stop running this helper. Ask again after the wake.
+            """
+        )
+    }
+
+    /// A client asked for a fan while § 7's panic verb or § 4's handback was returning every fan
+    /// to automatic control (#350, #364).
+    ///
+    /// `.notice`, for `refusedMidHandback`'s reason: it clears itself when the restore returns,
+    /// so a client seeing it repeatedly is watching a restore that does not.
+    func refusedDuringMachineWideRestore(_ connection: ConnectionID) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control while a restore of every fan to automatic control is still running — \
+            fanctl auto, fanctl reset --all, or the handback around a sleep. Refused: a lease \
+            granted now could be undone by that restore. Ask again once it has finished.
             """
         )
     }

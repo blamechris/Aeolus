@@ -11,8 +11,9 @@ import Foundation
 ///
 /// Split from the actor's own file, and along a real seam rather than a line count:
 /// everything here is a **verb**, and no verb touches this client's state. Each one encodes
-/// what it is sending, goes through one of the two gates, and decodes what came back. That
-/// is the whole of a verb, and it is why the interesting parts of this target — the
+/// what it is sending, goes through one of the two gates naming the message it sends (which
+/// decides when its deadline starts, `HelperMessage.sequenced`), and decodes what came back.
+/// That is the whole of a verb, and it is why the interesting parts of this target — the
 /// handshake, the connection's lifecycle, and what a transport failure means — are not in
 /// this file.
 ///
@@ -26,7 +27,7 @@ extension HelperClient {
     /// A fresh round trip every time. There is deliberately nothing to return when the
     /// round trip fails.
     public func snapshot() async throws -> SystemSnapshot {
-        let data: Data = try await withHandshakenProxy { proxy, resolve in
+        let data: Data = try await withHandshakenProxy(.snapshot) { proxy, resolve in
             proxy.snapshot { data, error in resolve(HelperClientPayload.outcome(data, error)) }
         }
         return try HelperClientPayload.decode(SystemSnapshot.self, from: data)
@@ -41,7 +42,7 @@ extension HelperClient {
     /// they still want.
     public func acquireLease(_ request: LeaseRequest) async throws -> Lease {
         let payload = try HelperClientPayload.encode(request)
-        let data: Data = try await withHandshakenProxy { proxy, resolve in
+        let data: Data = try await withHandshakenProxy(.acquireLease) { proxy, resolve in
             proxy.acquireLease(request: payload) { data, error in
                 resolve(HelperClientPayload.outcome(data, error))
             }
@@ -56,7 +57,7 @@ extension HelperClient {
     /// refusal is the client's signal to acquire again if it still wants the fans, and it is
     /// not something this type papers over.
     public func renewLease(id: UUID) async throws -> Lease {
-        let data: Data = try await withHandshakenProxy { proxy, resolve in
+        let data: Data = try await withHandshakenProxy(.renewLease) { proxy, resolve in
             proxy.renewLease(id: id.uuidString) { data, error in
                 resolve(HelperClientPayload.outcome(data, error))
             }
@@ -66,7 +67,7 @@ extension HelperClient {
 
     /// Gives a lease back and returns its fans to automatic.
     public func releaseLease(id: UUID) async throws {
-        try await withHandshakenProxy { proxy, resolve in
+        try await withHandshakenProxy(.releaseLease) { proxy, resolve in
             proxy.releaseLease(id: id.uuidString) { error in
                 resolve(HelperClientPayload.acknowledgement(error))
             }
@@ -78,9 +79,15 @@ extension HelperClient {
     /// Success means the helper accepted and applied the request, not that a fan reached a
     /// speed: what the firmware does with a clamped target is reported by the next
     /// `snapshot()`, never inferred from this returning.
+    ///
+    /// **The one gated verb with a deadline of its own**, which grows with the fans `settings`
+    /// names (`HelperClientDeadlines.applyDeadline(naming:)`): an `apply` that engages fans may
+    /// lawfully take a gate wait, a yield and several scheduler turns for each, and cutting it
+    /// off at `gatedVerb` would end a lease the helper was honouring.
     public func apply(_ settings: [FanSetting], leaseID: UUID) async throws {
         let payload = try HelperClientPayload.encode(settings)
-        try await withHandshakenProxy { proxy, resolve in
+        let deadline: (HelperClientDeadlines) -> Duration = { $0.applyDeadline(naming: settings) }
+        try await withHandshakenProxy(.apply, within: deadline) { proxy, resolve in
             proxy.apply(settings: payload, leaseID: leaseID.uuidString) { error in
                 resolve(HelperClientPayload.acknowledgement(error))
             }
@@ -101,7 +108,7 @@ extension HelperClient {
     /// caller reporting this to a user says the helper accepted the reset, never that the
     /// fans were restored.
     public func restoreAllToAutomatic() async throws {
-        try await withProxy { proxy, resolve in
+        try await withProxy(.restoreAllToAutomatic) { proxy, resolve in
             proxy.restoreAllToAutomatic { error in
                 resolve(HelperClientPayload.acknowledgement(error))
             }

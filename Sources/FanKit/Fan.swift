@@ -220,11 +220,16 @@ public struct FanState: Sendable, Hashable, Codable {
     public let actualRPM: FanReading
     public let minimumRPM: FanReading
     public let maximumRPM: FanReading
-    /// The speed the helper is currently asking for, or `nil` when it is asking for
-    /// nothing. That distinction (an unset target vs. a reading that could not be
-    /// produced) is what `FanReading` exists to make for `actualRPM`/`minimumRPM`/
-    /// `maximumRPM`, each of which carries its `unavailable(reason:)` separately from
-    /// `nil`-shaped "no value".
+    /// The speed the helper is holding this fan at under a lease, or `nil`. Non-nil only when
+    /// § 5 has recorded it for the snapshot's live lease, the same snapshot read the fan's mode
+    /// as manual, § 5 has not marked it reclaimed by the system, and no thermal emergency is
+    /// active — so never beside `isReclaimedBySystem`, `isThermalEmergencyActive` or an
+    /// automatic mode. `nil` when the helper is asking for nothing, or for a speed this snapshot
+    /// cannot confirm the fan is holding.
+    ///
+    /// That distinction (an unset target vs. a reading that could not be produced) is what
+    /// `FanReading` exists to make for `actualRPM`/`minimumRPM`/`maximumRPM`, each of which
+    /// carries its `unavailable(reason:)` separately from `nil`-shaped "no value".
     ///
     /// `targetRPM` deliberately does **not** make that distinction. It is a bare
     /// `Double?`, and a non-finite value given to either initialiser is normalised to
@@ -248,9 +253,16 @@ public struct FanState: Sendable, Hashable, Codable {
     /// § 5 also gives a fan up when it has gone blind on it, and that is not this: a helper
     /// that cannot read has learned nothing about who holds the fan, so reporting it here
     /// would claim a loss of control nothing has established and point the user at macOS's
-    /// thermal behaviour instead of at a dead SMC connection. Blindness travels as
-    /// `manualControlAvailability == .unavailable(.supervisorBlind)`. Any producer of this
-    /// field that has both conditions in hand sets it for the reclamation alone.
+    /// thermal behaviour instead of at a dead SMC connection. Blindness travels in the helper's
+    /// fault log and in the lease it revokes. Any producer of this field that has both
+    /// conditions in hand sets it for the reclamation alone.
+    ///
+    /// **A fact about what happened, not an availability**
+    /// ([#355](https://github.com/blamechris/Aeolus/issues/355)). Once § 5 has given a fan up it
+    /// stays set until an engagement or a release clears it, and it never makes
+    /// `manualControlAvailability` refuse on its own, because no grant is refused for it. It can
+    /// go stale if another program takes the fan afterwards; `manualControlAvailability` is the
+    /// field that is current.
     public let isReclaimedBySystem: Bool
     /// Whether this fan could be taken under a lease at all, and if not, why.
     ///

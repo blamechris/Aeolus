@@ -156,7 +156,7 @@ struct SafetyLog: Sendable {
         emit(
             .notice,
             """
-            Thermal emergency commanded fan \(fan) to \(Int(rpm.rounded())) RPM in a \
+            Thermal emergency commanded fan \(fan) to \(wholeRPM(rpm)) RPM in a \
             single write, bypassing the ramp governor (docs/SAFETY.md § 8, ADR 0007).
             """
         )
@@ -464,7 +464,7 @@ extension SafetyLog {
         let consequence =
             if let commanded {
                 """
-                Aeolus asked for \(Int(commanded.rpm.rounded())) RPM and the firmware is not \
+                Aeolus asked for \(wholeRPM(commanded.rpm)) RPM and the firmware is not \
                 holding it
                 """
             } else {
@@ -521,8 +521,8 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Fan \(fan) has turned at \(Int(actual.rounded())) RPM against a commanded \
-            \(Int(commanded.rounded())) RPM for \(dwellCycles) consecutive cycles. Its \
+            Fan \(fan) has turned at \(wholeRPM(actual)) RPM against a commanded \
+            \(wholeRPM(commanded)) RPM for \(dwellCycles) consecutive cycles. Its \
             target reads back correctly, so Aeolus still holds the fan and the firmware is \
             honouring the request — the fan is not reaching it. Nothing is being taken back.
             """
@@ -588,17 +588,18 @@ extension SafetyLog {
 
     /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
     ///
-    /// The compensating half of `ReclamationWatchdog.reassert(_:fanAt:attempt:)`. Check and
-    /// act cannot be made atomic across two actors, so the ruling is verified again after
-    /// the writes and this is what happens when it changed underneath them.
+    /// The compensating half of
+    /// `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)`. Check and act cannot
+    /// be made atomic across two actors, so the ruling is verified again after the writes and this
+    /// is what happens when it changed underneath them.
     func reclamationUndoneAfterEmergencyLatched(fan: Int) {
         emit(
             .fault,
             """
             The thermal emergency latch engaged while § 5 was re-asserting fan \(fan), so \
             the re-assert is being undone and the fan returned to automatic control. Level 2 \
-            outranks level 3, and nothing else would have corrected this: § 3 empties its \
-            own registry as it fires, so its next cycle would not have bridged this fan.
+            outranks level 3. If the firmware refuses the undo, the fan stays registered with \
+            § 3, whose next latched cycle bridges it.
             """
         )
     }
@@ -649,20 +650,22 @@ extension SafetyLog {
         )
     }
 
-    /// Fans dropped from § 5's registry because the revocation that just ran took their
-    /// leases too.
+    /// Fans dropped from § 5's registry because the terminal action is ending the lease they
+    /// were held under.
     ///
-    /// `revokeEveryLease(because:)` is whole-machine, so every other fan § 5 was watching is
-    /// now unleased. Dropping only the fan that diverged left the siblings registered, and
-    /// the next cycle re-engaged manual control on a fan with no lease behind it.
+    /// Emitted before that lease ends: the terminal action ends it whole next — revoked, or ended
+    /// as expired if it has lapsed — and that restores every fan it covered, or another path has
+    /// already ended it and restored them. Dropping only the fan that diverged left the siblings
+    /// registered, and the next cycle re-engaged manual control on a fan with no lease behind it.
+    /// Records under another lease are not siblings (#357).
     func reclamationSiblingsReleased(fans: [Int]) {
         emit(
             .notice,
             """
             § 5 also stopped watching fan(s) \
-            \(fans.map(String.init).joined(separator: ", ")): the revocation that just ran \
-            dropped every lease on the machine, so these are unleased and back on automatic \
-            control. They are not recorded as reclaimed — they were given up, not taken.
+            \(fans.map(String.init).joined(separator: ", ")): the terminal action is ending \
+            the lease they were held under, which hands them back to automatic control. They \
+            are not recorded as reclaimed — they were given up, not taken.
             """
         )
     }
@@ -688,8 +691,28 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Reclamation on fan \(fan): re-asserted \(Int(rpm.rounded())) RPM, attempt \
+            Reclamation on fan \(fan): re-asserted \(wholeRPM(rpm)) RPM, attempt \
             \(attempt) of \(budget). The next cycle's read-back decides whether it held.
+            """
+        )
+    }
+
+    /// § 5's record refused a target, a report's or a re-assert's (#395): not a number, or below
+    /// the floor every permit is clamped to, so no plane can have written it. The record keeps
+    /// the target it last took, and the next cycle judges the fan against that, exactly as if
+    /// nothing had been reported.
+    ///
+    /// `.fault`, because every writer reports the `CommandedTarget` its write returned: one no
+    /// plane can write is a defect on the write path, and treating it as no report is the safe
+    /// direction only while somebody knows it happened.
+    func reclamationTargetRefused(_ target: CommandedTarget, from source: String) {
+        emit(
+            .fault,
+            """
+            Fan \(target.fanIndex): \(source) was \(wholeRPM(target.rpm)) RPM, not a number or \
+            below the floor every permit is clamped to, so no plane can have written it. § 5 \
+            keeps the target it last recorded and judges the fan against that, as if nothing \
+            had been reported. The write path that returned it has a defect.
             """
         )
     }
@@ -703,8 +726,8 @@ extension SafetyLog {
             """
             Reclamation on fan \(fan) survived \(attempts) re-assert attempt(s) — \
             \(divergence.summary). The budget is spent: the fan goes back to automatic \
-            control and every lease is revoked, rather than Aeolus continuing a contest it \
-            is losing while reporting a speed nothing is honouring.
+            control and the lease it was held under is revoked, rather than Aeolus continuing \
+            a contest it is losing while reporting a speed nothing is honouring.
             """
         )
     }
@@ -774,7 +797,7 @@ extension SafetyLog {
     }
 
     /// A cycle could not read one held fan. The first of a run only — see
-    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:detail:)`.
+    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:heldUnder:detail:)`.
     func reclamationCycleUnreadable(fan: Int, detail: String) {
         emit(
             .notice,
@@ -1446,9 +1469,12 @@ extension SafetyLog {
             return "The machine-wide restore landed, so the force key was cleared."
         case .refused:
             return """
-                The machine-wide restore came back refused, so the force key was **not** \
-                cleared — observed rather than merely unconfirmed. On a build with no SMC \
-                write path that is every sleep.
+                The machine-wide restore came back refused — observed rather than merely \
+                unconfirmed. On a build with no SMC write path it refuses before writing \
+                anything, on every sleep, and the force key is as it was. On one that can \
+                write, at least one of its writes was refused or its fan set was unknown, and \
+                the force key's clear was attempted, so whether the key is still set is not \
+                known.
                 """
         }
     }
@@ -1527,3 +1553,332 @@ extension SafetyLog {
         )
     }
 }
+
+// MARK: - The engagement driver and the write path's preparation (ADR 0014)
+
+extension SafetyLog {
+
+    /// An engagement reached `.engaged`, registered with § 3, and kept its entitlement. `attempts`
+    /// is the last attempt index its step lines gave (`engagementStepAttempted(fan:attempt:)`),
+    /// counting a retried first step's two.
+    func engagementEngaged(fan: Int, attempts: Int, waited: Duration) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) came off automatic control after \(attempts) attempt(s), \(waited) after \
+            its first. It is registered with § 3, whose next emergency bridges it.
+            """
+        )
+    }
+
+    /// The driver is about to ask the plane for one step of an engagement, and this is its attempt
+    /// index: every step the engagement asks for counts, the retried first step included, which is
+    /// attempt 2 (ADR 0014 D3). D3's per-step record — the key, the value, the answer, the raw
+    /// values and the duration — is the plane's, and the step's own lines follow this one.
+    func engagementStepAttempted(fan: Int, attempt: Int) {
+        emit(.notice, "Fan \(fan)'s engagement asks the plane for one step: attempt \(attempt).")
+    }
+
+    /// An engagement was refused — by the entitlement, the plane or the yield budget — and what
+    /// became of what it wrote. A refused undo is reported at `.fault` by its own line too.
+    /// `attempts` counts as `engagementEngaged(fan:attempts:waited:)`'s does.
+    func engagementRefused(
+        fan: Int, attempts: Int, detail: String, aftermath: EngagementAftermath
+    ) {
+        let outcome: String
+        switch aftermath {
+        case .nothingWritten: outcome = "Nothing was written."
+        case .undone:
+            outcome = "It was registered with § 3 and handed back, and the restore landed."
+        case .undoRefused:
+            outcome = "Its hand-back was refused, so the fan may still be off automatic control."
+        }
+        emit(
+            .notice,
+            """
+            The engagement of fan \(fan) was refused after \(attempts) attempt(s): \(detail). \
+            \(outcome)
+            """
+        )
+    }
+
+    /// An engagement's first step was superseded at its admission — by a restore requested after
+    /// its ticket, or by the orderly exit's seal (ADR 0014's #410 ticket-and-seal amendment) — and
+    /// wrote nothing, so it is retried once (attempt 2) under a fresh ticket, after the entitlement
+    /// is asked again. D3 logs every step's attempt; this is the retried one's.
+    func engagementFirstStepRetried(fan: Int) {
+        emit(
+            .notice,
+            """
+            The first step of fan \(fan)'s engagement was superseded before it wrote anything, \
+            by a restore requested since the engagement began or by the orderly exit's seal. \
+            Taking a fresh ticket, asking the entitlement again and retrying it once (attempt 2).
+            """
+        )
+    }
+
+    /// The undo of a refused engagement was itself refused.
+    ///
+    /// `.fault`: the fan may be off automatic control with nothing holding it. What is left
+    /// watching it is § 3: the driver registers the fan before any undo, and § 3 keeps it until
+    /// a read confirms it automatic (#181).
+    func engagementUndoRefused(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Could not undo the engagement of fan \(fan): \(detail). The fan may still be off \
+            automatic control. It is registered with § 3, which bridges it in the next thermal \
+            emergency.
+            """
+        )
+    }
+
+    /// § 5's re-assert was refused by its entitlement, because the fan is no longer § 5's.
+    func reclamationReassertYielded(fan: Int, refusal: EngagementRefusal) {
+        emit(
+            .notice,
+            """
+            § 5's re-assert of fan \(fan) was refused, \(refusal): a higher level holds the \
+            fans, or the lease it was held under is no longer live. What the engagement \
+            wrote, and its undo, are reported by its own line. Handing the fan back rather \
+            than spending another attempt, and **not** recording it as reclaimed by the \
+            system.
+            """
+        )
+    }
+
+    /// What the write path's preparation step found at bring-up, and what it did.
+    ///
+    /// `.fault` when the enumeration failed or the machine-wide restore it issued was refused:
+    /// the first means a machine-wide restore can write only the fans this process touches,
+    /// and the second that a force key may still be set. D8's start-0 check reads this line.
+    func writePathPrepared(_ report: WritePathPreparation) {
+        let enumeration =
+            report.enumeratedFans.map { "enumerated \($0.count) fan(s) \($0.sorted())" }
+            ?? "could not enumerate the fans"
+        let restore: String
+        switch report.machineWideRestore {
+        case nil: restore = "issued no restore"
+        case .landed?: restore = "issued the machine-wide restore, which landed"
+        case .refused(let detail)?:
+            restore = "issued the machine-wide restore, which was refused: \(detail)"
+        }
+        var refused = false
+        if case .refused? = report.machineWideRestore { refused = true }
+        let sizes = report.declaredSizes.sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.rawValue) \($0.value)" }
+        emit(
+            report.enumeratedFans == nil || refused ? .fault : .notice,
+            """
+            The write path's preparation step \(enumeration), found the force key \
+            \(report.forceKey), recorded the restore keys' declared sizes in bytes \
+            [\(sizes.joined(separator: ", "))] (any other is written one zero byte), and \
+            \(restore).
+            """
+        )
+    }
+}
+
+extension SafetyLog {
+
+    // MARK: - docs/SAFETY.md § 5 — the lease a fan was registered under (#353, #357)
+
+    /// A registration arrived under a lease that is no longer live, or does not cover the fan —
+    /// or the fan was released or registered again while § 5 was asking about it, so the answer
+    /// no longer described the fan, or § 5's terminal action has given the fan up for that lease
+    /// (#366) — and § 5 recorded nothing. Its caller owns the hand-back of
+    /// what it engaged (ADR 0014's 2026-10-15 amendment, A6's contract).
+    func reclamationRegistrationRefused(fan: Int, whileReleasedOrRegistered: Bool) {
+        let reason =
+            whileReleasedOrRegistered
+            ? "§ 5 has given it up, or it was released or registered while § 5 asked its lease"
+            : "the lease it was engaged under is no longer live, or does not cover it"
+        emit(
+            .notice,
+            """
+            § 5 refused to register fan \(fan): \(reason). Nothing is recorded, and the \
+            engagement's caller hands the fan back.
+            """
+        )
+    }
+
+    /// A registration under the lease a fan is held for was accepted while § 5's reclamation
+    /// episode for the fan is in flight, so it cleared nothing (#366). It is the holder
+    /// re-applying while § 5 contests the fan: the mark stays until a cycle reads the fan's target
+    /// held, or the terminal action gives the fan up as reclaimed and keeps it. An episode that
+    /// escalates through blind cycles instead ends `.supervisorBlind`, because the ledger's last
+    /// diagnosis wins, and the fan is then not reported as reclaimed. `.notice`: nothing about the
+    /// fan changed.
+    func reclamationMarkLeftToItsEpisode(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered with § 5 again under the lease it is held for, while § 5 \
+            is contesting a reclamation of it. It stays reported as reclaimed until § 5 reads its \
+            target held, or gives the fan up as reclaimed and keeps it; if § 5 cannot read the \
+            fan first, blindness takes over.
+            """
+        )
+    }
+
+    /// § 5 stood a re-assert down: the fan was registered again under the lease it is held for
+    /// since the examination began, so that engagement commands the fan, after the reading the
+    /// re-assert was decided on (#381). `moment` is where § 5 found the registration — a
+    /// re-fetch, or a first step refused because that engagement had already taken the fan off
+    /// automatic control — not where it landed, which can be any suspension since the stamp.
+    /// `.notice`, not `.fault`: nothing failed. The attempt stays spent, so a holder re-applying
+    /// every cycle still meets the terminal action when the budget runs out.
+    func reclamationReassertLeftToItsEngagement(fan: Int, at moment: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered again, under the lease it is held for, since this \
+            examination began; § 5 found it at \(moment), so it left this re-assert to that \
+            engagement and wrote nothing more. The attempt stays spent; the next cycle's \
+            read-back decides whether the fan is held.
+            """
+        )
+    }
+
+    /// A registration under a live lease replaced the record an ended lease left. At most one
+    /// live lease covers a fan, so the replaced record was stale; the new one starts fresh.
+    func reclamationReplacedEndedLeaseRecord(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered with § 5 under a new lease, replacing the record an \
+            ended lease left. It starts fresh: nothing commanded and no attempt spent.
+            """
+        )
+    }
+
+    /// § 5 was about to act on a fan whose record now belongs to another lease, so it did
+    /// nothing: that lease's engagement holds the fan, and its own record watches it.
+    func reclamationLeftToAnotherLease(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 left fan \(fan) alone: it is now registered under another lease, whose \
+            engagement holds it and whose own record watches it. Nothing was restored, \
+            forgotten or revoked for the lease § 5 was acting for.
+            """
+        )
+    }
+
+    /// The terminal action handed a fan back, but the lease it was holding the fan for had
+    /// already ended, or had lapsed and was ended as expired, so nothing was revoked — and no
+    /// client is told the system took control it had already given up (#353, #361).
+    func reclamationHandbackLeaseAlreadyEnded(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 handed fan \(fan) back; the lease it was holding the fan for had already \
+            ended, or had lapsed and was ended as expired, so no lease was revoked.
+            """
+        )
+    }
+}
+
+// MARK: - docs/SAFETY.md § 5 — the examination gate (ADR 0014's A6 amendment)
+
+extension SafetyLog {
+
+    /// § 5 waited `bound` for a fan's examination gate and its holder had not left. Past
+    /// `FanExaminationGate.examinationWait` the contract was broken, or the helper is outside ADR
+    /// 0012's design point, where a queue that is moving can outlast G, or the wait spanned a
+    /// system sleep, which the bound counts. `.fault`, once per holder: later examinations
+    /// against the same holder do not wait and say nothing more. They examine without the gate,
+    /// judging, marking and restoring, and writing nothing away from automatic control; a false
+    /// divergence among them still spends an attempt.
+    func examinationGateOutwaited(fan: Int, after bound: Duration) {
+        emit(
+            .fault,
+            """
+            § 5 waited \(bound) for fan \(fan)'s examination gate, and its holder has not left. \
+            § 5 examines the fan without the gate until that holder leaves: it judges, marks and \
+            restores as before, and writes nothing that takes the fan away from automatic control.
+            """
+        )
+    }
+
+    /// A re-assert stood down at `moment`, writing nothing more: `pastTheBound` when the
+    /// examination ran past the gate's bound, and otherwise for a registration under the same
+    /// lease since the examination began, which `reclamationReassertLeftToItsEngagement(fan:at:)`
+    /// says (#381).
+    func reclamationReassertStoodDown(fan: Int, at moment: String, pastTheBound: Bool) {
+        guard pastTheBound else {
+            return reclamationReassertLeftToItsEngagement(fan: fan, at: moment)
+        }
+        emit(
+            .notice,
+            """
+            § 5 examined fan \(fan) without its examination gate, past the gate's bound, and \
+            found that at \(moment), so it wrote nothing that would take the fan away from \
+            automatic control. The attempt stays spent; the next cycle's read-back decides \
+            whether the fan is held.
+            """
+        )
+    }
+}
+
+// MARK: - Level 6's apply (ADR 0014's A6 PR-2 amendment)
+
+extension SafetyLog {
+
+    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan it had
+    /// come to hold as engaged, by an engagement that returned or a kept fan re-adopted. `.notice`:
+    /// a refusal is an ordinary answer, and what the undo handed back is the part worth finding
+    /// afterwards. A fan whose hand-back was refused is named apart, and has a `.fault` line of its
+    /// own: one the undo could not hand back, and one whose step the driver could not undo itself
+    /// (#406).
+    func controlLoopApplyRefused(handedBack fans: [Int], refused: [Int], detail: String) {
+        var undone: [String] = []
+        if !fans.isEmpty {
+            undone.append(
+                "The fans it had engaged, \(fans), were handed back to automatic control.")
+        }
+        if !refused.isEmpty {
+            undone.append(
+                "The hand-back of \(refused) was refused; § 3 keeps them registered until a "
+                    + "restore of them is confirmed.")
+        }
+        let text =
+            undone.isEmpty
+            ? "No engagement of its had returned, so its undo handed back no fan."
+            : undone.joined(separator: " ")
+        emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
+    }
+
+    /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off
+    /// automatic control with nothing holding it. The driver registered it with § 3 when it
+    /// engaged it, and § 3 keeps it until a read confirms it automatic (#181).
+    func controlLoopHandBackRefused(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Could not hand fan \(fan) back after level 6's apply was refused: \(detail). The fan \
+            may still be off automatic control. It stays registered with § 3, which bridges it in \
+            the next thermal emergency, until a restore of it is confirmed.
+            """
+        )
+    }
+
+    /// A fan whose hand-back was refused reads the raw mode Aeolus's engagement writes, so level 6
+    /// holds it again, with nothing written (ADR 0014's #410 refused-hand-back amendment). It says
+    /// only what was read: the value cannot say whose write it was. `.notice`: the account was kept
+    /// for exactly this.
+    func controlLoopKeptFanReAdopted(fan: Int, rawMode: UInt8) {
+        emit(
+            .notice,
+            """
+            Fan \(fan), whose hand-back level 6 could not confirm, reads raw mode \(rawMode), the \
+            value Aeolus's engagement writes. Level 6 holds it again under this lease with nothing \
+            written to its mode; the value cannot say whose write it was.
+            """
+        )
+    }
+}
+
+/// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:
+/// `Int(_:)` traps on a value that is not a number, and a log line may never kill the helper.
+private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }

@@ -131,7 +131,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// than the plane, exactly as `LeaseAuthority` holds it, and required with no default —
     /// `.notBuilt` is the literal being removed, so a defaulted one would put it back where
     /// nothing could see it. See
-    /// `ReadOnlyFanReport.availability(whenLedgerSays:writeCapabilityIs:bounds:)`.
+    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`.
     private let writeCapability: any FanWriteCapabilityReporting
 
     /// The sensor keys this machine exposes, discovered once. `nil` until the first
@@ -193,6 +193,17 @@ actor ReadOnlyFanAuthority: FanAuthority {
     // MARK: - Reporting
 
     func snapshot() async throws -> SystemSnapshot {
+        try await observe().snapshot
+    }
+
+    /// The snapshot, and the `F<n>Md` answers it was built from: one read, one dictionary, two
+    /// uses ([#360](https://github.com/blamechris/Aeolus/issues/360)).
+    ///
+    /// `FanState.mode` folds a mode that did not read into `.automatic` (#178), so the snapshot
+    /// alone cannot say which fans answered. `SupervisedFanAuthority.snapshot()` needs to, for
+    /// step 5 of the availability ladder, and it is handed the same dictionary the fans were
+    /// built from rather than a second read of the key, which could answer differently.
+    func observe() async throws -> MachineObservation {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let modes = await fanModes.modes(ofFans: fans.fanIndices)
         let sensors = await readSensors()
@@ -206,7 +217,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
         // Once per snapshot for the ledger's reason, and free: the role is synchronous.
         let capability = writeCapability.writeCapability
 
-        return SystemSnapshot(
+        let snapshot = SystemSnapshot(
             fans: fans.fans.map {
                 ReadOnlyFanReport.fanState(
                     for: $0,
@@ -220,6 +231,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
             isThermalEmergencyActive: isThermalEmergencyActive,
             capturedAt: now()
         )
+        return MachineObservation(snapshot: snapshot, modes: modes)
     }
 
     /// The fans this authority enumerated, for the fan-index check that decides which fans
@@ -265,8 +277,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// another tool left in manual is observable and unclearable here — and a refusal would
     /// restore it no better than this success does. Shape frozen at v1: see the type doc,
     /// #159 and #164.
+    ///
+    /// The log line names a cause only when it asked for one: the seam's capability, which this
+    /// type already holds. Behind a seam that can write it still issues nothing, and says only
+    /// that.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
-        log.restoredAllToAutomatic(connection: connection)
+        let machineWide: HelperLog.MachineWideRestore =
+            writeCapability.writeCapability == .notBuilt ? .noWritePath : .notIssued
+        log.restoredAllToAutomatic(connection: connection, machineWide: machineWide)
     }
 
     /// Nothing to release: no lease can exist in E2, so no connection can be holding one.
@@ -282,8 +300,8 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// [#194](https://github.com/blamechris/Aeolus/issues/194)**, which sourced the
     /// *availability* above. Not the same claim: this type has no lease table, no restorer and
     /// no control loop, so these verbs refuse because **there is nothing here to grant with**,
-    /// which no seam can change. Same argument at `SupervisedFanAuthority.apply`, pinned by
-    /// `supervisedApplyRefusesEvenWhenTheSeamCanWrite`.
+    /// which no seam can change. `SupervisedFanAuthority.apply` now reaches level 6, and on
+    /// `.notBuilt` answers as before: `onANotBuiltPlaneApplyAnswersAsBefore`.
     private static let noWritePath = AeolusXPCFault.manualControlUnavailable(
         reason: .writePathNotBuilt)
 

@@ -430,6 +430,8 @@ actor SimulatedFanAuthority: FanAuthority {
         }
     }
 
+    /// What the helper publishes for a fan § 5 gave up to the system: the fact on
+    /// `isReclaimedBySystem`, and an availability that is not refused for it (#355).
     private func reclaim(_ index: Int) {
         fans = fans.map { fan in
             guard fan.index == index else { return fan }
@@ -437,7 +439,7 @@ actor SimulatedFanAuthority: FanAuthority {
                 index: fan.index, firmwareName: fan.firmwareName, actualRPM: fan.actualRPM,
                 minimumRPM: fan.minimumRPM, maximumRPM: fan.maximumRPM, targetRPM: fan.targetRPM,
                 mode: .automatic, isReclaimedBySystem: true,
-                manualControlAvailability: .unavailable(.reclaimedBySystem))
+                manualControlAvailability: .available)
         }
     }
 }

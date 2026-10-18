@@ -4,7 +4,8 @@ import FanKit
 // The three refusals the lease core makes about the **machine and the build**, lifted out of
 // `LeaseAuthority.swift` by [#128](https://github.com/blamechris/Aeolus/issues/128). Every
 // body and every statement order is unchanged; each doc comment gained the paragraph
-// explaining why the member is `internal` rather than `private`.
+// explaining why the member is `internal` rather than `private`. A fourth of the same kind,
+// § 2's bounds gate, was written here rather than moved (#270).
 //
 // ## The doctrine is stated once, and it is not stated here
 //
@@ -15,13 +16,15 @@ import FanKit
 // the failure mode the rule itself warns about: two statements of one rule disagree the
 // moment either moves.
 //
-// ## Why these three and not the others
+// ## Why these four and not the others
 //
 // The line is **what a guard consults**, not what it refuses.
 //
 // Each of these asks a *stateless query role* — a protocol whose every member is a read —
 // and touches nothing this actor owns: `FanWriteCapabilityReporting` (a get-only property),
-// `SightednessProving` (`sighting()`), `ForeignManualControlSensing` (`refusalForGrant`).
+// `SightednessProving` (`sighting()`), `ForeignManualControlSensing` (`refusalForGrant`), and
+// since [#270](https://github.com/blamechris/Aeolus/issues/270) `FanEnvelopeReading`
+// (`readEnvelope(ofFan:)`), for the fourth, `refuseIfBoundsImplausible(_:wanting:)`.
 // So they can be reached from another file by widening only the references to those roles,
 // plus `log`. Nothing that decides who may hold or release a fan crosses.
 //
@@ -35,9 +38,10 @@ import FanKit
 //   it would hand every file in the module a route to engage or release `docs/SAFETY.md`
 //   § 3's latch through the lease core. The refusal is a read; the reference is not, and
 //   the reference is what a widening exposes.
-// - The refusals inside `acquireLease`'s straight-line region read `restoreAbandoned`,
-//   `handbackUnconfirmed`, `sleepSeal`, `table` and `releasing` directly, and stay inside it
-//   for the reason that region exists at all.
+// - The refusals inside `acquireLease`'s straight-line region read `table` directly, and
+//   `restoreAbandoned`, `handbackUnconfirmed`, `sleepSeal` and `releasing` through `registers`
+//   and `sleep` — the value types #128's lease-core pass moved them into, held `private` in
+//   that file — and stay inside it for the reason that region exists at all.
 //
 // **One addition reads this actor's state, and only through a view already on the seam.**
 // `refuseIfExemptionLapsed(_:exempted:)` ([#311](https://github.com/blamechris/Aeolus/issues/311))
@@ -57,7 +61,9 @@ import FanKit
 // acquisition, renewal/release, teardown — every one of them mutates `table` or calls
 // `restore(_:because:)`, and those are precisely the members that decide who may hold a fan
 // and who may hand one back. #128's own later comments declined `SMCReadScheduler` and
-// `ReclamationWatchdog` on that exact trade; this file does not take it.
+// `ReclamationWatchdog` on that exact trade; this file does not take it. The cut #128's
+// lease-core pass took instead pays no such price: it moved state into value types the actor
+// holds `private`, as § 5's registry did, and widened nothing.
 
 extension LeaseAuthority {
 
@@ -172,19 +178,20 @@ extension LeaseAuthority {
 
     /// `docs/SAFETY.md` § 6's baseline, asked immediately after the blindness gate.
     ///
-    /// **Last of the four things `acquireLease` suspends on, and last of the three refusals
-    /// among them — and the position is reasoned.** The four are the fan enumeration, § 3's
-    /// latch, the sightedness proof, and this; the enumeration is the one that is not a
-    /// refusal, and the sweep of lapsed leases runs ahead of all four rather than being one
-    /// of them. Step 3 of `acquireLease` lists them in that order, and says which count is
-    /// which for the same reason this does: two nearby sentences counting different things
-    /// with the same word is how the previous "three" and "four" came to disagree. § 3's
-    /// latch
-    /// and the sightedness proof are both properties of the *machine* and answer for
-    /// every fan at once; this one costs one `.supervisor` turn **per requested fan**, so it
-    /// is the most expensive question here and the one most worth not asking when a cheaper
-    /// refusal already applies. `refuseIfWritePathNotBuilt` running first (step 0) is what
-    /// keeps it off today's helper's grant path entirely.
+    /// **Fourth of the five things `acquireLease` suspends on, and third of the four refusals
+    /// among them — and the position is reasoned.** The five are the fan enumeration, § 3's
+    /// latch, the sightedness proof, this, and the bounds read (#270); the enumeration is the
+    /// one that is not a refusal, and the sweep of lapsed leases runs ahead of all five rather
+    /// than being one of them. Step 3 of `acquireLease` lists them in that order, and says
+    /// which count is which for the same reason this does: two nearby sentences counting
+    /// different things with the same word is how an earlier "three" and "four" came to
+    /// disagree. § 3's latch and the sightedness proof are both properties of the *machine*
+    /// and answer for every fan at once; this one and the bounds read each cost one
+    /// `.supervisor` turn **per requested fan**, so they are the most expensive questions here
+    /// and the ones most worth not asking when a cheaper refusal already applies. This one goes
+    /// first of the two: see `refuseIfBoundsImplausible(_:wanting:)` for why.
+    /// `refuseIfWritePathNotBuilt` running first (step 0) is what keeps both off today's
+    /// helper's grant path entirely.
     ///
     /// `fansAeolusIsAccountableFor` is read here rather than passed in, as this actor's state
     /// at the moment of the question — see that property for the three registers it unions
@@ -211,6 +218,54 @@ extension LeaseAuthority {
             throw AeolusXPCFault.manualControlUnavailable(reason: reason)
         }
         return fans.intersection(held)
+    }
+
+    /// Refuses the grant over a fan whose firmware bounds `docs/SAFETY.md` § 2's gate rejects
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+    ///
+    /// Such a fan has no envelope, so no target could ever be produced for it: the snapshot
+    /// has reported it `.boundsImplausible` since #194, and a grant over it was a lease that
+    /// could never be used. Each fan in `fans` is read afresh, sorted, one at a time, and
+    /// judged by `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)` — the snapshot's
+    /// own derivation, so the two sides cannot disagree about which declarations pass. A read
+    /// that throws is `.notMeasured`, exactly as the snapshot's failed read of a bound is, and
+    /// the default is refuse for `refuseIfBlind`'s reason: an allow-list of errors would let
+    /// the next one grant. `CancellationError` is rethrown, for that method's reason: a caller
+    /// that went away says nothing about the firmware, and is not logged as if it had.
+    ///
+    /// **After the foreign-control read, and only over the fans it did not exempt.** A fan
+    /// whose mode will not read is told `.supervisorBlind` there, which the ladder's step 5 also
+    /// ranks above step 8, so the two sides keep one order. A fan Aeolus is accountable for is
+    /// answered by the register below the marker that holds it, as the snapshot answers it; a
+    /// handback landing during this read is `refuseIfExemptionLapsed(_:exempted:)`'s, as one
+    /// landing during the foreign read is. Above the marker because it suspends, and nothing it
+    /// reads is kept: the evidence is current, and a cache would make it stale.
+    ///
+    /// It mints no permit and holds no plane — it judges the envelope and drops it — and costs
+    /// one `.supervisor` turn per fan it reads, bounded by per-connection serialisation, as the
+    /// foreign read is. `internal` for `refuseIfForeignManualControl(_:wanting:)`'s reason; it
+    /// can produce a refusal and nothing else.
+    func refuseIfBoundsImplausible(
+        _ connection: ConnectionID, wanting fans: Set<Int>
+    ) async throws {
+        for fan in fans.sorted() {
+            let bounds: Result<FanControlEnvelope, FanBoundsImplausibility>
+            var unread: String?
+            do {
+                let declared = try await envelopes.readEnvelope(ofFan: fan)
+                bounds = FanState.controlEnvelope(
+                    declaredMinimum: .measured(declared.minimumRPM),
+                    declaredMaximum: .measured(declared.maximumRPM))
+            } catch let cancellation as CancellationError {
+                throw cancellation
+            } catch {
+                bounds = .failure(.notMeasured)
+                unread = String(describing: error)
+            }
+            guard case .failure(let failure) = bounds else { continue }
+            log.refusedImplausibleBounds(connection, fan: fan, failure: failure, unread: unread)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .boundsImplausible)
+        }
     }
 
     /// Refuses a fan the foreign-control step exempted as Aeolus's own that no longer is

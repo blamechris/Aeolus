@@ -1,4 +1,5 @@
 import FanKit
+import Foundation
 
 /// `docs/SAFETY.md` § 5, and the precedence engine's second consumer — the one that makes
 /// `SafetyArbiter` load-bearing.
@@ -19,7 +20,7 @@ import FanKit
 /// Actual-versus-target survives as the **secondary** signal, behind
 /// `ReclamationLimits.actualDwellCycles` — and it **reports without acting**. Reaching it at
 /// all means the primary converged, so the firmware is holding Aeolus's target and nothing
-/// has been reclaimed; see `reportShortfall(_:fanAt:)` for why re-asserting, restoring and
+/// has been reclaimed; see `HeldFan.judge(_:)` for why re-asserting, restoring and
 /// flagging `isReclaimedBySystem` are all wrong answers to a fan that simply cannot reach
 /// its commanded speed. It used to reach the terminal action, and that was this file's worst
 /// defect: a fan whose `F<n>Tg` read back exactly right lost its lease eight seconds after
@@ -31,66 +32,22 @@ import FanKit
 /// Reclamation mid-emergency means a more competent authority — one that can also throttle
 /// the SoC, which Aeolus never can — reached the same destination first.
 ///
-/// That rule is enforced by asking `SafetyArbiter.ruling(for:incumbent:)` whether level 3
-/// may write while level 2 holds the fans, and the answer is no because ADR 0007 orders
-/// them that way. It is deliberately **not** a second `if temperature > ceiling` here: a
-/// bespoke comparison would be a second copy of § 3's own ceiling arithmetic, in the file
-/// least able to keep it in step, and `ThermalEmergency` already documents that a margin
-/// subtracted in two places is a margin that can disagree with itself.
-///
-/// `ThermalEmergency`'s own doc names this moment: the arbiter *"still has no production
-/// caller"* with one actor implemented, and *"that half becomes load-bearing when the
-/// reclamation watchdog (#126) and sleep/wake (#103) arrive to contend with it"*. This is
-/// that arrival. Replacing `SafetyArbiter.ruling`'s body with `return .commands` now fails
-/// `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds` as well as the
-/// arbiter's own tests — and, because the ruling is consulted twice per re-assert, also
-/// `itUndoesAReassertWhenTheEmergencyLatchesMidWrite`.
-///
-/// **What the latch buys, stated exactly.** The incumbent is read from
-/// `ThermalEmergencyLatch`, which is engaged from the cycle § 3 fires on until a fresh
-/// reading falls a hysteresis margin below the ceiling — so this refuses to re-assert
-/// through the whole band down to `ceiling − 5 °C`, which is *longer* than "above ceiling"
-/// strictly requires. Over-refusing is the safe direction: the fan is on Apple's thermal
-/// management throughout.
-///
-/// The gap in the other direction is one cycle. A temperature crossing the ceiling is not
-/// visible here until § 3's next cycle engages the latch, so a re-assert can be issued into
-/// the first second of an emergency. Making this read a temperature of its own to close that
-/// window would add a supervisor-priority read per cycle — see
-/// [#134](https://github.com/blamechris/Aeolus/issues/134) — for a window § 3 closes within
-/// one cycle by latching, after which this mechanism refuses.
-///
-/// **What does not close it is § 3 correcting the re-assert, and an earlier version of this
-/// paragraph claimed exactly that.** It said § 3's next cycle "bridges the fan to maximum and
-/// restores it, which overrides the re-assert rather than racing it". That is false, and
-/// checkably so: `ThermalEmergency.fire(_:from:)` empties `engagedFans` as it goes, and
-/// `ThermalEmergency.manualControlEngaged(_:)` has **no caller anywhere in `Sources/`** — so
-/// a fan this mechanism re-engaged is in no registry § 3 consults, and § 3's next cycle
-/// would leave it off automatic control indefinitely. Relying on another mechanism to clean
-/// up after this one was the wrong shape regardless; the correction belongs here, and
-/// `reassert(_:fanAt:attempt:)` performs it by re-checking the ruling **after** its writes
-/// and restoring if the latch engaged underneath them.
+/// Asked in `diverged(_:fanAt:heldUnder:)` before a re-assert, by the `EngagementDriver` before and
+/// after every step of its mode write, and again by
+/// `reassert(fanAt:heldUnder:attempt:reengaging:)` after its command write (`currentRuling()`,
+/// via `SafetyArbiter.ruling(for:incumbent:)`), never by a second `if temperature > ceiling`. The
+/// latch over-refuses (safe) but lags a ceiling crossing by up to one § 3 cycle, so a re-assert can
+/// still be issued into that cycle; the re-checks after the writes undo one the latch engaged
+/// underneath them, and the driver's § 3 registration covers an undo the firmware refuses (#181).
+/// reclamation-watchdog.md § *"The above-ceiling rule is the arbiter, not an `if`"*.
 ///
 /// ## Reads are strictly sequential, and that is #134's answer for this issue
 ///
-/// One fan is examined at a time, `await`ed to completion before the next begins.
-/// `SMCReadScheduler` is FIFO within `.supervisor`, and the starvation quota forces a
-/// snapshot turn after every `maxConsecutiveOvertakes`, so *N* concurrently outstanding
-/// supervisor reads delay § 3's cycle by *N* supervisor turns **plus** roughly `N/2`
-/// quota-forced snapshot turns — and a snapshot turn is 64 keys where a control-state read
-/// is three. The forced turns, not the watchdog's own reads, are what would hurt.
-///
-/// Sequential examination means this actor contributes **at most one** supervisor waiter at
-/// any instant however many fans the machine has, so § 3's cycle queues behind at most one
-/// other supervisor read and `SMCReadScheduler`'s "at most two turns" bound very nearly
-/// holds. The cost is borne here — a full sweep takes N times one read's latency — and this
-/// mechanism runs at 1 Hz against N of 1 or 2 on real hardware, so there is nothing to buy
-/// by parallelising it.
-///
-/// #134's remaining questions are untouched by this: whether § 3's cycle should outrank
-/// other supervisor reads at all, whether grant-time `refuseIfBlind` reads should be
-/// coalesced, and whether a third priority level is warranted. This issue only declines to
-/// make them worse.
+/// One fan is examined at a time, `await`ed to completion before the next, so this actor is
+/// at most one supervisor waiter on `SMCReadScheduler` however many fans there are. Each fan's
+/// examination gate is taken before its first read and never while a turn is held.
+/// reclamation-watchdog.md § *"Reads are strictly sequential, and that is #134's answer for
+/// this issue"*.
 ///
 /// ## The failure asymmetry, again
 ///
@@ -101,24 +58,29 @@ import FanKit
 /// that cannot obtain an envelope restores rather than commanding; persistent read failure
 /// is divergence rather than a read to be retried forever.
 ///
+/// ## Every act is for the lease the fan was registered under
+///
+/// Every judgement here asks about the lease a record was registered under and no other (#353,
+/// #357). reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
+///
 /// ## Running, with nothing to watch
 ///
 /// `ReclamationSupervisor` is the loop: `HelperComposition` constructs it and `bringUp()`
 /// starts it. No lease can be granted in this build, so nothing registers a fan here and every
-/// cycle returns at once. E3 owns registering fans and telling this actor what it commanded.
+/// cycle returns at once. Level 6's `apply` registers fans and reports what it commanded.
 ///
-/// - Note: this file is over SwiftLint's 400-line warning, and it has crossed the 1000-line
-///   **error** twice: when #169/#170/#172 landed beside the registration grace, and with ADR
-///   0009 D2 (#180). Each split taken widened no state: `ReclamationDivergence` and
-///   `ReclamationLimits` are values and live in `ReclamationLimits.swift`;
-///   `primaryDivergence(of:against:)` and `actualShortfall(of:against:)` are `static` and
-///   pure and live in `ReclamationSignals.swift`; and `HeldFan` is a type, not state, and
-///   lives in `ReclamationHeldFan.swift`. Every remaining member reads or writes `held`, so
-///   moving any of it into another file would widen that state to the whole module. That
-///   state is exactly what makes `examine(fanAt:ruling:)`'s read-then-mutate reasoning
-///   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
-///   this space — including what to do when the next paragraph pushes this over again.
-actor ReclamationWatchdog<Plane: FanControlPlane> {
+/// - Note: what has moved to `Registry` and beside this actor since
+///   [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass, and the rationale
+///   relocated out of this file's doc comments, are recorded in
+///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md). What is
+///   left below awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`,
+///   `writer`, `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file
+///   without widening that state or adding a suspension point. The body is 344 code lines against
+///   `type_body_length`'s error at 350, `examine(fanAt:inBound:)` 50 against
+///   `function_body_length`'s warning at 50, and the file 996 lines against `file_length`'s at
+///   1000. New § 5 state belongs in `Registry`, tested as a value, and new behaviour in the
+///   `EngagementDriver` ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not here.
+actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
     /// command a fan except through `writer` — see `FanStateSensing` for why that is a
@@ -129,30 +91,40 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// `RampGovernor` and has no property one could be assigned to.
     private let writer: SafetyActorWriter<Plane>
 
-    /// The authority on whether a fan in `held` is still Aeolus's to hold — asked in every
-    /// `examine(fanAt:)`, ADR 0009 D2 — and what `finaliseRelease(fanAt:because:)` revokes.
-    private let leases: LeaseAuthority
+    /// What the re-assert engages through, and what every restore here hands back through: the
+    /// entitlement around each step, the § 3 registration, and the undo
+    /// ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D2, D4; #181).
+    private let engagement: EngagementDriver<Plane>
 
-    /// § 3's bit, read once per cycle to decide the incumbent. Never written here: this
-    /// mechanism does not engage or release a thermal emergency, and `ThermalEmergency`
-    /// remains the only thing in `Sources/` that clears the latch at all — through
-    /// `cycle()`'s `release(ifStill:)`, the no-argument `release()` having no caller here.
-    private let latch: ThermalEmergencyLatch
+    /// The authority on whether the lease a fan in `held` was registered under is still live —
+    /// asked at registration and in every `examine(fanAt:inBound:)`, ADR 0009 D2 — and what
+    /// `finaliseRelease(fanAt:heldUnder:because:)` revokes. A role, `HeldLeaseRole`, so § 5 can
+    /// ask those two things of the lease core and nothing else.
+    private let leases: any HeldLeaseRole
 
-    /// What the user is told, via `FanState.isReclaimedBySystem`.
-    private let ledger: ReclamationLedger
+    /// § 3's bit, read by `currentRuling()` before each write it guards. Never written here:
+    /// `ThermalLatchRole` carries that one read and no verb (#380), so this mechanism cannot engage
+    /// or release a thermal emergency, and `ThermalEmergency` remains the only thing in `Sources/`
+    /// that clears the latch at all — through `cycle()`'s `release(ifStill:)`.
+    private let latch: any ThermalLatchRole
+
+    /// What the user is told, via `FanState.isReclaimedBySystem`. `ReclamationLedgerRole`: the
+    /// two marks and the clear this actor makes, and nothing else (#380).
+    private let ledger: any ReclamationLedgerRole
 
     private let log: SafetyLog
 
-    /// Every fan currently off Apple's thermal management, with what this mechanism knows
-    /// about it.
-    ///
-    /// Keyed by index so a second registration finds the entry that is already there rather
-    /// than duplicating it — and `manualControlEngaged(_:)` then leaves that entry alone,
-    /// which is what stops a re-registration rearming a budget. Empty is the ordinary state,
-    /// and a cycle over an empty registry does nothing at all — there is no fan pinned, so
-    /// there is nothing that could be taken back.
-    private var held: [Int: HeldFan] = [:]
+    /// The fans' examination gate, taken in `cycle()` before each examination's stamp and left
+    /// after its last act, so no level-6 step lands inside one (ADR 0014's #383 and A6
+    /// amendments). Required, with no default: a gate of its own would exclude nothing.
+    private let gate: FanExaminationGate
+
+    /// `held`, `finalising`, `givenUp` and `registrations`, with every synchronous decision made
+    /// over them, in `ReclamationRegistry.swift` (#128, #366). A value type, so no transition on
+    /// it can suspend; `private`; and reached only through its members, never copied out across
+    /// an `await` — `ReclamationWatchdogAccessTests` and `ReclamationRegistryAccessTests` hold all
+    /// three.
+    private var registry = Registry()
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
     /// `ThermalEmergency`'s `telemetry`. It is stored as one either way, and taking it as an
@@ -163,16 +135,20 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     init(
         sensing: any FanStateSensing,
         writer: SafetyActorWriter<Plane>,
-        leases: LeaseAuthority,
-        latch: ThermalEmergencyLatch,
-        ledger: ReclamationLedger,
+        engagement: EngagementDriver<Plane>,
+        leases: any HeldLeaseRole,
+        latch: any ThermalLatchRole,
+        ledger: any ReclamationLedgerRole,
+        gate: FanExaminationGate,
         log: SafetyLog = SafetyLog()
     ) {
         self.sensing = sensing
         self.writer = writer
+        self.engagement = engagement
         self.leases = leases
         self.latch = latch
         self.ledger = ledger
+        self.gate = gate
         self.log = log
     }
 
@@ -180,82 +156,67 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// Registers a fan that has just been taken off automatic control.
     ///
-    /// Called by whoever performs `FanControlPlane.engageManualControl(of:)` — E3's control
-    /// plane, once it exists — at the same point it calls
-    /// `ThermalEmergency.manualControlEngaged(_:)`.
+    /// Called by whoever engages a fan, once `EngagementDriver.engageManualControl(of:)` has
+    /// returned — level 6's `apply` (`LeaseApplier`). The driver has already registered the fan
+    /// with § 3 (`ThermalEmergency.manualControlEngaged(_:)`) by then.
     ///
     /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
     ///
-    /// "At the same point" says nothing about which side, and only one of the two sides
-    /// works. E3 will be written against this comment, so the constraint is stated here
-    /// rather than discovered later.
-    ///
-    /// Registering *before* the mode write is not a harmless reordering. This mechanism runs
-    /// on its own 1 Hz loop, so a `cycle()` can land in the window between the registration
-    /// and the write. What it reads there is `mode == .automatic` on a fan with nothing
-    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and
-    /// it reaches `diverged(_:fanAt:)`'s "nothing to re-assert" branch and
-    /// `finaliseRelease(fanAt:because:)` with `.systemReclaimed`: the fan restored, **every
-    /// lease on the machine revoked**, and a `.fault` line blaming the operating system —
-    /// milliseconds after a client was granted control it never got to use.
-    /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
-    /// `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
+    /// Register only after the `F<n>Md` write has landed. Registered first, a `cycle()` can read
+    /// `.modeReclaimed` on a fan with nothing commanded; once the registration grace runs out
+    /// (three divergent cycles) it restores the fan and revokes **the client's lease**.
+    /// reclamation-watchdog.md § *"The ordering is normative: call this **after** the
+    /// `F<n>Md` write has landed"*.
     ///
     /// ## The far side of the write is not free either, and the grace is what pays for it
     ///
-    /// An earlier version of this comment said the window after the mode write was safe, and
-    /// that a grace flag on `HeldFan` was therefore unnecessary. That was true of the
-    /// `.targetDiverged` case and of nothing else: both `.modeReclaimed` and
-    /// `.targetUnreadable` are decided *before* `primaryDivergence(of:against:)` consults
-    /// `commanded` at all, so a cycle landing in the `F<n>Md` write-to-read-back lag, or on
-    /// one unreadable `F<n>Tg`, reached the same whole-machine revocation from the ordering
-    /// this comment mandates. A write returning successfully and a read reflecting it are
-    /// different facts, and the lag between them is unmeasured on Apple Silicon.
-    ///
-    /// `gracedBeforeItsFirstCommand(_:of:fanAt:)` closes that window — #147's second remedy,
-    /// implemented rather than declined — by giving a fan with nothing commanded on it
-    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal
-    /// reaches the terminal action. So the ordering above is what this method requires, and
-    /// the grace is what makes obeying it survivable rather than merely correct on paper.
-    /// The two sides are not symmetrical after it: registering early still costs the client
-    /// its lease, three cycles later instead of one.
-    ///
-    /// `ReclamationRegistrationWindowTests` is the whole window, one test per answer
-    /// `primaryDivergence(of:against:)` can give inside it, so this comment claims no more
-    /// than the suite shows.
+    /// `HeldFan.judge(_:)`'s registration grace gives a fan with nothing commanded
+    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal reaches
+    /// the terminal action. Registering early still costs the client its lease, three cycles
+    /// later instead of one.
+    /// reclamation-watchdog.md § *"The far side of the write is not free either, and the
+    /// grace is what pays for it"*.
     ///
     /// ## The parameter stays a `CommandableFan`
     ///
-    /// Only `fan.index` is read, and with `HeldFan.permit` gone there is nothing else it is
-    /// stored into — so tidying this to `manualControlEngaged(fanAt index: Int)` looks free.
-    /// It is not: a `CommandableFan` can only be minted from a `FanEnvelope` that passed its
-    /// bounds gate, so the type is what makes registration lawful only from a caller that
-    /// was actually authorised to write to the fan. Widening it would let anything put a fan
-    /// into a registry whose entries this mechanism will later re-engage manual control on.
-    /// `ThermalEmergency.manualControlEngaged(_:)` takes the same parameter for the same
-    /// reason.
+    /// Only `fan.index` is read, but a `CommandableFan` can only be minted from an envelope
+    /// that passed its bounds gate, so the type is what makes registration lawful only from a
+    /// caller authorised to write the fan. reclamation-watchdog.md § *"The parameter stays a
+    /// `CommandableFan`"*.
     ///
-    /// ## Re-registering a fan already held changes nothing about it
+    /// ## Under the lease the engagement ran under, which must be live
     ///
-    /// The entry is created only when there is not one already, so its grace and its
-    /// `commanded` target survive a second call. `HeldFan` says what refilling either cost.
+    /// One lease hop, then a straight-line decision (#357): a lease that is not live or does not
+    /// cover the fan, a fan released or registered while the question was out, or the lease the
+    /// terminal action has given this fan up for, while it runs or after (#366), is refused with
+    /// `.leaseNotLive` and touches nothing; a current, live one keeps its own record and replaces
+    /// an ended lease's. Acquire, then engage, then register.
+    /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
-    /// ## A live lease must already cover the fan
-    ///
-    /// ADR 0009 D2: every examination asks the lease table before it believes a reading, so a
-    /// fan registered with no live lease covering it is `.leaseLapsed` on its first cycle and
-    /// handed back. Acquire, then engage, then register.
-    ///
-    /// Clears any reclamation recorded against this fan: something has just taken it off
-    /// automatic control, so the ledger's claim that the system holds it is now false, and
-    /// a stale `true` there would report a fan as lost that a client is about to command.
-    /// That half is unconditional, because it is a statement about the world rather than
-    /// about this registry.
-    func manualControlEngaged(_ fan: CommandableFan) async {
-        if held[fan.index] == nil { held[fan.index] = HeldFan() }
-        if await ledger.clearReclaimed(fanAt: fan.index) {
-            log.reclamationResolved(fan: fan.index)
+    /// An accepted registration clears any reclamation recorded against this fan: something has
+    /// just taken it off automatic control, so the ledger's claim that the system holds it is
+    /// false. **Except a registration under the record's own lease while § 5's episode for the
+    /// fan is in flight** (#366): that is the holder re-applying while § 5 contests the fan, and
+    /// the mark is the episode's. It goes on the next cycle that reads the target held, stays
+    /// through the terminal action, or goes with a record dropped or replaced first:
+    /// `restoreAndForget` (§ 3's yield, `.leaseLapsed`, a re-assert that yields), `release`, or a
+    /// newer lease's registration. A refused one clears nothing — it is evidence of no engagement
+    /// — so a mark the terminal action kept stands.
+    func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws {
+        let index = fan.index
+        let generation = registry.generation(ofFan: index)
+        let live = await leases.hasLiveLease(id: lease, coveringFan: index)
+        let registration = registry.register(lease, fanAt: index, live: live, since: generation)
+        guard case .accepted(let replacedEndedLease, let mayClearTheMark) = registration else {
+            log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
+            throw EngagementRefusal.leaseNotLive(fan: index)
         }
+        if replacedEndedLease { log.reclamationReplacedEndedLeaseRecord(fan: index) }
+        guard mayClearTheMark else {
+            log.reclamationMarkLeftToItsEpisode(fan: index)
+            return
+        }
+        await clearReclamationMark(fanAt: index)
     }
 
     /// Records what was actually put on the wire for a fan.
@@ -266,15 +227,17 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// and `GovernedFanWriter.command(towards:of:since:)` both return one of these
     /// precisely so their caller can hand it here.
     ///
-    /// A target commanded for a fan this actor is not watching is ignored rather than
-    /// registered: a `CommandedTarget` is an observation, and it is not evidence that
-    /// anybody took the fan off automatic control.
-    func commandedTarget(_ commanded: CommandedTarget) {
-        guard held[commanded.fanIndex] != nil else { return }
-        held[commanded.fanIndex]?.commanded = commanded
-        // A fresh command resets the secondary dwell: the fan is being asked for something
-        // new, and cycles spent short of the *previous* target say nothing about this one.
-        held[commanded.fanIndex]?.actualDwellCycles = 0
+    /// A target commanded for a fan this actor is not watching **under `lease`** is ignored
+    /// rather than registered: a `CommandedTarget` is an observation, and it is not evidence
+    /// that anybody took the fan off automatic control — and one from an ended lease is not a
+    /// target the newer lease's record may be judged against (#357). The receipt says which.
+    @discardableResult
+    func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) -> ReportReceipt {
+        guard isHeld(commanded.fanIndex, under: lease) else { return .notHeld }
+        // And resets the secondary dwell — see `HeldFan.command(_:)` — unless it is refused.
+        let recorded = registry.command(commanded, ofFan: commanded.fanIndex)
+        logRefusal(of: commanded, from: "the target reported for it", unless: recorded)
+        return recorded ? .recorded : .refused
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.
@@ -286,18 +249,59 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// **A hint, not the authority** — ADR 0009 D2. `HelperFanRestorer` calls this before
     /// every lease-core restore, and `.leaseLapsed` is what hands back a fan whose lease
     /// ended without it: past its deadline and not yet swept, or registered after its lease.
+    ///
+    /// **Except the ledger of a fan `finaliseRelease(fanAt:heldUnder:because:)` is giving up**
+    /// (#346). Its
+    /// revocation's restorer sends this for that fan while the terminal action is suspended,
+    /// and clearing then erased the entry it keeps, so a fan the system took was reported as
+    /// not taken. The registry entry still goes and the restore is untouched; this clear is
+    /// skipped, not postponed, so the mark stays until a later release or an engagement.
+    /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     func manualControlReleased(fanAt index: Int) async {
-        held[index] = nil
-        if await ledger.clearReclaimed(fanAt: index) {
-            log.reclamationResolved(fan: index)
-        }
+        guard registry.release(fanAt: index) else { return }
+        await clearReclamationMark(fanAt: index)
+    }
+
+    /// Level 6's undo, before its hand-back: forgets `index` only if `lease` holds it, and clears
+    /// the mark as a release does (`Registry.handBack(fanAt:under:)`). Permit-free.
+    /// reclamation-watchdog.md § *"Level 6's hand-back notice"*.
+    func manualControlHandedBack(fanAt index: Int, under lease: UUID) async {
+        guard registry.handBack(fanAt: index, under: lease) else { return }
+        await clearReclamationMark(fanAt: index)
     }
 
     /// The fans this instance is watching, for tests and diagnostics.
-    var fansUnderManualControl: Set<Int> { Set(held.keys) }
+    var fansUnderManualControl: Set<Int> { registry.fans }
 
     /// What this instance last recorded as commanded for a fan, for tests and diagnostics.
-    func lastCommanded(ofFan index: Int) -> CommandedTarget? { held[index]?.commanded }
+    func lastCommanded(ofFan index: Int) -> CommandedTarget? {
+        registry.record(ofFan: index)?.commanded
+    }
+
+    /// `ReclamationReporting`'s getter, the snapshot's read: `Registry.recordedTargets(under:)`.
+    func recordedTargets(under lease: UUID) -> [Int: Double] {
+        registry.recordedTargets(under: lease)
+    }
+
+    /// The level `engagement` asks the arbiter about, `.reclamationWatchdog`, for the test that
+    /// pins the composition's (ADR 0014's A6 amendments).
+    nonisolated var engagementLevel: SafetyActorLevel { engagement.level }
+
+    /// Whether `index` is still held under `lease`: the re-fetch this file makes after an `await`.
+    /// An absent record, or one under another lease, is `false`. The re-assert's two before its
+    /// command write ask `Registry.reassertTarget(ofFan:under:)` instead, which is the same
+    /// identity and also stops on a registration under that lease since the examination (#381).
+    private func isHeld(_ index: Int, under lease: UUID) -> Bool {
+        registry.isHeld(index, under: lease)
+    }
+
+    /// Says at `.fault` that the record refused `target`, unless it was `taken`: no plane can
+    /// write it, so the write that returned it has a defect (#395). Both writers of the record
+    /// call this rather than an `if` of their own, which would take `reassert`'s cyclomatic
+    /// complexity past 10.
+    private func logRefusal(of target: CommandedTarget, from source: String, unless taken: Bool) {
+        if !taken { log.reclamationTargetRefused(target, from: source) }
+    }
 
     // MARK: - One cycle
 
@@ -313,18 +317,23 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ## Nothing is carried across a suspension point
     ///
     /// This actor is reentrant, and every `await` below — a read, a write, a ledger or latch
-    /// hop — is a point at which `manualControlEngaged(_:)`, `commandedTarget(_:)`,
+    /// hop — is a point at which `manualControlEngaged(_:under:)`, `commandedTarget(_:under:)`,
     /// `manualControlReleased(fanAt:)` or a second `cycle()` can run. An adversarial review
     /// found four distinct defects of one shape here: a value read before an `await` and
     /// acted on after it. So the rule in this file is now uniform and stated once:
     ///
-    /// > **Re-fetch `held[index]` after every `await`, and treat its absence as an
-    /// > instruction to stop rather than as a no-op.**
+    /// > **Re-fetch the fan's record after every `await`; an absent record, or one under
+    /// > another lease, means stop** rather than a no-op.
     ///
-    /// Optional chaining (`held[index]?.x = y`) is *not* that rule. It makes a mutation
-    /// vanish silently while the code around it goes on acting as though the fan were still
-    /// registered, which is exactly how `reassert(_:fanAt:attempt:)` came to write `F<n>Md`
-    /// to a fan whose lease had just been released.
+    /// `isHeld(_:under:)` is the re-fetch: presence is not identity (#357). The re-assert's two
+    /// before its command write also stop for a registration under the same lease since the
+    /// examination began, and take the record's target as it stands (#381).
+    ///
+    /// Optional chaining (`held[index]?.x = y`, which is what every per-record transition on
+    /// `Registry` does to an absent record) is *not* that rule. It makes a mutation vanish
+    /// silently while the code around it goes on acting as though the fan were still registered,
+    /// which is exactly how `reassert(fanAt:heldUnder:attempt:reengaging:)` came to write
+    /// `F<n>Md` to a fan whose lease had just been released.
     ///
     /// ## One sweep at a time, by construction
     ///
@@ -355,7 +364,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         isSweeping = true
         defer { isSweeping = false }
 
-        guard !held.isEmpty else { return }
+        guard !registry.isEmpty else { return }
 
         // Sorted and sequential. Sorted so a scenario's log and attempt order are
         // deterministic; sequential because this actor must contribute at most one
@@ -365,8 +374,17 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // whole registry part-way through a sweep, and the remaining iterations then find
         // nothing and stop. That is correct rather than merely tolerable — those fans were
         // released by the revocation this sweep performed.
-        for index in held.keys.sorted() {
-            await examine(fanAt: index)
+        //
+        // **The gate, then the stamp** (ADR 0014's A6 amendment): a step that held the gate,
+        // registration included, is then before the examination, never inside it. The wait is
+        // bounded, and one past it examines ungated: judging, marking and restoring, and writing
+        // nothing away from automatic control. A cancelled wait is not past it, though it holds
+        // nothing either: the re-assert's cancellation guard stops it before any write. Left
+        // after the examination's last act, whichever way it returns.
+        for index in registry.fansInOrder {
+            let pass = await gate.enterForExamination(fanAt: index)
+            defer { gate.leave(pass) }
+            await examine(fanAt: index, inBound: !pass.isPastTheBound)
         }
     }
 
@@ -385,22 +403,25 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## What it still cannot do, stated rather than papered over
     ///
-    /// It cannot make check-and-act atomic. The latch is one actor and the plane is another,
-    /// so there is always a hop between the answer and the write, and no arrangement of
-    /// this code removes it. What this does is shrink the window from "a whole sweep" to
-    /// "one actor hop", and `reassert(_:fanAt:attempt:)` then **verifies again after
-    /// writing** and undoes in the safe direction if § 3 latched inside even that. Acting
-    /// and then checking is the only sound pattern available when the check cannot be made
-    /// atomic with the act; claiming the window is closed would be the more dangerous
-    /// spelling.
+    /// It cannot make check-and-act atomic. The latch is one actor and the plane is another, so
+    /// there is always a hop between the answer and the write, and no arrangement of this code
+    /// removes it. What this does is shrink the window from "a whole sweep" to "one actor hop", and
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)` then **verifies again after writing** and
+    /// undoes in the safe direction if § 3 latched inside even that. Acting and then checking is
+    /// the only sound pattern available when the check cannot be made atomic with the act; claiming
+    /// the window is closed would be the more dangerous spelling.
     private func currentRuling() async -> SafetyRuling {
         let incumbent: SafetyActorLevel? = await latch.isActive ? .thermalEmergency : nil
         return SafetyArbiter.ruling(for: .reclamationWatchdog, incumbent: incumbent)
     }
 
-    /// One fan: read it, ask whether anyone is entitled to it, decide, act.
-    private func examine(fanAt index: Int) async {
-        guard held[index] != nil else { return }
+    /// One fan: read it, ask whether the lease it was registered under is still live, decide,
+    /// act. Everything after this is for that lease, captured before the read, and the record is
+    /// stamped with the fan's generation then too, so a re-assert this examination decides on can
+    /// tell a registration under that lease since (#381), and with `inBound`, which is `false`
+    /// only past the gate's bound: such an examination stands its re-assert down.
+    private func examine(fanAt index: Int, inBound: Bool) async {
+        guard let lease = registry.beginExamination(ofFan: index, inBound: inBound) else { return }
 
         // Read here, believed only below the lease check — a failed read included.
         let reading: Result<FanControlState, any Error>
@@ -414,33 +435,35 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // runs on whatever task the lease core is on and can clear this entry while the read
         // is in flight; judging the fan from the pre-read copy reported an ordinary lease
         // expiry as the system reclaiming a fan, and revoked whatever lease was live at that
-        // instant.
-        guard held[index] != nil else {
+        // instant. Identity rather than presence for this file's rule; only the log line below
+        // tells it apart from a presence check, because the check after the lease hop catches
+        // a newer lease's record one hop later.
+        guard isHeld(index, under: lease) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "its control-state read")
             return
         }
 
         // **`.leaseLapsed`, ADR 0009 D2: the lease table is the authority and `held` a hint**,
-        // so a fan no live lease covers is restored and forgotten whatever the reading says.
+        // so a fan whose own lease is not live is restored and forgotten whatever the reading
+        // says, and whatever lease covers it now (#357).
         // After the read, never before: every teardown removes its entry before it restores,
         // so a read that saw that restore land is followed by a query that sees the lease
         // gone — asked first, the restore reads as `.modeReclaimed` and is re-asserted. Before
         // both signals and a failed read's count: blindness is grounds to act on a held fan.
-        let entitled = await leases.hasLiveLease(coveringFan: index)
+        let entitled = await leases.hasLiveLease(id: lease, coveringFan: index)
 
         // Re-fetched across the lease hop before either answer is acted on, so a fan released
-        // during it gets no second restore and no false "may still be pinned". **Untested, and
-        // kept by this file's re-fetch rule.** No seam wraps the hop. The only way found to land
-        // a release inside it blocks a cooperative-pool thread from the lease clock, which failed
-        // on CI (run 37940001373) and is unsafe in a parallel suite; #344 tracks a seam that
-        // does not block.
-        guard let fan = held[index] else {
+        // during it gets no second restore and no false "may still be pinned". **Tested** (#344,
+        // #365): `HeldLeaseRole` is the seam that holds the hop open without blocking a pool
+        // thread (the lease-clock route failed on CI, run 37940001373), and
+        // `ReclamationLeaseIdentityTests.aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
+        guard isHeld(index, under: lease), let fan = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return
         }
         guard entitled else {
             log.reclamationLeaseLapsed(fan: index)
-            await restoreAndForget(fanAt: index)
+            await restoreAndForget(fanAt: index, heldUnder: lease)
             return
         }
 
@@ -449,176 +472,47 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         case .success(let read):
             state = read
         case .failure(let error):
-            await cycleCouldNotSee(fanAt: index, detail: String(describing: error))
+            await cycleCouldNotSee(
+                fanAt: index, heldUnder: lease, detail: String(describing: error))
             return
         }
 
         if fan.consecutiveReadFailures > 0 {
             log.reclamationTelemetryRecovered(
                 fan: index, afterCycles: fan.consecutiveReadFailures)
-            held[index]?.consecutiveReadFailures = 0
+            registry.resetReadFailures(ofFan: index)
         }
 
-        // Primary first, and it is the only signal that reaches the terminal action.
-        if let primary = Self.primaryDivergence(of: state, against: fan.commanded) {
-            held[index]?.actualDwellCycles = 0
-            guard !gracedBeforeItsFirstCommand(primary, of: fan, fanAt: index) else { return }
-            await diverged(primary, fanAt: index)
+        // Primary first, and it is the only signal that reaches the terminal action; the
+        // secondary **reports and stops**. Every cycle whose primary converges clears the mark,
+        // `.short` included, because the firmware holds Aeolus's target (#119, #366), and none
+        // refills the registration grace. `HeldFan.judge(_:)` moves the counters, with no
+        // suspension point, and says which — its doc comment carries each branch's reason.
+        switch registry.judge(state, ofFan: index) {
+        case .diverged(let primary):
+            await diverged(primary, fanAt: index, heldUnder: lease)
+        case .graced(let primary, true):
+            log.reclamationAwaitingItsFirstCommand(fan: index, divergence: primary)
+        case .short(let actual, let commanded, let dwell)
+        where dwell == ReclamationLimits.actualDwellCycles:
+            // `==` and not `>=`: one line per episode — `HeldFan.judge(_:)`.
+            log.reclamationFanNotReachingTarget(
+                fan: index, actual: actual, commanded: commanded, dwellCycles: dwell)
+            await clearReclamationMark(fanAt: index)
+        case .short, .converged:
+            await clearReclamationMark(fanAt: index)
+        case .graced, nil:
+            // A graced cycle after the first says nothing. `nil` is unreachable: the record was
+            // fetched above, nothing suspended.
             return
         }
-
-        // Secondary: the fan is not turning as fast as it was told to, sustained. It
-        // **reports and stops** — see `reportShortfall(_:fanAt:)`.
-        if let shortfall = Self.actualShortfall(of: state, against: fan.commanded) {
-            reportShortfall(shortfall, fanAt: index)
-            return
-        }
-
-        // Converged on both signals. `uncommandedDivergentCycles` is deliberately **not**
-        // reset alongside these two — see `HeldFan.uncommandedDivergentCycles`. A fan whose
-        // `F<n>Tg` is merely flaky rather than gone would otherwise refill the registration
-        // grace on every readable cycle and stay off automatic control for as long as the
-        // flapping lasted, which is
-        // `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
-        held[index]?.actualDwellCycles = 0
-        held[index]?.reassertAttempts = 0
-        if await ledger.clearReclaimed(fanAt: index) {
-            log.reclamationResolved(fan: index)
-        }
-    }
-
-    // MARK: - The registration grace
-
-    /// Whether this divergence is still inside the window that follows registration, and so
-    /// must not reach the terminal action yet.
-    ///
-    /// ## The window this closes
-    ///
-    /// `manualControlEngaged(_:)` mandates registration **after** the `F<n>Md` write lands,
-    /// and an earlier version of that comment claimed the far side of the write was
-    /// therefore safe without any grace. It is not, and the claim covered exactly one of the
-    /// three ways `primaryDivergence(of:against:)` can answer for a fan on which nothing has
-    /// been commanded yet:
-    ///
-    /// - `.targetDiverged` — unreachable, because that case is behind
-    ///   `guard let commanded else { return nil }`. This is the only case the old claim
-    ///   analysed, and it is the one that never needed a grace.
-    /// - `.modeReclaimed` — reached **before** `commanded` is consulted at all. A write that
-    ///   has returned successfully is not the same fact as a read that reflects it, and the
-    ///   `F<n>Md` write-to-read-back latency on Apple Silicon is unmeasured — `docs/SMC-
-    ///   RESEARCH.md`'s observed section is empty on this point. One cycle landing inside
-    ///   that lag reads automatic.
-    /// - `.targetUnreadable` — reached before `commanded` as well. A single unreadable
-    ///   `F<n>Tg` on a fan nothing has been commanded on took the terminal action on the
-    ///   spot, with none of the tolerance `cycleCouldNotSee(fanAt:detail:)` gives a fan that
-    ///   could not be read at all.
-    ///
-    /// Both of the latter two ended at `diverged(_:fanAt:)`'s "nothing to re-assert" branch:
-    /// the fan restored, **every lease on the machine revoked**, and a `.fault` line blaming
-    /// the operating system — milliseconds after a client was granted control it never got
-    /// to use. That is the defect [#147](https://github.com/blamechris/Aeolus/issues/147)
-    /// names, arrived at from the ordering it mandates rather than from the one it forbids.
-    ///
-    /// ## Why the failure asymmetry inverts here, and only here
-    ///
-    /// This file's rule is that over-firing is the safe direction: handing a fan back to
-    /// Apple's thermal management costs cooling nobody chose, while under-firing leaves a
-    /// fan pinned at a speed nothing honours, which is `CLAUDE.md` rule 6. **On a fan with
-    /// no commanded target there is no such speed.** Nothing Aeolus picked is on the wire,
-    /// so the pinned-fan hazard the asymmetry is built around does not exist, and what
-    /// over-firing costs instead is the whole-machine revocation above — losing control that
-    /// is in fact still held, which is rule 6 in the direction people forget.
-    /// `reportShortfall(_:fanAt:)` declines the terminal action on the same grounds.
-    ///
-    /// So the tolerance is granted **only while `commanded` is `nil`**. The first
-    /// `commandedTarget(_:)` ends it for the rest of that registration, and a commanded fan
-    /// is judged exactly as strictly as before — including on the very next cycle.
-    ///
-    /// ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
-    ///
-    /// The same number, because it is the same question: how many 1 Hz cycles may pass
-    /// without this mechanism being able to confirm a fan is ours before that becomes
-    /// divergence. Three cycles is three seconds — long against any plausible firmware
-    /// read-back lag and short against anything a user would notice — and a genuine
-    /// reclamation of an uncommanded fan is still restored and reported, just on the third
-    /// cycle rather than the first. `ReclamationLimitsTests` already holds that constant
-    /// under a literal ceiling, so this window cannot be widened into minutes either.
-    ///
-    /// Synchronous, so there is no suspension point between reading the counter and writing
-    /// it back and no re-fetch is owed — `reportShortfall(_:fanAt:)`'s reason.
-    ///
-    /// - Returns: `true` when the caller must stop, leaving the fan held and untouched.
-    private func gracedBeforeItsFirstCommand(
-        _ divergence: ReclamationDivergence, of fan: HeldFan, fanAt index: Int
-    ) -> Bool {
-        guard fan.commanded == nil else { return false }
-
-        let cycles = fan.uncommandedDivergentCycles + 1
-        held[index]?.uncommandedDivergentCycles = cycles
-        guard cycles < ReclamationLimits.blindCyclesBeforeDivergence else { return false }
-
-        // Log the transition, not the state — #124's forward constraint, and
-        // `cycleCouldNotSee(fanAt:detail:)`'s rule for the same reason.
-        if cycles == 1 {
-            log.reclamationAwaitingItsFirstCommand(fan: index, divergence: divergence)
-        }
-        return true
-    }
-
-    // MARK: - The secondary signal reports, and does nothing else
-
-    /// The fan has been short of its commanded speed for the whole dwell. Say so, and stop.
-    ///
-    /// ## Why this no longer reaches the terminal action
-    ///
-    /// It used to, and that was the most consequential defect in this file. The secondary
-    /// signal is only ever *evaluated* when the primary has converged — `examine` returns
-    /// early on primary divergence — so reaching this function means `F<n>Md` reads manual
-    /// and `F<n>Tg` reads back exactly what Aeolus commanded. **The firmware is holding our
-    /// target.** Nothing has been reclaimed.
-    ///
-    /// A fan that is not reaching a target the firmware is faithfully holding is a fan that
-    /// *cannot* reach it: an obstruction, a failing bearing, a declared `F<n>Mx` the part
-    /// cannot actually achieve. The three things the mechanism could do about that are all
-    /// wrong. Re-asserting rewrites the number that is already correct. Restoring to
-    /// automatic makes it worse — Apple's thermal management will spin the same fan against
-    /// the same obstruction. And marking `isReclaimedBySystem` tells the user the system
-    /// took a fan it did not take, which is `CLAUDE.md` rule 6 in the direction people
-    /// forget: claiming to have *lost* control that is in fact still held.
-    ///
-    /// So it reports. The user is told, which is what `docs/SAFETY.md` § 5 asks for — *"and
-    /// either way tells the user"* — and the fan stays under the control it is genuinely
-    /// still under.
-    ///
-    /// ## `==` and not `>=`
-    ///
-    /// One line per episode. `>=` would emit at the supervisor's 1 Hz for as long as the
-    /// shortfall lasted, which is #124's forward constraint exactly: *an unchanged degraded
-    /// set logged every tick at 1 Hz is not a log, it is a denial of service against the
-    /// reader.* The dwell counter goes on rising and the next transition through
-    /// convergence, or a fresh `commandedTarget(_:)`, resets it — so a fan that recovers and
-    /// falls short again produces a second line rather than silence.
-    ///
-    /// Synchronous on purpose: it touches no other actor, so there is no suspension point
-    /// between reading the dwell and writing it back, and no re-fetch is needed.
-    private func reportShortfall(
-        _ shortfall: (actual: Double, commanded: Double), fanAt index: Int
-    ) {
-        let dwell = (held[index]?.actualDwellCycles ?? 0) + 1
-        held[index]?.actualDwellCycles = dwell
-        guard dwell == ReclamationLimits.actualDwellCycles else { return }
-        log.reclamationFanNotReachingTarget(
-            fan: index,
-            actual: shortfall.actual,
-            commanded: shortfall.commanded,
-            dwellCycles: dwell)
     }
 
     // MARK: - Acting on divergence
 
     /// The primary signal fired for this fan. Re-assert, or fall back and report.
     private func diverged(
-        _ divergence: ReclamationDivergence, fanAt index: Int
+        _ divergence: ReclamationDivergence, fanAt index: Int, heldUnder lease: UUID
     ) async {
         // **The above-ceiling rule, asked here rather than once per sweep.** Deleting this
         // guard is the mutation `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds`
@@ -633,82 +527,85 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             // system had reclaimed a fan § 3 had just deliberately released, and a
             // `isReclaimedBySystem` that stayed true for the rest of the process.
             log.reclamationYieldedToThermalEmergency(fan: index, divergence: divergence)
-            await restoreAndForget(fanAt: index)
+            await restoreAndForget(fanAt: index, heldUnder: lease)
             return
         }
 
-        // Re-fetched across the latch hop above.
-        guard let fan = held[index] else {
+        // Re-fetched across the latch hop above; tested through `ThermalLatchRole` (#380).
+        guard isHeld(index, under: lease), let judged = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the precedence check")
             return
         }
 
         if await ledger.markReclaimed(fanAt: index) {
             log.reclamationDetected(
-                fan: index, divergence: divergence, commanded: fan.commanded)
+                fan: index, divergence: divergence, commanded: judged.commanded)
         }
 
-        // Re-fetched across the ledger hop above.
-        guard held[index] != nil else {
+        // Re-fetched across the ledger hop above (tested through `ReclamationLedgerRole`, #380),
+        // and decided on as it stands now, not on the copy before the hop: past the gate's bound a
+        // first command can land in it, and the copy would give the fan up as having none (#383).
+        guard isHeld(index, under: lease), let fan = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the reclamation report")
             return
         }
 
-        guard let commanded = fan.commanded else {
+        guard fan.commanded != nil else {
             // Nothing was ever commanded here, so there is no target to re-assert to. The
             // fan came off automatic control and the system took it back before a speed
             // followed; restoring is both the honest answer and the only available one.
             log.reclamationHadNothingToReassert(fan: index)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
             return
         }
 
         guard fan.reassertAttempts < ReclamationLimits.reassertAttemptBudget else {
             log.reclamationBudgetExhausted(
                 fan: index, attempts: fan.reassertAttempts, divergence: divergence)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
             return
         }
 
         let attempt = fan.reassertAttempts + 1
-        held[index]?.reassertAttempts = attempt
-        await reassert(commanded, fanAt: index, attempt: attempt)
+        registry.spendReassertAttempt(attempt, ofFan: index)
+        await reassert(
+            fanAt: index, heldUnder: lease, attempt: attempt,
+            reengaging: divergence == .modeReclaimed)
     }
 
     /// One bounded attempt to take the fan back, below the ceiling.
     ///
     /// ## It reads a fresh envelope, and that is deliberate
     ///
-    /// Not the permit taken when the fan came off automatic control — and `HeldFan` keeps no
-    /// permit at all, so there is not one to reach for. Permits do not expire
-    /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
-    /// review, not by the type"* — and § 3 depends on that, because its maximum write has
-    /// to be available while the machine is above ceiling and reading may be what has
-    /// failed. This branch is the opposite case: it runs below the ceiling, and it has just
-    /// successfully read this fan's control state, so reading works. A mechanism that can
-    /// read has no excuse to command a fan against bounds nobody has checked since the
-    /// system took it back.
-    ///
-    /// That is also what `CommandedTarget` withholding an `AuthorisedFanTarget` is for: it
-    /// makes the re-assert explicitly fallible rather than free, and this is where the
-    /// fallibility is spent.
-    ///
-    /// A re-assert that cannot obtain an envelope **restores rather than commanding** —
-    /// #126's acceptance criterion, and `FanControlPlane`'s §2 rule that the only action a
-    /// fan with untrusted bounds is subject to is the bounds-free restore verb.
+    /// A re-assert reads a fresh envelope rather than reusing a stored permit (`HeldFan` keeps
+    /// none), and one that cannot obtain an envelope restores rather than commanding (#126).
+    /// reclamation-watchdog.md § *"It reads a fresh envelope, and that is deliberate"*.
     ///
     /// ## The two writes are not one step, and are not caught together
     ///
-    /// `engageManualControl` then `command` were wrapped in a single `do`/`catch`, which
-    /// made a firmware that accepted the first and refused the second indistinguishable from
-    /// one that refused both. Those are opposite states: the second leaves the fan on
-    /// Apple's thermal management, which is safe, and the first leaves it **off** automatic
-    /// control holding whatever `F<n>Tg` the system last wrote — a fan pinned at a speed
-    /// nobody chose, which is the worst reachable state in this project. They are caught
-    /// separately, and the half-landed case restores immediately rather than waiting for a
-    /// budget to run out.
+    /// `engageManualControl` and `command` are caught separately: a firmware that took the first
+    /// and refused the second leaves the fan off automatic control at a speed nobody chose, so
+    /// that half-landed case restores at once.
+    /// reclamation-watchdog.md § *"The two writes are not one step, and are not caught
+    /// together"*.
+    ///
+    /// ## Only a reclaimed mode is re-engaged
+    ///
+    /// The mode write runs ADR 0014 D3's unlock through the driver, whose first step refuses a
+    /// fan whose raw mode is not `0` — so it is issued only for `.modeReclaimed`. A fan still in
+    /// manual whose target diverged is re-commanded alone, after the same entitlement the driver
+    /// asks before every step (#181), and the post-write ruling covers both. Both are asked of a
+    /// driver bound to the lease the record was registered under (#357).
+    ///
+    /// ## It writes the fan as it stands, not as it was judged
+    ///
+    /// The target is the record's after the last suspension before the write, never the one
+    /// `diverged` read, and the write is recorded only over the target it was decided on: a report
+    /// during either is newer. A registration under the same lease since the examination began
+    /// stands it down, attempt spent, because that engagement commands the fan itself (#381): at
+    /// either re-fetch, or at a first step refused because that engagement took the fan first.
     private func reassert(
-        _ commanded: CommandedTarget, fanAt index: Int, attempt: Int
+        fanAt index: Int, heldUnder lease: UUID, attempt: Int, reengaging: Bool
     ) async {
         let permit: CommandableFan
         do {
@@ -716,16 +613,19 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         } catch {
             log.reclamationReassertHadNoEnvelope(
                 fan: index, detail: String(describing: error))
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
             return
         }
 
         // Re-fetched across the envelope read. This is the guard whose absence let § 5 write
         // `F<n>Md` to a fan whose lease had been released while the read was in flight —
         // manual control with no lease behind it, no registry entry to notice it, and
-        // nothing left watching. `CLAUDE.md` rule 2.
-        guard held[index] != nil else {
-            log.reclamationFanReleasedMidExamination(fan: index, during: "its envelope read")
+        // nothing left watching. `CLAUDE.md` rule 2. Since #381 it also stops for a registration
+        // under this lease since the examination began: an engagement that commands the fan itself,
+        // after the reading this re-assert was decided on. The attempt stays spent: that
+        // engagement's writes are this round's.
+        guard registry.reassertTarget(ofFan: index, under: lease) != nil else {
+            reassertStopped(fanAt: index, heldUnder: lease, during: "its envelope read")
             return
         }
 
@@ -750,16 +650,16 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // this file's own rule, that a check separated from the act it guards is not a
         // check.
         //
-        // **The attempt is refunded, because the budget counts writes and this branch
-        // performs none.** `diverged(_:fanAt:)` spends the attempt before the envelope read
-        // that suspends, so the cost is booked at the point of *intent* and this is the one
-        // exit that never converts it into a write. Leaving it spent made a sleep/wake cycle
-        // — `stop()` then `start()` — able to burn the whole budget without a single
-        // `F<n>Md` reaching the firmware: three stop-starts catching one diverged fan inside
-        // its read, and the next real sweep skips straight to `finaliseRelease` with cause
-        // `.systemReclaimed`. The direction is safe and the account is false, which is
-        // exactly what rule 6 forbids — the operator is told the system took a fan Aeolus
-        // never once tried to take back, and loses control it could have had.
+        // **The attempt is refunded, because the budget counts writes and this branch performs
+        // none.** `diverged(_:fanAt:heldUnder:)` spends the attempt before the envelope read that
+        // suspends, so the cost is booked at the point of *intent* and this is the one exit that
+        // never converts it into a write. Leaving it spent made a sleep/wake cycle — `stop()` then
+        // `start()` — able to burn the whole budget without a single `F<n>Md` reaching the
+        // firmware: three stop-starts catching one diverged fan inside its read, and the next real
+        // sweep skips straight to `finaliseRelease` with cause `.systemReclaimed`. The direction is
+        // safe and the account is false, which is exactly what rule 6 forbids — the operator is
+        // told the system took a fan Aeolus never once tried to take back, and loses control it
+        // could have had.
         //
         // An earlier version of this comment argued the other way, that "restarting with one
         // fewer attempt gives the fan back to automatic control sooner, which is the
@@ -768,79 +668,157 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // an attempt that never reached the wire is not a round of that fight. Refunding
         // keeps the budget measuring the thing it was sized against.
         //
-        // Decremented rather than assigned back to `attempt - 1`: `held[index]` is re-fetched
+        // Decremented rather than assigned back to `attempt - 1`: the record is re-fetched
         // above but is not proven to be the same episode, and a decrement is correct for
         // whatever count is actually there. Floored at zero so a concurrent reset —
         // `convergence` zeroes this — cannot leave it negative and hand the fan an extra try.
         guard !Task.isCancelled else {
-            if let spent = held[index]?.reassertAttempts {
-                held[index]?.reassertAttempts = max(0, spent - 1)
-            }
+            // Through the value type, so a fan released meanwhile refunds nothing and the
+            // return below is the only thing that follows.
+            registry.refundReassertAttempt(ofFan: index)
             log.reclamationAbandonedOnCancellation(fan: index)
             return
         }
 
+        let driver = engagement.under(lease: lease)
         do {
-            // Re-engage before re-commanding. The system took this fan back, so it is on
-            // automatic control: writing `F<n>Tg` without first writing `F<n>Md` would put
-            // a number on the wire that nothing honours.
-            try await writer.engageManualControl(of: permit)
-        } catch {
-            // The fan is still on Apple's thermal management, which is the safe state. The
-            // attempt is spent and the budget is what bounds the trying.
-            log.reclamationWriteFailed(
-                verb: "re-engage manual control of", fan: index,
-                detail: String(describing: error))
+            // Re-engage before re-commanding a reclaimed fan: it is on automatic control, and
+            // writing `F<n>Tg` without first writing `F<n>Md` would put a number on the wire
+            // that nothing honours. The driver asks the ruling and the lease before every step
+            // — #181's pre-engage ruling — and has undone any step it took by the time it
+            // throws. A fan still in manual is asked the same entitlement before its command.
+            if reengaging {
+                try await throwingTheCause { try await driver.engageManualControl(of: permit) }
+            } else {
+                try await driver.requireEntitlement(for: permit)
+            }
+        } catch let refusal as EngagementRefusal where refusal.yieldsTheFan {
+            // Not § 5's fan any more: `diverged`'s refusal path, without the attempt's write.
+            log.reclamationReassertYielded(fan: index, refusal: refusal)
+            await restoreAndForget(fanAt: index, heldUnder: lease)
             return
+        } catch {
+            // The driver has handed back any step it took, so the fan is on Apple's thermal
+            // management — or, if that undo was refused, registered with § 3, and the driver
+            // said so at `.fault`. The attempt is spent and the budget is what bounds the trying.
+            // A `.notAutomatic` refusal with a registration since the stamp is that engagement's
+            // fan and not a failure (#381), while the gate keeps one engagement of a fan (#389):
+            // `reengageRefused`.
+            return reengageRefused(fanAt: index, heldUnder: lease, error: error)
         }
 
         // Past this point the fan is OFF automatic control, so every exit below has to leave
         // it somewhere deliberate. A fan released during either write is held by nobody, so
         // both re-fetches below restore before they stop, where the envelope one only stops:
         // this write may have landed after the release's own restore, and nothing else knows.
-        guard held[index] != nil else {
-            log.reclamationReleasedMidReassert(fan: index, during: "its manual-control write")
-            await restoreAndForget(fanAt: index)
+        // A record under another lease is left to it, in `restoreAndForget`. One registered again
+        // under this lease is left to that engagement, and the target is the record's as it
+        // stands now, never the one `diverged` read (#381).
+        guard let target = registry.reassertTarget(ofFan: index, under: lease) else {
+            await reassertStoppedAfterItsFirstStep(fanAt: index, heldUnder: lease)
             return
         }
 
         let recommanded: CommandedTarget
         do {
-            recommanded = try await writer.command(commanded.rpm, of: permit)
+            recommanded = try await writer.command(target.rpm, of: permit)
         } catch {
-            log.reclamationReassertHalfLanded(fan: index, detail: String(describing: error))
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            await commandWriteFailed(
+                fanAt: index, heldUnder: lease, detail: String(describing: error))
             return
         }
 
-        // A `guard`, and not `held[index]?.commanded = recommanded` as it was until #180: a
-        // release during the write made that assignment vanish while the line below reported
+        // A `guard`, and not `held[index]?.commanded = recommanded` alone as it was until #180:
+        // a release during the write made that assignment vanish while the line below reported
         // a re-assert, and the fan was left off automatic control with nothing watching it.
-        guard var fan = held[index] else {
+        guard isHeld(index, under: lease) else {
             log.reclamationReleasedMidReassert(fan: index, during: "its command write")
-            await restoreAndForget(fanAt: index)
+            await restoreAndForget(fanAt: index, heldUnder: lease)
             return
         }
-        fan.commanded = recommanded
-        held[index] = fan
+        let recorded = registry.recordReassertedTarget(recommanded, decidedOn: target, ofFan: index)
+        logRefusal(of: recommanded, from: "the target its re-assert returned", unless: recorded)
         log.reclamationReasserted(
             fan: index,
             rpm: recommanded.rpm,
             attempt: attempt,
             budget: ReclamationLimits.reassertAttemptBudget)
 
-        // **Verify after acting.** § 3 can latch during either write above, and check-then-
-        // act cannot be made atomic across two actors — see `currentRuling()`. If it did,
-        // this mechanism has just taken a fan off automatic control that level 2 wants on
-        // it, and nothing else will correct that: `ThermalEmergency.fire(_:from:)` empties
-        // its own registry as it goes and nothing re-registers a fan with it, so § 3's next
-        // cycle will not bridge this one. The undo is therefore this mechanism's own, and it
-        // resolves in the safe direction.
+        // **Verify after acting.** § 3 can latch during the command write above, and check-
+        // then-act cannot be made atomic across two actors — see `currentRuling()`. If it did,
+        // this mechanism has just commanded a fan level 2 wants on automatic control. The undo
+        // is this mechanism's own and resolves in the safe direction; if the firmware refuses
+        // it, the driver's § 3 registration is what bridges the fan in the emergency (#181).
         guard await currentRuling().permitsWrite else {
             log.reclamationUndoneAfterEmergencyLatched(fan: index)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
             return
         }
+    }
+
+    /// A re-assert that stopped before writing anything more: the fan was released (#180) or is
+    /// now another lease's (#357), was registered again under its own lease since the
+    /// examination began (#381), or is examined past the gate's bound, which writes nothing away
+    /// from automatic control (ADR 0014's A6 amendment). Nothing of § 5's is left written, so
+    /// nothing is restored: either nothing was written, or, in the overlap the gate closes
+    /// (#389), the driver had already undone its own steps.
+    private func reassertStopped(fanAt index: Int, heldUnder lease: UUID, during moment: String) {
+        guard isHeld(index, under: lease) else {
+            return log.reclamationFanReleasedMidExamination(fan: index, during: moment)
+        }
+        let pastTheBound = registry.record(ofFan: index)?.examinedInBound == false
+        log.reclamationReassertStoodDown(fan: index, at: moment, pastTheBound: pastTheBound)
+    }
+
+    /// The re-assert's re-engage threw. A `.notAutomatic` refusal while
+    /// `reassertTarget(ofFan:under:)` answers `nil` stops as the envelope re-fetch does: a
+    /// registration since the stamp is that engagement's fan, which it had already taken off
+    /// automatic control (#381). Anything else is the `.fault` it always was.
+    ///
+    /// **That stand-down holds while one engagement of a fan runs at a time.** It routes on the
+    /// error type, and the driver throws `.notAutomatic` in two places: at a first step, before
+    /// any write, and, after a step answered, when a same-lease engagement of the same fan
+    /// completed during § 5's yield wait, so the plane's shared per-fan record admitted § 5's next
+    /// step as a first step. The second is two engagements of one fan overlapping, which the gate
+    /// closes ([#389](https://github.com/blamechris/Aeolus/issues/389)): level 6 engages only under
+    /// the fan's gate, and § 5 re-engages under its hold; were it to happen, the stand-down line
+    /// would say nothing was written. Out of `reassert` for its complexity.
+    private func reengageRefused(fanAt index: Int, heldUnder lease: UUID, error: any Error) {
+        guard case .notAutomatic? = error as? FanControlPlaneError,
+            registry.reassertTarget(ofFan: index, under: lease) == nil
+        else {
+            return log.reclamationWriteFailed(
+                verb: "re-engage manual control of", fan: index, detail: String(describing: error))
+        }
+        reassertStopped(fanAt: index, heldUnder: lease, during: "its first step")
+    }
+
+    /// A re-assert's re-fetch after its first step: a fan released during it is restored, because
+    /// a mode write may have landed after the release's own restore; one registered again under
+    /// its own lease is left to that engagement, which holds and reports it (#381). Out of
+    /// `reassert` for its complexity.
+    private func reassertStoppedAfterItsFirstStep(fanAt index: Int, heldUnder lease: UUID) async {
+        guard isHeld(index, under: lease) else {
+            log.reclamationReleasedMidReassert(fan: index, during: "its first write")
+            return await restoreAndForget(fanAt: index, heldUnder: lease)
+        }
+        log.reclamationReassertLeftToItsEngagement(fan: index, at: "its check before commanding")
+    }
+
+    /// The re-assert's command write was refused. **Re-fetched before blaming the firmware**
+    /// (#353): a release during the refused write is not the half-landed case, whose terminal
+    /// action blamed the system for Aeolus's own release. Out of `reassert` for its complexity.
+    private func commandWriteFailed(
+        fanAt index: Int, heldUnder lease: UUID, detail: String
+    ) async {
+        guard isHeld(index, under: lease) else {
+            log.reclamationReleasedMidReassert(
+                fan: index, during: "its command write, which failed")
+            await restoreAndForget(fanAt: index, heldUnder: lease)
+            return
+        }
+        log.reclamationReassertHalfLanded(fan: index, detail: detail)
+        await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
     }
 
     // MARK: - Blindness
@@ -851,10 +829,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// missed would be over-firing on noise. Persistent failure **is divergence** — § 5 is
     /// explicit that "being unable to read is divergence too" — because the alternative is
     /// a read retried indefinitely while the fans stay pinned, which is ADR 0007's hole 2.
-    private func cycleCouldNotSee(fanAt index: Int, detail: String) async {
-        guard let fan = held[index] else { return }
-        let failures = fan.consecutiveReadFailures + 1
-        held[index]?.consecutiveReadFailures = failures
+    private func cycleCouldNotSee(
+        fanAt index: Int, heldUnder lease: UUID, detail: String
+    ) async {
+        guard isHeld(index, under: lease), let failures = registry.recordReadFailure(ofFan: index)
+        else { return }
 
         guard failures >= ReclamationLimits.blindCyclesBeforeDivergence else {
             // Log the transition, not the state: the first blind cycle says so, and the
@@ -880,7 +859,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // Re-fetched across the reconnect. A fan released while the connection was being
         // rebuilt is a fan the lease core has already restored, and marking it reclaimed
         // would report an ordinary release as a loss.
-        guard held[index] != nil else {
+        guard isHeld(index, under: lease) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the reconnect attempt")
             return
         }
@@ -898,13 +877,17 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // supervisor had gone blind.
         await ledger.markSupervisorBlind(fanAt: index)
         log.reclamationRestoredBlindFan(fan: index)
-        await finaliseRelease(fanAt: index, because: .supervisorBlind)
+        await finaliseRelease(fanAt: index, heldUnder: lease, because: .supervisorBlind)
     }
 
     // MARK: - Falling back
 
     /// This fan is not § 5's to judge, so hand it back and stop watching it: § 3 holds the
-    /// fans, or — `.leaseLapsed`, and a release during a re-assert write — nobody does.
+    /// fans, or — `.leaseLapsed`, and a release during a re-assert write — the lease it was
+    /// held under has ended.
+    ///
+    /// **Unless its record now belongs to another lease** (#357): that lease's engagement holds
+    /// the fan and its own record watches it, so nothing is restored or forgotten.
     ///
     /// The restore is still attempted — it is the keystone verb, it consumes nothing, and
     /// whoever handed the fan back first may have been refused. What is **not** done here is
@@ -918,75 +901,96 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// **Forgotten before the restore, not after it.** A re-grant is the ordinary next event
     /// for a fan handed back here, and a registration landing while the restore is in flight
     /// must start a fresh entry, not be erased by this one: forgetting afterwards left a fan off
-    /// automatic control under a live lease with nothing watching it. `HelperFanRestorer` also
-    /// tells § 5 before its write, and unlike checking the entry's episode after the write,
-    /// forgetting first needs no identity `HeldFan` does not carry.
-    private func restoreAndForget(fanAt index: Int) async {
-        held[index] = nil
-        do {
-            try await writer.restoreToAutomatic(.fan(index))
-        } catch {
-            log.reclamationWriteFailed(
-                verb: "restore", fan: index, detail: String(describing: error))
-            log.reclamationFanMayStillBePinned(fan: index)
+    /// automatic control under a live lease with nothing watching it. Forgetting first also
+    /// keeps a re-engagement under the same lease made during the restore.
+    /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
+    ///
+    /// **§ 3 is deregistered by the hand-back, for all three callers** (#181): a restore the
+    /// firmware accepts marks the fan owed § 3's read-back, and a refused one leaves it in § 3's
+    /// registry. § 3's yield needs it most — a latched § 3 bridges what is registered.
+    private func restoreAndForget(fanAt index: Int, heldUnder lease: UUID) async {
+        guard registry.forget(fanAt: index, ifUnder: lease) else {
+            log.reclamationLeftToAnotherLease(fan: index)
+            return
         }
-        if await ledger.clearReclaimed(fanAt: index) {
-            log.reclamationResolved(fan: index)
-        }
+        await handBack(fanAt: index)
+        await clearReclamationMark(fanAt: index)
     }
 
-    /// The terminal action: hand the fan to Apple's thermal management and drop the leases
-    /// that claimed it.
+    /// The terminal action: hand the fan to Apple's thermal management and end the lease it
+    /// was held under.
     ///
-    /// The restore is attempted whatever else failed, and consumes nothing a failing
-    /// machine might be unable to supply — ADR 0007's keystone. The ledger entry for `index`
-    /// is **kept**, and what it says depends on which caller got here, because since #140
-    /// the two are no longer one bit:
+    /// The restore is attempted whatever else failed. The ledger entry for `index` is **kept**,
+    /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140) — and kept
+    /// through this call's own revocation, whose release notice skips its clear while this runs:
+    /// the mark stays until a later release, or an engagement under another lease, since one
+    /// under `lease` is refused from the entry on (#346, #366).
+    /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     ///
-    /// - `.systemReclaimed` — the system does hold this fan now, that is what the user
-    ///   should be told, and it stays true until something deliberately takes it off
-    ///   automatic control again.
-    /// - `.supervisorBlind` — the helper could not read the fan, so this entry asserts
-    ///   **nothing** about who holds it. It records that § 5 gave the fan up and why, which
-    ///   is what `ManualControlAvailability.Reason.supervisorBlind` reports and what
-    ///   `FanState.isReclaimedBySystem` deliberately does not.
+    /// ## For the lease the fan was held under, and no other (#353)
     ///
-    /// Either way it is kept rather than cleared, for the reason `clearReclaimed(fanAt:)`
-    /// states: a fan this mechanism has just handed back is not a fan known to be fine.
+    /// A record now under another lease is left to it. Otherwise the fan is handed back, every
+    /// record of `lease` is dropped, and `lease` is revoked whole — a client left holding a
+    /// subset it can no longer command would be told it has control it does not have. A lapsed
+    /// `lease` is ended as expired inside this call; one already ended is not touched, and the
+    /// hand-back runs either way.
+    /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
-    /// Every lease is revoked rather than the one covering this fan, for
-    /// `ThermalEmergency.fire(_:from:)`'s reason: a lease is a claim over a *set* of fans,
-    /// and a client left holding a lease over a subset it can no longer command would be
-    /// told it has control it does not have.
+    /// The siblings go back to automatic control with that lease's end: dropping only `index` left
+    /// them registered, and the next cycle **re-engaged manual control on a fan with no lease
+    /// behind it**. Their ledger entries are cleared rather than marked: they were not reclaimed
+    /// by anything, they were given up by this mechanism.
     ///
-    /// ## Which is why the whole registry goes, not just this fan
-    ///
-    /// `revokeEveryLease(because:)` drops every lease on the machine and restores the fans
-    /// they covered. Every other entry in `held` is therefore a fan that is now unleased and
-    /// back on automatic control — and dropping only `index` left them registered, so the
-    /// next cycle read `.modeReclaimed` on a sibling and **re-engaged manual control on a
-    /// fan with no lease behind it**. Their ledger entries are cleared rather than marked:
-    /// they were not reclaimed by anything, they were given up by this mechanism.
-    private func finaliseRelease(fanAt index: Int, because cause: FanRestoreCause) async {
-        do {
-            try await writer.restoreToAutomatic(.fan(index))
-        } catch {
-            log.reclamationWriteFailed(
-                verb: "restore", fan: index, detail: String(describing: error))
-            log.reclamationFanMayStillBePinned(fan: index)
+    /// The restore is the driver's hand-back, so § 3 is deregistered as `restoreAndForget`
+    /// describes (#181); the siblings are the lease core's, whose restorer tells § 3 itself.
+    private func finaliseRelease(
+        fanAt index: Int, heldUnder lease: UUID, because cause: FanRestoreCause
+    ) async {
+        // The entry, before the first suspension, not around the revocation alone: a lease
+        // teardown landing during the hand-back sends the same notice about a fan § 5 has
+        // already judged. The generation moves here too, so a registration already in flight
+        // resumes refused rather than clearing the mark this keeps (#361's review, C3); one
+        // under `lease`, arriving during the hand-back or resuming after this returns, is refused
+        // by the `givenUp` entry this sets (#366).
+        guard registry.beginFinalising(fanAt: index, for: lease) else {
+            log.reclamationLeftToAnotherLease(fan: index)
+            return
         }
+        defer { registry.endFinalising(fanAt: index) }
+        await handBack(fanAt: index)
 
-        held[index] = nil
-        let siblings = held.keys.sorted()
-        held.removeAll()
+        let siblings = registry.dropLease(lease, sparing: index)
 
         if !siblings.isEmpty {
             log.reclamationSiblingsReleased(fans: siblings)
-            for sibling in siblings where await ledger.clearReclaimed(fanAt: sibling) {
-                log.reclamationResolved(fan: sibling)
-            }
+            for sibling in siblings { await clearReclamationMark(fanAt: sibling) }
         }
 
-        await leases.revokeEveryLease(because: cause)
+        if await leases.revokeLease(id: lease, forFan: index, because: cause) != .revoked {
+            log.reclamationHandbackLeaseAlreadyEnded(fan: index)
+        }
+    }
+
+    // MARK: - The two steps every hand-back shares
+
+    /// The driver's hand-back, attempted whatever else failed, and its refusal logged as one
+    /// that may have left the fan pinned. `restoreAndForget` and `finaliseRelease` both end a
+    /// fan this way. On this actor, so calling it adds no hop.
+    private func handBack(fanAt index: Int) async {
+        do {
+            try await engagement.handBack(fanAt: index)
+        } catch {
+            log.reclamationWriteFailed(
+                verb: "restore", fan: index, detail: String(describing: error))
+            log.reclamationFanMayStillBePinned(fan: index)
+        }
+    }
+
+    /// Clears the ledger's mark on a fan, and says so only when there was one to clear. On
+    /// this actor, so calling it adds no hop.
+    private func clearReclamationMark(fanAt index: Int) async {
+        if await ledger.clearReclaimed(fanAt: index) {
+            log.reclamationResolved(fan: index)
+        }
     }
 }

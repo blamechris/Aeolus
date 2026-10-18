@@ -65,9 +65,10 @@ protocol FanAuthority: Sendable {
 
     /// The panic path. Its contract is global — every fan to automatic, every lease dropped —
     /// and how much of it a build performs is each conformer's own documentation to state.
-    /// `SupervisedFanAuthority` releases every lease and issues no machine-wide restore;
-    /// `ReadOnlyFanAuthority` succeeds as a no-op. Neither clears the force key on this build,
-    /// which this requirement read as promising until
+    /// `SupervisedFanAuthority` releases every lease and, only on a plane whose capability is
+    /// `.built`, issues the machine-wide restore that also clears the force key;
+    /// `ReadOnlyFanAuthority` succeeds as a no-op. Neither clears the key on any build on
+    /// `main` today, whose plane cannot write — which this requirement read as promising until
     /// [#228](https://github.com/blamechris/Aeolus/issues/228).
     ///
     /// Reached without a handshake — see `AeolusXPCProtocol.restoreAllToAutomatic` — and

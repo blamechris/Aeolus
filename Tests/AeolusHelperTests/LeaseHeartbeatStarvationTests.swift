@@ -42,6 +42,12 @@ struct LeaseHeartbeatStarvationTests {
     ///
     /// The green path never waits for it — `waitUntil` returns the moment its condition
     /// holds — so the generous deadline costs the suite nothing and only the red run pays it.
+    ///
+    /// **Waited for on the wall clock** (`budget: .wallTime` at both call sites): this is a
+    /// deadline the lease contract holds the product to, not a wait, and the default budget
+    /// would stretch it by any overrun in the poll, up to 50 s. The price is that a runner
+    /// stall can fail these two waits; the message says "seen, not compensated". Held by
+    /// `StallTolerantWaitBudgetTests`.
     private static let heartbeatBudget = Duration.seconds(
         Lease.defaultTimeToLive - Lease.defaultHeartbeatInterval)
 
@@ -99,7 +105,7 @@ struct LeaseHeartbeatStarvationTests {
 
         try await waitUntil(
             "the heartbeat reached the lease core inside the budget § 1 gives it",
-            timeout: Self.heartbeatBudget
+            timeout: Self.heartbeatBudget, budget: .wallTime
         ) {
             await authority.heartbeats == 1
         }
@@ -165,7 +171,7 @@ struct LeaseHeartbeatStarvationTests {
 
         try await waitUntil(
             "the release reached the lease core rather than waiting for the reads",
-            timeout: Self.heartbeatBudget
+            timeout: Self.heartbeatBudget, budget: .wallTime
         ) {
             await authority.releases == 1
         }
@@ -248,6 +254,11 @@ struct LeaseHeartbeatStarvationTests {
     /// leave the count at four**, which is why the membership is asserted separately rather
     /// than trusted to it.
     ///
+    /// **`apply`'s place on the queue carries a second claim since A6's third step** (ADR 0014's A6
+    /// PR-3 amendment): it is what keeps a client's two applies from meeting `LeaseApplier`'s
+    /// claim. `SupervisedApplyBoundaryTests.twoPipelinedAppliesAreEachAnsweredOnTheirMerits` holds
+    /// that through the listener, red when `apply` leaves the queue.
+    ///
     /// Read off the source rather than driven through the wire, because it is a claim about the
     /// *route*, and both routes reach the same method behind the same gates: nothing a client
     /// can observe distinguishes them except timing, which the tests above assert one verb at a
@@ -268,15 +279,7 @@ struct LeaseHeartbeatStarvationTests {
     /// ```
     @Test("Exactly the four pipelineable verbs are sequenced, and the three unlocks are not")
     func theSequencedVerbsAreTheOnesAClientPipelines() throws {
-        let file = try #require(
-            try SeamScanner.swiftFiles(under: "AeolusHelper")
-                .first { $0.lastPathComponent == "HelperXPCService.swift" },
-            "HelperXPCService.swift is not in the tree — the routes it declares are this test")
-        let collapsed = SeamScanner.collapsingWhitespace(
-            SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8)))
-
-        let sequenced = Self.dispatchedVerbs(in: collapsed, through: #"sequencer\.enqueue"#)
-        let dispatched = Self.dispatchedVerbs(in: collapsed, through: #"Task"#)
+        let (sequenced, dispatched) = try Self.helperRoutes()
 
         #expect(
             sequenced == ["acquireLease", "apply", "hello", "snapshot"],
@@ -294,6 +297,25 @@ struct LeaseHeartbeatStarvationTests {
             of any of them is time the fans stay held by something nobody is checking (D27, \
             #229). Adding a fourth is a safety review; removing one reopens its issue.
             """)
+    }
+
+    /// `HelperXPCService`'s two dispatch routes, read off its source: the verbs it hands to its
+    /// `MessageSequencer`, and the verbs it dispatches on a `Task` of their own.
+    ///
+    /// Shared with `HelperClientSequencingCensusTests.theClientsSequencedListIsTheHelpersOwn`,
+    /// which holds the client's copy of the first list to this one. One reading of the helper's
+    /// routes, so the client's mirror cannot pass against a second scan that drifted from this.
+    static func helperRoutes() throws -> (sequenced: [String], dispatched: [String]) {
+        let file = try #require(
+            try SeamScanner.swiftFiles(under: "AeolusHelper")
+                .first { $0.lastPathComponent == "HelperXPCService.swift" },
+            "HelperXPCService.swift is not in the tree — the routes it declares are this test")
+        let collapsed = SeamScanner.collapsingWhitespace(
+            SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8)))
+        return (
+            sequenced: dispatchedVerbs(in: collapsed, through: #"sequencer\.enqueue"#),
+            dispatched: dispatchedVerbs(in: collapsed, through: #"Task"#)
+        )
     }
 
     /// The `HelperConnectionSession` methods awaited inside a `route { [session] in … }` body,

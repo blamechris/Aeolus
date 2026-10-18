@@ -267,5 +267,18 @@ let package = Package(
             path: "Tests/SMCSamplerTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+
+        // The app icon's generator is a script, run as
+        // `swift Tools/AppIcon/generate-app-icon.swift`, so unlike the two tools above there
+        // is no target for these tests to depend on. They read files: the seam scan over the
+        // script's source that every directory under `Tools/` owes
+        // (Tests/AeolusHelperTests/ToolsSeamCoverageTests.swift insists on it), and checks
+        // that the committed asset catalog still has every size the app target needs. See
+        // Tools/AppIcon/README.md.
+        .testTarget(
+            name: "AppIconTests",
+            path: "Tests/AppIconTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )

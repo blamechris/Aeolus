@@ -1,4 +1,5 @@
 import FanKit
+import Foundation
 import Testing
 
 @testable import AeolusHelper
@@ -7,8 +8,8 @@ import Testing
 /// authority, and § 5's registry of held fans is a hint
 /// ([#180](https://github.com/blamechris/Aeolus/issues/180)).
 ///
-/// A fan in `held` with no live lease covering it is `ReclamationDivergence.leaseLapsed`,
-/// decided in `examine(fanAt:)` after the control-state read and before either firmware
+/// A fan in `held` whose own lease is no longer live is `ReclamationDivergence.leaseLapsed`,
+/// decided in `examine(fanAt:inBound:)` after the control-state read and before either firmware
 /// signal is computed from it, and its only action is restore-and-forget: no re-assert, no
 /// ledger mark, no revocation. Every scenario here ends a lease **without telling § 5** —
 /// `endLease()` drops the table entry and hands the fans to a `RecordingFanRestorer`, and
@@ -40,20 +41,20 @@ struct ReclamationLeaseLapseTests {
     /// this also fails against a query that judges presence instead of the deadline.
     ///
     /// The ledger is read **at the restore write** as well as afterwards, through the
-    /// `.restoreWrite` moment. `restoreAndForget(fanAt:)` ends by clearing the ledger, so a
-    /// `markReclaimed` issued before it would leave the end state clean and is visible only
-    /// in between — the same masking `itNeverReassertsWhileTheThermalLatchHolds` records for
-    /// § 3's branch, closed here by looking at the instant rather than at a log line.
+    /// `.restoreWrite` moment. `restoreAndForget(fanAt:heldUnder:)` ends by clearing the ledger, so
+    /// a `markReclaimed` issued before it would leave the end state clean and is visible only in
+    /// between — the same masking `itNeverReassertsWhileTheThermalLatchHolds` records for § 3's
+    /// branch, closed here by looking at the instant rather than at a log line.
     ///
-    /// **Mutation:** delete the `guard entitled else { … }` block from `examine(fanAt:)`.
+    /// **Mutation:** delete the `guard entitled else { … }` block from `examine(fanAt:inBound:)`.
     /// Run: red on the engage assertion — the write the guard refuses —
     /// and on every assertion after it except `restorer.causes`.
-    /// **Mutation:** move that block below the primary-signal `if` in `examine(fanAt:)`. Run:
-    /// red on the same assertions.
+    /// **Mutation:** move that block below the primary-signal `if` in `examine(fanAt:inBound:)`.
+    /// Run: red on the same assertions.
     /// **Mutation:** add `await ledger.markReclaimed(fanAt: index)` to the guard's `else`,
     /// before `restoreAndForget`. Run: red on `sightings` — and with it after
     /// `restoreAndForget`, red on the final ledger assertion.
-    /// **Mutation:** make `LeaseTable.covers(_:liveAt:)` ignore the deadline. Run: red here.
+    /// **Mutation:** make `LeaseTable.covers(_:under:liveAt:)` ignore the deadline. Run: red here.
     @Test("A fan whose lease lapsed is handed back and forgotten, never re-asserted")
     func aFanWhoseLeaseLapsedIsRestoredNotReasserted() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 2_400)])
@@ -87,8 +88,8 @@ struct ReclamationLeaseLapseTests {
         // No revocation on § 5's behalf: `finaliseRelease` would have swept the lapsed entry
         // through the lease core's restorer under `.systemReclaimed`.
         #expect(await machine.restorer.causes.isEmpty)
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
-        #expect(machine.safetyLog.levels(containing: "no live lease covers it") == [.notice])
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
+        #expect(machine.safetyLog.levels(containing: leaseLapsedNotice) == [.notice])
         #expect(machine.safetyLog.lines(containing: "Reclamation detected").isEmpty)
     }
 
@@ -98,9 +99,9 @@ struct ReclamationLeaseLapseTests {
     /// sees the lease gone; a query taken before the read saw it live, and the reading then
     /// looked exactly like the system taking the fan.
     ///
-    /// **Mutation:** move `let entitled = await leases.hasLiveLease(coveringFan: index)` above
-    /// the `readControlState(ofFan:)` call in `examine(fanAt:)`. Run: red on every assertion
-    /// after `didFire`, and on no other test.
+    /// **Mutation:** move `let entitled = await leases.hasLiveLease(id: lease, coveringFan: index)`
+    /// above the `readControlState(ofFan:)` call in `examine(fanAt:inBound:)`. Run: red on every
+    /// assertion after `didFire`, and on no other test.
     @Test("A lease ending during the read is caught by the check after it")
     func aLeaseEndingDuringTheReadIsCaughtByTheCheckAfterIt() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 2_400)])
@@ -122,7 +123,7 @@ struct ReclamationLeaseLapseTests {
         #expect(await machine.didRestore(fan: 0))
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(await machine.ledger.causes.isEmpty)
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
     }
 
     /// **Before a failed read is counted.** The SMC answers nothing and the lease has ended:
@@ -132,7 +133,7 @@ struct ReclamationLeaseLapseTests {
     /// `.supervisorBlind` three cycles later and revoked every lease on the machine.
     ///
     /// **Mutation:** move the `guard entitled` block below the `switch reading` in
-    /// `examine(fanAt:)`, where only a successful read reaches it. Run: red on the restore,
+    /// `examine(fanAt:inBound:)`, where only a successful read reaches it. Run: red on the restore,
     /// the registry and both log assertions, and on no other test.
     @Test("An unreadable fan with no live lease is handed back at once")
     func anUnreadableFanWithNoLeaseIsHandedBackAtOnce() async throws {
@@ -146,7 +147,7 @@ struct ReclamationLeaseLapseTests {
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(await machine.attempts.contains(.reconnect) == false)
         #expect(await machine.ledger.causes.isEmpty)
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
         #expect(machine.safetyLog.lines(containing: "could not read fan 0").isEmpty)
     }
 
@@ -176,11 +177,13 @@ struct ReclamationLeaseLapseTests {
         #expect(await machine.ledger.causes.isEmpty)
     }
 
-    /// **Per fan.** A live lease over fan 1 does not entitle § 5 to fan 0, and the answer for
-    /// fan 0 does not touch fan 1 or the lease.
+    /// **Per fan.** A live lease over fan 1 does not entitle § 5 to fan 0: a registration of
+    /// fan 0 under it is refused and records nothing, and the answer for fan 0 does not touch
+    /// fan 1 or the lease. Since #357 the registration asks the question the examination asks,
+    /// so the uncovered fan is refused at the door rather than handed back on its first cycle.
     ///
-    /// **Mutation:** make `LeaseTable.covers(_:liveAt:)` ignore `fan` — any live entry
-    /// answers. Run: red on fan 0's restore, the registry and the log assertion.
+    /// **Mutation:** make `LeaseTable.covers(_:under:liveAt:)` ignore `fan` — any fan of a live
+    /// entry answers. Run: red on the refusal and the registry.
     @Test("A live lease over another fan does not entitle this one")
     func aLeaseOverAnotherFanDoesNotEntitleThisOne() async throws {
         let fans: [Int: ScriptedControlPlane.FanCondition] = [
@@ -188,16 +191,18 @@ struct ReclamationLeaseLapseTests {
         ]
         let machine = ReclamationMachine(fans: fans)
         let lease = try await machine.lease(fans: [1])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await machine.hold(fan: 0, commanding: 2_400)
+        }
         try await machine.hold(fan: 1, commanding: 2_400)
 
         await machine.watchdog.cycle()
 
-        #expect(await machine.didRestore(fan: 0), "fan 0 was kept on fan 1's lease")
+        #expect(
+            await machine.watchdog.fansUnderManualControl == [1], "fan 0 was kept on fan 1's lease")
         #expect(await machine.didRestore(fan: 1) == false)
-        #expect(await machine.watchdog.fansUnderManualControl == [1])
         #expect(await machine.leases.activeLease()?.id == lease.id)
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: "refused to register fan 0").count == 1)
     }
 
     /// **Uncommanded fans too.** A fan registered and never commanded — the state between
@@ -217,7 +222,7 @@ struct ReclamationLeaseLapseTests {
 
         #expect(await machine.didRestore(fan: 0), "an uncommanded fan nobody holds was kept")
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
     }
 
     /// **A reclamation recorded earlier in the episode is cleared by the hand-back.** The
@@ -225,8 +230,8 @@ struct ReclamationLeaseLapseTests {
     /// is now on automatic because nobody holds it, and a fan Aeolus stopped asking for is not
     /// a fan the system took — `manualControlReleased(fanAt:)`'s rule, which this stands in for.
     ///
-    /// **Mutation:** delete the `ledger.clearReclaimed` call from `restoreAndForget(fanAt:)`.
-    /// Run: red on the ledger assertion.
+    /// **Mutation:** delete the `ledger.clearReclaimed` call from
+    /// `restoreAndForget(fanAt:heldUnder:)`. Run: red on the ledger assertion.
     @Test("A lapsed lease clears a reclamation recorded earlier in its episode")
     func aLapsedLeaseClearsAnEarlierReclamation() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
@@ -253,19 +258,21 @@ struct ReclamationLeaseLapseTests {
     /// leave the mark behind, because a fan Aeolus handed back is not one the system took.
     ///
     /// **Mutation:** delete `log.reclamationFanMayStillBePinned(fan:)` from
-    /// `restoreAndForget(fanAt:)`. Run: red on the "may still be under manual control"
-    /// assertion.
-    /// **Mutation:** move `held[index] = nil` inside the `do`, after the restore, so a refused
-    /// restore skips the forget. Run: red on the registry assertion, and on
-    /// `aFanRegisteredDuringItsHandBackStaysWatched`, which any late forget breaks.
-    /// **Mutation (M2):** add `return` after `log.reclamationFanMayStillBePinned(fan: index)`
-    /// in `restoreAndForget(fanAt:)`'s `catch`. The forget has already run, but the ledger clear
-    /// after the restore is skipped. Run: red on the ledger assertion.
+    /// `restoreAndForget(fanAt:heldUnder:)`. Run: red on the "may still be under manual control"
+    /// assertion. **Mutation:** make the forget conditional on the restore landing — inline
+    /// `handBack(fanAt:)` and move `registry.forget(fanAt:ifUnder:)` inside its `do`, after the
+    /// restore — so a refused restore skips the forget. Run: red on the registry assertion, and on
+    /// `aFanRegisteredDuringItsHandBackStaysWatched`, which any late forget breaks. **Mutation
+    /// (M2):** add `return` after `log.reclamationFanMayStillBePinned(fan: index)` in
+    /// `restoreAndForget(fanAt:heldUnder:)`'s `catch`. The forget has already run, but the ledger
+    /// clear after the restore is skipped. Run: red on the ledger assertion.
     @Test("A refused hand-back is reported, and the fan is still forgotten and cleared")
     func aRefusedHandBackIsReportedAndForgotten() async throws {
+        // Reclaimed, so the first cycle's refused write is the re-engagement — which leaves
+        // the fan held and marked — rather than a command, whose refusal would give it up.
         let machine = ReclamationMachine(
             stages: [.nominal(writes: .refused(reason: "firmware said no"))],
-            fans: [0: .held(at: 1_800)])
+            fans: [0: .automatic(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
         await machine.watchdog.cycle()
         #expect(
@@ -289,13 +296,13 @@ struct ReclamationLeaseLapseTests {
     /// restore is in flight. Here it lands inside the restore write: a lease over fan 0, the
     /// fan back in manual, and a fresh registration at 2,000 RPM.
     ///
-    /// `restoreAndForget(fanAt:)` dropped `held[index]` *after* awaiting the restore, so the
-    /// fresh registration — which found the old entry still there and kept it — went with it:
-    /// a fan off automatic control under a live lease, with nothing watching it.
+    /// `restoreAndForget(fanAt:heldUnder:)` dropped `held[index]` *after* awaiting the restore, so
+    /// the fresh registration — which found the old entry still there and kept it — went with it: a
+    /// fan off automatic control under a live lease, with nothing watching it.
     ///
-    /// **Mutation:** move `held[index] = nil` in `restoreAndForget(fanAt:)` back below the
-    /// `do`/`catch` around the restore. Run: red on the registry and commanded-target
-    /// assertions.
+    /// **Mutation:** move the `registry.forget(fanAt:ifUnder:)` guard in
+    /// `restoreAndForget(fanAt:heldUnder:)` back below `await handBack(fanAt: index)`. Run: red
+    /// on the registry and commanded-target assertions.
     @Test("A fan registered again while its hand-back is in flight stays watched")
     func aFanRegisteredDuringItsHandBackStaysWatched() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 2_400)])
@@ -325,29 +332,44 @@ struct ReclamationLeaseLapseTests {
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
     }
 
-    /// The lease core's half: one fan, one instant, judged against the deadline.
+    /// The lease core's half: one lease, one fan, one instant, judged against the deadline
+    /// (#357). The ended lease is asked about after a second lease is granted over the same
+    /// fan, which is the re-grant a coverage question answered for it.
     ///
-    /// **Mutation:** make `LeaseTable.covers(_:liveAt:)` ignore the deadline. Run: red on the
-    /// lapsed assertion. Ignoring `fan` instead: red on fan 1.
-    @Test("The lease core answers per fan, against the deadline, without sweeping")
-    func theLeaseCoreAnswersPerFanAgainstTheDeadline() async throws {
+    /// **Mutation:** make `LeaseTable.covers(_:under:liveAt:)` ignore `id` — any live entry
+    /// covering the fan answers. Run: red on the ended lease. Ignoring `fan` instead: red on
+    /// fan 1. Ignoring the deadline: red on the lapsed assertion.
+    @Test("The lease core answers per lease and per fan, against the deadline, without sweeping")
+    func theLeaseCoreAnswersPerLeaseAgainstTheDeadline() async throws {
         let clock = TestClock()
         let leases = LeaseFixture.authority(clock: clock)
-        #expect(await leases.hasLiveLease(coveringFan: 0) == false)
+        #expect(
+            await leases.hasLiveLease(id: UUID(), coveringFan: 0) == false,
+            "a lease the table never granted was answered live")
 
-        let connection = ConnectionID()
-        _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: connection)
-        #expect(await leases.hasLiveLease(coveringFan: 0))
-        #expect(await leases.hasLiveLease(coveringFan: 1) == false)
+        let first = ConnectionID()
+        let ended = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: first)
+        #expect(await leases.hasLiveLease(id: ended.id, coveringFan: 0))
+        try await leases.releaseLease(id: ended.id, from: first)
+        let regranted = try await leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+
+        #expect(
+            await leases.hasLiveLease(id: ended.id, coveringFan: 0) == false,
+            "an ended lease was answered for by the lease granted over its fan after it")
+        #expect(await leases.hasLiveLease(id: regranted.id, coveringFan: 0))
+        #expect(
+            await leases.hasLiveLease(id: regranted.id, coveringFan: 1) == false,
+            "a lease was answered live for a fan it does not cover")
 
         clock.advance(by: .seconds(Lease.defaultTimeToLive))
         #expect(
-            await leases.hasLiveLease(coveringFan: 0) == false,
+            await leases.hasLiveLease(id: regranted.id, coveringFan: 0) == false,
             "a lease whose deadline is exactly now has had its full TTL")
         #expect(await leases.leaseCount == 1, "the question swept the table it was asked about")
 
         await leases.expireLapsedLeases()
-        #expect(await leases.hasLiveLease(coveringFan: 0) == false)
+        #expect(await leases.hasLiveLease(id: regranted.id, coveringFan: 0) == false)
     }
 }
 

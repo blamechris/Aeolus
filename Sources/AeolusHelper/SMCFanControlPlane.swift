@@ -8,9 +8,10 @@ import SMCCore
 /// all throw `FanControlPlaneError.controlPathNotBuilt`. That is not a stub waiting to be
 /// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
 /// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
-/// stays behind the `FanWrite` SPI group and keeps throwing, and no write selector exists
-/// anywhere in `Sources` (the read selectors are 5, 8 and 9, and
-/// `Tests/AeolusHelperTests/WritePathAbsenceTests` is the tripwire on that).
+/// stays behind the `FanWrite` SPI group and nothing here calls it. Its one command code,
+/// `WRITE_BYTES` (6), sits beside the read codes 5, 8 and 9 in SMCCore, and
+/// `Tests/AeolusHelperTests/WritePathAbsenceTests` pins that set and holds the helper to
+/// calling no write.
 ///
 /// What ships today is the *shape*: every E5 mechanism can be written, reviewed and tested
 /// against this seam now, and E3/E4 supply three method bodies later rather than a design.
@@ -137,6 +138,14 @@ struct SMCFanControlPlane: FanControlPlane {
     /// `CLAUDE.md` rule 9 — one code path keyed on what the SMC declares, never on
     /// `uname -m` — applied to the seam rather than asserted about it.
     ///
+    /// **Except the snapshot's read of the same fact**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)). `SnapshotFanModeReads` decodes
+    /// `F<n>Md` on its own, and since #360 a mode it cannot read is refused `.supervisorBlind`
+    /// on a seam that can write. A platform branch added here — Intel's `FS!` bit — must be
+    /// taken there too, or the decode shared, **in the same change**: otherwise every fan on
+    /// that platform reads `.supervisorBlind` for ever while the grant, reading through this
+    /// method, grants.
+    ///
     /// `Ftst` is deliberately not read here. It is a *write-side* key: set as part of the
     /// M3+ unlock sequence and cleared as part of a restore, per `SMCKey.forceTest` and
     /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s keystone. It says nothing
@@ -240,13 +249,25 @@ struct SMCFanControlPlane: FanControlPlane {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
+    /// Does nothing: a plane that cannot write admits no step, so it has no ticket to take. B1's
+    /// write path forwards this to its `PlaneWriteLedger` (ADR 0014's #410 ticket-and-seal
+    /// amendment).
+    func beginEngagement(fanAt index: Int) {}
+
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         throw FanControlPlaneError.controlPathNotBuilt
+    }
+
+    /// Does nothing, and that is the requirement on a plane that cannot write: no enumeration,
+    /// no key-info read, no force-key read and no restore. The step's body is the E4 branch's
+    /// (ADR 0014 D5, slice B1), and arrives with the `.built` that makes it reachable.
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        nil
     }
 
     // MARK: - Decoding

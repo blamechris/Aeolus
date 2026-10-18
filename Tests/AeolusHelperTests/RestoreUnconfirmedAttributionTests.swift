@@ -58,10 +58,10 @@ struct RestoreUnconfirmedAttributionTests {
         in helper: HelperComposition<ControlStateGatePlane>
     ) async throws -> (ConnectionID, Lease) {
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
         let connection = ConnectionID()
         let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await helper.plane.wrapped.setMode(.manual, ofFan: 0)
         return (connection, lease)
     }
@@ -232,17 +232,20 @@ struct RestoreUnconfirmedAttributionTests {
     ///
     /// **Mutation:** in `StartupReconciliation.refusalForGrant`, stop `held` from exempting a
     /// fan § 3 is keeping — `let candidates = fans.subtracting(held.subtracting(awaiting))`.
-    /// Run: red on `thrown`. The snapshot stays `.restoreToAutomaticFailed` under the same
-    /// mutation applied there, because `reportingHandbackState` composes after it and
-    /// overwrites; that is why the named mutation is on the grant path, and why the agreement
-    /// assertion is the one that catches it.
+    /// Run: red on `thrown`. **Mutation:** the same on the snapshot side, in
+    /// `ReadOnlyFanReport.reportingForeignControl` — `guard !held.subtracting(awaiting)
+    /// .contains(fan.index) else { return fan }`. Run: red on `shown`, which says
+    /// `.restoreToAutomaticUnconfirmed`: step 5 is above the registers in the ladder, as the
+    /// grant's foreign read is above its straight-line region (#269).
     @Test("Where § 3's set meets an abandoned handback, the durable refusal wins")
     func theDurableRefusalStillWinsWhereTheSetsMeet() async throws {
         let helper = Self.composed(writes: AvailabilityFixture.firmwareRefusesTheModeWrite)
         try await Self.engageThenRelease(in: helper)
         #expect(await helper.leases.fansWithAbandonedHandbacks == [0])
 
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        // § 3 alone: no lease is live, so § 5 would refuse the registration (#357).
+        await helper.thermalEmergency.manualControlEngaged(
+            try commandableFan(0, declaring: .held(at: 2_400)))
         await Self.fireAndCool(in: helper)
         #expect(await helper.thermalEmergency.isHolding == false, "the latch never released")
         #expect(
@@ -263,8 +266,8 @@ struct RestoreUnconfirmedAttributionTests {
     /// re-acquisition throughout that window, and nothing else in this suite would notice.
     ///
     /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl`, move the
-    /// `if awaiting.contains(fan.index)` arm above `guard fan.mode != .automatic`. Run: red on
-    /// `shown`.
+    /// `if awaiting.contains(fan.index)` arm out of `case .manual:` to above the
+    /// `switch observedMode`. Run: red on `shown`.
     /// **Mutation:** in `StartupReconciliation.refusalForGrant`, move the
     /// `if awaiting.contains(fan)` arm above `guard state.mode == .manual`. Run: red — the
     /// re-acquisition throws.

@@ -34,8 +34,9 @@ same correction-in-place rule applies here as above.
 Not built: § 7's body and § 8's hysteresis — and **"§ 7's body" is narrower than it sounds**,
 which this line did not say until #104. The XPC message `restoreAllToAutomatic` has existed since
 E2.1, is implemented through the helper, is tested, and is the one message exempt from the version
-handshake gate. What is not built is `fanctl`'s call into it (#15) and the SMC write behind it
-(E3/E4). All of it is tracked as epic E5,
+handshake gate. What is not built is the SMC write behind it (E3/E4). This line also named
+`fanctl`'s call into it (#15) until that landed in #159, and the handler's own machine-wide restore,
+issued on a plane that can write, landed in #104 (§ 7). All of it is tracked as epic E5,
 and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
 the safety subsystem exists and is tested.
 
@@ -81,8 +82,8 @@ strongly than the source does. This document was amended to match in #119; the p
 that changed say so, in place, rather than quietly reading as though they had always said
 it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
 [ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
-last one implemented but for D1's second pre-write ruling (#181) — so that field lags practice
-here rather than signalling doubt.
+last one implemented in full since #181 — so that field lags practice here rather than
+signalling doubt.
 
 ---
 
@@ -98,30 +99,50 @@ lease that has to be actively held.
   affected fan to automatic.
 
 **That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
-ordinary per-lease teardown restores only the fans that lease covered and leaves `Ftst` untouched:
+ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
+write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
+hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it — another
+engaged fan, or an engagement still waiting for its yield under the current epoch:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
 per-lease teardown, which may be running alongside another client's still-live lease over a
-different fan. The three `.everyFan` call sites in `Sources/` are all non-lease paths, and they
-are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's orderly exit
-(`Lifecycle/SignalTeardown.swift`) and § 6's startup-reconciliation fallback
-(`Safety/StartupReconciliation.swift`). **That count and that list are asserted, not merely
-stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fourth site cannot arrive
-while this sentence goes on saying there are three (#228).
+different fan. The four machine-wide call sites in `Sources/` are all non-lease paths, and they are
+§ 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's orderly exit
+(`Lifecycle/SignalTeardown.swift`), § 6's startup-reconciliation fallback
+(`Safety/StartupReconciliation.swift`) and § 7's panic verb (`SupervisedFanAuthority.swift`), which
+issues it only on a plane that can write. § 6's exit issues `.everyFan` at its first keystone and
+its own scope, `.forExit`, at its last, once the supervisors have stopped: `.forExit` writes what
+`.everyFan` writes and seals the plane against every later forward write (ADR 0014's #410
+ticket-and-seal amendment). The other three issue `.everyFan`. **That count and that list are
+asserted, not merely stated** — `PanicPathScopeTripwireTests` scans the tree for both scopes, so a
+fifth site cannot arrive while this sentence goes on saying there are four (#228). **Each is issued
+behind a grant interlock, and one of the four has a gap.** § 7's panic verb and § 4's sleep handback
+run inside `LeaseAuthority.sealingGrants(during:)`
+([#350](https://github.com/blamechris/Aeolus/issues/350),
+[#364](https://github.com/blamechris/Aeolus/issues/364)), open from before the sweep empties the
+table until the machine-wide restore returns — for § 4 whether its sleep seal was set, declined
+because its wake was already answered, or lifted by a wake the teardown outlived — and bring-up
+reconciles before the listener is resumed, so none of the three can undo a lease. § 6's teardown
+closes the control gate first, but the gate refuses a grant on arrival, not one already in flight;
+such a grant can land, and an `apply` arriving after it is refused by the same gate. An `apply`
+already in flight was § 6's residual (ADR 0014's A6 PR-3 amendment), closed by the #410
+ticket-and-seal amendment: its first step is refused at its admission, and a command after the final
+keystone by the exit's seal. `PanicPathScopeTripwireTests` holds the three runtime orderings, and
+§ 7's and § 4's restores inside the seal, and `HelperCompositionTests` bring-up's.
 
-**§ 7's panic path is not among them, and this paragraph said it was until the review of #104.**
-The machine-wide clear is § 7's by design, and the shipped verb does not issue it:
-`SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and calls nothing on the
-control plane. That is a recorded decision rather than an omission — the plane verb throws
-`.controlPathNotBuilt` on this build, so issuing it would convert a v1 message that succeeds into
-one that always fails while leaving the machine in exactly the same state, and the message's
-contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). The
-consequence for a reader is the one worth stating plainly: **on this build no path clears `Ftst`
-at all** — not a lease teardown, which never asks; not the panic verb, which does not ask either;
-and not the three call sites above, whose write throws. Every sentence in this document that has
-the panic path clearing the force key is describing the design, not the binary. The correction is
-recorded here rather than made silently, for the reason the status block above gives.
+**§ 7's panic path is among them, and on this build it still issues nothing.** This paragraph
+listed it until the review of #104, while the shipped verb issued no machine-wide restore; the
+review corrected that, and [ADR 0014](ADR/0014-apple-silicon-unlock.md) D5 then gave the verb
+one (#104). `SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and then, if and
+only if the plane's `writeCapability` is `.built`, issues `restoreToAutomatic(.everyFan)` ahead of
+its read-back (§ 7). Every build on `main` answers `.notBuilt`, so the consequence for a reader is
+unchanged and still worth stating plainly: **on this build no path clears `Ftst` at all** — not a
+lease teardown, which never asks; not the panic verb, which asks only a plane that can write; and
+not the other three call sites, whose write throws. Every sentence in this document that has the
+panic path clearing the force key describes the design and a build that can write, not this
+binary. The correction is recorded here rather than made silently, for the reason the status block
+above gives.
 
 The heartbeat interval is a third of the TTL so that two consecutive missed beats are
 tolerated. A single scheduling hiccup must not surrender control; a dead client must.
@@ -171,11 +192,14 @@ never mentioned it until #104: `acquireLease` runs a sightedness check that is a
 own most recent reading — **the usual case and not the guarantee**, exactly as § 3's own
 paragraph below now says — and a failure to obtain one is refused
 `.noThermalTelemetry` rather than granted and watched
-([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). The reading answering the check can also be
-a grant-path flight's, and after #280 it can be a flight's *blindness* that displaced a § 3
-sighting taken later: the cache prefers refusal on every tie it can see, so the check is
-conservative rather than exact, and a grant can be refused on a machine that is currently
-readable. § 3 having working telemetry is a
+([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). On a seam that can write, the snapshot states
+it too, from the same proof ([#269](https://github.com/blamechris/Aeolus/issues/269)), over a fan
+nothing else refuses or only § 2's bounds do — never over a reason that says the fan's own mode is
+not yet established or will not come back, which `fanctl auto` reads as a fact about the fan.
+The reading answering the check can also be a grant-path flight's, and after #280 it can be a
+flight's *blindness* that displaced a § 3 sighting taken later: the cache prefers refusal on every
+tie it can see, so the check is conservative rather than exact, and a grant can be refused on a
+machine that is currently readable. § 3 having working telemetry is a
 precondition of § 1 granting a lease at all — § 5 states the same rule from the divergence side,
 where being unable to read is itself divergence.
 
@@ -194,12 +218,18 @@ this document:
   deliberately distinct from the transient `.releaseInProgress`, so a client can tell
   *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
   automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
-- **Only § 3 watches it.** Every path that reaches this state has already cleared § 5's
-  registry, so § 5 has no entry left to cycle over — not even for ADR 0009 D2's
-  `.leaseLapsed`, which judges only fans still registered. What remains is § 3 keeping a fan
-  whose handback was refused registered, so an emergency still bridges it; below the ceiling,
-  nothing retries its restore short of § 7's panic verb.
-  [#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap.
+- **What watches it, decided in [#343](https://github.com/blamechris/Aeolus/issues/343).** Every
+  path that reaches this state has already cleared § 5's registry — `HelperFanRestorer` tells § 5
+  before it writes — so ADR 0009 D2's `.leaseLapsed`, which judges only fans still registered, never
+  sees it. § 3 keeps it registered, because the restorer marks only fans the firmware accepted, so
+  an emergency bridges it to maximum and restores it. Below the ceiling nothing retries it on its
+  own: § 7's panic verb, § 4's sleep handback and SIGTERM's teardown each sweep this register
+  through `releaseEveryLease()` and then issue the machine-wide restore — `.everyFan`, and for the
+  teardown `.everyFan` and then the exit's `.forExit` — and the next process reconciles it (§ 6). A
+  retry of its own was declined until a run on hardware shows what a refused keystone is — ADR 0009,
+  amendment 2026-10-15. That every fan Aeolus engages is in § 3's registry — once its engagement
+  returns, or at its undo — is ADR 0014's A6 contract, held by a source tripwire. The grant refusal
+  and the snapshot are what tell the user.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
@@ -234,8 +264,9 @@ this document:
   terminal state independently
   ([ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md)): a fan found in manual at
   bring-up whose handback the firmware refuses is recorded in reconciliation's own
-  `handbackRefused` set rather than in `LeaseAuthority.restoreAbandoned`, and reached before any
-  client connected rather than after one disconnected. It is watched by nothing for the same
+  `handbackRefused` set rather than in the lease core's `restoreAbandoned` (a private store of
+  `LeaseAuthority.HandbackRegisters`), and reached before any client connected rather than after
+  one disconnected. It is watched by nothing for the same
   reason — § 3 included, because reconciliation engaged nothing and there is no registry entry for
   the emergency bridge to find ([#201](https://github.com/blamechris/Aeolus/issues/201)).
   `Fan.ManualControlAvailability.Reason.restoreToAutomaticFailed` documents both producers on the
@@ -260,9 +291,9 @@ the softer of two refusals.** `StartupReconciliation.refusalForGrant` answers
 found **automatic** at bring-up that a fresh grant-time read then finds in manual — something else
 took it after the pass ran. The distinction matters here rather than being a naming detail,
 because the refusal actually carried over is the terminal state this section has just said
-nothing watches. Nor does #189's clear reach it: that is `LeaseAuthority.restoreAbandoned`, and
-reconciliation's `handbackRefused` is a separate set in a separate type, which no lease teardown
-and no panic sweep writes to.
+nothing watches. Nor does #189's clear reach it: that clears the lease core's `restoreAbandoned`,
+in `LeaseAuthority.HandbackRegisters`, and reconciliation's `handbackRefused` is a separate set
+in a separate type, which no lease teardown and no panic sweep writes to.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
@@ -376,8 +407,11 @@ must pass a plausibility gate:
 | `F<n>Mx <= 20,000` | Rejects the denormal and ~1e14 shapes of a byte-order fault, with wide margin over real hardware |
 
 A fan that fails any of them is reported
-`manualControlAvailability: .unavailable(.boundsImplausible)` — distinct from "no helper"
-and from "no such fan" — and **no target write of any kind may be produced for it, ever**.
+`manualControlAvailability: .unavailable(.boundsImplausible)` — by the snapshot, and since
+[#270](https://github.com/blamechris/Aeolus/issues/270) by the grant, which reads both bounds
+afresh for every requested fan Aeolus is not already accountable for, after the foreign-control
+read and before its straight-line region. That reason is distinct from "no helper" and from "no
+such fan", and **no target write of any kind may be produced for it, ever**.
 Inventing a maximum to write against would push a fabricated number through the exact path
 rule 4 exists to guard; see [ADR 0007](ADR/0007-safety-composition.md). The only action such
 a fan is subject to is the bounds-free mode verb, restore-to-automatic, which needs no
@@ -426,7 +460,11 @@ the declared-minimum-of-zero case; a rejection test per gate check, using synthe
 and no hardware; a test asserting an observation below the declared minimum passes through
 unclamped; and, on the helper side, a permit refused for every implausible declaration,
 granted for a legitimate zero minimum, and source tripwires asserting that both write verbs
-take a permit and that the restore verb takes none.
+take a permit and that the restore verb takes none. Since #270: a grant refused
+`.boundsImplausible` for the one scripted firmware value the snapshot reads, ranked as the
+snapshot ranks it beside foreign control, a mode that will not read, a handback register and
+§ 7's seal (`GrantBoundsAgreementTests`); the gate's reads counted, and cancellation kept apart
+(`GrantBoundsGateTests`); and a source tripwire asserting that the lease core names no permit.
 
 ## 3. Thermal emergency override
 
@@ -624,9 +662,12 @@ notification ever arrives.
 - Before sleep, in this order: **seal acquisition** so no new lease can be granted until the
   machine wakes, **release every lease**, **restore `.everyFan`** through the keystone verb
   (which also clears the Apple Silicon force key), and only **then** acknowledge the power
-  change.
+  change. The release and the restore run inside the machine-wide restore seal
+  (`LeaseAuthority.sealingGrants(during:)`), so no grant succeeds while either is in flight,
+  before the wake or after it ([#364](https://github.com/blamechris/Aeolus/issues/364)).
 - After wake: **nothing** written. The helper does not re-assert, and does not reconcile
-  either. It clears the seal, which touches no fan.
+  either. It clears the sleep seal, which touches no fan, and leaves the machine-wide restore
+  seal to any teardown still running.
 
 **The seal is what closes the door the other three leave open.** Without it, a request
 already parked on the helper's 34-key telemetry read when `.willSleep` arrived resumes after
@@ -634,9 +675,47 @@ the table has been emptied and every fan restored, finds no lease and no fan mid
 and engages manual control on a machine that is about to stop running the helper — a fan
 pinned across a sleep by the one path the ordering above does not cover. A client that asks
 in the window is refused `ManualControlAvailability.Reason.systemSleeping` and told to ask
-again after the wake. A helper that hears a sleep and never hears the wake refuses manual
-control for the rest of its life, which is the fail-safe direction and is deliberately not
-guarded against.
+again after the wake, and the snapshot says so before it asks
+([#269](https://github.com/blamechris/Aeolus/issues/269)): every fan nothing ranked above the seal
+refuses — the build, § 6's answer for the fan, § 2's bounds for a fan Aeolus is not accountable
+for, an abandoned or unconfirmed handback — reads `systemSleeping` while the seal stands, so
+`fanctl auto` there exits 8 rather than 0. A leased fan's bounds are not among them: the grant's
+bounds read exempts it, so it reads `systemSleeping` too. A helper that hears a sleep and never
+hears the wake refuses manual control for the rest of its life, which is the fail-safe direction
+and is deliberately not guarded against.
+
+**An engagement already past its entitlement is the other door, and the plane closes it** (ADR
+0014's #410 ticket-and-seal amendment). The grant seal stops a lease being taken in the window; it
+cannot stop a step of an engagement whose lease was checked just before the release. So every
+engagement takes its epoch from the plane before it asks the entitlement, and its first step is
+admitted only if no restore has been requested since. The handback requests its restores after it
+ends every lease, so a step admitted after them is refused inside its own turn, before it writes,
+and one admitted before them is covered by the restore that follows it. A command that lands after
+`.everyFan` writes a target to an automatic fan and moves no mode — reported harmless on Apple
+Silicon, and untested on Intel (`CLAUDE.md` rule 11). So when the handback's restores take effect,
+it leaves raw `F<n>Md = 0` and `Ftst = 0` behind it, as ADR 0014's restatement says, whatever was in
+flight: a step is refused if it is admitted after the handback's restore request, and otherwise
+covered by the restore that follows. The ticket guarantees that no engagement in flight undoes a
+restore that took effect; it does not make the firmware take one, and a refused restore still lets
+the machine sleep. `MachineWideRestoreInFlightApplyTests` drives the first half, a step admitted
+after the request, with an `apply` in flight on both unlock paths.
+
+**Two seals, because they are two facts** (#364, [#347](https://github.com/blamechris/Aeolus/issues/347)).
+`sleepSeal` is the episode's: the machine is going to sleep. It is set before the teardown and
+cleared by a wake newer than every sleep that met it, so a stale wake cannot reopen a seal a newer
+sleep set or found standing (#347). The machine-wide restore seal is the teardown's: a restore that
+would undo a grant is in flight. The two coincide only when the teardown starts after the sleep
+seal and ends before the wake, and neither is guaranteed — the seal is declined when its wake was
+already answered, and a teardown whose restore outlasts the budget is still running after the
+wake. So the teardown holds the second seal for its whole extent. A grant during a sealed
+teardown is refused `systemSleeping`; one during a declined teardown, or one still running after
+the wake, is refused `releaseInProgress`. The declined teardown still runs, because the later wake
+proves the sleep is over and not what it left behind: it is the only act that ends a lease which
+crossed the sleep, and the episode's only `.everyFan`. A teardown that never returns refuses every
+grant until it returns or the helper is ended
+([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)), which is the safe
+side. [handback-ledger.md](records/handback-ledger.md) § *"§ 4's handback runs inside it (#364)"*
+has the argument.
 
 **Release-before-sleep is the load-bearing half**; the continuous-clock TTL is the backstop,
 for a sleep that arrives without a completed notification round trip. Whether
@@ -816,8 +895,10 @@ exercised by it. Nothing in the observation licenses weakening that path.
 Reconnect-or-release is the answer either way: a helper that cannot read after
 wake is the blindness case in § 5.
 
-*Tested by:* `SystemPowerTests`, which drives `.willSleep` and `.didWake` through the
-composed helper against a scripted `SystemPowerObserving` — asserting the restore is on the
+*Tested by:* `MachineWideRestoreInFlightApplyTests`, which runs the handback inside an `apply`'s
+engagement and holds that nothing is written after its restore, and that a sleep and a wake leave
+the plane able to engage; and `SystemPowerTests`, which drives `.willSleep` and `.didWake` through
+the composed helper against a scripted `SystemPowerObserving` — asserting the restore is on the
 wire **before** the acknowledgement (observed from inside the acknowledgement, because
 afterwards the two orders are indistinguishable), **no firmware call at all** on wake, that
 the budget releases the system when the handback does not return, and that neither event
@@ -837,7 +918,11 @@ nothing pinned. That the seal is paired with *its own* episode: a `.willSleep` w
 starved until after its wake does not close the table, a wake older than the seal standing
 does not reopen it, and — the sequence that matters most — `.didWake`, `.willSleep`,
 `.didWake`, `.willSleep` still seals on the second ordinary sleep, so one unpaired wake cannot
-disable the seal for the life of the process. That the keystone is **observed** in each of its
+disable the seal for the life of the process. Since #347 it holds two more sequences: a wake
+older than a sleep that *met* the standing seal, rather than set it, does not reopen it; and a
+starved older sleep that runs after a newer one sealed does not lower the seal below a stale
+wake, which pins the larger generation rather than plain assignment. That the keystone is
+**observed** in each of its
 four states rather than inferred from an empty register: never issued, issued and outstanding,
 landed, refused. And that a wedge on the first fan still records every fan the sweep covered,
 on a two-fan machine, which is the smallest that can tell "every fan" from "the first fan".
@@ -851,6 +936,24 @@ stayed green. It is a claim about the seal, the acknowledgement count and the cy
 those it holds; it is not a claim about either register, and it is recorded here as a
 correction rather than deleted, because a *Tested by:* line that retires a question is the
 failure mode this section's own reading note warns about.
+
+**`SleepGrantSealTests`** (#364) holds the machine-wide restore seal across the whole teardown on
+the three routes the sleep seal does not cover: a grant during a declined seal's teardown, with the
+keystone or the sweep parked, is refused `releaseInProgress` and the snapshot says the same; a
+keystone parked across its wake refuses a grant `systemSleeping` before the wake and
+`releaseInProgress` after it; and a sweep parked across its wake refuses a grant over a fan it
+does not cover, with the keystone issued only once the sweep returns. Every one grants once the
+teardown returns. **`SleepSealAvailabilityTests`** (#269) holds the snapshot to the grant while the
+seal stands: a fan nothing else refuses, a fan mid-handback, a free fan beside another client's
+lease and a leased fan with implausible bounds read `systemSleeping` on both sides; a handback
+register, a fan held elsewhere and one whose mode will not read keep their own reason above the
+seal; and a seam that cannot write reads the build. **`BlindAvailabilityTests`** holds § 3's
+blindness the same way: stated over a fan nothing else refuses and over implausible bounds, and
+never over a fan's own pending or durable reason — one scenario for each reason the ladder can
+state there (`aFansOwnReasonOutranksBlindness`, `aHandbackOutranksBlindness`). It holds the check
+asked once per snapshot, cold or warm, in `aSnapshotAsksTheCacheOnce`; of the grant's own cache,
+in `theSnapshotAndTheGrantShareOneSighting`; never on a seam that cannot write; and never logged
+per snapshot.
 
 The register half is **`SleepCycleAccumulationTests`** (#209) and its sibling
 **`SleepCycleSurvivalTests`**, which split decision D33's endings between them. The first
@@ -908,8 +1011,12 @@ A fan that cannot reach a target the firmware **is** holding has not been reclai
 obstructed, or failing, or declaring a maximum it cannot achieve. Re-asserting rewrites a
 number that is already correct, restoring hands the fan to Apple's thermal management against
 the same obstruction, and reporting it as reclaimed is a false statement about who holds it.
-So the secondary signal tells the user and changes nothing else. Only the primary signal
-reaches the re-assert and the fallback below.
+So the secondary signal tells the user and changes nothing else. The cycle it fires on still
+clears a reclamation mark an earlier cycle left, because that cycle's primary converged and the
+mark follows the primary signal; it does not refill the re-assert budget, which only a cycle
+converged on both signals does ([#366](https://github.com/blamechris/Aeolus/issues/366)). The
+budget bounds a contest with the system, and the mark says who holds the fan. Only the primary
+signal reaches the re-assert and the fallback below.
 
 **A fan at rest reads exactly 0, and that is the shortfall case hardware has actually
 demonstrated** (#212). On the read-only lid close recorded in [SMC-RESEARCH.md](SMC-RESEARCH.md),
@@ -979,12 +1086,28 @@ When divergence is confirmed the helper either re-asserts control or falls back 
 — and either way **tells the user**. It never continues reporting a target speed the
 hardware is ignoring.
 
+**What the fallback leaves behind is a fact, not a refusal**
+([#355](https://github.com/blamechris/Aeolus/issues/355)). The terminal action hands the fan
+back, revokes the lease it was holding the fan for (#353), and keeps a ledger entry saying why
+(#346): the system took the fan, or the helper could not read it. The snapshot reports the first
+as `FanState.isReclaimedBySystem`; the second is in the fault log and in the lease's ending.
+Neither is a manual-control availability. The grant path never reads the ledger, and only an
+engagement or a release clears it, so a refusal keyed on it would stand for the life of the
+process — the only events that end it need the lease it refuses. On a build that can write, a
+client may ask for the fan again: the grant reads it fresh, the unlock runs with a fresh yield
+budget, and a landed engagement clears the mark and gives this section a fresh re-assert budget.
+The contest with the system is bounded per request, because no Aeolus client re-acquires on its
+own (ADR 0013 D1). The flag is history, and can go stale if another program takes the fan later;
+the availability beside it is current. A hardware run showing the system repeatedly reclaiming
+re-engaged fans reopens this ([ADR 0014](ADR/0014-apple-silicon-unlock.md)'s 2026-10-15
+amendment).
+
 **One window is graced, and only one.** A fan is registered as under manual control at the
 moment the `F<n>Md` write lands, which is before anything has been commanded on it. In that
 window the primary signal's target comparison cannot be made at all, and the two answers that
 *are* reachable — the mode still reading automatic, or `F<n>Tg` not reading — are exactly
 what the lag between a mode write and a read reflecting it looks like. Confirming divergence
-there costs the client every lease on the machine milliseconds after it was granted one, with
+there costs the client its lease milliseconds after it was granted one, with
 a fault line blaming the operating system for it. So divergence on a fan with **nothing
 commanded** is tolerated for `blindCyclesBeforeDivergence` cycles — three, so three seconds —
 before it reaches the fallback above; for those cycles the user is told nothing beyond a
@@ -1013,38 +1136,206 @@ forever, so nothing revisits it.
 
 The window is narrowed rather than shut, and the bolded sentence above is worded to say so
 rather than to reassure. ADR 0009 prescribes a second precedence read after the envelope read
-and before manual control is re-engaged; **that read did not ship**, so § 3 can still latch
-during the envelope read and both writes will land above the ceiling. What corrects it is the
-check *after* the writes, which restores the fan in the safe direction — acting and then
-checking, because the check cannot be made atomic with the act across two actors. The residual
-that leaves is disclosed rather than rounded off: the undo is itself a restore, a restore can
-be refused, and a refused undo leaves the fan pinned with a log line and no mechanism watching
-it — § 3's registry is not told about the re-assert either.
-[#181](https://github.com/blamechris/Aeolus/issues/181) carries all three — the missing read,
-the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
-section is the audit of which parts of that ruling are in the tree.
+and before manual control is re-engaged; since
+[#181](https://github.com/blamechris/Aeolus/issues/181) it is ADR 0014's `EngagementDriver`
+that asks it — before every step of the mode write, and before the command of a fan still in
+manual — so § 3 latching during the envelope read refuses the re-assert before it writes. What
+covers a latch after that is the check *after* the writes, which restores the fan in the safe
+direction — acting and then checking, because the check cannot be made atomic with the act
+across two actors. The undo is itself a restore and can be refused; what covers that is the
+driver registering the fan with § 3 before its after-check, so a fan whose undo was refused
+stays in the registry § 3's next latched cycle bridges, until a read confirms it automatic. The
+driver then throws `EngagementUndoRefused`, carrying the step's own refusal, and § 5 routes that
+cause exactly as it routed the unwrapped error (ADR 0014's #410 refused-hand-back amendment).
+ADR 0009's "As built, and what did not land" section is the audit of which parts of that ruling
+are in the tree.
 
-**A write away from the safe state requires a live lease, checked at every examination.**
-ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
-([#180](https://github.com/blamechris/Aeolus/issues/180)):
-this section's registry of held fans is a hint, and the lease table is the authority. Every
-examination reads the fan, then asks the lease core whether a live lease covers it, and only
-then believes the reading. A held fan with no live lease is its own divergence class,
-`.leaseLapsed`, restored and forgotten, and never reported as a system reclamation — nobody
-took that fan, Aeolus simply stopped being entitled to it. So § 1's guarantee that manual
-control is a lease rather than a setting no longer rests on the control plane remembering to
-say when a lease ended; the helper still says so, before every lease-core restore, and that
-notice is now a courtesy rather than the control. The check is dormant until something registers
-fans with § 5, which nothing in this build does.
+**A write away from the safe state requires the lease the fan was registered under to be live,
+checked at every examination.** ADR 0009's second ruling, built in
+[#342](https://github.com/blamechris/Aeolus/pull/342) and scoped to identity by
+[#357](https://github.com/blamechris/Aeolus/issues/357) and
+[#353](https://github.com/blamechris/Aeolus/issues/353). This section's registry of held fans is
+a hint, and the lease table is the authority. Every registration names the lease it was made
+under, the one `apply` authorised. Every examination reads the fan, then asks the lease core
+whether *that* lease is still live and still covers the fan, and only then believes the reading.
+Coverage alone is not the question: once a lease ends, another client can be granted the same fan
+within one cycle, and a coverage question answered by the newer lease let § 5 re-assert the old
+lease's target under it, or give the fan up and revoke the newer lease blaming the operating
+system. A held fan whose own lease is no longer live is `.leaseLapsed`: restored and forgotten
+whatever covers the fan now, and never reported as a system reclamation. That restore can
+supersede an engagement the newer lease has in progress (ADR 0014 D4); that `apply` is refused,
+which is the safe direction. Level 6's `apply` registers fans with § 5, and on a `.notBuilt` build,
+which grants no lease, nothing does, so the check is dormant there.
 
-The order is deliberate. The lease is asked *after* the read because every teardown drops its
-lease before it restores, so a read that saw that restore land is followed by a question that
-sees the lease gone; asked first, the same restore looks like the system taking the fan back.
+**Every act § 5 takes is taken for that lease and no other.** After every suspension § 5 re-fetches
+the fan's record and stops if it is gone *or belongs to another lease*. A record under a newer lease
+means that lease's engagement holds the fan and its own record is watching it, so § 5 neither
+restores, forgets nor commands it. The re-assert's two re-fetches before its command write ask one
+thing more ([#381](https://github.com/blamechris/Aeolus/issues/381)): whether the fan has been
+registered again under its own lease since the examination began, which stamps the record before its
+read. If it has, that engagement commands the fan itself, after the reading the re-assert was
+decided on, so § 5 writes nothing more for that examination and says so; the attempt stays spent,
+and the mark is left to the episode. While one engagement of a fan runs at a time, a first step
+refused because that engagement had already taken the fan off automatic control writes nothing, and
+is the same stand-down, not a failed write. If it has not, § 5 commands the record's target as it
+stands after its last suspension before the write,
+never the one it judged, and records its write only over that target, so a report that arrived
+during the write is kept. The terminal action ends only the lease it was holding the fan for:
+revoked if it is live, ended as expired if it has lapsed and is still unswept — inside the call, so
+its release notice cannot erase the mark the terminal action keeps — and not touched if it has
+already ended; the fan is handed back in every case. A sweep or a
+teardown that removes the lease after the hand-back and before the revocation is outwaited: the
+revocation answers only once that teardown's handback of the fan has returned, so its notice finds
+the mark kept ([#368](https://github.com/blamechris/Aeolus/issues/368)). A registration under a
+lease that is no longer live is refused, as is one whose fan was released or registered while it
+asked. A registration under the lease the fan is held under has three answers, by when it lands
+([#366](https://github.com/blamechris/Aeolus/issues/366)):
+
+| When it lands | What happens to it |
+|---|---|
+| Before the cycle that judges the fan diverged | Accepted, and it clears the mark |
+| From that judgement to the terminal action's entry | Accepted, and it clears nothing: the episode decides the mark |
+| From the entry on, while the terminal action runs and after | Refused |
+
+The second row holds only while the episode is open: once a cycle that reads the target held has
+closed it, a registration behaves as in the first. Mid-episode it is the holder re-applying while
+§ 5 contests the fan. The next cycle that reads the target held clears the mark, and the terminal
+action keeps it; § 5's own flow does not change, so a re-apply can neither postpone the terminal
+action nor rearm the budget. It is accepted rather than refused because a refusal makes the caller
+hand the fan back, and that restore would supersede § 5's own re-assert. From the entry on it is
+refused because the same call ends that lease, and an ended lease is never live again, so any answer
+about it is stale whenever the registration began. That refusal is per fan: a re-apply of a sibling
+fan under the same lease is refused by the revocation's release notice in the shipping composition,
+and with that notice lost it is accepted and handed back as `.leaseLapsed` on the next cycle. None
+of this relies on a release notice for the fan given up. The terminal action also moves the
+registration's generation as it begins, for another lease's registration in flight across the entry.
+A refused registration clears nothing; one under a live lease replaces whatever an ended lease left.
+The engagement driver asks the same question, about the lease the engagement runs under, before and
+after every step.
+
+**What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an
+engagement that outlived its lease, can land after a newer lease's engagement and before that
+lease registers the fan. Nothing sees it until the newer record's first examination, which reads
+the fan as reclaimed and re-asserts that lease's own target, in the safe direction, with a
+reclamation reported that the system did not cause. The false mark lasts one cycle: the next
+readable cycle reads the re-asserted target held and clears it, whether or not the fan has reached
+its speed yet, because the mark follows the primary signal
+([#366](https://github.com/blamechris/Aeolus/issues/366)). Until #366 only a cycle converged on
+both signals cleared it, so it stood for as long as the fan ramped. Cycles that cannot read clear
+nothing, and after `blindCyclesBeforeDivergence` of them blindness takes over. A same-lease
+re-apply that engages the fan mid-episode is held to the same bound: the mark stands until the
+next readable cycle.
+
+A client write issued during § 5's own command write can still land first (#381). The fan then
+holds § 5's re-fetched target, which is older than the client's, until the next readable cycle
+reads it as diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept
+for that cycle. Only mutual exclusion over the write closes it, and the fans' examination gate is
+that exclusion (ADR 0014's #383 and A6 amendments): a client write then waits out § 5's re-assert,
+and past § 5's bound § 5 writes nothing away from automatic control, so the case remains only for a
+write that bypasses the gate. A same-lease re-apply just before a genuine re-reclamation stands
+that cycle's re-assert down, and so does one that registers without engaging a fan the system has
+taken back to automatic, which A6's contract allows for a fan it believes already engaged; the fan
+stays on automatic until the next cycle re-engages it. Each costs one cycle and one attempt, in the
+direction of giving the fan up sooner. Two engagements of one fan under one lease will not
+overlap ([#389](https://github.com/blamechris/Aeolus/issues/389), closed by A6's second step):
+level 6 engages only under the fan's examination gate, which § 5
+holds through its re-assert, so a same-lease engagement attempted during § 5's yield wait waits
+for it, and neither undoes the other. Before the gate, one that completed during that wait re-admitted § 5's next step as a first
+step, refused `.notAutomatic` after § 5's driver had written, and § 5's stand-down line then said
+nothing was written. A level-6 step that lands between § 5's read and its judgement is judged against a
+record that predates or postdates the reading, so an ordinary step can read as diverged. § 5
+excuses no reading for it, because any excuse built on what the lease holder reports can be met by
+a lease holder that reports a target the system holds; instead A6 keeps each step out of § 5's
+examination of the fan (ADR 0014's #383 amendment,
+[#383](https://github.com/blamechris/Aeolus/issues/383)).
+
+**The examination gate, as built** (ADR 0014's A6 amendment). `FanExaminationGate` lets one § 5
+examination or one level-6 step hold a fan at a time, first in, first out, per fan. § 5 takes it
+before it stamps the examination and holds it to the examination's last act, so a step lands before
+an examination or after it, never inside. § 5 waits at most `examinationWait`, 32 s. That is:
+
+- the longest a step queued ahead of § 5 waits for its grant, `stepWait`;
+- then the longest hold a step that keeps A6's contract makes at ADR 0012's design point, 30 s,
+  which is three scheduler turns, or the yield budget and two, each turn, its wait included, taken
+  at ADR 0012's G;
+- and `examinationMargin`, 1 s, for a late timer wake and the actor hops inside a hold. Neither is
+  measured: run 1 measures both (ADR 0014 D8).
+
+ADR 0012 itself ends the helper for neither a long turn nor a long wait: D bounds one round trip,
+and G only logs (ADR 0014's A6 PR-2 amendment). A wait past the bound means the contract was
+broken, or the helper is outside that design point, or the wait spanned a system sleep, which the
+bound counts. The gate says so at `.fault`, and § 5 examines without it. It judges, marks and
+restores as before, and its re-assert stands down, so nothing it writes takes the fan away from
+automatic control. A false divergence there marks the fan for a cycle and spends an attempt, which
+the next converged cycle resets; at the budget it takes the terminal action. Later examinations
+against the same holder do not wait at all, so a stuck holder costs § 5 one bound: 32 s in which no
+fan is examined.
+
+A cancelled wait is not past the bound, though it holds nothing; the re-assert's cancellation guard
+stops its writes and refunds its attempt (#144), a mark its judgement leaves is cleared by the next
+converged cycle, and a restore or a revocation it reaches, through `finaliseRelease`, still
+happens. `diverged` decides on the record as it stands after its ledger hop, so past the bound a
+first command reported there is seen, not overtaken by a stale copy. Level 6 waits at most
+`stepWait`, 1 s, and never engages a fan or commands a target without the gate. Its undo's
+hand-back is a restore, and takes none. § 3's writes and every restore never take the
+gate, so no hand-back waits on a holder; the engagement driver and the writers never take it either,
+because § 5's re-engage runs through them while § 5 holds it.
+
+**Level 6's `apply`, as built** (ADR 0014's A6 PR-2 amendment). `LeaseApplier` takes each fan's gate
+for the whole of that fan's step: it engages the fan unless this lease holds it engaged, registers
+it with § 5, asks the entitlement, writes the fixed target whole and reports what the write
+returned, one fan at a time and one gate at a time, after reading the fan's envelope outside the
+gate. Any refusal on the way undoes what this `apply` engaged, dropping § 5's record first and then
+handing the fan back, outside the gate and without waiting for one. Before it replies it asks the
+lease and § 3's latch again. It admits one `apply` at a time, whatever the lease or connection, and
+refuses a second before it reads anything: a refused `apply`'s undo takes no gate, so it must never
+meet another `apply` that has commanded the fan since. It answers applied only for reports § 5
+recorded. A fan whose hand-back throws — level 6's own, or the driver's undo of an engagement that
+issued a write, even a refused one — is kept under its lease as one whose hand-back was refused,
+registered with § 3 until a restore of it is confirmed, and restored by the lease's teardown. A
+first step that fails before it issues any write is not undone and opens no account. The next
+`apply` under the lease that names a kept fan does not assume what it is doing: it runs the driver,
+whose first step reads the fan's raw mode in its own turn. A fan back on automatic is engaged
+afresh. One reading the value Aeolus's engagement writes is held again, registered with § 3 and § 5
+and commanded with nothing written to its mode; the value cannot say whose write it was, which is a
+contest § 5's budget bounds. One reading any other value is someone else's, and its account ends.
+The account also ends at every other refusal of the re-apply, a driver hand-back that returns
+included, except two: a refused undo keeps it, and a first step that failed before writing leaves
+it standing (ADR 0014's #410 refused-hand-back amendment). A fan whose report § 5 answered
+`.notHeld` has already left the set, and is kept again only if this
+`apply` engaged it and its hand-back then throws. Since A6's third step the composition builds
+exactly one, from the one gate and the § 5 its supervisor cycles, and `SupervisedFanAuthority.apply`
+reaches it through `LeaseApplying`, a role with one verb and no permit, after the authority's
+shutdown refusal (ADR 0014's A6 PR-3 amendment). The connection's sequencer carries `apply`, so a
+client's two applies on one connection never meet the claim; an `apply` under a lease that has
+ended, as across a reconnect, can still meet one under the lease granted since, and is refused. On a
+`.notBuilt` build it writes nothing, because no lease is granted, and every answer is the one it was
+before, in the same order.
+
+The snapshot states a fan's target only as § 5 holds it for the live lease, and only while the same
+snapshot reads the fan in manual, § 5 has not marked it reclaimed by the system, and no thermal
+emergency is active. A reclaimed fan is reported with no target, its mode as read, and the mark once
+§ 5 has judged it. A system that rewrites `F<n>Tg` and leaves `F<n>Md` manual is not seen until § 5's
+next examination, so the record is stated for up to one § 5 period (ADR 0014's #410 snapshot-target
+amendment).
+
+**The record refuses a target no plane can write.** A target that is not a number, or is below the
+floor every permit is clamped to, is not recorded, whether a report or a re-assert's write returned
+it, and the refusal is logged at `.fault`; the record then keeps the
+step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
+RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
+([#395](https://github.com/blamechris/Aeolus/pull/395)).
+
+The order is deliberate. The fan's own lease is asked *after* the read because every teardown
+drops its lease before it restores, so a read that saw that restore land is followed by a
+question that sees the lease gone; asked first, the same restore looks like the system taking the
+fan back.
 It is asked *before* either signal, and before an unreadable cycle is counted, because the
-tolerances this section grants are for fans Aeolus holds. **What it does not close:** the lease
-is asked once per examination, not inside the re-assert's writes, so a lease that lapses while
-a re-assert is in flight is re-asserted once and handed back on the next cycle — one second,
-not permanently. Checking before and after each write is ADR 0014's, and is not built.
+tolerances this section grants are for fans Aeolus holds. Since #181 it is asked inside the
+re-assert too: ADR 0014's engagement driver asks it, with the precedence ruling, before and after
+every step of the mode write, and before the command of a fan that needs no mode write. **What
+it does not close:** nothing asks it after the command write, so a lease that lapses during that
+write is re-asserted once and handed back on the next cycle — one second, not permanently.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
@@ -1052,12 +1343,89 @@ worse than a UI that reports an error, because the user acts on it.
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
 `ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
-`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift` and
-`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
-seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
-envelope, a read held open so overlapping reads would be visible, a read or write that runs a
-side effect while it is suspended, and a control-state read answered from a scripted sequence
-so a `F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
+`ReclamationLeaseIdentityTests.swift`, `ReclamationRegistrationHopTests.swift`,
+`ReclamationTerminalEntryTests.swift`, `ReclamationRefusedCommandWriteTests.swift`,
+`FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
+`TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
+`LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationRecordIntegrityTests.swift` (a report or a re-assert's return below the floor or not a
+number, refused and logged at `.fault`; a report matching a system target below the floor; a target
+that is not a number; and every RPM a log line states, #395),
+`ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
+the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
+and #366's episode and given-up lease as values, in its extension in
+`ReclamationRegistryEpisodeTests.swift`),
+`ReclamationEpisodeMarkTests.swift` (the mark following the primary signal, and a re-apply
+mid-episode leaving it to the episode, #366, with the three boundaries #384's review added: a
+blind cycle keeps the episode open, a run of `.short` cycles does not refill the re-assert
+budget, and a cycle that cannot read clears nothing),
+the `ReclamationReassertViewTests` suite, with its extension in
+`ReclamationReassertSuspensionTests.swift`, and `ReclamationReassertTargetValueTests` (the
+re-assert writing the fan as it stands: a same-lease re-apply landed in each of its suspensions,
+before its first step and once the control-state read has sampled included, a first step refused
+after its mode write or after a release, and the stamp, the re-fetch and the record as values,
+#381),
+`ReclamationRefetchIdentityTests.swift`, `ReclamationSafetyHopIdentityTests.swift` and
+`ReclamationLateRegistrationTests.swift` (the identity half of every re-fetch, and the
+registrations the generation lets through: accepted after a lapse or a lost release notice, and
+refused under the lease the terminal action gave the fan up for, whatever notice was sent, #365,
+#366, #380), `ReclamationLedgerHopTests` (what `diverged` decides on after its ledger hop: the live
+record, a first command that waits for the gate, and one seen past the gate's bound, #365's C1
+note and #383), the examination gate in `FanExaminationGateTests.swift` with its `+Bound.swift`
+extension and, as a value,
+`FanExaminationGateLanesTests.swift` (exclusion, the per-fan lanes, first in first out, both bounds
+to the nanosecond, § 5's bound outlasting a lawful hold by a step queued ahead of it, a grant and an
+expiry at one instant, cancellation, a clock that fails, the outwaited holder),
+`ReclamationExaminationGateTests.swift` (a step in either order around the read, each fan's own
+gate, the gate before the stamp, a divergence past the bound marked with nothing written, and a
+cancelled wait's refund), `ExaminationGateRestoreTests.swift` (every hand-back finishing with a
+gate held for good, `restoreAndForget` and the driver's undo included) and
+`ExaminationGateRouteTests.swift` (where the gate may be named and entered, its one instance, and
+a shipped build never entering it). *Not claimed:* the two cancellation guards in the gate's timer,
+in its `catch` and after its sleep, are equivalent mutants that leave every gate test green, since
+the timer is cancelled only once its wait is decided. Level 6's `apply` is tested in the
+`LeaseApplier` suites (`LeaseApplierTests.swift` and its siblings: item 0's checks, the item 5
+table row by row, the undo's order and that it never waits for a gate, one hold per fan, one
+`apply` at a time and the claim given up on every exit, the report's receipt, a refused hand-back
+keeping the fan's account and its next re-apply reading the fan through the driver
+(`LeaseApplierHandBackTests.swift`, `LeaseApplierKeptFanTests.swift`), which engagements open an
+account (`LeaseApplierIssuedWriteTests.swift`), when one ends (`LeaseApplierAccountEndTests.swift`),
+every kept fan held by § 3 and each re-adopted by its own index
+(`LeaseApplierReAdoptionTests.swift`), the registration and the report under the gate, index order,
+the ramp reset, § 5's bound outlasting a lawful hold at the design point, and #383's and #389's
+acceptance with the real level 6), with
+`manualControlHandedBack` in `ReclamationHandedBackTests.swift`, level 6's two accounts as a value
+in `LeaseEngagementsTests.swift`, the driver's refused undo said and routed by its cause in
+`EngagementUndoRefusedTests.swift`, with a first step that failed before its first write, the
+plane's own split in `ScriptedControlPlaneModeReadTests.swift`, the governed writer's whole write in
+`GovernedFanWriterHoldTests.swift`, the driver's own level in `EngagementDriverLevelTests.swift`,
+and what the level-6 file names in `LeaseApplierTripwireTests.swift`. § 5's access is held by
+`ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift`, and
+`ReclamationRoleTripwireTests.swift` holds what the three roles over the lease core, the latch and
+the ledger carry (#380). Level 6 at the boundary is tested in `ApplyEndToEndTests.swift` (acquire,
+apply, snapshot and release through the real client), `SupervisedApplyBoundaryTests.swift` (the
+shutdown refusal first, the `.notBuilt` answers and two pipelined applies through the listener),
+`LevelSixCompositionTests.swift` with the composed pins beside § 5's,
+`LeaseApplyingTripwireTests.swift` (the role and its verb, by census) and
+`SignalTeardownInFlightApplyTests.swift` (§ 6's exit with an `apply`, a command or a re-assert in
+flight, below), `MachineWideRestoreInFlightApplyTests.swift` (§ 4's and § 7's), with the
+engagement driver the re-assert engages through in `EngagementDriverTests.swift`,
+`EngagementEpochTests.swift`, `EngagementTicketTests.swift` and `EngagementTicketTripwireTests.swift`,
+and the plane's ledger in `PlaneWriteLedgerTests.swift` with `PlaneWriteLedgerTicketTests.swift` —
+mostly through `ScriptedControlPlane`, with seven bespoke seams in
+`ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused envelope, a read
+held open so overlapping reads would be visible, a read or write that runs a side effect while it
+is suspended, a ticket with a synchronous effect run just before it (`runBeforeBeginEngagement`), a
+command with an effect run before its turn (`interfere(beforeCommandTarget:)`), a control-state
+read answered from a scripted sequence so a `F<n>Tg` can be readable on one cycle and not the next,
+and a lease answer held open on a
+continuation (`ParkableHeldLeases`) so a release, a re-grant or the terminal action can land
+between the lease core answering and § 5 resuming — the same seam lands #368's teardown between
+§ 5's hand-back and its revocation, held inside its handback by `ParkingFanRestorer`, a
+`FanRestoring` decorator in `HandbackOutwaitDoubles.swift`. Two more in
+`ParkableSafetyHops.swift` hold the latch's answer and any of the ledger's three calls open the
+same way (`ParkableThermalLatch`, `ParkableReclamationLedger`, #380), on the one parking
+primitive all three share. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give
@@ -1077,6 +1445,16 @@ Those interleavings are scripted rather than raced, via a read seam that runs a 
 bug that needs work to **arrive**. Three more, from #180, script a lease ending inside one of
 the re-assert's *writes* — the same seam, now a write seam too, because the re-fetch missing
 after the command write was invisible to a seam that could only interfere with reads.
+
+The identity half of every re-fetch is pinned the same way: a registration under a newer lease is
+landed in that one suspension, and the test goes red when the re-fetch asks about presence
+instead (#365). `ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test.
+The last two, the precedence check and the reclamation report in `diverged`, follow hops on
+`ThermalEmergencyLatch` and `ReclamationLedger`, which § 5 now holds through roles,
+`ThermalLatchRole` and `ReclamationLedgerRole`, as it holds the lease core through
+`HeldLeaseRole` (#380); the parkable doubles above hold each hop open, so nothing is raced and no
+thread is blocked. [The watchdog's records](records/reclamation-watchdog.md) say what a presence
+check at either would cost, which is what each test asserts.
 
 The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
 tests rather than compared against their constants, so changing a constant changes what the
@@ -1109,13 +1487,31 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   messages, release every lease, restore every fan, stop the supervisors, restore every fan
   once more, then exit `0` — **or a non-zero exit if that last restore failed**, which is what
   makes the exit code the contract `KeepAlive = { SuccessfulExit = false }` reads. The restore
-  is issued twice because stopping a supervisor does not await a cycle already in flight: a
-  § 3 fire or a § 5 re-assert can land after the first one, and the exit code is taken from
-  the write that comes after them. That narrows the window rather than closing it: a write
-  landing between that last restore and the exit is still possible, and nothing in this
-  process is left to see it. **A restore refused with `controlPathNotBuilt` — this
-  build, which has no SMC write path — exits `0`, because a helper that cannot write cannot
-  have left a fan in manual, and restarting it after every quit would tell the user nothing.**
+  is issued twice, because stopping a supervisor does not await a cycle already in flight, and
+  the exit code is taken from the second. The second is the exit's own scope, `.forExit`:
+  everything `.everyFan` writes, and from the moment it is requested the plane admits no forward
+  write for the rest of the process. The first is `.everyFan`, so that § 3, which runs until the
+  supervisors stop, can still bridge a fan whose restore the firmware refused to maximum. A forward
+  write admitted before that request has its turn before the restore's, which then covers it; one
+  admitted after is refused inside its own turn, before it writes. The engagement's own ticket
+  refuses such a step as well; the seal is the exit's second line, and its only guard against a
+  target command. So whatever was in flight — level 6's `apply` past its entitlement, a § 5
+  re-assert, a § 3 bridge — every forward write is issued before the exit's restore or not at all
+  (ADR 0014's #410 ticket-and-seal amendment). Until that amendment this sentence said the window
+  was narrowed rather than closed, and it was: a first step admitted after the last restore wrote
+  `F<n>Md = 1`, and on the force-key path `Ftst = 1`, and left its undo to a process that was
+  ending. `SignalTeardownInFlightApplyTests` now holds
+  that an engagement, a command and a re-assert in flight at the exit write nothing after the
+  keystone, and that § 3 still bridges a fan to maximum between the two keystones; ruling D19 on
+  [#197](https://github.com/blamechris/Aeolus/pull/197), which accepted the window, is closed by
+  the amendment. One residual is left: a § 3 fire in flight across `stop()` whose maximum takes its
+  turn after the final keystone's request is refused. `stop()` cancels § 3's cycle without joining
+  it, so the teardown does not wait for that fire; the seal permits its restore, which runs only if
+  execution reaches it before the exit. The exit code comes from the final keystone alone: a
+  refused final keystone exits non-zero, and a refused § 3 restore does not.
+  **A restore refused with `controlPathNotBuilt` — this build, which has
+  no SMC write path — exits `0`, because a helper that cannot write cannot have left a fan in
+  manual, and restarting it after every quit would tell the user nothing.**
   Built in E5.4d (#166): `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`.
 - **Orderly exits** — explicit teardown, and **no `atexit` belt**. This bullet used to offer
   one as "a cheap belt, since it too runs in normal context". Running in normal context was
@@ -1301,10 +1697,12 @@ a keystone the firmware accepts but does not apply leaves that fan refused, only
 enumeration and the read-back, and on a seam that can write the snapshot names each durable
 refusal with the reason a grant over the same fan throws — while on one that cannot, it names
 none.
-`ForeignManualControlReportingTests` covers three fans the snapshot must **not** call
-somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
-diagnosed as reclaimed by the system. `RestoreUnconfirmedAttributionTests` covers the other
-two, one from each of § 3's registers of restores no read has confirmed (#303).
+`ForeignManualControlReportingTests` covers two fans the snapshot must **not** call
+somebody else's — one under a live lease, one whose handback was abandoned — and, since
+[#355](https://github.com/blamechris/Aeolus/issues/355), two § 5 recorded as reclaimed or as
+blind that read manual, which the snapshot reports with the reason the grant throws for them.
+`RestoreUnconfirmedAttributionTests` covers two more fans that must not be called somebody
+else's, one from each of § 3's registers of restores no read has confirmed (#303).
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
 *Pending hardware:* rows 2 to 7, 16 and 17 of the
@@ -1316,7 +1714,9 @@ is observable read-only today. The checklist carries each row with its own timin
 *Tested by:* `SignalTeardownTests` and `SignalTeardownTripwireTests` drive the orderly-signal
 bullet through the composed helper — the ordering of all five steps, the exit code for each
 outcome, the three gated control verbs, the second signal being dropped, and a fan put into
-manual while the supervisors are stopping still being handed back — plus source tripwires for
+manual while the supervisors are stopping still being handed back — with
+`SignalTeardownInFlightApplyTests` for an engagement, a command and a re-assert in flight at the
+exit, and § 3 still bridging a fan to maximum between the two keystones — plus source tripwires for
 the absence of crash handling and for the three lines of `DispatchSignalSources.serve` that
 nothing else can reach. `HelperHardwareTests` runs the same teardown against the real SMC on
 `Mac16,5`. **What none of them does is deliver a real signal**, and no test proves a real
@@ -1326,8 +1726,9 @@ firmware takes the mode write; both belong to E3/E4 bring-up.
 
 `fanctl reset --all` is specified to restore every fan to automatic, clear the force key, and
 drop all leases. It must work when the helper's state is inconsistent and when the app will not
-launch at all. **Read that as the design.** What ships today drops the leases and nothing else —
-the gap is itemised below and in row 18 of the [hardware checklist](#hardware-checklist).
+launch at all. **Read that as the design.** The handler does all three on a plane that can write;
+what ships today, on a plane that cannot, drops the leases and nothing else — the gap is itemised
+below and in row 18 of the [hardware checklist](#hardware-checklist).
 
 Handing the fans back to Apple's thermal management is always a valid state, so this
 command is safe to run at any time, from anywhere, including over SSH.
@@ -1346,37 +1747,79 @@ code-signing authorisation check, which is applied at the connection rather than
 "restore what this connection holds". E2's teardown-gate exemption depends on that staying
 true.
 
-**The built implementation satisfies that contract only through the lease core.**
-`SupervisedFanAuthority.restoreAllToAutomatic` is `await leases.releaseEveryLease()` and a log
-line: no `restoreToAutomatic(.everyFan)` reaches the control plane, so a fan held in manual under
-no live lease that Aeolus is *not* accountable for — one another tool pinned, one reconciliation
-recorded as `handbackRefused` — is outside what today's message touches, and no force-key clear is
-issued. That is deliberate and recorded at the source: the plane verb throws
-`.controlPathNotBuilt`, so calling it would make a
-v1 message that succeeds into one that always fails for no change in machine state, and the
-contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). It is
-nonetheless a third missing piece, and it is not obtainable from the two named below.
+**The handler is three acts, and the second is gated on the plane** ([ADR
+0014](ADR/0014-apple-silicon-unlock.md) D5,
+[#104](https://github.com/blamechris/Aeolus/issues/104)).
+`SupervisedFanAuthority.restoreAllToAutomatic` releases every lease (`releaseEveryLease()`); then,
+if and only if the plane's `writeCapability` is `.built`, issues `restoreToAutomatic(.everyFan)`;
+then reads back the handbacks the firmware accepted (`confirmAcceptedHandbacks()`). An engagement
+past its entitlement when the verb arrives is refused at its first step's admission when that
+admission comes after the verb's restore request — on a `.built` plane, where the verb issues
+`.everyFan` — and one admitted earlier is covered by the restore that follows it (ADR 0014's #410
+ticket-and-seal amendment; `MachineWideRestoreInFlightApplyTests` drives an admission after the
+request). So the read-back never sees a step written after the keystone. The machine-wide restore is
+what reaches a fan held in manual under no live lease that Aeolus is *not* accountable for — one
+another tool pinned, one reconciliation recorded as `handbackRefused` — and a stray force key that
+no remaining tracked engagement's restore would clear (a `.fan(n)` restore clears the key only when
+no engagement still depends on it). It sits between the other two so that the read-back follows the
+keystone and never precedes it ([ADR 0007](ADR/0007-safety-composition.md)'s 2026-09-20 amendment).
+The handler is handed two narrow roles of the plane — the keystone (`KeystoneRestoring`) and
+`FanWriteCapabilityReporting` — and never the plane itself, so it still cannot command a fan. On
+every build on `main` the capability is `.notBuilt`: the restore is not issued, and what ships is
+the lease release and the read-back.
+
+**The reply is v1's "accepted" in every case, and that is not a contract change.** A refused
+`.everyFan` is caught explicitly — never with `try?` — and logged at `.fault`, and the message
+still succeeds. Until #104 this section called the handler-side restore "a v1 contract change"
+that "belongs with the write path rather than before it", because the plane verb throws
+`.controlPathNotBuilt` on this build and calling it would have turned a v1 message that succeeds
+into one that always fails ([#159](https://github.com/blamechris/Aeolus/issues/159)). Catching the
+throw keeps the success, and the `.built` gate keeps the call off a plane with nothing to write
+with. The reply's shape and meaning are unchanged — *accepted*, never *done*
+([ADR 0013](ADR/0013-fanctl-control-contract.md)) — so `AeolusXPCVersion` does not move. A fan
+still manual after a refusal reads as such in the snapshot, under the reason the availability
+ladder already gives it; a force key left set has no snapshot field, and the fault line is the
+only report of it. The reply now follows one more restore call, which the client's 10 s
+`panicVerb` deadline covers; its round trip on hardware is unmeasured.
+
+**No lease is granted while the panic verb runs** (#350). Its three acts run inside
+`LeaseAuthority.sealingGrants(during:)`, open from before the sweep empties the table until after
+the read-back. `acquireLease` refuses `.releaseInProgress` while it is open. The seal gates grants
+only: no restore reads it, the restore waits on nothing new, and the reply is unchanged. § 4's
+sleep handback runs inside the same seal (#364).
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
-([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
-`LeaseAuthority.restoreAbandoned` — § 1's terminal state — beside the lease table, per fan
-through the same `restoreToAutomatic(.fan(index))` every teardown uses. Those fans are Aeolus's
-own: it leased them, put them off automatic, asked for them back and was refused, so
-`fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does not apply.
+([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps the lease
+core's `restoreAbandoned` (`LeaseAuthority.HandbackRegisters`), § 1's terminal state, beside the
+lease table, per fan through the same `restoreToAutomatic(.fan(index))` every teardown uses.
+Those fans are Aeolus's own: it leased them, put them off automatic, asked for them back and was
+refused, so `fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does
+not apply.
 Before this they were unreachable by any restore the helper issued, because § 1's own refusal kept
 a lease over them from existing — so § 7 could not recover the one state § 1 called terminal, and
-a fan that entered it stayed there for the life of the process. A write the firmware accepts
-clears the refusal; one it refuses again leaves it standing, and the message succeeds either way,
-which is why this does not have the v1 problem the machine-wide call has.
+a fan that entered it stayed there for the life of the process. A write the firmware accepts,
+and then a read-back confirming the fan automatic (#291), clears the refusal; one it
+refuses again leaves it standing, and the message succeeds either way, as it does for the
+machine-wide call.
 
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by (pending E3/E4):* integration tests invoked against a deliberately corrupted helper
-state; a manual hardware check. `fanctl reset --all` now sends `restoreAllToAutomatic` over XPC
-and is exercised end to end — the real command, the real client, a real `NSXPCListener` and the
-real helper session — by `Tests/AeolusHelperTests/FanctlResetTests.swift`. **No hardware run has
-executed it.** What blocked one, a signed `fanctl` the installed helper admits
+*Tested by:* an integration test invoked against a deliberately corrupted helper state,
+`Tests/AeolusHelperTests/FanctlResetCorruptedStateTests.swift` (#104). It drives the shipping
+`fanctl reset --all` through the real client, a real `NSXPCListener` and the real helper session,
+in front of the composed helper over `ScriptedControlPlane` answering `.built`, with every one of
+these at once: a lease whose connection is gone; a fan in manual under no lease, registered with
+§ 3 and § 5 while the lease table holds no lease over it; a stale `restoreAbandoned` entry; a
+latched § 3 with nothing bridged under it; and a force key set with nothing engaged. The command
+exits 0 saying *accepted*, and afterwards every fan is automatic, the key is clear, no lease is held
+and no handback refusal stands; § 3's latch is still set, because ending an emergency is § 3's own
+cool-down and no message's. A firmware that refuses the machine-wide restore still gets *accepted*, and
+a fault line. `PanicVerbMachineWideRestoreTests` holds both capabilities, the order and the
+refusal at the authority, `PanicGrantSealTests` the grant seal (#350), and `FanctlResetTests` the
+command's own decisions against a healthy helper. That is the panic path as it behaves once a write path exists; every build on `main`
+answers `.notBuilt`. *Pending (E3/E4):* a manual hardware check, row 18's hardware half. **No
+hardware run has executed it.** What blocked one, a signed `fanctl` the installed helper admits
 ([#82](https://github.com/blamechris/Aeolus/issues/82)), no longer does: on 2026-10-09, on
 `Mac16,5` / macOS 27.0.1, the `fanctl` embedded in a Developer ID `Full Release` build was
 admitted by the installed helper ([the hardware
@@ -1386,10 +1829,11 @@ the write behind it is not built. A `swift build` binary carries no Team ID, so 
 the helper and the helper would refuse it, both by design — the ad-hoc binary was seen to refuse
 itself before connecting.
 
-**The CLI's call now exists; the firmware write and the handler's scope do not.** This line read
-*"the XPC call behind it is #15"* until #104, which reads as though the message did not exist, and
-then *"what is missing is the CLI's call and the firmware write"* until
-[#159](https://github.com/blamechris/Aeolus/issues/159) landed the call.
+**The CLI's call and the handler's scope now exist; the firmware write does not.** This line read
+*"the XPC call behind it is #15"* until #104's rewrite of this document, which reads as though the
+message did not exist; then *"what is missing is the CLI's call and the firmware write"* until
+[#159](https://github.com/blamechris/Aeolus/issues/159) landed the call; then *"the firmware
+write and the handler's scope do not"* until #104 gave the handler its machine-wide restore.
 `restoreAllToAutomatic` has existed since E2.1: it is declared on `AeolusXPCProtocol`, implemented
 through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is the one
 message exempt from the version handshake gate. #159 is `fanctl`'s call into it. E3/E4 are the
@@ -1404,13 +1848,12 @@ the client decided, and prints step 5's `bootout` line; an unreachable helper is
 of the two possibilities ADR 0005 measured to be indistinguishable from the client's side.
 
 **Wiring the call was not sufficient, which the previous sentence read as though it were.** The
-handler behind the message is lease-scoped in effect (above), so a build with the call wired and a
-live write path would restore the fans live leases covered and still leave a foreign-held fan
-pinned and `Ftst` set. Two pieces remain, then: the firmware write (E3/E4), and the machine-wide
-restore inside the handler — which is a v1 contract change and belongs with the write path rather
-than before it. Until both land, § 7 describes the panic path rather than providing one, which
-matters more than the other pending lines here because this is the section the others fall back
-to.
+handler behind the message was lease-scoped in effect until #104, so a build with the call wired
+and a live write path would have restored the fans live leases covered and still left a
+foreign-held fan pinned and `Ftst` set. #104 put the machine-wide restore inside the handler,
+gated on the plane (above). One piece remains: the firmware write (E3/E4). Until it lands, § 7
+describes the panic path rather than providing one, which matters more than the other pending
+lines here because this is the section the others fall back to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -1434,6 +1877,15 @@ compiled cap.
 Ramp limiting shapes the control loop's output **only, and never delays a safety-actor
 write**: the thermal override in § 3 is not rate-limited by a comfort mechanism. See
 [ADR 0007](ADR/0007-safety-composition.md).
+
+**It shapes the steps a control loop takes, not a client's setpoint** (ADR 0014's A6 amendments).
+Until E8a's loop exists, level 6 writes a `.fixed(rpm:)` setting whole, in one write of the clamped
+goal (`GovernedFanWriter.hold(_:of:)`): a single governed step towards it would write a speed the
+client did not ask for and report it applied, which is `CLAUDE.md` rule 6. The writer's memory of
+the last target, which a governed step ramps from, is reset at every engagement level 6 makes and
+every hand-back of its that returns, so no later step ramps from a speed a fan stopped holding when
+level 6 handed it back. A fan the system takes back under a lease that still counts it engaged
+keeps its memory until its next engagement: #381's one-cycle residual. § 2's clamp and the 0 RPM floor bind the whole write as they bind every other.
 
 **The ramp governor is built; hysteresis is not.** #121 recorded that three places named
 three different owners for the governor, that #101 had shipped only the constraint on the
@@ -1464,7 +1916,11 @@ refusal on. `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` is the 
 that argument — the emergency's bridge is asserted to reach the fan's declared maximum, so
 injecting a governor into the safety writer fails it on the commanded RPM. The stronger half
 is compile-time: `GovernedFanWriter` declares neither of the verbs a safety actor calls, so
-handing one to the emergency does not build.
+handing one to the emergency does not build. `GovernedFanWriterHoldTests` and
+`LeaseApplierRampTests` — a fixed setting written whole, and the ramp memory reset at each
+engagement and hand-back. `EngagementDriverLevelTests` — level 6's driver is asked about its own
+level, never its writer's. `LeaseApplierTripwireTests` — the level-6 file never names
+`SafetyActorWriter`.
 
 *Tested by (pending #17):* `FanKit` unit tests driving a temperature series across a curve
 boundary and asserting no oscillation. The ramp half of that line is now covered above; the
@@ -1525,8 +1981,13 @@ numbering.
 **§ 8 is not a peer of these.** Ramp limiting shapes level 6's output only and never delays a
 safety write — and that holds structurally rather than by a runtime check. Levels 1–5 write
 through `SafetyActorWriter`, which holds no `RampGovernor` and has no property one could be
-assigned to; level 6 writes through `GovernedFanWriter`, the only holder of one, which does not
-declare the verbs a safety actor calls. The two share no *writing* protocol, so no code can be
+assigned to; level 6 writes its targets through `GovernedFanWriter`, the only holder of one, which
+does not declare the verbs a safety actor calls. Level 6 engages through an `EngagementDriver` of
+its own, at `.controlLoop` (ADR 0014's A6 amendments; `LeaseApplier`, composed once and reached
+through the authority), which steps through a `SafetyActorWriter` for the mode write and the undo
+and nothing else: the driver has no target verb, and the file that holds it never names the writer
+type in code, so the control loop holds no writer it can command a target through but the
+governed one. The two share no *writing* protocol, so no code can be
 generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
 exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
 `restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
@@ -1723,12 +2184,12 @@ The signed `fanctl` an installed helper will admit, which this row was also bloc
 ([#82](https://github.com/blamechris/Aeolus/issues/82)), now exists: the installed Developer ID
 `Full Release` helper admitted it for `fanctl status` on 2026-10-09 ([the hardware
 check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). `reset --all`
-itself has not been run against it.* **Two** blockers remain of the three this row used to
+itself has not been run against it.* **One** blocker remains of the three this row used to
 name: #159 wired the CLI to the XPC message, so the command now issues a real request and reports
-the helper's answer; the plane write still throws `.controlPathNotBuilt`, and the handler behind
-the message still issues no machine-wide restore of its own (§ 7), so a fan no live lease covers
-stays pinned with `Ftst` set. This row is what checks that, and it is the reason the row is worth
-running rather than assuming.
+the helper's answer, and #104 gave the handler behind it a machine-wide restore of its own, issued
+on a plane that can write (§ 7); the plane write still throws `.controlPathNotBuilt`, so on this
+build a fan no live lease covers stays pinned with `Ftst` set. This row is what checks that the
+restore reaches the firmware, and it is the reason the row is worth running rather than assuming.
 
 The message itself exists, is exempt from the handshake gate, and is authorisation-checked. The
 exemption is covered by `AnonymousListenerTests`, `HandshakeGateTests` and
@@ -1745,7 +2206,8 @@ Developer ID and is E2.5's manual check. That check was run once, on 2026-10-09:
 helper admitted the signed embedded `fanctl` and libxpc refused two Developer ID-signed probes, one
 failing the `get-task-allow` clause and one the identifier clause (ADR 0005, "Update — 2026-10-09").
 One machine, one OS version, and it re-runs on every change to the boundary. This row also carries
-#104's corrupted-helper-state case.
+#104's corrupted-helper-state case; its scripted form, through the real client and listener, is
+`FanctlResetCorruptedStateTests` (§ 7).
 
 ---
 

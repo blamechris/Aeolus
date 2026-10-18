@@ -6,13 +6,16 @@
 /// that decision, and it is `.fan(index)`.
 ///
 /// **Per fan, never `.everyFan`.** `FanRestoring` reports *which* fans could not be handed
-/// back, and `LeaseAuthority.restoreAbandoned` turns that set into a per-fan refusal a
-/// client is told about. A conformer that restored `.everyFan` once could not produce that
-/// set: one throw would have to be reported as every fan abandoned (refusing leases over
-/// fans that are demonstrably fine) or as none (the inversion `FanRestoring` calls out —
+/// back, and the lease core's `restoreAbandoned` (in `LeaseAuthority.HandbackRegisters`)
+/// turns that set into a per-fan refusal a client is told about. A conformer that restored
+/// `.everyFan` once could not produce that set: one throw would have to be reported as every
+/// fan abandoned (refusing leases over fans that are demonstrably fine) or as none (the
+/// inversion `FanRestoring` calls out —
 /// *"it converts 'the write was refused' into 'the teardown completed'"*). `.everyFan` also
 /// clears the Apple Silicon force key, which is a machine-wide act and not this path's to
-/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers.
+/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers. That a
+/// `.fan(index)` restore leaves the key alone is true only of a plane that cannot write: on one
+/// that can, it clears the key when it hands back the last fan the plane engaged (ADR 0014 D5).
 ///
 /// **Through `SafetyActorWriter`, never through the plane directly.** [ADR
 /// 0008](../../../docs/ADR/0008-write-authorisation.md) makes every write to a *fan* carry a
@@ -52,11 +55,9 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// **This type closes the teardown half of that finding and none of the other.** What the
 /// quote lists is two symmetrical gaps, and only one is #163's: every `manualControlReleased`
 /// gained its production caller here, on both registries (§ 3's became
-/// `handbackAccepted(fanAt:)` in #295), while `manualControlEngaged` still
-/// has none in `Sources/` and is E3's to supply — nothing puts a fan *into* manual control in
-/// a build with no write path. Read the sentence as naming the two ends of a missing wire
-/// rather than as naming this file's subject; the engage end stays open, deliberately, and
-/// `HelperRestorerTests` has to register fan 0 by hand for exactly that reason.
+/// `handbackAccepted(fanAt:)` in #295). The engage end is not this file's: `EngagementDriver`
+/// calls `manualControlEngaged` on § 3 (#181), and nothing puts a fan *into* manual control in
+/// a build with no write path — which is why `HelperRestorerTests` registers fan 0 by hand.
 ///
 /// The wire is worth a type of its own rather than a closure at the composition root for one
 /// reason: the **order** of the two deregistrations relative to the write is a safety
@@ -69,19 +70,18 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// differ because the two registries are read by mechanisms
 /// that draw opposite conclusions from the same entry.
 ///
-/// - **`ReclamationWatchdog` — before.** Its cycle asks, of every fan in its registry,
-///   "is this fan still where Aeolus put it?" A fan that has just gone back to automatic
-///   reads `mode == .automatic`; with a commanded target on record that is
-///   `.modeReclaimed`, the strongest primary signal there is, and it lands on
-///   `finaliseRelease(fanAt:because:)` with `.systemReclaimed` — **every lease on the
-///   machine revoked** and a `.fault` line blaming the operating system for a handback
-///   Aeolus asked for. The window between a landed write and a later deregistration is
-///   exactly one actor hop wide and § 5 runs at 1 Hz, so it is small and it is reachable;
-///   the harm is not small. Telling § 5 first closes it, and costs only that § 5 stops
-///   watching a fan whose restore is already in flight — a fan no client holds, because
-///   every teardown path removes its lease entry synchronously before awaiting the restore.
+/// - **`ReclamationWatchdog` — before.** Its cycle asks, of every fan in its registry, "is this fan
+///   still where Aeolus put it?" A fan that has just gone back to automatic reads
+///   `mode == .automatic`; with a commanded target on record that is `.modeReclaimed`, the
+///   strongest primary signal there is, and it landed on the terminal action with
+///   `.systemReclaimed` — **every lease on the machine revoked** until #353 — and a `.fault` line
+///   blaming the operating system for a handback Aeolus asked for. The window between a landed
+///   write and a later deregistration is exactly one actor hop wide and § 5 runs at 1 Hz, so it is
+///   small and it is reachable; the harm is not small. Telling § 5 first closes it, and costs only
+///   that § 5 stops watching a fan whose restore is already in flight — a fan no client holds,
+///   because every teardown path removes its lease entry synchronously before awaiting the restore.
 ///   § 5 already settles the same question the same way for itself:
-///   `finaliseRelease(fanAt:because:)` "drops the fan from its registry **regardless**" of
+///   `finaliseRelease(fanAt:heldUnder:because:)` drops the fan from its registry **regardless** of
 ///   whether the restore threw.
 ///
 ///   **Since ADR 0009 D2 (#180) this ordering is no longer the only thing closing that
@@ -90,12 +90,18 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///   back as `.leaseLapsed` — a redundant restore, not a revocation. The ordering stays, and
 ///   not only because it costs nothing. Once level 6 exists, a registration can land while
 ///   this restore is in flight: an `apply` sent ahead of the release and handled after it. (A
-///   new lease over the fan cannot, because `acquireLease` refuses a fan in `releasing`.) A
-///   deregistration after the write would erase that registration and leave a fan its
-///   engagement took off automatic control with nothing watching it; told first, § 5 keeps
-///   the registration and D2 hands the fan back. That is
-///   [#307](https://github.com/blamechris/Aeolus/issues/307)'s problem in its lease-core form,
-///   and `ReclamationWatchdog.restoreAndForget(fanAt:)` forgets before its restore for it.
+///   new lease over the fan cannot, because `acquireLease` refuses a fan in `releasing`.)
+///   Since #357 that registration is refused outright — it names a lease that is no longer
+///   live — so a deregistration after the write could not erase it; told first, the order
+///   still costs nothing. That was [#307](https://github.com/blamechris/Aeolus/issues/307)'s
+///   problem in its lease-core form, and `ReclamationWatchdog.restoreAndForget(fanAt:heldUnder:)`
+///   forgets before its restore for the same-lease form of it.
+///
+///   **The notice is keyed by index, not by lease, and that is safe for one reason.**
+///   `releasing` is held from before these notices until the restore returns, and
+///   `acquireLease` refuses a fan in it, so every lease-core notice about a fan precedes any
+///   grant over it and cannot erase a newer lease's record. A restore path that bypassed
+///   `releasing` would need the notice to carry the lease (ADR 0014's assumption table).
 ///
 /// - **`ThermalEmergency` — after, and only for fans the firmware accepted — and it is
 ///   *marked*, not dropped.** Its registry is read by `fire(_:from:)`, which attempts to

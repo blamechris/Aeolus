@@ -17,8 +17,8 @@ import Foundation
 /// ## Deliberately unimplemented in this target
 ///
 /// E5.1 ships the lease core and **writes nothing to the SMC**: `SMCConnection.write` is
-/// still SPI-gated and still throws, and no write selector exists anywhere in
-/// `Sources/`. The conforming type is the helper's control plane, which arrives with the
+/// SPI-gated and nothing in the helper calls it. The conforming type is the helper's
+/// control plane, which arrives with the
 /// write path. Declaring the seam here rather than there keeps the lease core testable in
 /// full today — every teardown path below is exercised against a recording double — and
 /// means the control plane inherits a contract it cannot widen by accident.
@@ -37,14 +37,14 @@ import Foundation
 /// forever. This contract used to say the opposite, and what that costs was the whole of
 /// #110: `LeaseAuthority` awaits this from every teardown path, and since
 /// [#136](https://github.com/blamechris/Aeolus/issues/136) one of those paths is
-/// `ReclamationWatchdog.cycle()` by way of `revokeEveryLease(because:)`. A conformer parked
+/// `ReclamationWatchdog.cycle()` by way of `revokeLease(id:forFan:because:)`. A conformer parked
 /// inside a retry loop therefore parks `ReclamationSupervisor`'s loop for the life of the
 /// process — silently, and for every other fan, not only the one that would not go back.
 /// A guarantee of return is what makes awaiting this from a safety actor's cycle legal at
 /// all.
 ///
 /// `docs/SAFETY.md` § 5 already settled the same question the same way for the mechanism
-/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:because:)` attempts the restore,
+/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` attempts the restore,
 /// logs a fault if it throws, and drops the fan from its registry **regardless** — bounded,
 /// then report, never "keep trying". Two mechanisms in one subsystem must not disagree
 /// about what a failed restore means.

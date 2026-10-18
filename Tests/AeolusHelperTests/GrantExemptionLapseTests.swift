@@ -95,4 +95,71 @@ struct GrantExemptionLapseTests {
             #expect(fault == .manualControlUnavailable(reason: .foreignManualControl))
         }
     }
+
+    /// Fan 0's handback lands while a grant over fans 0 and 1 is parked on fan 1's **bounds**
+    /// read ([#270](https://github.com/blamechris/Aeolus/issues/270)) — the suspension point
+    /// after the foreign-control read, and the last above the marker. Fan 0 is exempted from both
+    /// reads as mid-handback, so nothing reads it during the grant, and the firmware left it
+    /// manual.
+    ///
+    /// The bounds gate adds no exemption of its own to keep honest: it reads what the foreign
+    /// read did not exempt, and `refuseIfExemptionLapsed(_:exempted:)` is what answers for a
+    /// handback that lands during either.
+    ///
+    /// **Mutation:** delete `try refuseIfExemptionLapsed(connection, exempted: exempted)` from
+    /// `LeaseAuthority.acquireLease`. Run: red — "Granted a lease over fan 0".
+    @Test("A fan exempted mid-handback is not granted once its handback lands mid-bounds-read")
+    func anExemptionThatLapsesDuringTheBoundsReadIsRefused() async throws {
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400), 1: .automatic(at: 2_400)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let fans = ScriptedFanEnumeration(indices: [0, 1])
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        let envelopes = ParkableEnvelopeReading(over: firmware)
+        let leases = LeaseFixture.authority(
+            enumeration: fans,
+            restorer: RecordingFanRestorer(entered: entered, release: release),
+            foreignControl: LeaseFixture.reconciliation(over: firmware, enumeration: fans),
+            envelopes: envelopes)
+
+        let holder = ConnectionID()
+        let lease = try await leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: holder)
+        await firmware.setMode(.manual, ofFan: 0)
+        let handback = observing { try await leases.releaseLease(id: lease.id, from: holder) }
+        try await entered.wait()
+        #expect(await leases.fansMidHandback == [0], "fan 0's handback is not in flight")
+
+        // Client B asks for fans 0 and 1. Fan 0 is exempted from both reads; fan 1's mode reads
+        // automatic, and its bounds read parks.
+        await envelopes.park()
+        let grant = observing {
+            try await leases.acquireLease(LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
+        }
+        #expect(
+            await yieldUntil("the grant to park on fan 1's bounds read") {
+                await envelopes.parked == 1
+            })
+        #expect(
+            await envelopes.requests == [0, 1],
+            "the grant read fan 0's bounds although fan 0 was mid-handback, or never read fan 1's")
+
+        await release.signal()
+        _ = try await finished("fan 0's handback to finish", handback)
+        #expect(await leases.fansMidHandback.isEmpty, "fan 0's handback never finished")
+        await envelopes.release()
+
+        do {
+            _ = try await grant.task.value
+            Issue.record(
+                """
+                Granted a lease over fan 0, which still reads manual and which nothing has read \
+                since its handback was accepted: both reads exempted it as mid-handback, and the \
+                handback finished during the bounds read.
+                """)
+        } catch let fault as AeolusXPCFault {
+            #expect(fault == .manualControlUnavailable(reason: .releaseInProgress))
+        }
+    }
 }
