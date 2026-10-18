@@ -197,9 +197,9 @@ struct ThermalCycleLaneTripwireTests {
 
     /// No helper code enumerates an enum's cases but the gate mirror, which reads every priority.
     /// An enumeration reaches a case without naming it: `SMCReadPriority.allCases` reaches the
-    /// lane, and `FanRestoreCause.allCases` — the enum is `CaseIterable` for a test — reaches the
-    /// lane's cause. Counted as a word, so a type alias or a metatype in front of it changes
-    /// nothing.
+    /// lane, and `FanRestoreCause.allCases` — the enum is `CaseIterable` for a test — reaches § 3's
+    /// cause label, which since #440 routes nothing but still says who restored. Counted as a word,
+    /// so a type alias or a metatype in front of it changes nothing.
     ///
     /// **Mutation:** in `ConnectionHealth.swift`, add `private typealias Priority =
     /// SMCReadPriority` and `private let everyPriority = Priority.allCases`. Run: red.
@@ -212,7 +212,7 @@ struct ThermalCycleLaneTripwireTests {
             enumerations == ["GateWaitMonitor.swift": 1],
             """
             cases are enumerated \(enumerations). An enumeration of SMCReadPriority reaches § 3's \
-            lane, and one of FanRestoreCause its cause, without naming either.
+            lane, and one of FanRestoreCause § 3's cause label, without naming either.
             """)
     }
 

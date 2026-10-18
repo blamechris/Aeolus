@@ -69,7 +69,9 @@ struct PlaneViewTests {
 
     /// The production plane's view holds its one scheduler and its one connection, and nothing
     /// of its own but the admission. A stored property added to `SMCFanControlPlane` later is in
-    /// this scan, so a channel or a ledger B1 adds is held to it too.
+    /// this scan — but the plane scanned here is built with no write channel, so a channel B1
+    /// adds is not checked by it. The sync that carries B1's channel onto `main`'s lane views scans
+    /// a plane built with one, at every lane site, the handback's included (#440's sync notes).
     ///
     /// **Mutation:** add `private var turnsTaken = 0` to `SMCFanControlPlane`. Run: red — the view
     /// holds a counter of its own.

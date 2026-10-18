@@ -414,7 +414,7 @@ enum LeaseFixture {
         ThermalCycleHandback(
             notifying: HelperFanRestorer(
                 writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: Self.log),
-            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency))
+            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency), log: Self.log)
     }
 
     /// Every curated key reading a plausible idle die temperature.

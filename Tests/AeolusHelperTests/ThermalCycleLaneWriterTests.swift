@@ -32,7 +32,10 @@ import Testing
 /// pump's task, and a recycle is a supervisor turn whatever view asks for it
 /// (`FanControlPlane.admitted(at:)`), so no call could tell. A view built at a call site needs an
 /// admission that maps to the lane, and the value-set pin leaves only `.thermalCycle`, whose
-/// namings `ThermalCycleLaneTripwireTests` counts per file.
+/// namings `ThermalCycleLaneTripwireTests` counts per file. Those counts say where the lane is
+/// named, not who uses it: a lane view returned by a property in a file that may name the lane, and
+/// used elsewhere, keeps every count. `ThermalCycleHandbackShapeTripwireTests` closes that for the
+/// two files that may name it, and counts every handback built, since building one is a mint.
 @Suite("Every stored plane is at supervisor but § 3's", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneWriterTests {
 

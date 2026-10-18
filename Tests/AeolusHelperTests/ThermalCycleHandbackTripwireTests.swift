@@ -14,16 +14,20 @@ import Testing
 /// - a view is minted only in the composition and in `ThermalCycleHandback`;
 /// - the lease core's files and the restorer name no admission, priority or view;
 /// - `revokeEveryLease(handingBackThrough:)` is called only from § 3;
-/// - the three lending signatures keep `borrowing` and `~Copyable`, because dropping either one
-///   compiles.
+/// - the three lending signatures keep `borrowing` and `~Copyable`. Dropping `borrowing` alone does
+///   not compile, but dropping `~Copyable` from `revokeEveryLease`'s or `handBack`'s constraint
+///   does, and so does dropping both words together.
 ///
+/// `ThermalCycleHandbackShapeTripwireTests` holds the rest: who builds a handback, the handback
+/// file's shape, `FanRestoring`'s one requirement, and the unsafe spellings `Lease/` may not use.
 /// Every scan reads comment-stripped source under `Sources/AeolusHelper`.
 @Suite("§ 3's lane is held by § 3 and lent, at the source")
 struct ThermalCycleHandbackTripwireTests {
 
     /// Every file in `Sources/AeolusHelper`, by its path below that directory, with its comments
     /// removed — read and stripped once, for `ThermalCycleLaneTripwireTests.helperCode`'s reason.
-    private static let helperCode: Result<[String: String], any Error> = Result {
+    /// `ThermalCycleHandbackShapeTripwireTests` reads the same scan.
+    static let helperCode: Result<[String: String], any Error> = Result {
         var code: [String: String] = [:]
         let marker = "/Sources/AeolusHelper/"
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
@@ -204,9 +208,12 @@ struct ThermalCycleHandbackTripwireTests {
     }
 
     /// The three lending signatures, compacted: each borrows a parameter of a generic constrained
-    /// `FanRestoring & ~Copyable`. Dropping `borrowing`, or `~Copyable` from a constraint, still
-    /// compiles — a copyable argument satisfies either signature — and makes the parameter one
-    /// the callee can keep, so the source is where that is held. Each verb is declared exactly as
+    /// `FanRestoring & ~Copyable`. Dropping `~Copyable` from `revokeEveryLease`'s or `handBack`'s
+    /// constraint still compiles — a copyable argument satisfies either signature — and so does
+    /// dropping it with `borrowing`; either makes the parameter one the callee can keep, so the
+    /// source is where that is held. (`borrowing` alone cannot be dropped: a noncopyable generic
+    /// parameter must state its ownership. `restore(_:because:through:)` refuses losing either
+    /// word, because the verb lends it a noncopyable generic.) Each verb is declared exactly as
     /// often as it is pinned, so an overload beside a pinned signature fails too.
     ///
     /// **Mutation (K7b):** drop `& ~Copyable` from `HelperFanRestorer.handBack`'s constraint.

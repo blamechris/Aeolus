@@ -162,7 +162,8 @@ struct TeardownRaceGraph: Sendable {
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             handback: ThermalCycleHandback(
                 notifying: restorer,
-                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency)),
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+                log: LeaseFixture.log),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane),

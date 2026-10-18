@@ -1,4 +1,5 @@
 import AeolusXPC
+import FanKit
 import Foundation
 import Testing
 
@@ -14,6 +15,9 @@ import Testing
 /// grant over the fan is refused durably. Both are what `handback-ledger.md` argues for every path,
 /// and a lent restorer called outside the bracket would keep neither while every restore still
 /// reached the firmware.
+///
+/// And it keeps the notices: § 3's own revocation, driven through `cycle()`, tells § 5 about the
+/// fans it hands back, because the handback lends its bound to `HelperFanRestorer.handBack`.
 @Suite("A lent handback runs inside the handback ledger's bracket", .timeLimit(.minutes(1)))
 struct HandbackLendingBracketTests {
 
@@ -21,17 +25,23 @@ struct HandbackLendingBracketTests {
     /// `.releaseInProgress`, the fan is in `releasing` throughout, and the lent restorer — not the
     /// lease core's own — is the one asked, under § 3's label.
     ///
+    /// The lease core's own restorer signals `entered` too, so a verb that restored through it
+    /// instead of the one it was lent fails at the expectations below at once, rather than parking
+    /// on a signal nothing sends until the time limit.
+    ///
     /// **Mutation (K4):** in `revokeEveryLease(handingBackThrough:)`, call
     /// `handback.restoreToAutomatic(fans: fans, because: cause)` directly instead of
     /// `restore(fans, because: cause, through: handback)`. Run: red — the fan is not mid-handback
     /// and the grant succeeds.
+    /// **Mutation (K2b):** the verb lends `restorer` instead of `handback`. Run: red at once — the
+    /// fan has left `releasing`, the grant succeeds, and the wrong restorer was asked.
     @Test("A grant during a lent handback is refused, with the fan mid-handback throughout")
     func aGrantDuringALentHandbackIsRefused() async throws {
-        let standing = RecordingFanRestorer()
+        let entered = AsyncSignal()
+        let standing = RecordingFanRestorer(entered: entered)
         let leases = LeaseFixture.authority(restorer: standing)
         _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: ConnectionID())
 
-        let entered = AsyncSignal()
         let release = AsyncSignal()
         let lent = RecordingFanRestorer(entered: entered, release: release)
         let revocation = Task { await leases.revokeEveryLease(handingBackThrough: lent) }
@@ -53,6 +63,46 @@ struct HandbackLendingBracketTests {
             await lent.restores
                 == [RecordingFanRestorer.Restore(fans: [0], cause: .thermalEmergencyRevocation)])
         #expect(await standing.restores.isEmpty, "the lease core's own restorer was asked")
+    }
+
+    /// § 3's own route, end to end: a fan level 6 engaged is in § 5's registry, § 3 fires over it,
+    /// and its revocation — through the handback, in the lane — tells § 5 to stop watching it.
+    /// Nothing else in the firing tells § 5: the bridge does not, and § 5 is not cycled here.
+    ///
+    /// **Mutation:** at `ThermalEmergency`'s three revocations, lend a hand-built bound,
+    /// `BoundedFanRestorer(attempting: KeystoneRestoreAttempt(writer: writer))`, instead of
+    /// `handback`. Run: red here — the restores still reach the lane, and § 5 is never told.
+    @Test("§ 3's firing revocation tells § 5 about the fans it hands back")
+    func sectionThreesFiringTellsSectionFive() async throws {
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures), .at(96)])
+        let helper = HelperComposition(
+            plane: firmware,
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
+            criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
+            log: HelperRestorerTests.helperLog, leaseLog: LeaseFixture.log,
+            safetyLog: HelperRestorerTests.safetyLog,
+            teardown: TeardownSeams(
+                sources: RecordingSignalSources(), terminate: TeardownJournal().terminate))
+        await helper.bindSafetyRegistries()
+        let holder = ConnectionID()
+        let lease = try await helper.authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: holder)
+        try await helper.authority.apply(
+            [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))], leaseID: lease.id, from: holder)
+        #expect(await helper.reclamationWatchdog.fansUnderManualControl == [0])
+
+        await firmware.advance()
+        await helper.thermalEmergency.cycle()
+
+        #expect(await helper.latch.isActive, "the cycle did not fire")
+        #expect(await helper.leases.leaseCount == 0, "the firing did not revoke the lease")
+        #expect(
+            await helper.reclamationWatchdog.fansUnderManualControl.isEmpty,
+            "§ 5 still watches a fan § 3's revocation handed back")
     }
 
     /// § 3's own handback, as the composition gave it to § 3, refused by the firmware on every
