@@ -82,28 +82,79 @@ struct ThermalEmergencyBridgeTests {
         #expect(written == [.mode(fan: 0, value: 0)], "after the seal the job wrote \(written)")
     }
 
+    /// § 3's bridge is the **one** verb that restores inside a permit: the stated exception to the
+    /// keystone's permit-free restore (`docs/SAFETY.md`; `WriteAuthorisationTests`'
+    /// `theRestoreVerbTakesNoAuthorisation`, whose `restore\w*` scan does not reach it).
+    /// `bridgeThenRestore(_:)` and its writer's `bridgeToMaximumThenRestore(of:)` take a permit
+    /// because their command half writes the fan's maximum, and run a `.fan(n)` restore in the same
+    /// job, attempted whatever the command answered and reading nothing of the permit but the fan's
+    /// index. The keystone verbs are untouched, and § 3's revocation restores every fan through
+    /// them afterwards. Pinned to exactly its three declarations, so a second verb that restores
+    /// inside a permit is a decision and not a drift.
+    ///
+    /// **Mutation:** declare `func commandThenRestore(_ target: AuthorisedFanTarget) async` on
+    /// `SafetyActorWriter`. Run: red.
+    @Test("§ 3's bridge is the one verb that restores inside a permit")
+    func theBridgeIsTheOneRestoreInsideAPermit() throws {
+        let bridges = try SeamScanner.writeVerbs(named: #"\w+ThenRestore"#)
+        #expect(
+            bridges.map(\.file).sorted()
+                == ["FanControlPlane.swift", "SMCFanControlPlane.swift", "SafetyWriters.swift"],
+            """
+            a verb that restores inside a permit is declared at \(bridges.map(\.file).sorted()). \
+            § 3's bridge is the one stated exception to the keystone's permit-free restore.
+            """)
+        let permits = ["AuthorisedFanTarget", "CommandableFan"]
+        for bridge in bridges {
+            #expect(
+                permits.contains(where: bridge.text.contains),
+                "\(bridge.file): `\(bridge.text)` restores without its command's permit")
+        }
+    }
+
     /// Only the safety-actor writer declares the bridge: `GovernedFanWriter`, level 6's governed
-    /// writer, declares neither it nor a restore, so § 8's ramp governor cannot be pointed at § 3's
-    /// write (`SafetyWriters.swift`'s header). Read at the source, beside a positive control.
+    /// writer, declares neither it nor a restore — in its body or in an extension anywhere in the
+    /// helper — so § 8's ramp governor cannot be pointed at § 3's write (`SafetyWriters.swift`'s
+    /// header). Read at the source, beside a positive control.
     ///
     /// **Mutation:** add `func bridgeToMaximumThenRestore(of fan: CommandableFan) async ->
     /// BridgeOutcome { await plane.bridgeThenRestore(fan.target(for: 0)) }` to `GovernedFanWriter`.
+    /// Run: red.
+    /// **Mutation:** add the same in an `extension GovernedFanWriter` in `LeaseApplier.swift`.
     /// Run: red.
     @Test("GovernedFanWriter declares no bridge, and SafetyActorWriter does")
     func onlyTheSafetyActorWriterDeclaresTheBridge() throws {
         let url = SeamScanner.sourcesRoot.appendingPathComponent(
             "AeolusHelper/Safety/SafetyWriters.swift")
         let code = SeamScanner.strippingAllComments(try String(contentsOf: url, encoding: .utf8))
-        let governed = try #require(
-            WatchdogBoundsTripwireTests.body(
-                ofTypeDeclaredBy: "actor GovernedFanWriter", in: code))
+        var governed = [
+            try #require(
+                WatchdogBoundsTripwireTests.body(
+                    ofTypeDeclaredBy: "actor GovernedFanWriter", in: code))
+        ]
         let safetyActor = try #require(
             WatchdogBoundsTripwireTests.body(
                 ofTypeDeclaredBy: "struct SafetyActorWriter", in: code))
 
+        let opening = try NSRegularExpression(pattern: #"\bextension\s+GovernedFanWriter\b"#)
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let source = SeamScanner.strippingAllComments(
+                try String(contentsOf: file, encoding: .utf8))
+            let range = NSRange(source.startIndex..., in: source)
+            for match in opening.matches(in: source, range: range) {
+                guard let start = Range(match.range, in: source) else { continue }
+                let rest = String(source[start.lowerBound...])
+                let body = WatchdogBoundsTripwireTests.body(
+                    ofTypeDeclaredBy: "GovernedFanWriter", in: rest)
+                governed.append(contentsOf: body.map { [$0] } ?? [])
+            }
+        }
+
         for verb in ["bridgeToMaximumThenRestore", "bridgeThenRestore", "restoreToAutomatic"] {
-            #expect(try SeamScanner.mentions(of: verb, inSource: governed) == 0, "\(verb)")
-            #expect(!governed.contains("func \(verb)"), "GovernedFanWriter declares \(verb)")
+            for body in governed {
+                #expect(try SeamScanner.mentions(of: verb, inSource: body) == 0, "\(verb)")
+                #expect(!body.contains("func \(verb)"), "GovernedFanWriter declares \(verb)")
+            }
         }
         #expect(
             safetyActor.contains("func bridgeToMaximumThenRestore"),

@@ -7,10 +7,45 @@ import Testing
 /// `DegradationMemo` across § 3's telemetry and the cache's source (#124), and one read loop
 /// behind § 3's read-back and reconciliation's (#295).
 ///
-/// `ThermalCycleLaneTripwireTests` counts the loop's copies at the source; this suite holds both
-/// by behaviour, in the composed graph and over the scripted firmware.
+/// `ThermalCycleLaneTripwireTests` counts where the loop is built at the source; this suite holds
+/// both by behaviour, in the composed graph and over the scripted firmware, and § 3's reader by
+/// type.
 @Suite("§ 3's lane views share the memo and the read loop", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneSharingTests {
+
+    /// § 3's lane reader in the composed graph **is** `PlaneHandbackReadBack`, reconciliation's
+    /// loop, over the plane's lane view — by type, so a reader of its own is a second copy of the
+    /// loop whichever verb it reads through, and a behavioural comparison that happens to agree
+    /// cannot pass it.
+    ///
+    /// **Mutation:** in `StartupReconciliation.handbackReadBack(admittedAt:)`, return `some
+    /// HandbackReadingBack`, a reader of its own whose loop reads through `readMode(ofFan:)`.
+    /// Run: red — § 3 reads through the copy. (`ThermalCycleLaneTripwireTests` counts one
+    /// construction too.)
+    @Test("§ 3's reader is reconciliation's loop over the lane view, by type")
+    func sectionThreesReaderIsTheLoopByType() throws {
+        let firmware = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
+        let helper = HelperComposition(
+            plane: firmware,
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
+            criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
+            log: HelperRestorerTests.helperLog,
+            leaseLog: LeaseFixture.log,
+            safetyLog: HelperRestorerTests.safetyLog,
+            teardown: TeardownSeams(sources: RecordingSignalSources()))
+
+        let reader = try #require(
+            Mirror(reflecting: helper.thermalEmergency).children
+                .first { $0.label == "handbackReadBack" }?.value,
+            "ThermalEmergency no longer stores `handbackReadBack`")
+        let loop = try #require(
+            reader as? PlaneHandbackReadBack<ScriptedControlPlane>,
+            "§ 3 reads back through \(type(of: reader)), not reconciliation's loop")
+        #expect(loop.sensing.admission == .thermalCycle, "§ 3's loop reads at the wrong admission")
+        #expect(loop.sensing.firmware === firmware.firmware, "§ 3's loop reads another machine")
+    }
 
     /// A degraded set — twenty of the thirty-four curated keys answering — is logged once
     /// across a grant's cache flight, at `.supervisor`, and § 3's cycle after it, in the lane:
