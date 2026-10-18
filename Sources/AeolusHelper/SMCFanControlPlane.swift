@@ -85,7 +85,9 @@ struct SMCFanControlPlane: FanControlPlane {
     /// name.
     ///
     /// `channel` **is** defaulted, to `nil`: a plane nobody gave a channel can never write, and
-    /// every construction that predates it means what it meant. In the daemon it is `connection`.
+    /// every construction that predates it means what it meant. In the daemon it is
+    /// `AeolusHelperMain`'s `DaemonWriteChannel`, over the same connection; `SMCConnection` itself
+    /// is not a channel (ADR 0014's B1 seam amendment).
     init(
         scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling,
         channel: (any SMCWriteChannel)? = nil
