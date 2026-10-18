@@ -108,19 +108,32 @@
 #   anything else is refused. SwiftPM compiles every .swift file under Sources/, reads a
 #   root Package@swift-*.swift, and treats an ignored Packages/ directory as an edited
 #   dependency. The allowed set is what the repository's own .gitignore names as local or
-#   generated, and a build tolerates:
-#     Configs/Signing.xcconfig             local signing settings; read by Full builds only
-#     Configs/Aeolus-Info.plist            generated from project.yml by xcodegen
-#     Configs/AeolusHelper-Info.plist      generated from project.yml by xcodegen
-#     Configs/fanctl-Info.plist            generated from project.yml by xcodegen
+#   generated, and a build tolerates. **Tolerates is not "does not read":** an incremental
+#   build reads several of these, which is why the list says what from each.
+#     Configs/Signing.xcconfig             the project-level xcconfig of both Full
+#                                          configurations (project.yml `configFiles`): it can
+#                                          set any build setting the targets do not override,
+#                                          not only the signing identity. Monitor builds do
+#                                          not read it
+#     Configs/Aeolus-Info.plist            generated from project.yml by xcodegen; the
+#     Configs/AeolusHelper-Info.plist      targets' Info.plists, which the build reads
+#     Configs/fanctl-Info.plist
 #     Aeolus.xcodeproj/                    generated from project.yml (and, inside it, the
-#                                          Xcode user state and IDEWorkspaceChecks.plist)
-#     .build/                              SwiftPM's build output
-#     DerivedData/, build/                 Xcode's build output
+#                                          Xcode user state and IDEWorkspaceChecks.plist);
+#                                          the build reads the project itself
+#     .build/                              SwiftPM's build output, which an incremental build
+#                                          reads: intermediates, and the swift-argument-parser
+#                                          checkout that fanctl links
+#     DerivedData/, build/                 Xcode's build output, read the same way. CI and
+#                                          ADR 0008 build with `-derivedDataPath DerivedData`,
+#                                          inside the tree
 #     dist/                                release artifacts a build only writes
 #     .DS_Store                            Finder state, anywhere
 #     .claude/settings.local.json          an agent's local settings; nothing builds from it
-#     autonomous-session-*.md              an agent's session log at the root; the same
+#     autonomous-session-*.md              an agent's session log, at the root. The pattern's
+#                                          `*` also matches `/`, so a file of that name below
+#                                          a directory that holds tracked files passes too;
+#                                          harmless, a Markdown file is not built
 #   Everything else the .gitignore lists is refused on purpose: *.p12, *.cer,
 #   *.provisionprofile and AuthKey_*.p8 (signing secrets that have no business in the tree),
 #   Packages/, Pods/ and Carthage/Build/ (dependencies a build would read), .swiftpm/ (it can
@@ -133,10 +146,16 @@
 #   link between the source and the hashes is the operator making the record straight after
 #   building from that clean tree. A record made later, or against another tree, is only as
 #   good as the operator's care. The script cannot tell.
-# - **That the ignored-but-allowed inputs were right.** Configs/Signing.xcconfig decides the
-#   signing identity, and nothing here reads it. The generated Info.plists and
-#   Aeolus.xcodeproj/ come from project.yml and can be stale: this script does not regenerate
-#   or compare them. The record says only whether each is present.
+# - **That the hashes come from this tree, unless the app was built from scratch.** An
+#   incremental build reads .build/, DerivedData/ and build/ (intermediates and a package
+#   checkout) as well as the tree, and this script sees only that those directories are
+#   allowed, never what is in them. Only a build with them absent, or emptied first, ties the
+#   hashes to the tree the record names. The script does not require that and cannot tell.
+# - **That the ignored-but-allowed inputs were right.** Configs/Signing.xcconfig can set any
+#   setting the targets do not override, the signing identity among them, and nothing here
+#   reads it. The generated Info.plists and Aeolus.xcodeproj/ come from project.yml and can
+#   be stale: this script does not regenerate or compare them. The record says only whether
+#   each is present.
 # - **That the bundle is intact.** It reads three binaries; it does not run
 #   `codesign --verify --deep --strict` on the app, and it does not read the app's resources.
 # - **That any signature is trustworthy.** It reads each CDHash and identifier and nothing
