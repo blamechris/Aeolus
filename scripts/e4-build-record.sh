@@ -81,9 +81,13 @@
 # ## What "clean" checks
 #
 # <source-worktree> must be the top level of its work tree (exit 2 otherwise): a subdirectory
-# would be checked without the files outside it. Every git call runs with
+# would be checked without the files outside it. The test is `-ef`, the same directory by
+# device and inode, so a differently cased path to the tree on a case-insensitive disk passes
+# and a subdirectory does not. Every git call runs with
 # `-c core.fsmonitor=false -c core.untrackedCache=false`, so a monitor that says nothing
-# changed is not believed. Then:
+# changed is not believed, and with `-c core.hooksPath=/dev/null`, because `git status` runs
+# repository hooks (post-index-change, when it refreshes the index) and a hook is code from
+# the tree being checked. Then:
 # - No tracked path has a `filter` attribute (exit 3), from any attribute source:
 #   `git check-attr filter` over every tracked path. A clean filter can make a modified file
 #   compare equal to the committed one. The repository has no .gitattributes, and a filter
@@ -244,9 +248,11 @@ source_tree="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
 # --- The source ---------------------------------------------------------------------------
 
 # Every git call goes through here. Its standard error can carry the tree's path, so it is
-# never passed on; and a file-system monitor or an untracked cache is never believed.
+# never passed on; a file-system monitor or an untracked cache is never believed; and no
+# repository hook runs (`git status` runs post-index-change when it refreshes the index).
 git_in_tree() {
-    git -C "${source_tree}" -c core.fsmonitor=false -c core.untrackedCache=false "$@" 2>/dev/null
+    git -C "${source_tree}" -c core.fsmonitor=false -c core.untrackedCache=false \
+        -c core.hooksPath=/dev/null "$@" 2>/dev/null
 }
 
 command -v git >/dev/null 2>&1 || die "${EX_USAGE}" "git is not available"
@@ -257,7 +263,9 @@ top_level=$(git_in_tree rev-parse --show-toplevel) \
     || die "${EX_USAGE}" "the source tree's top level could not be read"
 here=$(cd "${source_tree}" && pwd -P) \
     || die "${EX_USAGE}" "the source tree could not be entered"
-if [ "${top_level}" != "${here}" ]; then
+# `-ef` compares device and inode, not spelling: on a case-insensitive disk git and `pwd -P` can
+# spell the same directory differently. An empty top_level is no directory, so it fails here.
+if ! [ "${top_level}" -ef "${here}" ]; then
     die "${EX_USAGE}" "the source tree must be the top level of its work tree, not a subdirectory of it"
 fi
 
