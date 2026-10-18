@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # Prints one build record for an Aeolus.app, to paste into a review record.
 #
 #     scripts/e4-build-record.sh <path-to-Aeolus.app> [<source-worktree>]
@@ -10,10 +10,30 @@
 # record lists every one: the kernel holds the hash of the slice a process actually runs.
 #
 # The block goes to standard output and only once every check has passed, so a failed run
-# leaves no partial record to paste. Diagnostics go to standard error, in words this script
-# chooses: no `codesign` or `git` output is passed through, and no path that could carry a
-# user name is printed (the app is named by its basename, the binaries by their place in the
-# bundle). The script writes no file, does not run any binary it reads, and does not need root.
+# leaves no partial record to paste. The script writes no file, does not run any binary it
+# reads, and does not need root.
+#
+# ## What is printed
+#
+# - **A successful record** prints fixed labels, the source tree's branch and HEAD, the bundle's
+#   two version strings, the helper's build string, and per binary the architecture, the
+#   sha256 CDHash and the signing identifier. It contains no file name from the source tree,
+#   no name of the app bundle, and no path. It does not print the Team ID or the signing
+#   authority that `codesign` reports: the raw output is held in a variable and two `sed`
+#   extractions read the identifier and the hash, so a record can be pasted anywhere.
+# - **A refusal** (any non-zero exit) writes to standard error, in words this script chooses:
+#   no `codesign` or `git` output is passed through. It may name repo-relative paths from the
+#   source tree, because the operator needs them to act and no record is produced.
+#
+# ## The environment
+#
+# The script does not trust the one it is started in. `#!/bin/bash -p` makes macOS's bash 3.2
+# ignore BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE and import no shell
+# function from the environment; it is used instead of `env -i` so the script keeps its own
+# name and arguments. `bash script` ignores that flag, so the script also refuses (exit 2) to
+# run with BASH_ENV or ENV set, or with xtrace or verbose on, either of which would print the
+# signature it reads. It then pins PATH to /usr/bin:/bin and the locale to C, and unsets
+# GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and POSIXLY_CORRECT.
 #
 # ## What a record proves
 #
@@ -26,17 +46,42 @@
 #
 # ## What "clean" checks
 #
+# <source-worktree> must be the top level of its work tree (exit 2 otherwise): a subdirectory
+# would be checked without the files outside it. Every git call runs with
+# `-c core.fsmonitor=false -c core.untrackedCache=false`, so a monitor that says nothing
+# changed is not believed. Then:
+# - No tracked path has a `filter` attribute (exit 3), from any attribute source:
+#   `git check-attr filter` over every tracked path. A clean filter can make a modified file
+#   compare equal to the committed one. The repository has no .gitattributes, and a filter
+#   driver merely being configured is not refused: git-lfs is configured globally on many Macs
+#   and applies to nothing here.
 # - `git status --porcelain --untracked-files=all --ignore-submodules=none` is empty: no
 #   tracked change (staged or not), no untracked file, no change inside a submodule.
 # - No tracked file is marked `--assume-unchanged` or `--skip-worktree` (`git ls-files -v`
 #   shows a lowercase letter or `S`), because git then reports a modified file as clean.
-# - No untracked file, ignored or not, sits under Sources/, Tests/, Tools/, Resources/ or
-#   Configs/, whatever ignored it (.gitignore, .git/info/exclude or core.excludesFile).
-#   SwiftPM compiles every .swift file under Sources/, tracked or not. The only exceptions are
-#   the files this repository's own .gitignore names as generated or local, and which a build
-#   needs: Configs/Signing.xcconfig, Configs/Aeolus-Info.plist,
-#   Configs/AeolusHelper-Info.plist, Configs/fanctl-Info.plist, and .DS_Store anywhere.
-#   The record lists which of those exist, by name only.
+# - **Every** untracked path, ignored or not, whatever ignored it (.gitignore,
+#   .git/info/exclude or core.excludesFile), must be in this explicit allowed set, and
+#   anything else is refused. SwiftPM compiles every .swift file under Sources/, reads a
+#   root Package@swift-*.swift, and treats an ignored Packages/ directory as an edited
+#   dependency. The allowed set is what the repository's own .gitignore names as local or
+#   generated, and a build tolerates:
+#     Configs/Signing.xcconfig             local signing settings; read by Full builds only
+#     Configs/Aeolus-Info.plist            generated from project.yml by xcodegen
+#     Configs/AeolusHelper-Info.plist      generated from project.yml by xcodegen
+#     Configs/fanctl-Info.plist            generated from project.yml by xcodegen
+#     Aeolus.xcodeproj/                    generated from project.yml (and, inside it, the
+#                                          Xcode user state and IDEWorkspaceChecks.plist)
+#     .build/                              SwiftPM's build output
+#     DerivedData/, build/                 Xcode's build output
+#     dist/                                release artifacts a build only writes
+#     .DS_Store                            Finder state, anywhere
+#     .claude/settings.local.json          an agent's local settings; nothing builds from it
+#     autonomous-session-*.md              an agent's session log at the root; the same
+#   Everything else the .gitignore lists is refused on purpose: *.p12, *.cer,
+#   *.provisionprofile and AuthKey_*.p8 (signing secrets that have no business in the tree),
+#   Packages/, Pods/ and Carthage/Build/ (dependencies a build would read), .swiftpm/ (it can
+#   hold a package mirror configuration), and *.hmap, *.dSYM, *.ipa, *.dmg, *.xcuserstate and
+#   the like outside the directories above.
 #
 # ## What it does not prove
 #
@@ -44,35 +89,59 @@
 #   link between the source and the hashes is the operator making the record straight after
 #   building from that clean tree. A record made later, or against another tree, is only as
 #   good as the operator's care. The script cannot tell.
-# - **That the ignored-but-expected inputs were right.** Configs/Signing.xcconfig is local and
-#   ignored: it decides the signing identity, and nothing here reads it. The generated
-#   Info.plists and Aeolus.xcodeproj/ come from project.yml and can be stale: this script does
-#   not regenerate or compare them.
+# - **That the ignored-but-allowed inputs were right.** Configs/Signing.xcconfig decides the
+#   signing identity, and nothing here reads it. The generated Info.plists and
+#   Aeolus.xcodeproj/ come from project.yml and can be stale: this script does not regenerate
+#   or compare them. The record says only whether each is present.
 # - **That the bundle is intact.** It reads three binaries; it does not run
 #   `codesign --verify --deep --strict` on the app, and it does not read the app's resources.
 # - **That any signature is trustworthy.** It reads each CDHash and identifier and nothing
-#   about who signed. `codesign` also prints the Team ID and the signing authority; this
-#   script reads past those lines and prints neither, so a record can be pasted anywhere.
+#   about who signed.
 # - **That the helper is running, or what it is doing.** Never run here; see the verify script.
 #
 # The helper's build string (`AeolusHelperMain.build`) is read from the binary's string table
 # by pattern, because the helper must not be run to ask it. It is display-grade and appears
 # only when exactly one string in the binary has the shape `N.N.N (text)`; otherwise the
-# record says it could not be read, and whether that is because `strings` failed or because
-# no (or more than one) such string exists. It is never evidence of which build this is. The
-# CDHash is.
+# record says it could not be read, and whether that is because `strings` or `grep` failed or
+# because no (or more than one) such string exists. It is never evidence of which build this
+# is. The CDHash is.
 #
 # Exit status:
 #   0  the record was printed
-#   2  the arguments or the source tree cannot be used: wrong number of arguments, git not on
-#      PATH, the source tree is not a git work tree, or it has no HEAD commit
+#   2  the arguments, the environment or the source tree cannot be used: wrong number of
+#      arguments; BASH_ENV, ENV, xtrace or verbose is on; git is not available; the source
+#      tree is not a git work tree, is not its top level, or has no HEAD commit
 #   3  the source tree is not clean in the sense above: a record of a dirty build names no
 #      source anyone can review, so none is made
 #   4  an input of the app is missing: Contents/Info.plist, one of its two version keys, or
 #      one of the three binaries
 #   5  a binary is unsigned, or its signature or architectures cannot be read
-#   6  a system tool failed where it should not have (git, date, or any other utility); the
-#      message says that and names no output of it
+#   6  a system tool failed where it should not have (git, date, grep, or any other utility);
+#      the message says that and names no output of it
+
+# --- The environment ----------------------------------------------------------------------
+
+case "$-" in
+    *[xv]*)
+        echo "error: refusing to run with xtrace or verbose on: they would print the signature output this script keeps out of the record" >&2
+        exit 2
+        ;;
+esac
+if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+    echo "error: refusing to run with BASH_ENV or ENV set: the file would run before this script and could change what it does" >&2
+    exit 2
+fi
+PATH=/usr/bin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+for scrub_name in $(compgen -e); do
+    case "${scrub_name}" in
+        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT)
+            unset "${scrub_name}"
+            ;;
+    esac
+done
 
 set -Eeuo pipefail
 
@@ -108,9 +177,6 @@ carry_out() {
     esac
 }
 
-# A caller's git environment must not point git somewhere other than the tree it was given.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
-
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     die "${EX_USAGE}" "usage: $(basename "$0") <path-to-Aeolus.app> [<source-worktree>]"
 fi
@@ -120,13 +186,23 @@ source_tree="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # --- The source ---------------------------------------------------------------------------
 
-# Every git call goes through here: its standard error can carry the tree's path, so it is
-# never passed on.
-git_in_tree() { git -C "${source_tree}" "$@" 2>/dev/null; }
+# Every git call goes through here. Its standard error can carry the tree's path, so it is
+# never passed on; and a file-system monitor or an untracked cache is never believed.
+git_in_tree() {
+    git -C "${source_tree}" -c core.fsmonitor=false -c core.untrackedCache=false "$@" 2>/dev/null
+}
 
-command -v git >/dev/null 2>&1 || die "${EX_USAGE}" "git is not on PATH"
+command -v git >/dev/null 2>&1 || die "${EX_USAGE}" "git is not available"
 git_in_tree rev-parse --is-inside-work-tree >/dev/null \
     || die "${EX_USAGE}" "the source tree is not a git work tree"
+
+top_level=$(git_in_tree rev-parse --show-toplevel) \
+    || die "${EX_USAGE}" "the source tree's top level could not be read"
+here=$(cd "${source_tree}" && pwd -P) \
+    || die "${EX_USAGE}" "the source tree could not be entered"
+if [ "${top_level}" != "${here}" ]; then
+    die "${EX_USAGE}" "the source tree must be the top level of its work tree, not a subdirectory of it"
+fi
 
 branch=$(git_in_tree symbolic-ref --short -q HEAD || true)
 if [ -z "${branch}" ]; then
@@ -137,6 +213,29 @@ head_sha=$(git_in_tree rev-parse HEAD) \
 
 # Prints up to ten of the lines it is given, indented, to standard error.
 show_first_ten() { printf '%s\n' "$1" | sed -n '1,10p' | sed 's/^/  /' >&2; }
+
+# 0. No filter may apply to a tracked file: a clean filter can make a modified file compare
+#    equal to the committed one. A driver being configured is not enough to refuse (git-lfs is
+#    configured globally on many Macs and applies to nothing here); what matters is whether
+#    any attribute source (.gitattributes, .git/info/attributes, core.attributesFile, the
+#    system file) sets `filter` on a tracked path. `git check-attr` reads them all.
+tracked_paths=$(git_in_tree ls-files) || die "${EX_TOOL}" "git could not list the tracked files"
+attribute_lines=$(printf '%s\n' "${tracked_paths}" | git_in_tree check-attr --stdin filter) \
+    || die "${EX_TOOL}" "git could not read the attributes of the tracked files"
+filtered=""
+while IFS= read -r line; do
+    case "${line}" in
+        '' | *": filter: unspecified") ;;
+        *) filtered="${filtered}${line}"$'\n' ;;
+    esac
+done <<EOF
+${attribute_lines}
+EOF
+if [ -n "${filtered}" ]; then
+    echo "error: a filter attribute applies to tracked files, and a clean filter can make a modified file compare equal. First paths:" >&2
+    show_first_ten "${filtered}"
+    exit "${EX_DIRTY}"
+fi
 
 # 1. Tracked changes, untracked files and anything inside a submodule. Untracked files count:
 #    SwiftPM compiles every .swift file under Sources, tracked or not.
@@ -151,8 +250,17 @@ if [ -n "${dirty}" ]; then
 fi
 
 # 2. Tracked files git has been told to treat as unchanged: a modified one reports as clean.
+#    `git ls-files -v` prefixes each path with a letter: lowercase for assume-unchanged, S for
+#    skip-worktree. The test is a shell pattern and not grep, so no environment can change it.
 listing=$(git_in_tree ls-files -v) || die "${EX_TOOL}" "git could not list the source tree's files"
-hidden=$(printf '%s\n' "${listing}" | grep -E '^[a-zS] ' || true)
+hidden=""
+while IFS= read -r line; do
+    case "${line}" in
+        [a-zS]\ *) hidden="${hidden}${line}"$'\n' ;;
+    esac
+done <<EOF
+${listing}
+EOF
 if [ -n "${hidden}" ]; then
     echo "error: tracked files are marked assume-unchanged or skip-worktree, so git cannot say whether they changed." >&2
     echo "(lowercase letter or S in 'git ls-files -v'; undo with 'git update-index --no-assume-unchanged' or '--no-skip-worktree'.) First paths:" >&2
@@ -160,35 +268,51 @@ if [ -n "${hidden}" ]; then
     exit "${EX_DIRTY}"
 fi
 
-# 3. Untracked files in the directories a build reads, whatever ignored them. Without an
-#    exclude option `git ls-files --others` lists ignored files too, including those hidden
-#    by .git/info/exclude and core.excludesFile.
-readonly EXPECTED_IGNORED="Configs/Signing.xcconfig
-Configs/Aeolus-Info.plist
-Configs/AeolusHelper-Info.plist
-Configs/fanctl-Info.plist"
-untracked=$(git_in_tree ls-files --others -- Sources Tests Tools Resources Configs) \
-    || die "${EX_TOOL}" "git could not list the untracked files"
-unexpected=$(printf '%s\n' "${untracked}" \
-    | grep -v -x -F -e "${EXPECTED_IGNORED}" | grep -v -E '(^|/)\.DS_Store$' | grep . || true)
+# 3. Every untracked path, ignored or not. Without an exclude option `git ls-files --others`
+#    lists ignored paths too, including those hidden by .git/info/exclude and core.excludesFile,
+#    and --directory shows a wholly untracked directory as one entry. The allowed set is
+#    explicit (see the header); a shell pattern decides, and anything else is refused.
+is_allowed_untracked() {
+    case "$1" in
+        Configs/Signing.xcconfig | Configs/Aeolus-Info.plist | Configs/AeolusHelper-Info.plist | Configs/fanctl-Info.plist) return 0 ;;
+        Aeolus.xcodeproj/ | .build/ | DerivedData/ | build/ | dist/) return 0 ;;
+        .DS_Store | */.DS_Store) return 0 ;;
+        .claude/settings.local.json) return 0 ;;
+        autonomous-session-*.md) return 0 ;;
+    esac
+    return 1
+}
+untracked=$(git_in_tree ls-files --others --directory) \
+    || die "${EX_TOOL}" "git could not list the untracked paths"
+unexpected=""
+while IFS= read -r entry; do
+    if [ -n "${entry}" ] && ! is_allowed_untracked "${entry}"; then
+        unexpected="${unexpected}${entry}"$'\n'
+    fi
+done <<EOF
+${untracked}
+EOF
 if [ -n "${unexpected}" ]; then
-    echo "error: untracked files sit in the build's directories (ignored or not), and a build reads them." >&2
+    echo "error: untracked paths, ignored or not, are outside the set a build may have here, and a build can read them." >&2
     echo "Remove them, or track them, and build again. First paths:" >&2
     show_first_ten "${unexpected}"
     exit "${EX_DIRTY}"
 fi
 
-# Which of the expected-ignored inputs exist, by name only.
-present=""
-while IFS= read -r name; do
-    if [ -e "${source_tree}/${name}" ]; then
-        present="${present:+${present}, }${name}"
+# Which of the allowed local inputs exist, as fixed labels.
+signing_label="absent"
+if [ -e "${source_tree}/Configs/Signing.xcconfig" ]; then
+    signing_label="present"
+fi
+plists_found=0
+for plist_name in Aeolus-Info.plist AeolusHelper-Info.plist fanctl-Info.plist; do
+    if [ -e "${source_tree}/Configs/${plist_name}" ]; then
+        plists_found=$((plists_found + 1))
     fi
-done <<EOF
-${EXPECTED_IGNORED}
-EOF
-if [ -z "${present}" ]; then
-    present="none"
+done
+project_label="absent"
+if [ -e "${source_tree}/Aeolus.xcodeproj" ]; then
+    project_label="present"
 fi
 
 # --- The app ------------------------------------------------------------------------------
@@ -204,14 +328,15 @@ plist_value() {
 short_version=$(plist_value CFBundleShortVersionString) || carry_out "$?"
 bundle_version=$(plist_value CFBundleVersion) || carry_out "$?"
 
-# Prints "<identifier> <sha256 CDHash>" for one architecture of one binary, or returns 1.
-# The raw output is held in a variable and never printed: it carries the Team ID and the
-# signing authority, which a record must not.
+# Prints "<identifier> <sha256 CDHash>" for one architecture of one binary. Returns 1 if the
+# binary is unsigned or the signature gives no single identifier and sha256 hash, 2 if a
+# parser failed. The raw output is held in a variable and never printed: it carries the Team
+# ID and the signing authority, which a record must not.
 slice_signature() {
     local binary="$1" arch="$2" output identifier hash
     output=$("${CODESIGN}" -d --verbose=4 --arch "${arch}" "${binary}" 2>&1) || return 1
-    identifier=$(printf '%s\n' "${output}" | sed -n 's/^Identifier=//p')
-    hash=$(printf '%s\n' "${output}" | sed -n 's/^CandidateCDHashFull sha256=//p')
+    identifier=$(printf '%s\n' "${output}" | sed -n 's/^Identifier=//p') || return 2
+    hash=$(printf '%s\n' "${output}" | sed -n 's/^CandidateCDHashFull sha256=//p') || return 2
     if [ -z "${identifier}" ] || [ "$(printf '%s\n' "${identifier}" | wc -l)" -ne 1 ]; then
         return 1
     fi
@@ -223,15 +348,20 @@ slice_signature() {
 
 # Prints the record's lines for one binary, or exits naming it.
 binary_lines() {
-    local name="$1" binary="${app}/Contents/MacOS/$1" archs arch signature
+    local name="$1" binary="${app}/Contents/MacOS/$1" archs arch signature signature_status
     [ -f "${binary}" ] || die "${EX_MISSING}" "missing binary: Contents/MacOS/${name}"
     archs=$("${LIPO}" -archs "${binary}" 2>/dev/null) \
         || die "${EX_UNSIGNED}" "Contents/MacOS/${name}: cannot read its architectures (is it a Mach-O?)"
     [ -n "${archs}" ] || die "${EX_UNSIGNED}" "Contents/MacOS/${name}: no architectures found"
     printf '%s  (Contents/MacOS/%s)\n' "${name}" "${name}"
     for arch in ${archs}; do
-        signature=$(slice_signature "${binary}" "${arch}") \
-            || die "${EX_UNSIGNED}" "Contents/MacOS/${name} (${arch}): unsigned, or no sha256 CDHash and identifier can be read from its signature"
+        signature_status=0
+        signature=$(slice_signature "${binary}" "${arch}") || signature_status=$?
+        case "${signature_status}" in
+            0) ;;
+            1) die "${EX_UNSIGNED}" "Contents/MacOS/${name} (${arch}): unsigned, or no sha256 CDHash and identifier can be read from its signature" ;;
+            *) die "${EX_TOOL}" "Contents/MacOS/${name} (${arch}): a system tool failed while reading its signature" ;;
+        esac
         printf '  %-7s sha256 CDHash %s  identifier %s\n' \
             "${arch}" "${signature#* }" "${signature%% *}"
     done
@@ -240,14 +370,26 @@ binary_lines() {
 # The helper's build string, by pattern, without running the helper. Display only: when it
 # cannot be read the record says why, and still makes the record.
 helper_build_line() {
-    local binary="${app}/Contents/MacOS/AeolusHelper" listing matches count
+    local binary="${app}/Contents/MacOS/AeolusHelper" listing matches count line match_status=0
     if ! listing=$("${STRINGS}" -a "${binary}" 2>/dev/null); then
         echo "not read: the strings tool failed on the binary (the helper was not run)"
         return 0
     fi
+    # grep's exit 1 is "no line matches" and is not a failure; 2 or more is.
     matches=$(printf '%s\n' "${listing}" \
-        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+ \(.+\)$' | sort -u || true)
-    count=$(printf '%s' "${matches}" | grep -c . || true)
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+ \(.+\)$' | sort -u) || match_status=$?
+    if [ "${match_status}" -gt 1 ]; then
+        echo "not read: the grep tool failed on the binary's strings (the helper was not run)"
+        return 0
+    fi
+    count=0
+    while IFS= read -r line; do
+        if [ -n "${line}" ]; then
+            count=$((count + 1))
+        fi
+    done <<EOF
+${matches}
+EOF
     if [ "${count}" -eq 1 ]; then
         printf '%s\n' "${matches}"
     elif [ "${count}" -eq 0 ]; then
@@ -270,10 +412,13 @@ E4 build record
   recorded (UTC): ${recorded_at}
   source branch:  ${branch}
   source HEAD:    ${head_sha}
-  source tree:    clean (no tracked change, no untracked file, no assume-unchanged or skip-worktree file)
-  ignored inputs present: ${present}
-    (names only; they are not part of the tree this record names)
-  app:            $(basename "${app}")
+  source tree:    clean (top level; no filter, no tracked change, no untracked path outside the allowed set,
+                  no assume-unchanged or skip-worktree file)
+  local inputs, ignored and not part of the tree this record names (presence only):
+    Configs/Signing.xcconfig: ${signing_label}
+    generated Info.plists:    ${plists_found} of 3 present
+    Aeolus.xcodeproj/:        ${project_label}
+  app bundle:     (name not recorded)
   version:        ${short_version} (CFBundleShortVersionString)
   build:          ${bundle_version} (CFBundleVersion)
   helper build string: ${build_line}
