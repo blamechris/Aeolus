@@ -53,6 +53,14 @@ jobs:
       - name: Build
         run: swift build --build-tests
 
+      # ADR 0012's #440 amendment: § 3's handback is lent to the lease core, and the compiler
+      # refuses to let a borrowed restorer be stored, boxed, copied, consumed or captured. Each
+      # refused shape is code that must not compile, so no test can hold it: this compiles each
+      # one fully against the modules the step above built, on this runner's own toolchain, and
+      # requires its refusal; a positive control must compile. Reads only.
+      - name: Lending probes
+        run: scripts/lending-probes/check.sh
+
       - name: Test
         run: swift test --skip-build
 
