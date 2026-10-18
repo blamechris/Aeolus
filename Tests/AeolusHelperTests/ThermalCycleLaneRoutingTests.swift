@@ -314,16 +314,14 @@ extension ThermalCycleLaneRoutingTests {
     /// **Mutation (K6):** in `HelperComposition.init`, build the handback before the lease core
     /// and give it to `LeaseAuthority` as `restorer:`. Run: red at the seven lease-core paths.
     /// § 6's pass restores through the restorer itself, not the lease core, and stays green.
-    /// **Mutation (N5c, kept from #439's review):** store the revocation's cause in the lease core
-    /// and restore lapsed leases under it, bound to a local first. Run: the whole suite green,
-    /// correctly — the cause routes nothing, so the TTL path still restores at `.supervisor`.
-    /// (Passed straight into the call, the stored cause is a member read in a teardown's restore
-    /// arguments, which `TeardownCountTripwireTests` refuses; this test stays green either way.)
+    /// **Mutation (N5c, from #439's review):** store the revocation's cause and restore lapsed
+    /// leases under it, bound to a local first. Run: the whole suite green, correctly — the cause
+    /// routes nothing. (Passed straight into the call it is a member read in a restore's arguments,
+    /// which `TeardownCountTripwireTests` refuses; this test stays green either way.)
     @Test("After a firing, every other path restores at supervisor")
     func afterAFiringEveryOtherPathRestoresAtSupervisor() async throws {
         let machine = await Machine(stages: [Self.nominal, .at(96), Self.nominal], fans: 1)
         let helper = machine.helper
-
         _ = try await machine.lease([0])
         await machine.firmware.advance()
         let firing = await machine.calls { await helper.thermalEmergency.cycle() }
@@ -386,8 +384,7 @@ extension ThermalCycleLaneRoutingTests {
         ]
     }
 
-    /// § 4's half of `everyOtherPath(on:)`: a lease, the sleep that
-    /// hands it back, and the wake that reopens the table for the paths after it.
+    /// § 4's half of `everyOtherPath(on:)`: a lease, its sleep, and the wake that reopens grants.
     private static func sleepAndWake(
         _ machine: Machine
     ) async throws -> [ScriptedControlPlane.AdmittedAttempt] {
