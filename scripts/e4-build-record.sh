@@ -89,8 +89,14 @@
 #   compare equal to the committed one. The repository has no .gitattributes, and a filter
 #   driver merely being configured is not refused: git-lfs is configured globally on many Macs
 #   and applies to nothing here.
+# - No tracked path is a submodule (exit 3): no mode-160000 entry in `git ls-files -s`.
+#   `git check-attr`, `git ls-files -v` and `git ls-files --others` stop at a submodule's
+#   boundary, so a clean filter, an assume-unchanged file or an untracked file inside one is
+#   invisible to every other check here: a clean filter in a submodule and a same-size edit
+#   recorded `clean`. This repository has no .gitmodules, and a record of one that does would
+#   say nothing about what is inside it.
 # - `git status --porcelain --untracked-files=all --ignore-submodules=none` is empty: no
-#   tracked change (staged or not), no untracked file, no change inside a submodule.
+#   tracked change (staged or not), no untracked file, no change a submodule reports.
 # - No tracked file is marked `--assume-unchanged` or `--skip-worktree` (`git ls-files -v`
 #   shows a lowercase letter or `S`), because git then reports a modified file as clean.
 # - **Every** untracked path, ignored or not, whatever ignored it (.gitignore,
@@ -145,8 +151,8 @@
 #   2  the arguments, the environment or the source tree cannot be used: wrong number of
 #      arguments; BASH_ENV, ENV, xtrace or verbose is on; git is not available; the source
 #      tree is not a git work tree, is not its top level, or has no HEAD commit
-#   3  the source tree is not clean in the sense above: a record of a dirty build names no
-#      source anyone can review, so none is made
+#   3  the source tree is not clean in the sense above, or has a submodule: a record of a
+#      dirty build names no source anyone can review, so none is made
 #   4  an input of the app is missing: Contents/Info.plist, one of its two version keys, or
 #      one of the three binaries
 #   5  a binary is unsigned, or its signature or architectures cannot be read
@@ -288,7 +294,26 @@ if [ -n "${filtered}" ]; then
     exit "${EX_DIRTY}"
 fi
 
-# 1. Tracked changes, untracked files and anything inside a submodule. Untracked files count:
+# 0b. No submodule. Everything below stops at a submodule's boundary: `git check-attr` does not
+#     look inside one, nor do `git ls-files -v` and `git ls-files --others`, and `git status`
+#     only asks the submodule's own git, which applies the submodule's own filters. A mode of
+#     160000 in the index marks one (a gitlink). This repository has none, so any is refused.
+staged=$(git_in_tree ls-files -s) || die "${EX_TOOL}" "git could not list the source tree's index entries"
+submodules=""
+while IFS= read -r line; do
+    case "${line}" in
+        160000\ *) submodules="${submodules}${line#*$'\t'}"$'\n' ;;
+    esac
+done <<EOF
+${staged}
+EOF
+if [ -n "${submodules}" ]; then
+    echo "error: the source tree has a submodule. The checks here do not look inside one, so a clean record would say nothing about its files. First paths:" >&2
+    show_first_ten "${submodules}"
+    exit "${EX_DIRTY}"
+fi
+
+# 1. Tracked changes and untracked files. Untracked files count:
 #    SwiftPM compiles every .swift file under Sources, tracked or not.
 dirty=$(git_in_tree status --porcelain --untracked-files=all --ignore-submodules=none) \
     || die "${EX_TOOL}" "git could not read the source tree's status"
@@ -463,8 +488,8 @@ E4 build record
   recorded (UTC): ${recorded_at}
   source branch:  ${branch}
   source HEAD:    ${head_sha}
-  source tree:    clean (top level; no filter, no tracked change, no untracked path outside the allowed set,
-                  no assume-unchanged or skip-worktree file)
+  source tree:    clean (top level; no filter, no submodule, no tracked change, no untracked path outside
+                  the allowed set, no assume-unchanged or skip-worktree file)
   local inputs, ignored and not part of the tree this record names (presence only):
     Configs/Signing.xcconfig: ${signing_label}
     generated Info.plists:    ${plists_found} of 3 present
