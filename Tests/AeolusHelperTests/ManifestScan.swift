@@ -163,10 +163,18 @@ enum ManifestScan {
 
     // MARK: - Where a target's sources live
 
-    /// The directories every other scan under `Tests/` reads. A target compiled from anywhere else
-    /// is a target no guard here has seen: a `.target` at `Probe/`, linked into a test, could hold
-    /// an opt-in to the write SPI that no census counts.
-    static let scannedRoots: Set<String> = ["Sources", "Tests", "Tools"]
+    /// The directories a target of `kind` may take its sources from, because a scan reads them.
+    ///
+    /// A test target is held to `Tests/`, the one directory rule zero reads
+    /// (`RuleZeroScan.files(under: "Tests")`): a test target at `Sources/X` that composes the real
+    /// graph with no require leaves the whole suite green (#442's review, A15), and the guard
+    /// this one replaced refused it. Every other kind may live in `Sources/` and `Tools/`, which
+    /// the scans over the helper, the clients and the tools read. A target anywhere else is code no
+    /// scan here reads: a `.target` at `Probe/`, linked into a test, could hold an opt-in to the
+    /// write SPI that no census counts.
+    static func roots(for kind: String) -> [String] {
+        kind == "testTarget" ? ["Tests"] : ["Sources", "Tools"]
+    }
 
     /// `path` with `.` and empty components dropped and `..` resolved, or `nil` when it is
     /// absolute or climbs above the package. `Tests/../Probe` is `Probe`.
@@ -205,10 +213,12 @@ enum ManifestScan {
             }
             declared = (target.kind == "testTarget" ? "Tests/" : "Sources/") + name
         }
-        guard let parts = resolved(declared), let root = parts.first, scannedRoots.contains(root)
+        let allowed = roots(for: target.kind)
+        guard let parts = resolved(declared), let root = parts.first, allowed.contains(root)
         else {
             return "\(called) takes its sources from \(declared), which is not under "
-                + "\(scannedRoots.sorted().joined(separator: ", ")): no scan here reads it"
+                + "\(allowed.joined(separator: ", ")), the only place the scans here read a "
+                + target.kind
         }
         guard directoryExists(parts.joined(separator: "/")) else {
             return "\(called) takes its sources from \(parts.joined(separator: "/")), which is "

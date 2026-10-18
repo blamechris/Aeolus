@@ -175,20 +175,52 @@ struct ManifestScanTests {
             "tests/T", "Sources/../Package.swift/..",
         ]
         for path in outside {
-            let target = ManifestScan.Target(kind: "target", name: "T", path: .literal(path))
-            let problem = Self.lookingFor(target).problem
-            #expect(problem?.contains("not under") == true, "\(path): \(problem ?? "nil")")
+            for kind in ["target", "testTarget"] {
+                let target = ManifestScan.Target(kind: kind, name: "T", path: .literal(path))
+                let problem = Self.lookingFor(target).problem
+                #expect(
+                    problem?.contains("not under") == true, "\(kind) \(path): \(problem ?? "nil")")
+            }
         }
-        let inside: [(path: String, resolved: String)] = [
-            ("Sources/T", "Sources/T"), ("Tests/T/", "Tests/T"), ("./Tests/T", "Tests/T"),
-            ("Tests/../Sources/T", "Sources/T"), ("Tools/X/../Y", "Tools/Y"),
-            ("Tests//T", "Tests/T"), ("Sources", "Sources"),
+        let inside: [(kind: String, path: String, resolved: String)] = [
+            ("target", "Sources/T", "Sources/T"), ("testTarget", "Tests/T/", "Tests/T"),
+            ("testTarget", "./Tests/T", "Tests/T"), ("target", "Tests/../Sources/T", "Sources/T"),
+            ("target", "Tools/X/../Y", "Tools/Y"), ("testTarget", "Tests//T", "Tests/T"),
+            ("target", "Sources", "Sources"), ("testTarget", "Sources/../Tests/T", "Tests/T"),
         ]
-        for (path, resolved) in inside {
-            let target = ManifestScan.Target(kind: "target", name: "T", path: .literal(path))
+        for (kind, path, resolved) in inside {
+            let target = ManifestScan.Target(kind: kind, name: "T", path: .literal(path))
             let (problem, asked) = Self.lookingFor(target)
-            #expect(problem == nil, "\(path): \(problem ?? "")")
+            #expect(problem == nil, "\(kind) \(path): \(problem ?? "")")
             #expect(asked == [resolved], "\(path) was looked for at \(asked)")
+        }
+    }
+
+    /// **A15** (#442's review). Rule zero reads only `Tests/`, so a test target anywhere else can
+    /// compose the real graph with no require and leave the suite green. The guard this one
+    /// replaced held test targets to `Tests/`; the first draft of this one let them live in any
+    /// root, and its fixture said so.
+    ///
+    /// **Mutation:** in `roots(for:)`, return all three directories for every kind. Run: red here,
+    /// at the first path.
+    @Test("A test target must live under Tests, and no other kind may")
+    func aTestTargetMustLiveUnderTests() throws {
+        for path in ["Sources/P", "Tools/P", "Tests/../Sources/P", "Sources/./P", "Sources"] {
+            let target = try Self.target(#".testTarget(name: "P", path: "\#(path)")"#)
+            let problem = Self.lookingFor(target).problem
+            #expect(problem?.contains("not under Tests") == true, "\(path): \(problem ?? "nil")")
+        }
+        #expect(
+            Self.lookingFor(try Self.target(#".testTarget(name: "P", path: "Tests/P")"#)).problem
+                == nil)
+        #expect(Self.lookingFor(try Self.target(#".testTarget(name: "P")"#)) == (nil, ["Tests/P"]))
+        for kind in ManifestScan.targetKinds where kind != "testTarget" {
+            let underTests = try Self.target(#".\#(kind)(name: "P", path: "Tests/P")"#)
+            #expect(Self.lookingFor(underTests).problem != nil, "\(kind) under Tests")
+            for path in ["Sources/P", "Tools/P"] {
+                let target = try Self.target(#".\#(kind)(name: "P", path: "\#(path)")"#)
+                #expect(Self.lookingFor(target).problem == nil, "\(kind) at \(path)")
+            }
         }
     }
 
@@ -204,7 +236,7 @@ struct ManifestScanTests {
         return (problem, asked)
     }
 
-    /// **P06.** A `.target` whose sources are outside the three roots, linked into a test, is code
+    /// **P06.** A `.target` whose sources are outside the roots, linked into a test, is code
     /// no scan reads. Every constructor that declares a target is held to the same rule, and so is
     /// the directory it defaults to when it names no path.
     ///
@@ -216,7 +248,8 @@ struct ManifestScanTests {
             #expect(outside.kind == kind)
             #expect(Self.lookingFor(outside).problem != nil, "\(kind)")
 
-            let inside = try Self.target(#".\#(kind)(name: "Probe", path: "Sources/Probe")"#)
+            let home = kind == "testTarget" ? "Tests" : "Sources"
+            let inside = try Self.target(#".\#(kind)(name: "Probe", path: "\#(home)/Probe")"#)
             #expect(Self.lookingFor(inside).problem == nil, "\(kind)")
         }
         // No `path:`: SwiftPM looks in `Sources/<name>`, or `Tests/<name>` for a test target.
