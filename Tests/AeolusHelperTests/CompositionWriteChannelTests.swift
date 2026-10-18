@@ -128,9 +128,19 @@ struct CompositionWriteChannelTests {
     }
 
     /// An explicit access level that can widen a member past `private`. `private`, `fileprivate`
-    /// and `private(set)` are the narrowing ones and are not matched; a longer word is not either.
+    /// and `private(set)` are the narrowing ones and are not matched; a longer word is not either,
+    /// nor is a member access (`connection.open()`).
+    ///
+    /// `internal` and `public` are matched wherever they stand. `open` and `package` are also
+    /// ordinary words, so they are matched only as modifiers: followed, past any other modifiers
+    /// and attributes, by a declaration keyword. `func open()`, the forwarder's own verb, is a name
+    /// and not a widening (#442's review, N1), and `open class`, `package static func` and
+    /// `@MainActor open var` are.
     static let widenedAccessToken =
-        #"(?<![A-Za-z0-9_])(?:internal|public|package|open)(?![A-Za-z0-9_])"#
+        #"(?<![.\w])(?:internal|public)(?!\w)|(?<![.\w])(?:open|package)(?!\w)"#
+        + #"(?=\s+(?:@?\w+(?:\([^()]*\))?\s+){0,8}?"#
+        + #"(?:func|var|let|class|struct|enum|actor|protocol|extension|init|subscript|typealias"#
+        + #"|associatedtype|import)(?!\w))"#
 
     /// Every widening access word in `code`, in order.
     static func widenedAccess(in code: String) throws -> [String] {
@@ -139,22 +149,36 @@ struct CompositionWriteChannelTests {
             .compactMap { Range($0.range, in: code).map { String(code[$0]) } }
     }
 
-    /// **Mutation:** in `widenedAccessToken`, drop `internal|`. Run: red here, at the first
-    /// fixture.
+    /// **Mutations:** in `widenedAccessToken`, drop `internal|`; match `open` and `package`
+    /// wherever they stand. Run: red here, the first at the first fixture and the second at the
+    /// forwarder's `func open()`.
     @Test("An explicit internal, public, package or open in main's file is found")
     func widenedAccessIsFound() throws {
-        let widening = [
-            "private extension HelperComposition where Plane == SMCFanControlPlane {\n"
-                + "    internal static func daemonGraph(log: HelperLog) -> Self {\n"
-                + "        production(log: log)\n    }\n}",
-            "private extension E {\n    public func f() {}\n}",
-            "private enum E {\n    package static func f() {}\n}",
-            "private class E {\n    open func f() {}\n}",
-            "fileprivate extension E {\n    internal(set) var x: Int { 0 }\n}",
-            "@main private enum E {\n    static func main() {}\n    internal static let x = 1\n}",
+        let widening: [(source: String, words: [String])] = [
+            (
+                "private extension HelperComposition where Plane == SMCFanControlPlane {\n"
+                    + "    internal static func daemonGraph(log: HelperLog) -> Self {\n"
+                    + "        production(log: log)\n    }\n}", ["internal"]
+            ),
+            ("private extension E {\n    public func f() {}\n}", ["public"]),
+            ("private enum E {\n    package static func f() {}\n}", ["package"]),
+            ("private class E {\n    open func f() {}\n}", ["open"]),
+            (
+                "private class E {\n    open var x = 1\n    @MainActor open static func g() {}\n}",
+                ["open", "open"]
+            ),
+            (
+                "private enum E {\n    package static func f() {}\n    package let y = 1\n}",
+                ["package", "package"]
+            ),
+            ("fileprivate extension E {\n    internal(set) var x: Int { 0 }\n}", ["internal"]),
+            (
+                "@main private enum E {\n    static func main() {}\n    internal static let x = 1\n}",
+                ["internal"]
+            ),
         ]
-        for source in widening {
-            #expect(try Self.widenedAccess(in: Self.mainCode(source)).count == 1, "\(source)")
+        for (source, words) in widening {
+            #expect(try Self.widenedAccess(in: Self.mainCode(source)) == words, "\(source)")
         }
         let narrowing = [
             "private extension E {\n    private(set) var openCount = 0\n    func f() {}\n}",
@@ -162,6 +186,11 @@ struct CompositionWriteChannelTests {
             "// internal public package open\nprivate enum E {}",
             "private let words = \"internal public package open\"",
             "private enum E {\n    static func main() { opened(); isOpen = false }\n}",
+            // N1: `open` and `package` as names. The forwarder's own `func open()` is one.
+            "private actor E {\n    func open() throws { try connection.assumeIsolated { try $0.open() } }\n}",
+            "private enum E {\n    static func main() { let open = 1; _ = open; _ = self.open }\n}",
+            "private enum E {\n    var package: Int { 0 }\n    func package(_ x: Int) {}\n}",
+            "private enum E {\n    func f() { if open { return } else { _ = package } }\n}",
         ]
         for source in narrowing {
             #expect(try Self.widenedAccess(in: Self.mainCode(source)).isEmpty, "\(source)")
