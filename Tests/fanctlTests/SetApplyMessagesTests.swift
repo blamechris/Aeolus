@@ -165,22 +165,40 @@ struct SetApplyMessagesTests {
         #expect(timer.contains("fanctl's timer failed"))
     }
 
-    /// `leaseExpired`'s own description says the fans "have returned to automatic control". Nobody
-    /// observed that, so `set` does not repeat it: it says what the helper answered, and nothing
-    /// about the fans.
+    /// `leaseExpired`'s own description says the fans "have returned to automatic control"; a
+    /// restarted helper's says "any manual control it was holding ended with it; ask for the fans
+    /// again"; a request nobody answered says the helper "returns those fans to automatic control
+    /// when it handles that". Nobody observed any of that, and advice to ask again is no use to a
+    /// run that never re-acquires, so `set` does not repeat them: it says what it saw.
     ///
-    /// **Mutation:** return the fault's own description in `SetCommand.describe`. Run: red.
+    /// **Mutation:** return the error's own description in `SetCommand.describe`. Run: red.
     @Test(
-        "An expired lease is described by the helper's answer, not by its claim about the fans"
+        "A transport failure or an expired lease is described by what was seen, not by its claim"
     )
-    func expiredLeaseIsNotQuotedWithItsClaim() {
-        let words = SetCommand.describe(AeolusXPCFault.leaseExpired)
-        #expect(words.contains("expired"))
-        #expect(!words.contains("returned to automatic"))
+    func describedByWhatWasSeen() {
+        let seen: [any Error] = [
+            AeolusXPCFault.leaseExpired, HelperClientError.helperRestarted,
+            HelperClientError.helperNeverAnswered(after: .seconds(57)),
+            HelperClientError.connectionAbandoned,
+        ]
+        for error in seen {
+            let words = SetCommand.describe(error)
+            #expect(!words.contains("returned to automatic"), "\(error): \(words)")
+            #expect(!words.contains("return those fans"), "\(error): \(words)")
+            #expect(!words.contains("ended with it"), "\(error): \(words)")
+            #expect(!words.contains("ask for the fans again"), "\(error): \(words)")
+            #expect(!words.contains("Acquire a new lease"), "\(error): \(words)")
+        }
+        #expect(SetCommand.describe(AeolusXPCFault.leaseExpired).contains("expired"))
         #expect(
-            !words.contains("Acquire a new lease"), "a run that never re-acquires is not told to")
-        // Every other fault is still the error's own words.
+            SetCommand.describe(HelperClientError.helperRestarted).contains("interrupted"))
+        #expect(
+            SetCommand.describe(HelperClientError.helperNeverAnswered(after: .seconds(57)))
+                .contains("did not answer within"))
+        // Every other error is still its own words.
         let other = AeolusXPCFault.leaseUnknown
         #expect(SetCommand.describe(other) == other.errorDescription)
+        let unread = HelperClientError.replyNotDelivered
+        #expect(SetCommand.describe(unread) == unread.errorDescription)
     }
 }

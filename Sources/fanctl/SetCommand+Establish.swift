@@ -189,8 +189,11 @@ extension SetCommand {
                 settlement: settlement)
         }
         guard answered else {
+            // The client's words for what it saw, not the error's own, which go on to claim what
+            // the helper did with the fans and to advise what to do next (`describe`).
+            let observed = HelperCommandFailure(classified.code, describe(error))
             return .applyUnanswered(
-                classified, hold: hold, release: release, settlement: settlement)
+                observed, hold: hold, release: release, settlement: settlement)
         }
         if let lapse = lapse(afterApplyFault: error) {
             return .lapsed(lapse, hold: hold, release: release, settlement: settlement)

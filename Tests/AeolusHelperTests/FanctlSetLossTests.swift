@@ -363,6 +363,12 @@ struct FanctlSetLossTests {
         #expect(!message.contains("did not accept the speed"))
         #expect(!message.contains("refused"))
         #expect(!message.contains("Nothing is held"))
+        // What the client saw, not the error's own claim about the fans ("any manual control it
+        // was holding ended with it") or its advice to ask again, which a run that never
+        // re-acquires has no use for.
+        #expect(message.contains("The connection to the helper was interrupted"))
+        #expect(!message.contains("ended with it"))
+        #expect(!message.contains("ask for the fans again"))
         #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
     }
 }
