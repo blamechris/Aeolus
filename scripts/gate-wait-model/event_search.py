@@ -5,7 +5,7 @@
 #
 # A wider search of the event model at N = 12: histories with no firing head, one or two latched
 # cycles before the tail, and phases from -200 to 199 round trips. Its worst is 611 round trips.
-import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import os, sys; sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from event import wait_of_W, RT_S
 K, F = 34, 2
 fire = [K] + [5] * F + [2] * (F * 3)

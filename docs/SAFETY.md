@@ -529,8 +529,9 @@ composed graph only this cycle's reads, bridges and restores take the class, and
 restore cause routes outside it); `ThermalCycleLaneWriterTests` (every plane the composed graph
 stores is admitted at `.supervisor` but this cycle's); `ThermalCycleLaneTripwireTests` (who may
 name the class, counted per file); `ThermalCycleLaneOverlapTests` and
-`ThermalCycleLaneCounterTests` (this cycle's firing episode never has two requests in the class,
-two outstanding together are reported, and the count returns to zero however a request ends); and
+`ThermalCycleLaneCounterTests` (this cycle's firing episode and its take-back never have two
+requests in the class, two outstanding together are reported, and the count returns to zero
+however a request ends); and
 `WatchdogLimitsTests` (the bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and

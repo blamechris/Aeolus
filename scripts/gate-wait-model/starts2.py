@@ -5,6 +5,7 @@
 #
 # The same count over histories whose latched cycles revoke with or without restores refused.
 import os, sys
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from starts import wait, gen, fire, lat, rb, tb, K, F, RT
 rev_refused = K + F * 3 * 2

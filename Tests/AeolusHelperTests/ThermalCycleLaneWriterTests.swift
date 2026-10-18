@@ -123,6 +123,8 @@ struct ThermalCycleLaneWriterTests {
         await helper.bindSafetyRegistries()
 
         let found = Self.planes(reachableFrom: helper)
+        // Adding a site here is an ADR 0012 amendment and a safety review (#332): a fifth lane site
+        // lands with three visible edits and nothing else red, so this list is the review signal.
         let laneSites: Set<String> = [
             "HelperFanRestorer.thermalCycleBounded.attempting.writer.plane",
             "ThermalEmergency.telemetry.plane",

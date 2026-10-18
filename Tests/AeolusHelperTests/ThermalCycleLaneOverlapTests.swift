@@ -90,11 +90,9 @@ struct ThermalCycleLaneOverlapTests {
     /// read back for both fans. Every one of § 3's requests is in the lane, and no two are ever
     /// outstanding together.
     ///
-    /// **Not every path § 3 has.** A latched cycle that takes a fan back with writes, and a blind
-    /// cycle, are not driven here. Both are sequential by inspection, inside `isCycling`:
-    /// `takeBackAnythingEngagedSinceFiring()` awaits each fan's bridge and then the revocation,
-    /// and a blind cycle reads nothing more and takes back what it finds the same way. The run-time
-    /// report covers them in production.
+    /// **Not every path § 3 has.** The take-back a latched cycle runs is driven by the next test.
+    /// A blind cycle is not driven: it reads nothing more and takes back what it finds the same
+    /// way, inside `isCycling`, and the run-time report covers it in production.
     ///
     /// **Mutation:** in `ThermalEmergency.fire(_:from:)`, bridge the held fans in a task group.
     /// Run: red — two bridge jobs outstanding in the lane.
@@ -152,6 +150,41 @@ struct ThermalCycleLaneOverlapTests {
         #expect(
             Self.overlaps(in: observer.events).isEmpty,
             "§ 3 had two requests in its lane at once: \(Self.overlaps(in: observer.events))")
+    }
+
+    /// § 3's take-back, the path the episode above omits: the latch held from a firing that
+    /// bridged nothing, two fans engaged since it (`manualControlEngaged`), and a latched cycle
+    /// that bridges both and revokes, over a plane whose every call holds a real turn. No two
+    /// requests outstanding together.
+    ///
+    /// **Mutation:** in `takeBackAnythingEngagedSinceFiring()`, bridge the fans in a task group.
+    /// Run: red — two bridge jobs outstanding in the lane.
+    @Test("§ 3's take-back never has two requests in its lane")
+    func sectionThreesTakeBackNeverOverlapsInItsLane() async throws {
+        let observer = RecordingSchedulerObserver()
+        let turns = TurnHolder(observer: observer)
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)],
+            stages: [.at(96, writes: .refused(reason: "the scripted firmware refuses"))])
+        let helper = await Self.helper(over: firmware, turns: turns)
+
+        await helper.thermalEmergency.cycle()
+        #expect(await helper.latch.isActive, "the firing cycle did not fire")
+        for fan in [0, 1] {
+            await helper.thermalEmergency.manualControlEngaged(
+                try commandableFan(fan, declaring: .held(at: 2_400)))
+        }
+        let beforeTakeBack = await firmware.attempts.count
+        await helper.thermalEmergency.cycle()
+
+        let bridges = await firmware.attempts.dropFirst(beforeTakeBack).filter {
+            if case .bridgeThenRestore = $0 { return true }
+            return false
+        }
+        #expect(bridges.count == 2, "the latched cycle took back \(bridges)")
+        #expect(
+            Self.overlaps(in: observer.events).isEmpty,
+            "§ 3's take-back had two requests in its lane: \(Self.overlaps(in: observer.events))")
     }
 
     /// The composed graph over `firmware`, every call through it holding a turn of `turns`.

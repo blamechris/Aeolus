@@ -25,6 +25,14 @@ struct ThermalCycleLaneValueSetTests {
         }
     }
 
+    /// How many waiters the scheduler has reported parked.
+    private static func parkedCount(in events: [SchedulerEvent]) -> Int {
+        events.filter { event in
+            if case .waiterParked = event { return true }
+            return false
+        }.count
+    }
+
     /// Whether a priority is § 3's lane. No `default`: a new case does not compile.
     private static func isTheLane(_ priority: SMCReadPriority) -> Bool {
         switch priority {
@@ -66,17 +74,22 @@ struct ThermalCycleLaneValueSetTests {
         #expect(SMCReadPriority.allCases.count == 3)
         #expect(SMCReadPriority.allCases.filter(Self.isTheLane) == [.thermalCycle])
 
+        let observer = RecordingSchedulerObserver()
         let provider = GatedSensorProvider(holdingSubsetReads: true)
-        let scheduler = SMCReadScheduler(provider: provider)
+        let scheduler = SMCReadScheduler(provider: provider, observer: observer)
         let inFlight = observing { try await scheduler.read(keys: ["H0"], at: .snapshot) }
         await yieldUntil("a turn to hold the connection") { await provider.turns.count == 1 }
 
+        // Each request is waited for until it has **parked**, counted from the scheduler's own
+        // events, not from its queue: a priority folded into a queue another already occupies
+        // would make that queue's count true before the request parked, and the check below would
+        // race it.
         var parked: [ObservableWork<[SensorReadOutcome]>] = []
-        for priority in SMCReadPriority.allCases {
+        for (index, priority) in SMCReadPriority.allCases.enumerated() {
             parked.append(
                 observing { try await scheduler.read(keys: ["P\(priority)"], at: priority) })
             await yieldUntil("a request at \(priority) to park") {
-                await scheduler.queuedTurns(at: priority) == 1
+                Self.parkedCount(in: observer.events) == index + 1
             }
         }
         for priority in SMCReadPriority.allCases {

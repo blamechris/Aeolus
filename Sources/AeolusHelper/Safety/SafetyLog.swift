@@ -354,8 +354,8 @@ struct SafetyLog: Sendable {
 
     // MARK: - docs/SAFETY.md § 3 — its lane (ADR 0012's 2026-10-18 amendment)
 
-    /// A request arrived in § 3's lane while another was outstanding, with more outstanding at
-    /// once than any earlier report. Admitted in the lane anyway.
+    /// A request arrived in § 3's lane while another was outstanding, deeper than any earlier
+    /// report or at a power of two of the overlapping arrivals. Admitted in the lane anyway.
     func thermalCycleLaneOverlapped(outstanding: Int, overlappingArrivals: Int) {
         emit(
             .fault,
@@ -365,7 +365,7 @@ struct SafetyLog: Sendable {
             time. The request was admitted; the override's cycle bound (ADR 0012) assumes one, \
             so its waits are no longer the ones derived. \(overlappingArrivals) request(s) have \
             arrived to find another outstanding since the helper started; this is reported \
-            again only if more are ever outstanding at once.
+            again when that count doubles, or when more are outstanding at once.
             """
         )
     }

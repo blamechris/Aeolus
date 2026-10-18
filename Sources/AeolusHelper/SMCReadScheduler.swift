@@ -281,12 +281,12 @@ actor SMCReadScheduler {
     /// read that throws is counted out by the same `defer` that releases its turn.
     private var outstandingThermalCycleRequests = 0
 
-    /// The most lane requests reported outstanding at once. One until the first overlap, so the
-    /// first overlap reports; after that a report needs more outstanding than ever before.
+    /// The most lane requests reported outstanding at once. One until the first overlap; an
+    /// arrival that makes more outstanding than this reports, whatever the arrivals count.
     private var mostThermalCycleRequestsReported = 1
 
-    /// Lane requests that arrived while another was outstanding, ever, reported or not: carried in
-    /// every report, so a later, larger overlap says how often the premise broke in between.
+    /// Lane requests that arrived while another was outstanding, ever, reported or not. Carried in
+    /// every report, and itself a reason to report each time it reaches a power of two.
     private var overlappingThermalCycleArrivals = 0
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
@@ -708,8 +708,8 @@ actor SMCReadScheduler {
         admitNext()
     }
 
-    /// Counts a lane request in, and reports an arrival that makes more lane requests outstanding
-    /// at once than have ever been reported.
+    /// Counts a lane request in, and reports an overlapping arrival that is deeper than any
+    /// reported, or that brings the overlapping arrivals to a power of two.
     ///
     /// **It reports and admits; it does not trap, block or demote.** ADR 0012's 2026-10-18
     /// amendment rules § 3 the lane's one producer, with its calls sequential, and both bounds
@@ -721,16 +721,23 @@ actor SMCReadScheduler {
     /// waits in the lane like the first, the bound it was owed is no longer the one derived, and
     /// the log says so.
     ///
-    /// **Re-armed on a new maximum, not latched for good.** A report needs more lane requests
-    /// outstanding at once than any earlier report did, so a transient overlap at bring-up cannot
-    /// mask a sustained second producer later, and an overlap that recurs at the same depth is one
-    /// line, not one per arrival. Every report carries the overlapping arrivals so far.
+    /// **When it reports: at a new depth, and at every power of two of the arrivals.** § 3 has at
+    /// most one request outstanding, so a second producer making its calls one at a time reaches
+    /// depth 2 and no deeper, however long it runs — the depth any transient overlap has already
+    /// reported. A report on depth alone would let one early overlap mask that producer for good.
+    /// So an overlapping arrival also reports whenever the cumulative count reaches 1, 2, 4, 8 and
+    /// so on: a sustained second producer keeps writing lines, and the log grows only
+    /// logarithmically in the overlaps. A deeper overlap reports at once. Every report carries the
+    /// depth and the arrivals so far.
     private func noteThermalCycleRequest() {
         outstandingThermalCycleRequests += 1
         guard outstandingThermalCycleRequests > 1 else { return }
         overlappingThermalCycleArrivals += 1
-        guard outstandingThermalCycleRequests > mostThermalCycleRequestsReported else { return }
-        mostThermalCycleRequestsReported = outstandingThermalCycleRequests
+        let arrivals = overlappingThermalCycleArrivals
+        let deeper = outstandingThermalCycleRequests > mostThermalCycleRequestsReported
+        let powerOfTwo = arrivals & (arrivals - 1) == 0
+        guard deeper || powerOfTwo else { return }
+        if deeper { mostThermalCycleRequestsReported = outstandingThermalCycleRequests }
         report(
             .thermalCycleLaneOverlapped(
                 outstanding: outstandingThermalCycleRequests,

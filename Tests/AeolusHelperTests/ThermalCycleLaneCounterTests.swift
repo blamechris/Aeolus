@@ -5,18 +5,19 @@ import Testing
 @testable import AeolusHelper
 
 /// The scheduler's count of lane requests outstanding returns to zero however a request ends, and
-/// its report re-arms only on a new maximum (ADR 0012's 2026-10-18 amendment).
+/// its report fires at each new depth and at each power of two of the overlapping arrivals (ADR
+/// 0012's 2026-10-18 amendment).
 ///
 /// The count is what the run-time overlap report reads, so a count that leaks reports overlaps
 /// that never happened and one that runs negative hides overlaps that did. Each test here runs
 /// one way a request can end on a **fresh** scheduler — a read the provider really throws from, a
 /// read longer than one turn, a request cancelled while it queues — and then puts the scheduler
 /// through the same check (`expectTheCountAtRest(on:)`): requests one after another report
-/// nothing, and a genuine overlapping pair reports once. Fresh, because a report re-arms only on a
-/// new maximum: on a scheduler that had already reported a pair, a leak of one would make the next
-/// sequential request a pair that reports nothing.
+/// nothing, and a genuine overlapping pair reports once. Fresh, so that the reports the check reads
+/// are exactly the ones it provokes: on a scheduler that had already reported, whether the next
+/// overlap reports depends on its depth and on how many came before it.
 @Suite(
-    "The lane's outstanding count returns to zero, and re-arms on a new maximum",
+    "The lane's outstanding count returns to zero, and its report fires at depth and doubling",
     .timeLimit(.minutes(1)))
 struct ThermalCycleLaneCounterTests {
 
@@ -140,21 +141,34 @@ struct ThermalCycleLaneCounterTests {
         try await Self.expectTheCountAtRest(on: rig)
     }
 
-    /// The report re-arms on a new maximum and on nothing else. A pair reports; the same pair
-    /// again does not; three at once report again, carrying every overlapping arrival so far.
+    /// A second producer making one call at a time only ever reaches depth 2, the depth any
+    /// earlier overlap has already reported, so depth alone would let one early overlap mask it for
+    /// good. Eight depth-2 overlaps in a row report at the 1st, 2nd, 4th and 8th: the producer
+    /// keeps writing lines, and the log grows only logarithmically.
     ///
-    /// **Mutation:** report every overlapping arrival (drop the new-maximum guard). Run: red — the
-    /// second pair reports.
-    /// **Mutation:** latch the report after the first. Run: red — the triple does not report.
-    @Test("The overlap report re-arms on a new maximum, with the arrivals so far")
-    func theReportReArmsOnANewMaximum() async throws {
+    /// **Mutation:** drop the power-of-two arm, so only a new depth reports. Run: red — one report.
+    /// **Mutation:** report every overlapping arrival. Run: red — eight reports.
+    /// **Mutation:** latch the report after the first. Run: red.
+    @Test("A sustained depth-2 overlap keeps reporting, at every power of two of its arrivals")
+    func aSustainedOverlapReportsAtEachDoubling() async throws {
         let rig = Rig()
-        try await rig.overlap(2)
-        #expect(rig.reports == [[2, 1]], "\(rig.reports)")
-        try await rig.overlap(2)
-        #expect(rig.reports == [[2, 1]], "the same overlap again reported: \(rig.reports)")
+        for _ in 0..<8 { try await rig.overlap(2) }
+        #expect(rig.reports == [[2, 1], [2, 2], [2, 4], [2, 8]], "\(rig.reports)")
+    }
+
+    /// A deeper overlap reports at once, off the powers of two. Three pairs report at arrivals 1
+    /// and 2; then three at once arrive as the 4th, a power of two at depth 2, and the 5th, the
+    /// first at depth 3.
+    ///
+    /// **Mutation:** drop the depth arm, so only the powers of two report. Run: red — depth 3 is
+    /// never reported.
+    @Test("A deeper overlap reports at once, whatever the arrivals count")
+    func aDeeperOverlapReportsAtOnce() async throws {
+        let rig = Rig()
+        for _ in 0..<3 { try await rig.overlap(2) }
+        #expect(rig.reports == [[2, 1], [2, 2]], "\(rig.reports)")
         try await rig.overlap(3)
-        #expect(rig.reports == [[2, 1], [3, 4]], "\(rig.reports)")
+        #expect(rig.reports == [[2, 1], [2, 2], [2, 4], [3, 5]], "\(rig.reports)")
     }
 }
 

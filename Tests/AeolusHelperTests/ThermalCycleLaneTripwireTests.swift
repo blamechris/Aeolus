@@ -178,6 +178,9 @@ struct ThermalCycleLaneTripwireTests {
     func theLaneIsNamedOnlyWhereItIsWired() throws {
         #expect(try Self.helperCode.get().count > 50, "the scan found too few helper files")
         let named = try Self.census(of: "thermalCycle")
+        // Adding a file here, or raising a count, is an ADR 0012 amendment and a safety review
+        // (#332): a new lane site lands with a few visible edits and nothing else red, so this
+        // list is the review signal.
         #expect(
             named == [
                 "SMCReadPriority.swift": 1, "PlaneAdmission.swift": 3, "SMCReadScheduler.swift": 1,

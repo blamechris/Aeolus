@@ -4,7 +4,7 @@
 # windows, and these scripts count the histories the windows do not cover.
 #
 # The event model over the named histories, at several N.
-import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import os, sys; sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from event import wait_of_W, RT_S
 K, F = 34, 2
 fire = [K] + [5] * F + [2] * (F * 3)
