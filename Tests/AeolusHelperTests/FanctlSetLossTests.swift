@@ -81,6 +81,8 @@ struct FanctlSetLossTests {
         #expect(await authority.renewals == 1)
         #expect(Harness.event("holding", in: try run.output.events()).count == 1)
         #expect(run.output.standardError.contains("did not renew lease"))
+        // The refusal here is `leaseExpired`, whose own description claims what the fans did.
+        #expect(!run.output.standardError.contains("returned to automatic"))
         #expect(failed["leaseID"] is String)
     }
 

@@ -251,7 +251,11 @@ a hold earlier or says less.
      in its own words**: "Control was lost before the hold began", never "refused" and never "did
      not accept". `endedBecause` is `controlLost`. The lease is released and the safe state
      **looked at** (the lease being gone says nothing of the fans). The exit is 6, or 9 or 8 if
-     the check found something worse.
+     the check found something worse. The closing text states that check's verdict and nothing
+     else about the fans: `leaseExpired`'s own description goes on to say the fans "have returned
+     to automatic control", which nothing here observed (`CLAUDE.md` rule 6), so `set` words the
+     answer itself ("The helper answered that the manual-control lease had expired.") and does
+     not quote the claim, in a lapse or in a renewal refused during the hold.
    - *Not changed.* A signal that lands while `apply` is outstanding is remembered and ends the
      hold at its first look, as before; the wait for it is now bounded by `apply`'s own deadline.
      A loss the helper reports once the hold is under way (exit 6) still skips the check.

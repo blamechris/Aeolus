@@ -132,4 +132,23 @@ struct SetApplyMessagesTests {
         )
         #expect(alone.components(separatedBy: "XYZZY").count == 2, "said once, not twice")
     }
+
+    /// `leaseExpired`'s own description says the fans "have returned to automatic control". Nobody
+    /// observed that, so `set` does not repeat it: it says what the helper answered, and nothing
+    /// about the fans.
+    ///
+    /// **Mutation:** return the fault's own description in `SetCommand.describe`. Run: red.
+    @Test(
+        "An expired lease is described by the helper's answer, not by its claim about the fans"
+    )
+    func expiredLeaseIsNotQuotedWithItsClaim() {
+        let words = SetCommand.describe(AeolusXPCFault.leaseExpired)
+        #expect(words.contains("expired"))
+        #expect(!words.contains("returned to automatic"))
+        #expect(
+            !words.contains("Acquire a new lease"), "a run that never re-acquires is not told to")
+        // Every other fault is still the error's own words.
+        let other = AeolusXPCFault.leaseUnknown
+        #expect(SetCommand.describe(other) == other.errorDescription)
+    }
 }

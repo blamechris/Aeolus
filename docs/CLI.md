@@ -714,7 +714,10 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
   `leaseNotHeldByThisConnection`. The message opens "Control was lost before the hold began",
   never says the helper refused or did not accept the speed, and `endedBecause` is
   `controlLost`. The lease is released and the safe-state check **looks**: the exit is 6, or 9 or 8
-  if the check found something worse.
+  if the check found something worse, and the closing text states that check's verdict. It does
+  not repeat the helper's own description of `leaseExpired`, which claims the fans "have returned
+  to automatic control"; nothing observed that, so the text says only that the helper answered
+  that the lease had expired.
 - **An `apply` the helper answered with a fault is followed by a release and the safe-state
   check, whatever the fault.** Level 6 can engage a fan, fail on the next, have the undo refused
   and answer only the original fault, so a refusal is not taken to mean no fan was touched. The
