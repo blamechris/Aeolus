@@ -30,9 +30,11 @@ struct GateWait: Sendable, Equatable {
 ///
 /// ## What it holds
 ///
-/// A FIFO of waiters per priority, in the order the scheduler reported them parked. The
-/// scheduler grants the head of one queue each time, so the head is the oldest and is the only
-/// waiter whose age matters: if the head is not past the bound, nobody behind it is.
+/// A FIFO of waiters per priority, in the order the scheduler reported them parked, § 3's lane
+/// among them (`SMCReadPriority.allCases`; ADR 0012's 2026-10-18 amendment). The scheduler grants
+/// the head of one queue each time, so the head is the oldest and is the only waiter whose age
+/// matters: if the head is not past the bound, nobody behind it is. A lane waiter waits for one
+/// turn in flight, so one past G is a turn that was not given back.
 ///
 /// ## A grant takes out the waiter it names, and a fast-path grant takes out nobody
 ///

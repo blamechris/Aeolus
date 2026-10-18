@@ -17,7 +17,9 @@ import os
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s render-unavailable-forever case.
 ///
 /// So this counts whole-read failures **on either path** — the client snapshot and the
-/// supervisor cycle both — and fires one reconnect when a run of them says the connection
+/// supervisor cycle both, § 3's lane counted as the supervisor's (ADR 0012's 2026-10-18
+/// amendment; it reads no priority at all) — and fires one reconnect when a run of them says the
+/// connection
 /// rather than a sensor is the problem. A success ends the run. A request that asked only for
 /// keys this Mac does not have — `SchedulerEvent.wholeReadAbsentOnly`, ruling D25 — does
 /// neither, because nothing in it reached IOKit: it proved the handle neither dead nor
