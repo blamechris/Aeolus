@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # Checks that the AeolusHelper running on this Mac has the CDHash a build record names.
 #
 #     scripts/e4-verify-running.sh <expected-helper-cdhash>
@@ -7,10 +7,23 @@
 # scripts/e4-build-record.sh. A universal helper has one per architecture; give the one for
 # the architecture it runs as (an Apple Silicon Mac runs arm64).
 #
-# Whenever the script reaches a verdict (every exit in the table at the end of this header),
-# the last line of standard output is `result=<word> seams=<none|ACTIVE(...)>`, and the exit
-# status says the same thing as the word. Test for the word with an anchored match
-# (`^result=verified `), never a substring.
+# **The operator's test is exactly: exit status 0 and a last line equal to
+# `result=verified seams=none`.** Nothing else is a verification. Whenever the script reaches a
+# verdict (every exit in the table at the end of this header) the last line of standard output
+# is `result=<word> seams=<none|ACTIVE(...)>`, and the exit status says the same thing as the
+# word. A consumer that greps must anchor the whole line, never a substring.
+#
+# ## The environment
+#
+# The script does not trust the one it is started in. `#!/bin/bash -p` makes macOS's bash 3.2
+# ignore BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE and import no shell
+# function from the environment. `bash script` ignores that flag, so the script also refuses
+# (exit 2) to run with BASH_ENV or ENV set, or with xtrace or verbose on, either of which
+# would print the signature output it reads. It then pins PATH to /usr/bin:/bin and the locale
+# to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and POSIXLY_CORRECT.
+# The perl reader below runs under `env -i`, with an empty environment and no `use` line, so
+# neither PERL5LIB, PERL5OPT nor a module on a search path can replace the code that reads
+# the kernel.
 #
 # ## How the running hash is read
 #
@@ -29,21 +42,22 @@
 # **This depends on the OS.** The 66-byte csops_cdhash_t exists in the macOS 27 SDK. The
 # macOS 26.5 SDK and XNU's main branch define it as 21 bytes (a 20-byte hash and a type), so
 # on macOS 26 the first call is refused as invalid (EINVAL) and every check is the second one:
-# only the first 40 hex digits of the expected hash are compared, the output says so, and the
-# result word is `truncated-match`, never `verified`. A 160-bit prefix is the kernel's own
-# identity for a code directory (CS_CDHASH_LEN), but it is not the whole sha256.
+# only the first 40 hex digits of the expected hash are compared, the output says so, the
+# result word is `truncated-match`, and the exit status is 18, never 0. Exit 0 means a full
+# 32-byte verification and nothing else. A 160-bit prefix is the kernel's own identity for a
+# code directory (CS_CDHASH_LEN), but it is not the whole sha256.
 #
 # macOS has no man page for csops, and the public SDK has no <sys/codesign.h>. What the SDK
-# does have: SYS_csops (169) in <sys/syscall.h>, and CS_VALID, CS_DEBUGGED and csops_cdhash_t
-# in <kern/cs_blobs.h>, whose comment names CS_OPS_CDHASH_WITH_INFO. The three CS_OPS_ numbers
-# above are not in any header on this machine; they are XNU's (bsd/sys/codesign.h), and what
-# stands behind them here is behaviour: the two hash calls answered with the hash `codesign -d`
-# gives for launchd (pid 1), for a root daemon and for a process started for the purpose, and
-# the status call answered with a flags word with CS_VALID set for each of them. perl makes
-# the call because it ships with macOS (/usr/bin/perl on 27.0.1) and can issue a syscall
-# without a compiler. Before it reads the helper it reads its own status and gives up if csops
-# does not behave like csops. `man codesign` documents the pid forms of -d and -v that the
-# fallback below uses.
+# does have: SYS_csops (169) in <sys/syscall.h>, and CS_VALID, CS_INVALID_ALLOWED,
+# CS_DEBUGGED and csops_cdhash_t in <kern/cs_blobs.h>, whose comment names
+# CS_OPS_CDHASH_WITH_INFO. The three CS_OPS_ numbers above are not in any header on this
+# machine; they are XNU's (bsd/sys/codesign.h), and what stands behind them here is
+# behaviour: the two hash calls answered with the hash `codesign -d` gives for launchd
+# (pid 1), for a root daemon and for a process started for the purpose, and the status call
+# answered with a flags word with CS_VALID set for each of them. perl makes the call because
+# it ships with macOS (/usr/bin/perl on 27.0.1) and can issue a syscall without a compiler.
+# Before it reads the helper it reads its own status and gives up if csops does not behave
+# like csops. `man codesign` documents the pid forms of -d and -v that the fallback below uses.
 #
 # ## One process, one instance
 #
@@ -53,22 +67,26 @@
 #   2. Its uid and start time are read with ps. The uid must be 0: the real helper is a root
 #      launch daemon, and a copy of the name under another user does not verify (17).
 #   3. csops reads the flags, then the hash, then the flags again.
-#   4. pgrep runs again.
-#   5. The same single pid must come back, with the same start time (a reused pid, or a
-#      restart, is 13; the process having gone is 11), and CS_VALID must still be set in both
-#      flag reads. CS_DEBUGGED must be clear in both (16).
+#   4. pgrep runs again, and must return the same single pid with the same start time and
+#      uid (a reused pid, or a restart, is 13; the process having gone is 11).
+#   5. csops reads the flags, the hash and the flags a second time. The hash must equal the
+#      first one: a process that exec'd another image between the reads does not verify (13).
+#   6. In all four flag reads CS_VALID must be set and CS_DEBUGGED and CS_INVALID_ALLOWED
+#      clear (16 for the latter two, 13 for CS_VALID).
 # The start time has a resolution of a second, which is enough here: reusing a pid takes the
 # pid space going round (99,999 processes), not the same second.
 #
-# ## Why CS_DEBUGGED refuses
+# ## Why CS_DEBUGGED and CS_INVALID_ALLOWED refuse
 #
 # XNU sets CS_DEBUGGED (0x10000000 in <kern/cs_blobs.h>: "currently or has previously been
 # debugged and allowed to run with invalid pages") when a debugger attaches, and a debugged
 # process may run pages that no longer match its signature without CS_VALID ever clearing.
-# Writes to data pages never clear it. A Full Debug build, the bring-up configuration,
-# carries get-task-allow, so a debugger can attach to it. The recorded hash then says what
-# the process was launched from and not what it is running, so the script refuses (16) and
-# prints the flags it checked. A helper that was debugged earlier needs relaunching.
+# Writes to data pages never clear it. CS_INVALID_ALLOWED (0x20, same header: "page
+# invalidation allowed by task port policy") appeared with it when a debugger was attached to
+# a get-task-allow process. A Full Debug build, the bring-up configuration, carries
+# get-task-allow, so a debugger can attach to it. The recorded hash then says what the process
+# was launched from and not what it is running, so the script refuses (16) and prints the
+# flags it checked. A helper that was debugged earlier needs relaunching.
 #
 # ## Does it need root?
 #
@@ -91,10 +109,10 @@
 # ## What a match proves
 #
 # `verified`: that the process currently named AeolusHelper, as one root-owned instance, was
-# launched from code whose CodeDirectory hashes to the recorded value; that the kernel still
-# considered its signature valid and no debugger had been allowed to run it with invalid
-# pages. A CodeDirectory hash covers the binary's pages, its entitlements and its Info.plist,
-# so it names that build and no other.
+# launched from code whose CodeDirectory hashes to the recorded value, twice, either side of a
+# second look at the process; that the kernel still considered its signature valid; and that
+# no debugger had been allowed to run it with invalid pages. A CodeDirectory hash covers the
+# binary's pages, its entitlements and its Info.plist, so it names that build and no other.
 #
 # ## What it does not prove
 #
@@ -104,12 +122,16 @@
 # - What the helper is doing, or whether it is healthy. It is not asked anything; it is not
 #   sent a message and it is not signalled.
 # - That nothing changed after the last read. A check is a moment, not a guarantee.
+# - Anything against a process with the privilege to defeat a user-space reader. A root
+#   process that can exec into the helper's pid between the two reads and back, or a kernel
+#   extension, defeats this check and every other one made from user space. The second read
+#   catches an exec that is still in place; it does not make the check proof against root.
 #
 # ## Output
 #
-# The executable is named by its basename and by whether it is under /Applications/ or
-# /Library/. A path elsewhere is never printed, because it can carry a user name, and no
-# `codesign` diagnostic is passed on: the messages are this script's own.
+# The executable is named by a label, AeolusHelper or "other", and by whether it is under
+# /Applications/ or /Library/. A path elsewhere is never printed, because it can carry a user
+# name, and no `codesign` diagnostic is passed on: the messages are this script's own.
 #
 # ## Testing seams (not for operators)
 #
@@ -117,35 +139,70 @@
 #   E4_VERIFY_ALLOW_NONROOT=1    accept a process that is not owned by uid 0.
 #   E4_VERIFY_NO_CSOPS=1         forces the fallback.
 #   E4_VERIFY_SIMULATE_ERRNO=N   makes the csops read fail with errno N.
-#   E4_VERIFY_SIMULATE_DEBUGGED=1  reads the first flags with CS_DEBUGGED set; =after, the second.
+#   E4_VERIFY_SIMULATE_DEBUGGED=1  reads the first flags with CS_DEBUGGED set; =after, the
+#                                second; =allowed, the first with CS_INVALID_ALLOWED set.
 #   E4_VERIFY_SIMULATE_INVALID=1   reads the first flags with CS_VALID cleared.
 #   E4_VERIFY_SIMULATE_INVALID_AFTER=1  the same for the read after the hash.
 #   E4_VERIFY_SIMULATE_RESTART=1   reads a different start time on the second look.
 #
-# **Every active seam is announced**: a banner is the first line of output and the last line
-# carries `seams=ACTIVE(...)`, so a run made with one cannot pass for a check of the helper.
-# None of them can make a hash that differs from the expected one compare equal; they select
-# what is looked at, accept a non-root process, or produce a failure.
+# **Every active seam is announced**: a banner is the first line of output, the last line
+# carries `seams=ACTIVE(...)`, and a run with any seam active never exits 0: where it would
+# have, it exits 19, with the result word it would have had. A run made with a seam cannot
+# pass for a check of the helper. None of them can make a hash that differs from the expected
+# one compare equal; they select what is looked at, accept a non-root process, or produce a
+# failure.
 #
 # ## Result words and exit status
 #
 # The words share no substring: a plain `grep` for one cannot match another.
 #
 #   exit  result=            meaning
-#   0     verified           the kernel's full sha256 equals the expected one
-#   0     truncated-match    only the kernel's 20-byte hash exists on this macOS, and its
-#                            40 hex digits equal the expected one's first 40
-#   2     usage              not exactly one 64-hex argument
+#   0     verified           the kernel's full sha256 equals the expected one, read twice,
+#                            and no seam is active. The only exit 0.
+#   2     usage              not exactly one 64-hex argument, or an environment the script
+#                            refuses to run in (BASH_ENV, ENV, xtrace, verbose)
 #   10    mismatch           the helper is running and is not the recorded build
 #   11    not-running        no helper is running, or it went away while being read
 #   12    several-running    more than one helper is running
 #   13    unreadable         the signature could not be read or cannot be trusted: a tool
-#                            failed, csops answered unexpectedly, CS_VALID was missing or
-#                            cleared, or the process changed (pid, start time) during the check
+#                            failed (including pgrep, ps or a parser), csops answered
+#                            unexpectedly, CS_VALID was missing or cleared, the hash changed
+#                            between the two reads, or the process changed (pid, start time,
+#                            uid) during the check
 #   14    needs-root         the kernel refused a non-root reader: rerun under sudo
 #   15    file-only          fallback only: the file matches, the running image is not proven
-#   16    debugged           CS_DEBUGGED is set: the hash does not say what is running
+#   16    debugged           CS_DEBUGGED or CS_INVALID_ALLOWED is set: the hash does not say
+#                            what is running
 #   17    not-root-owned     the process is not owned by uid 0, so it is not the helper
+#   18    truncated-match    only the kernel's 20-byte hash exists on this macOS, and its
+#                            40 hex digits equal the expected one's first 40
+#   19    verified or        a seam is active: the verdict would have been exit 0 or 18, and
+#         truncated-match    the word says which; a test run never exits 0
+
+# --- The environment ----------------------------------------------------------------------
+
+refuse_environment() {
+    echo "error: $1" >&2
+    echo "result=usage seams=none"
+    exit 2
+}
+case "$-" in
+    *[xv]*) refuse_environment "refusing to run with xtrace or verbose on: they would print the signature output this script keeps out of its messages" ;;
+esac
+if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+    refuse_environment "refusing to run with BASH_ENV or ENV set: the file would run before this script and could change what it does"
+fi
+PATH=/usr/bin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+for scrub_name in $(compgen -e); do
+    case "${scrub_name}" in
+        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT)
+            unset "${scrub_name}"
+            ;;
+    esac
+done
 
 set -Eeuo pipefail
 
@@ -158,13 +215,17 @@ readonly EX_NEEDS_ROOT=14
 readonly EX_FILE_ONLY=15
 readonly EX_DEBUGGED=16
 readonly EX_NOT_ROOT=17
+readonly EX_TRUNCATED=18
+readonly EX_SEAMS=19
 
 readonly CS_VALID=$((0x00000001))
+readonly CS_INVALID_ALLOWED=$((0x00000020))
 readonly CS_DEBUGGED=$((0x10000000))
 
 readonly PGREP=/usr/bin/pgrep
 readonly PS=/bin/ps
 readonly PERL=/usr/bin/perl
+readonly ENV_BIN=/usr/bin/env
 readonly CODESIGN=/usr/bin/codesign
 
 # --- Seams, announced first ---------------------------------------------------------------
@@ -196,6 +257,17 @@ finish() {
     exit "${status}"
 }
 
+# A match ends here. Exit 0 is a full verification with no seam active and nothing else.
+conclude_match() { # word: verified | truncated-match
+    if [ "${seam_state}" != "none" ]; then
+        finish "$1" "${EX_SEAMS}" "a seam is active, so this run tests the script and never exits 0"
+    fi
+    if [ "$1" = "truncated-match" ]; then
+        finish truncated-match "${EX_TRUNCATED}" "only the first 20 bytes of the hash were compared; exit 0 is reserved for the full verification"
+    fi
+    finish verified 0
+}
+
 # A command that fails where this script did not expect it to is an unreadable signature, with
 # a code of this script's own and not the failing command's. In a subshell it only leaves it,
 # with the failing command's status, for the assignment that ran it to read.
@@ -216,13 +288,19 @@ if ! [[ "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 
 process_name="${E4_VERIFY_PROCESS_NAME:-AeolusHelper}"
+# What may be said about the name: the helper's own, or "other".
+if [ "${process_name}" = "AeolusHelper" ]; then
+    process_label="AeolusHelper"
+else
+    process_label="other"
+fi
 
 # --- Looking at the process ---------------------------------------------------------------
 
 # Looks for the process by name. Sets found_pids and returns 0 for exactly one, 1 for none,
-# 3 for several, 4 if pgrep itself failed.
+# 3 for several, 4 if pgrep itself failed or gave something that is not a pid.
 lookup() {
-    local output status=0
+    local output status=0 line count=0
     output=$("${PGREP}" -x "${process_name}" 2>/dev/null) || status=$?
     found_pids=""
     case "${status}" in
@@ -231,52 +309,76 @@ lookup() {
         *) return 4 ;;
     esac
     found_pids="${output}"
-    if [ "$(printf '%s\n' "${output}" | grep -c .)" -gt 1 ]; then
+    while IFS= read -r line; do
+        if [ -n "${line}" ]; then
+            count=$((count + 1))
+        fi
+    done <<EOF
+${output}
+EOF
+    if [ "${count}" -gt 1 ]; then
         return 3
     fi
+    [[ "${found_pids}" =~ ^[0-9]+$ ]] || return 4
     return 0
 }
 
-# Sets instance_uid and instance_start for a pid; returns 1 if there is no such process.
+# Sets instance_uid and instance_start for a pid. Returns 0, 1 if there is no such process,
+# or 3 if ps answered and the answer could not be parsed. The parsers' own statuses count.
 instance_of() {
     local output
     output=$("${PS}" -p "$1" -o uid= -o lstart= 2>/dev/null) || return 1
     [ -n "${output}" ] || return 1
-    instance_uid=$(printf '%s\n' "${output}" | awk '{print $1}')
-    instance_start=$(printf '%s\n' "${output}" | awk '{$1=""; print}' | sed 's/^ *//')
-    [ -n "${instance_start}" ] || return 1
+    instance_uid=$(printf '%s\n' "${output}" | awk '{print $1}') || return 3
+    instance_start=$(printf '%s\n' "${output}" | awk '{$1=""; print}' | sed 's/^ *//') || return 3
+    [ -n "${instance_start}" ] || return 3
+    [[ "${instance_uid}" =~ ^[0-9]+$ ]] || return 3
     return 0
 }
 
-# What may be said about a path: its basename and whether it is under /Applications/ or
-# /Library/. Never the path, which can carry a user name.
+# Looks at the process and ends the run if it is gone (11) or ps's answer cannot be parsed (13).
+look_at() {
+    local look_status=0
+    instance_of "$1" || look_status=$?
+    case "${look_status}" in
+        0) ;;
+        1) finish not-running "${EX_NONE}" "pid $1 (${process_label}) went away while it was being read" ;;
+        *) finish unreadable "${EX_UNREADABLE}" "ps gave an answer for pid $1 that could not be parsed; nothing was verified" ;;
+    esac
+}
+
+# What may be said about a path: a label for its name, and whether it is under /Applications/
+# or /Library/. Never the path, which can carry a user name.
 describe_executable() {
-    local path="$1" where
+    local path="$1" where label
     case "${path}" in
         /Applications/*) where="under /Applications/" ;;
         /Library/*) where="under /Library/" ;;
         *) where="elsewhere; path not shown" ;;
     esac
-    printf '%s (%s)' "$(basename "${path}")" "${where}"
+    if [ "$(basename "${path}")" = "AeolusHelper" ]; then
+        label="AeolusHelper"
+    else
+        label="other"
+    fi
+    printf '%s (%s)' "${label}" "${where}"
 }
 
 lookup_status=0
 lookup || lookup_status=$?
 case "${lookup_status}" in
     0) ;;
-    1) finish not-running "${EX_NONE}" "no process named ${process_name} is running" ;;
-    3) finish several-running "${EX_MANY}" "several processes named ${process_name} are running (pids $(printf '%s' "${found_pids}" | tr '\n' ' ')); a check of one of them says nothing about the others" ;;
+    1) finish not-running "${EX_NONE}" "no process named ${process_label} is running" ;;
+    3) finish several-running "${EX_MANY}" "several processes named ${process_label} are running (pids $(printf '%s' "${found_pids}" | tr '\n' ' ')); a check of one of them says nothing about the others" ;;
     *) finish unreadable "${EX_UNREADABLE}" "pgrep failed, so it is not known whether the helper is running" ;;
 esac
 pid="${found_pids}"
 
-if ! instance_of "${pid}"; then
-    finish not-running "${EX_NONE}" "pid ${pid} (${process_name}) went away before it could be read"
-fi
+look_at "${pid}"
 uid_first="${instance_uid}"
 start_first="${instance_start}"
 
-echo "e4-verify-running: ${process_name} pid ${pid}"
+echo "e4-verify-running: ${process_label} pid ${pid}"
 report "process:" "uid ${uid_first}, started ${start_first}"
 
 # The executable's path, for the reader. Best effort and never printed as it is.
@@ -291,8 +393,8 @@ if [ "${uid_first}" != "0" ] && [ -z "${E4_VERIFY_ALLOW_NONROOT:-}" ]; then
     finish not-root-owned "${EX_NOT_ROOT}" "pid ${pid} is owned by uid ${uid_first}; the helper is a root daemon, so this is not it"
 fi
 
-# Looks again, and requires the same single process: the same pid and the same start time.
-# Sets nothing; ends the run on any difference.
+# Looks again, and requires the same single process: the same pid, start time and uid.
+# Ends the run on any difference.
 confirm_same_instance() {
     local again_status=0 start_again
     lookup || again_status=$?
@@ -304,9 +406,7 @@ confirm_same_instance() {
     if [ "${found_pids}" != "${pid}" ]; then
         finish unreadable "${EX_UNREADABLE}" "the helper's pid changed during the check; not the same process"
     fi
-    if ! instance_of "${pid}"; then
-        finish not-running "${EX_NONE}" "pid ${pid} went away during the check"
-    fi
+    look_at "${pid}"
     start_again="${instance_start}"
     if [ -n "${E4_VERIFY_SIMULATE_RESTART:-}" ]; then
         start_again="${start_again} (simulated restart)"
@@ -320,9 +420,9 @@ confirm_same_instance() {
 
 # Prints "status1=0x..", "bytes=N", "cdhash=<hex>" and "status2=0x.." on success. On failure
 # prints "errno=<N or a word>" and exits non-zero. 66 is the size of csops_cdhash_t on macOS
-# 27: 64 bytes of hash, the type and the length.
+# 27: 64 bytes of hash, the type and the length. No `use` line: it runs under an empty
+# environment, and loads no module.
 read -r -d '' PERL_READER <<'PERL' || true
-use strict; use warnings;
 my ($pid, $simulate, $sim_debugged, $sim_invalid, $sim_invalid_after) = @ARGV;
 sub csops {
     my ($target, $op, $size) = @_;
@@ -338,7 +438,8 @@ if (!defined $self || !(unpack("V", $self) & 0x1)) { fail("selfcheck"); }
 my $first = csops($pid, 0, 4);
 if (!defined $first) { fail($! + 0); }
 my $flags1 = unpack("V", $first);
-if ($sim_debugged ne "" && $sim_debugged ne "after") { $flags1 |= 0x10000000; }
+if ($sim_debugged eq "allowed") { $flags1 |= 0x20; }
+elsif ($sim_debugged ne "" && $sim_debugged ne "after") { $flags1 |= 0x10000000; }
 if ($sim_invalid ne "") { $flags1 &= ~0x1; }
 my ($bytes, $hex);
 my $full = csops($pid, 18, 66);
@@ -362,16 +463,17 @@ if ($sim_debugged eq "after") { $flags2 |= 0x10000000; }
 printf "status1=0x%08x\nbytes=%d\ncdhash=%s\nstatus2=0x%08x\n", $flags1, $bytes, $hex, $flags2;
 PERL
 
-if [ -z "${E4_VERIFY_NO_CSOPS:-}" ] && [ -x "${PERL}" ]; then
+if [ -z "${E4_VERIFY_NO_CSOPS:-}" ] && [ -x "${PERL}" ] && [ -x "${ENV_BIN}" ]; then
     read_mode="kernel"
 else
     read_mode="fallback"
 fi
 
-if [ "${read_mode}" = "kernel" ]; then
-    reading=""
-    read_status=0
-    reading=$("${PERL}" -e "${PERL_READER}" -- "${pid}" "${E4_VERIFY_SIMULATE_ERRNO:-}" \
+# One kernel read: the flags, the hash, the flags. Sets k_before, k_after, k_bytes and k_hash;
+# ends the run on any failure.
+kernel_read() {
+    local reading="" read_status=0 failure
+    reading=$("${ENV_BIN}" -i "${PERL}" -e "${PERL_READER}" -- "${pid}" "${E4_VERIFY_SIMULATE_ERRNO:-}" \
         "${E4_VERIFY_SIMULATE_DEBUGGED:-}" "${E4_VERIFY_SIMULATE_INVALID:-}" \
         "${E4_VERIFY_SIMULATE_INVALID_AFTER:-}" 2>/dev/null) || read_status=$?
     if [ "${read_status}" -ne 0 ]; then
@@ -381,7 +483,7 @@ if [ "${read_mode}" = "kernel" ]; then
                 finish needs-root "${EX_NEEDS_ROOT}" "the kernel refused to give a non-root user the signature of pid ${pid} (errno ${failure}); rerun this under sudo. This script does not run sudo."
                 ;;
             3)
-                finish not-running "${EX_NONE}" "pid ${pid} (${process_name}) exited while it was being read"
+                finish not-running "${EX_NONE}" "pid ${pid} (${process_label}) exited while it was being read"
                 ;;
             '')
                 finish unreadable "${EX_UNREADABLE}" "the reader gave no answer for pid ${pid}; nothing was verified"
@@ -391,38 +493,57 @@ if [ "${read_mode}" = "kernel" ]; then
                 ;;
         esac
     fi
-    flags_before=$(printf '%s\n' "${reading}" | sed -n 's/^status1=//p')
-    flags_after=$(printf '%s\n' "${reading}" | sed -n 's/^status2=//p')
-    bytes=$(printf '%s\n' "${reading}" | sed -n 's/^bytes=//p')
-    running=$(printf '%s\n' "${reading}" | sed -n 's/^cdhash=//p')
-    if ! [[ "${flags_before}" =~ ^0x[0-9a-f]{8}$ ]] || ! [[ "${flags_after}" =~ ^0x[0-9a-f]{8}$ ]] \
-        || ! [[ "${bytes}" =~ ^(20|32)$ ]] || ! [[ "${running}" =~ ^[0-9a-f]+$ ]]; then
+    k_before=$(printf '%s\n' "${reading}" | sed -n 's/^status1=//p')
+    k_after=$(printf '%s\n' "${reading}" | sed -n 's/^status2=//p')
+    k_bytes=$(printf '%s\n' "${reading}" | sed -n 's/^bytes=//p')
+    k_hash=$(printf '%s\n' "${reading}" | sed -n 's/^cdhash=//p')
+    if ! [[ "${k_before}" =~ ^0x[0-9a-f]{8}$ ]] || ! [[ "${k_after}" =~ ^0x[0-9a-f]{8}$ ]] \
+        || ! [[ "${k_bytes}" =~ ^(20|32)$ ]] || ! [[ "${k_hash}" =~ ^[0-9a-f]+$ ]]; then
         finish unreadable "${EX_UNREADABLE}" "the kernel's answer for pid ${pid} could not be understood"
     fi
-    report "read from:" "the kernel (csops), the hash of the signature the process was launched with"
-    report "flags:" "before the hash ${flags_before}, after ${flags_after}"
-    for flags in "${flags_before}" "${flags_after}"; do
-        if [ $((flags & CS_DEBUGGED)) -ne 0 ]; then
-            finish debugged "${EX_DEBUGGED}" "CS_DEBUGGED is set in ${flags} for pid ${pid}: a debugger was allowed to run it, so its hash does not say what is running; relaunch the helper"
+}
+
+# Requires the two flag words of one read to show a signature that is valid, with no debugger
+# and no page invalidation allowed. $3 names the read. Ends the run otherwise.
+check_flags() {
+    local flags
+    for flags in "$1" "$2"; do
+        if [ $((flags & (CS_DEBUGGED | CS_INVALID_ALLOWED))) -ne 0 ]; then
+            finish debugged "${EX_DEBUGGED}" "CS_DEBUGGED or CS_INVALID_ALLOWED is set in ${flags} (${3}) for pid ${pid}: a debugger was allowed to run it, so its hash does not say what is running; relaunch the helper"
         fi
     done
-    for flags in "${flags_before}" "${flags_after}"; do
+    for flags in "$1" "$2"; do
         if [ $((flags & CS_VALID)) -eq 0 ]; then
-            finish unreadable "${EX_UNREADABLE}" "CS_VALID is clear in ${flags} for pid ${pid}: the kernel no longer calls its signature valid, so its hash is not evidence"
+            finish unreadable "${EX_UNREADABLE}" "CS_VALID is clear in ${flags} (${3}) for pid ${pid}: the kernel no longer calls its signature valid, so its hash is not evidence"
         fi
     done
-    report "checked:" "CS_VALID set and CS_DEBUGGED clear, before and after the hash"
-    report "running:" "${running}"
+}
+
+if [ "${read_mode}" = "kernel" ]; then
+    kernel_read
+    first_hash="${k_hash}"
+    first_bytes="${k_bytes}"
+    report "read from:" "the kernel (csops), the hash of the signature the process was launched with"
+    report "flags:" "first read: before the hash ${k_before}, after ${k_after}"
+    check_flags "${k_before}" "${k_after}" "first read"
+    report "running:" "${first_hash}"
     report "expected:" "${expected}"
     confirm_same_instance
-    if [ "${bytes}" -eq 20 ]; then
+    kernel_read
+    report "flags:" "repeat read: before the hash ${k_before}, after ${k_after}"
+    check_flags "${k_before}" "${k_after}" "repeat read"
+    if [ "${k_hash}" != "${first_hash}" ] || [ "${k_bytes}" != "${first_bytes}" ]; then
+        finish unreadable "${EX_UNREADABLE}" "the kernel's hash for pid ${pid} changed between two reads: the process exec'd another image, so the first read does not describe it"
+    fi
+    report "checked:" "CS_VALID set, CS_DEBUGGED and CS_INVALID_ALLOWED clear, the hash read twice and equal"
+    if [ "${first_bytes}" -eq 20 ]; then
         report "compared:" "the first 40 hex digits only: this macOS gives the kernel's 20-byte hash and no more"
-        if [ "${running}" = "${expected:0:40}" ]; then
-            finish truncated-match 0
+        if [ "${first_hash}" = "${expected:0:40}" ]; then
+            conclude_match truncated-match
         fi
     else
-        if [ "${running}" = "${expected}" ]; then
-            finish verified 0
+        if [ "${first_hash}" = "${expected}" ]; then
+            conclude_match verified
         fi
     fi
     finish mismatch "${EX_MISMATCH}" "the running helper is not the recorded build"
@@ -435,7 +556,7 @@ fi
 file_hash() {
     local output hash
     output=$("${CODESIGN}" -d --verbose=4 "${pid}" 2>&1) || return 1
-    hash=$(printf '%s\n' "${output}" | sed -n 's/^CandidateCDHashFull sha256=//p')
+    hash=$(printf '%s\n' "${output}" | sed -n 's/^CandidateCDHashFull sha256=//p') || return 1
     [[ "${hash}" =~ ^[0-9a-f]{64}$ ]] || return 1
     printf '%s\n' "${hash}"
 }
@@ -446,8 +567,10 @@ report "evidence:" "WEAKER. The kernel's hash is not read and no debugger check 
 # A read through codesign failed. If the process has gone, say so (11); otherwise the
 # signature could not be read (13).
 fallback_failed() {
-    if ! instance_of "${pid}"; then
-        finish not-running "${EX_NONE}" "pid ${pid} (${process_name}) went away while it was being read"
+    local gone_status=0
+    instance_of "${pid}" || gone_status=$?
+    if [ "${gone_status}" -eq 1 ]; then
+        finish not-running "${EX_NONE}" "pid ${pid} (${process_label}) went away while it was being read"
     fi
     finish unreadable "${EX_UNREADABLE}" "$1"
 }
