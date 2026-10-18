@@ -122,8 +122,10 @@ struct HelperCompositionTests {
             recycle that fixes nothing and says it worked.
             """)
 
+        // The recycler is the local, and the write channel follows it (ADR 0014's B1 amendment);
+        // `ProductionWritePathTests` pins that the channel is the same local.
         let source = Self.strippingWhitespace(try Self.compositionSource())
-        let planeTakesTheLocal = source.contains("connection:connection)")
+        let planeTakesTheLocal = source.contains("connection:connection,channel:writePath")
         #expect(
             planeTakesTheLocal,
             "the plane is no longer handed the connection local the provider was built from")
@@ -224,7 +226,7 @@ struct HelperCompositionTests {
     func thePlaneIsBuiltFromTheOneScheduler() throws {
         let source = Self.strippingWhitespace(try Self.compositionSource())
         let builtFromTheOneScheduler = source.contains(
-            "SMCFanControlPlane(scheduler:scheduler,connection:connection)")
+            "SMCFanControlPlane(scheduler:scheduler,connection:connection,")
 
         #expect(
             builtFromTheOneScheduler,

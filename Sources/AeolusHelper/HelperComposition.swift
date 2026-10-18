@@ -717,10 +717,25 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// passed a source that never fires would have disarmed ADR 0012 without touching the
     /// watchdog, which is why the parameter is on this factory and not on a public surface, and
     /// why `HelperWatchdogCompositionTests` asks the *default* what it is.
+    ///
+    /// ## The write path is withheld unless the daemon asks for it
+    ///
+    /// `writePath` defaults to `.withheld`, and **only `AeolusHelperMain` passes `.connection`**
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1 amendment). Every test that
+    /// composes this graph over the real SMC — `HelperHardwareTests` runs one on every bare
+    /// `swift test` on the development machine, bring-up and teardown included — therefore gets a
+    /// plane holding no channel, which cannot write once the plane can, rather than one that can.
+    /// A wrong default fails safe in either direction: `.withheld` here leaves the daemon unable
+    /// to write, and `ProductionWritePathTests` fails on any other default.
+    ///
+    /// The channel, when given, is `connection` — the local the provider reads through and the
+    /// plane recycles — for the reason that paragraph gives above. On this build it changes
+    /// nothing a fan sees: the plane holds it and answers `.notBuilt`.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams(),
-        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks()
+        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks(),
+        writePath: ProductionWritePath = .withheld
     ) -> HelperComposition<SMCFanControlPlane> {
         let connection = SMCConnection()
         let connectionHealth = ConnectionHealth()
@@ -728,7 +743,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection),
             observer: SchedulerObservers([connectionHealth, gateMonitor]))
-        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: connection,
+            channel: writePath.channel(over: connection))
         return HelperComposition(
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,
@@ -741,5 +758,29 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             powerObserver: IOKitSystemPowerObserver(),
             log: log,
             teardown: teardown)
+    }
+}
+
+/// What the production graph's plane is given to write through: nothing, or the connection it
+/// reads through.
+///
+/// Named for the path rather than for a mode, because it is not one: no runtime check reads it,
+/// nothing in a snapshot reports it, and the only thing it decides is whether the plane holds the
+/// channel. `HelperComposition.production` defaults it to `.withheld`, and `AeolusHelperMain`
+/// passes `.connection`.
+enum ProductionWritePath: Sendable {
+
+    /// The plane holds no channel, so it can never write — every composition but the daemon's.
+    case withheld
+
+    /// The plane holds the one connection as its channel — the daemon's.
+    case connection
+
+    /// The channel this path gives a plane built over `connection`.
+    func channel(over connection: some SMCWriteChannel) -> (any SMCWriteChannel)? {
+        switch self {
+        case .withheld: nil
+        case .connection: connection
+        }
     }
 }

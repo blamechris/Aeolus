@@ -38,8 +38,11 @@ import SMCCore
 /// `SMCConnection.write(_:to:)` is SPI-gated and nothing in the helper calls it; the plane
 /// answers `.notBuilt`. **The helper's strongest safety property is structural: it cannot
 /// fail open into a write, because nothing in it calls one.** Calling one "ready for E5",
-/// ahead of the safe default and the plane's write turns, would spend that property for
-/// nothing.
+/// ahead of the plane's write turns, would spend that property for nothing.
+///
+/// The safe default is in place ahead of them: this is the one caller that passes
+/// `writePath: .connection`, so the daemon's plane holds its connection as a write channel and
+/// no test composition's does. The plane holds it and uses it for nothing.
 ///
 /// What changed in #163 is that the refusal is no longer a literal in the type serving
 /// clients. `SMCFanControlPlane` answers `FanWriteCapability.notBuilt`, `LeaseAuthority`
@@ -72,7 +75,11 @@ enum AeolusHelperMain {
         // and must not be on a per-connection path.
         let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
-        let helper = HelperComposition.production(log: log)
+        // The one composition given the write path: the plane holds the daemon's connection as
+        // its write channel. On this build that changes nothing a fan sees — the plane answers
+        // `.notBuilt` and nothing writes through the channel — and every other composition,
+        // every test's included, is given none (`HelperComposition.production`).
+        let helper = HelperComposition.production(log: log, writePath: .connection)
 
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,

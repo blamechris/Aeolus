@@ -16,6 +16,14 @@ import SMCCore
 /// What ships today is the *shape*: every E5 mechanism can be written, reviewed and tested
 /// against this seam now, and E3/E4 supply three method bodies later rather than a design.
 ///
+/// ## A write channel can be held, and nothing uses it
+///
+/// The plane takes an optional `SMCWriteChannel` (ADR 0014's B1 amendment, "write capability is
+/// what the plane holds"), which `HelperComposition.production` passes only when
+/// `AeolusHelperMain` asks. On this build it is **read by nothing** but `holdsWriteChannel`:
+/// `writeCapability` is the constant `.notBuilt` and every write verb below refuses. `.built`
+/// follows the channel in the change that gives those verbs bodies, and not before.
+///
 /// ## The reads are real, they are subset reads, and they go first
 ///
 /// `readAll()` is never called from here — not for discovery, not for a refresh, not once.
@@ -75,10 +83,25 @@ struct SMCFanControlPlane: FanControlPlane {
     /// second connection, so the recycle would leave the one being read through untouched.
     /// Making the caller name it is what forces the composition root to have one local to
     /// name.
-    init(scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling) {
+    ///
+    /// `channel` **is** defaulted, to `nil`: a plane nobody gave a channel can never write, and
+    /// every construction that predates it means what it meant. In the daemon it is `connection`.
+    init(
+        scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling,
+        channel: (any SMCWriteChannel)? = nil
+    ) {
         self.scheduler = scheduler
         self.connection = connection
+        self.writeChannel = channel
     }
+
+    /// The channel the plane's write turns will run on, or `nil`. Held, and read by nothing but
+    /// `holdsWriteChannel` — see this type's documentation.
+    private let writeChannel: (any SMCWriteChannel)?
+
+    /// Whether this plane was given a write channel. A fact for tests: not `writeCapability`,
+    /// and surfaced over no XPC message, in no snapshot and in no log line.
+    var holdsWriteChannel: Bool { writeChannel != nil }
 
     // MARK: - Reads
 
@@ -241,6 +264,8 @@ struct SMCFanControlPlane: FanControlPlane {
     /// that claims a write path it does not have would have `LeaseAuthority` grant a lease
     /// over a fan nothing can command, which is `CLAUDE.md` rule 6 reached through a
     /// one-line lie.
+    /// **Not even when the plane holds a channel**: nothing writes through it yet, so `.built`
+    /// would be that same lie.
     var writeCapability: FanWriteCapability { .notBuilt }
 
     /// Refuses **without reading anything.** See this type's documentation: the absence of
