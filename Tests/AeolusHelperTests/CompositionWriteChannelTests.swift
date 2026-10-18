@@ -89,35 +89,142 @@ struct CompositionWriteChannelTests {
     /// scope handed every `@testable` test the daemon's graph with the real forwarder. Now every
     /// column-0 code line must be one this file is allowed — `exposedLines` says which.
     ///
+    /// That reads where a declaration begins, never what access its members carry, so a second
+    /// half reads the words: no `internal`, `public`, `package` or `open` appears anywhere in the
+    /// file's code (#441). `private extension HelperComposition … { internal static func … }`
+    /// passed the first half, because the extension is `private` and the member is not.
+    ///
     /// **Mutations:** add an internal `static func channel(over:)` in an `extension
     /// AeolusHelperMain`; drop `private` from the entry point; add `@inline(never) func f()` at
-    /// file scope. Run: red, each.
+    /// file scope; add `private extension HelperComposition where Plane == SMCFanControlPlane {
+    /// internal static func daemonGraph(log: HelperLog) -> Self { production(log: log) } }`.
+    /// Run: red, each — the last at the access-level expectation, which the first half cannot
+    /// see.
     @Test("main's file declares nothing beyond private")
     func mainsFileExposesOnlyTheEntryPoint() throws {
-        let code = WriteSeamTestIsolationTests.strippingStringLiterals(
-            SeamScanner.strippingAllComments(
-                try String(
-                    contentsOf: SeamScanner.sourcesRoot.appendingPathComponent(
-                        "AeolusHelper/AeolusHelperMain.swift"),
-                    encoding: .utf8)))
+        let code = Self.mainCode(
+            try String(
+                contentsOf: SeamScanner.sourcesRoot.appendingPathComponent(
+                    "AeolusHelper/AeolusHelperMain.swift"),
+                encoding: .utf8))
         let exposed = Self.exposedLines(in: code)
         #expect(exposed.isEmpty, "AeolusHelperMain.swift exposes \(exposed) beyond private")
+        let widened = try Self.widenedAccess(in: code)
+        #expect(
+            widened.isEmpty,
+            """
+            AeolusHelperMain.swift names \(widened). A member spelled that way is reachable from \
+            every helper file and, through @testable, every helper test, even inside a private \
+            extension or a private type.
+            """)
         #expect(
             code.contains("private enum AeolusHelperMain"), "the scan is not reading main's file")
     }
 
-    /// Every column-0 line of `code` that is not an `import`, a `}`, a blank, or a declaration
-    /// whose first word after its attributes is `private` or `fileprivate`. A line holding only
-    /// attributes joins the line after it, so `@main` over `private enum` is the private
-    /// declaration it is, and `@available(macOS 14, *)` over `func f()` is the exposed one it is.
-    /// Anything else at column 0 — `#if`, an attribute split across lines — is refused.
+    /// Comments, then string literals: what every scan of main's file reads.
+    static func mainCode(_ source: String) -> String {
+        WriteSeamTestIsolationTests.strippingStringLiterals(
+            SeamScanner.strippingAllComments(source))
+    }
+
+    /// An explicit access level that can widen a member past `private`. `private`, `fileprivate`
+    /// and `private(set)` are the narrowing ones and are not matched; a longer word is not either,
+    /// nor is a member access (`connection.open()`).
+    ///
+    /// `internal` and `public` are matched wherever they stand. `open` and `package` are also
+    /// ordinary words, so they are matched only as modifiers: followed, past any other modifiers
+    /// and attributes, by a declaration keyword. `func open()`, the forwarder's own verb, is a name
+    /// and not a widening (#442's review, N1), and `open class`, `package static func` and
+    /// `@MainActor open var` are.
+    static let widenedAccessToken =
+        #"(?<![.\w])(?:internal|public)(?!\w)|(?<![.\w])(?:open|package)(?!\w)"#
+        + #"(?=\s+(?:@?\w+(?:\([^()]*\))?\s+){0,8}?"#
+        + #"(?:func|var|let|class|struct|enum|actor|protocol|extension|init|subscript|typealias"#
+        + #"|associatedtype|import)(?!\w))"#
+
+    /// Every widening access word in `code`, in order.
+    static func widenedAccess(in code: String) throws -> [String] {
+        try NSRegularExpression(pattern: widenedAccessToken)
+            .matches(in: code, range: NSRange(code.startIndex..., in: code))
+            .compactMap { Range($0.range, in: code).map { String(code[$0]) } }
+    }
+
+    /// **Mutations:** in `widenedAccessToken`, drop `internal|`; match `open` and `package`
+    /// wherever they stand. Run: red here, the first at the first fixture and the second at the
+    /// forwarder's `func open()`.
+    @Test("An explicit internal, public, package or open in main's file is found")
+    func widenedAccessIsFound() throws {
+        let widening: [(source: String, words: [String])] = [
+            (
+                "private extension HelperComposition where Plane == SMCFanControlPlane {\n"
+                    + "    internal static func daemonGraph(log: HelperLog) -> Self {\n"
+                    + "        production(log: log)\n    }\n}", ["internal"]
+            ),
+            ("private extension E {\n    public func f() {}\n}", ["public"]),
+            ("private enum E {\n    package static func f() {}\n}", ["package"]),
+            ("private class E {\n    open func f() {}\n}", ["open"]),
+            (
+                "private class E {\n    open var x = 1\n    @MainActor open static func g() {}\n}",
+                ["open", "open"]
+            ),
+            (
+                "private enum E {\n    package static func f() {}\n    package let y = 1\n}",
+                ["package", "package"]
+            ),
+            ("fileprivate extension E {\n    internal(set) var x: Int { 0 }\n}", ["internal"]),
+            (
+                "@main private enum E {\n    static func main() {}\n"
+                    + "    internal static let x = 1\n}", ["internal"]
+            ),
+        ]
+        for (source, words) in widening {
+            #expect(try Self.widenedAccess(in: Self.mainCode(source)) == words, "\(source)")
+        }
+        let narrowing = [
+            "private extension E {\n    private(set) var openCount = 0\n    func f() {}\n}",
+            "fileprivate func reopen(internalState: Int, publicKey: Int, packaged: Int) {}",
+            "// internal public package open\nprivate enum E {}",
+            "private let words = \"internal public package open\"",
+            "private enum E {\n    static func main() { opened(); isOpen = false }\n}",
+            // N1: `open` and `package` as names. The forwarder's own `func open()` is one.
+            "private actor E {\n    func open() throws {\n"
+                + "        try connection.assumeIsolated { try $0.open() }\n    }\n}",
+            "private enum E {\n    static func main() { let open = 1; _ = open; _ = self.open }\n}",
+            "private enum E {\n    var package: Int { 0 }\n    func package(_ x: Int) {}\n}",
+            "private enum E {\n    func f() { if open { return } else { _ = package } }\n}",
+        ]
+        for source in narrowing {
+            #expect(try Self.widenedAccess(in: Self.mainCode(source)).isEmpty, "\(source)")
+        }
+    }
+
+    /// Every line of `code` that is not an `import`, a `}`, a blank, or a declaration whose first
+    /// word after its attributes is `private` or `fileprivate`, and every one that cannot be read
+    /// as one of those because of how it is laid out. A line holding only attributes joins the
+    /// line after it, so `@main` over `private enum` is the private declaration it is, and
+    /// `@available(macOS 14, *)` over `func f()` is the exposed one it is. Refused:
+    /// - anything else at column 0 — `#if`, an attribute split across lines;
+    /// - a `}` with anything after it on its line, since `} ; func f() {}` declares one;
+    /// - a line that starts with whitespace while no bracket is open, since an indented `func f()`
+    ///   after the last `}` is a file-scope declaration the column-0 rule never reads;
+    /// - a `;` outside every bracket, since `private let a = 1; func f() {}` declares one too.
+    ///
+    /// The last two read the file's layout, and can refuse correct code: a file-scope initialiser
+    /// that swift-format wraps after its `=` has an indented second line. They err loud, and this
+    /// file has none.
     static func exposedLines(in code: String) -> [String] {
         let attributes = #"^(?:@\w+(?:\([^()\n]*\))?\s*)+"#
         var exposed: [String] = []
         var pending = ""
+        var depth = 0
         for raw in code.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
-            guard let first = line.first, !first.isWhitespace else { continue }
+            let atFileScope = depth == 0
+            let separated = Self.advance(&depth, over: line)
+            guard let first = line.first, !first.isWhitespace else {
+                if atFileScope, line.contains(where: { !$0.isWhitespace }) { exposed.append(line) }
+                continue
+            }
             let joined = pending + line
             if line.range(of: attributes + "$", options: .regularExpression) != nil {
                 pending = joined + " "
@@ -127,17 +234,38 @@ struct CompositionWriteChannelTests {
             let rest = joined.replacingOccurrences(
                 of: attributes, with: "", options: .regularExpression)
             let allowed =
-                rest == "}" || rest.hasPrefix("} ") || rest.hasPrefix("import ")
+                rest.trimmingCharacters(in: .whitespaces) == "}" || rest.hasPrefix("import ")
                 || rest.range(of: #"^(?:private|fileprivate)\s"#, options: .regularExpression)
                     != nil
-            if !allowed { exposed.append(joined) }
+            if !allowed || separated { exposed.append(joined) }
         }
         if !pending.isEmpty { exposed.append(pending) }
         return exposed
     }
 
-    /// **Mutation:** in `exposedLines`, accept any line that starts with `@`. Run: red here.
-    @Test("An attribute-prefixed or unmarked declaration in main's file is exposed")
+    /// Moves `depth` — how many of `{`, `(` and `[` are open — across `line`, and says whether
+    /// the line holds a `;` while none was.
+    private static func advance(_ depth: inout Int, over line: String) -> Bool {
+        var separated = false
+        for character in line {
+            switch character {
+            case "{", "(", "[": depth += 1
+            case "}", ")", "]": depth = max(0, depth - 1)
+            case ";" where depth == 0: separated = true
+            default: break
+            }
+        }
+        return separated
+    }
+
+    /// Each rule has a fixture only it refuses: `} func f() {}` is the `}` rule's (Swift rejects
+    /// it, and a lexical rule still should), `private let a = 1; func f() {}` the `;` rule's, and
+    /// `} ; func f() {}` is both, so neither mutation of those two rules alone turns it green.
+    ///
+    /// **Mutations:** in `exposedLines`, accept any line that starts with `@`; compare the `}`
+    /// line with `hasPrefix("} ")` again; skip the indented-line refusal; drop the `;` refusal.
+    /// Run: red here, each — at its own fixture.
+    @Test("An attribute-prefixed, unmarked, indented or semicoloned declaration in main's file")
     func exposedLinesAreFound() {
         let exposed = [
             "@available(macOS 14, *) func runDaemon() {}",
@@ -149,6 +277,18 @@ struct CompositionWriteChannelTests {
             "let x = 1",
             "#if DEBUG",
             "public actor A {}",
+            // #441: a declaration on the line of a `}`, behind a `;`.
+            "private enum E {\n} ; func f() {}",
+            // …or with nothing between, which Swift rejects and a lexical rule still refuses.
+            "private enum E {\n} func f() {}",
+            // #441: indented at file scope, after the last `}`, with and without a keyword.
+            "private enum E {\n}\n    func f() {}",
+            "private enum E {\n}\n\tlet x = 1",
+            "    @available(macOS 14, *) func f() {}",
+            // #441: a `;` outside every bracket, after a line the column-0 rule allows.
+            "private let a = 1; func f() {}",
+            "import SMCCore; func f() {}",
+            "private enum E {}; func f() {}",
         ]
         for line in exposed {
             #expect(Self.exposedLines(in: line).count == 1, "\(line)")
@@ -156,7 +296,12 @@ struct CompositionWriteChannelTests {
         let allowed = [
             "import SMCCore", "@preconcurrency import Foundation", "@main\nprivate enum E {", "}",
             "@available(macOS 14, *)\nprivate actor A {", "fileprivate func f() {}",
-            "private extension E {", "    func indented() {}", "",
+            "private extension E {", "",
+            // Indented inside a body is the ordinary case, and a `;` inside one is not file scope.
+            "private enum E {\n    func indented() {}\n    func g() { a(); b() }\n}",
+            "private let table = [\n    1,\n    2]",
+            "private let value = compute(\n    a: 1,\n    b: 2)",
+            "private enum E {\n}\n\n",
         ]
         for line in allowed {
             #expect(Self.exposedLines(in: line).isEmpty, "\(line)")

@@ -135,12 +135,10 @@ extension RuleZeroScan {
         // or skipped, and the test carries on to its drive (B1).
         // A conditional-compilation directive between them is a block too: `#if DEBUG` compiles
         // the require out of CI's `-c release`, and `#if false` out of everything (#436's final
-        // review, S1).
+        // review, S1). Anywhere between them, not only at the start of a line: `_ = 0; #if false`
+        // compiles, and the line-start pattern that stood here passed it (#441, I02).
         let between = code[binding.initializer.upperBound..<named.lowerBound]
-        if between.range(
-            of: #"(?m)^[ \t]*#(?:if|elseif|else|endif)\b"#, options: .regularExpression)
-            != nil
-        {
+        if between.range(of: directive, options: .regularExpression) != nil {
             return Construction(
                 built: built, binding: binding.name,
                 violation: "a conditional-compilation directive stands between it and its require, "
@@ -156,6 +154,11 @@ extension RuleZeroScan {
         }
         return Construction(built: built, binding: binding.name, violation: nil)
     }
+
+    /// A conditional-compilation directive, on any line and at any column. Nothing else in code
+    /// that has had its strings and comments removed is spelled `#if`, `#elseif`, `#else` or
+    /// `#endif`, and `#elseif` is one word.
+    static let directive = #"(?<![A-Za-z0-9_])#(?:if|elseif|else|endif)(?![A-Za-z0-9_])"#
 
     /// Whether every `{` in `text` is closed in it, and no `}` closes one opened before it.
     private static func bracesBalance(_ text: Substring) -> Bool {

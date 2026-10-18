@@ -10,6 +10,8 @@ struct RuleZeroScannerTests {
 
     // MARK: - Reach
 
+    /// **Mutation:** in `RuleZeroScan.reachPatterns`, put `\s*\(` back after the recycler's name.
+    /// Run: red here, at the `.init(` spelling (R01i); the typed `= .init(` (R01j) is the next.
     @Test("A real connection is in reach however it is spelled")
     func reachIsFoundInEverySpelling() throws {
         let spellings = [
@@ -23,6 +25,12 @@ struct RuleZeroScannerTests {
             "let provider = SMCSensorProvider(connection: connection)",
             // S2: a real connection built through the recycler, without the word.
             "let recycler = SMCConnectionRecycler(connection: .init())",
+            // R01i and R01j: the recycler by its name alone, which has no `(` after it.
+            "let recycler = SMCConnectionRecycler.init(connection: .init())",
+            "let recycler: SMCConnectionRecycler = .init(connection: .init())",
+            "let recycler = SMCConnectionRecycler\n    .init(connection: .init())",
+            "let recycler = SMCConnectionRecycler (connection: .init())",
+            "typealias Recycler = SMCConnectionRecycler",
             "let f = HelperComposition.production",
             "let f = HC.production",
         ]
@@ -36,6 +44,8 @@ struct RuleZeroScannerTests {
         let sources = [
             "let connection = InertSMCConnection()",
             "struct R: SMCConnectionRecycling {}",
+            "let recycler = InertSMCConnectionRecycler()",
+            "let recycler = SMCConnectionRecyclers.shared",
             "// let connection = SMCConnection()",
             "let pin = \"let connection = SMCConnection()\"",
             "let kind = SMCSensorProvider.kind(for: key)",
@@ -88,6 +98,8 @@ struct RuleZeroScannerTests {
         }
     }
 
+    /// **Mutation:** in `RuleZeroScan.directive`, anchor the pattern to the start of a line again,
+    /// `(?m)^[ \t]*#(?:if|elseif|else|endif)\b`. Run: red here, at the first I02 fixture.
     @Test("Every way past the rule is a violation")
     func everyWayPastTheRuleIsAViolation() throws {
         let rejected = [
@@ -155,6 +167,13 @@ struct RuleZeroScannerTests {
                 + "_ = helper.plane",
             "let helper = HelperComposition.production(log: log)\n#if DEBUG\n#else\n#endif\n"
                 + "try #require(!helper.plane.holdsWriteChannel)",
+            // I02: the directive is not the first thing on its line. `;` is all Swift needs there.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "_ = 0; #if false\n    try #require(!helper.plane.holdsWriteChannel)\n#endif\n"
+                + "_ = helper.plane",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "_ = 0;#if DEBUG\n    try #require(!helper.plane.holdsWriteChannel)\n#endif\n"
+                + "_ = helper.plane",
             // …or an argument, which an autoclosure can swallow.
             "let helper = HelperComposition.production(log: log)\n"
                 + "swallow(try #require(!helper.plane.holdsWriteChannel))",

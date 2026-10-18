@@ -53,8 +53,10 @@ struct WriteSeamAccessTests {
     /// And a scoped import is one too: `@_spi(FanWrite) import class SMCCore.SMCConnection` grants
     /// the write as surely as the whole-module form, and the pattern that read only `import
     /// SMCCore` passed it in a `fanctl` file and in a third helper file (#436's delta review, S1).
+    /// An access level may stand before `import`, outside the captured run (#441, T06p).
     private static let spiImport = try? NSRegularExpression(
-        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)import\s+"#
+        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)"#
+            + WriteSeamTestIsolationTests.importAccess + #"import\s+"#
             + #"(?:(?:class|struct|enum|protocol|typealias|func|var|let)\s+)?"#
             + #"SMCCore(?![A-Za-z0-9_])"#
     )
@@ -165,25 +167,40 @@ struct WriteSeamAccessTests {
             """)
     }
 
-    /// **Mutation:** drop the `(?:(?:class|…)\s+)?` kind from `spiImport`. Run: red here.
-    @Test("An SPI import is found whole-module or scoped")
+    /// **Mutations:** drop the `(?:(?:class|…)\s+)?` kind from `spiImport`; drop `importAccess`
+    /// from it (#441, T06p). Run: red here, each — the second at the first access level.
+    @Test("An SPI import is found whole-module or scoped, at every access level")
     func spiImportsAreFoundScopedOrNot() throws {
         let pattern = try #require(Self.spiImport)
-        for raw in [
-            "@_spi(FanWrite) import SMCCore",
-            "@`_spi`(FanWrite) import SMCCore",
+        func read(_ raw: String) throws -> (count: Int, groups: [String]) {
+            let text = Self.withoutCommentsOrBackticks(raw)
+            let found = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            let run = found.first.flatMap { Range($0.range(at: 1), in: text) }
+            return (found.count, try run.map { try Self.spiGroups(in: String(text[$0])) } ?? [])
+        }
+        var spellings = [
+            "@_spi(FanWrite) import SMCCore", "@`_spi`(FanWrite) import SMCCore",
             "@`_spi`(FanWrite) import class SMCCore.SMCConnection",
             "@_spi(FanWrite) import class SMCCore.SMCConnection",
             "@_spi(FanWrite) @preconcurrency import struct SMCCore.SMCKeyType",
             "@_spi(FanWrite)\nimport func SMCCore.resolveByteOrder",
-        ] {
-            let spelling = Self.withoutCommentsOrBackticks(raw)
-            let range = NSRange(spelling.startIndex..., in: spelling)
-            #expect(pattern.numberOfMatches(in: spelling, range: range) == 1, "\(spelling)")
+            "@_spi(FanWrite) public/* */import SMCCore",
+        ]
+        for level in ["public", "package", "internal", "fileprivate", "private"] {
+            spellings += [
+                "@_spi(FanWrite) \(level) import SMCCore",
+                "@`_spi`(FanWrite) @preconcurrency \(level) import class SMCCore.SMCConnection",
+            ]
         }
-        let other = "@_spi(FanWrite) import SMCCoreExtras"
-        #expect(
-            pattern.numberOfMatches(in: other, range: NSRange(other.startIndex..., in: other)) == 0)
+        for raw in spellings {
+            #expect(try read(raw) == (1, ["FanWrite"]), "\(raw)")
+        }
+        for raw in [
+            "public import SMCCore", "@_spi(FanWrite) publicly import SMCCore",
+            "@_spi(FanWrite) import SMCCoreExtras", "@_spi(FanWrite) public import SMCCoreExtras",
+        ] {
+            #expect(try read(raw) == (0, []), "\(raw)")
+        }
     }
 
     @Test("The only SPI group imported under Sources is FanWrite, by exactly two helper files")
