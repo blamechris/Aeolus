@@ -524,8 +524,8 @@ the source, which also holds that views are minted only in the composition and i
 handback, and that the lease core names no admission; every stored plane's admission is checked in
 the composed graph, at rest and after a firing. The restores this cycle's revocation causes take the
 class because this cycle holds the one restorer admitted there, its handback, and lends it to the
-lease core for that call alone: the compiler stops the lease core keeping it, and a restore's cause
-selects nothing. And the premise is observed at run time, where the scheduler reports a second
+lease core for that call alone: in safe Swift the compiler stops the lease core keeping it, CI
+compiles each refused shape on its own toolchain, and a restore's cause selects nothing. And the premise is observed at run time, where the scheduler reports a second
 request in the class while one is outstanding.
 
 *Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
@@ -534,10 +534,12 @@ priority value sets, pinned by exhaustive switches); `ThermalCycleLaneRoutingTes
 composed graph only this cycle's reads, bridges and revocation's restores take the class; the
 restorer puts every cause outside it, and after a firing every other teardown restores outside
 it); `ThermalCycleLaneWriterTests` (every plane the composed graph stores is admitted at
-`.supervisor` but this cycle's, at rest and after a firing); `ThermalCycleLaneTripwireTests` and
-`ThermalCycleHandbackTripwireTests` (who may name the class, counted per file; where a view may be
-minted; that only this cycle lends to the lease core; and that the lending signatures keep
-`borrowing` and `~Copyable`); `HelperRestorerTests` and `HandbackLendingBracketTests` (the lent
+`.supervisor` but this cycle's, at rest and after a firing); `ThermalCycleLaneTripwireTests`,
+`ThermalCycleHandbackTripwireTests` and `ThermalCycleHandbackShapeTripwireTests` (who may name the
+class, counted per file; where a view may be minted, and that only the composition builds this
+cycle's handback; that only this cycle lends to the lease core; that the lending signatures keep
+`borrowing` and `~Copyable`; and that the borrower reaches nothing but the one requirement, through
+no unsafe spelling); `HelperRestorerTests` and `HandbackLendingBracketTests` (the lent
 route keeps § 5's and this cycle's notices and the handback ledger's bracket);
 `ThermalCycleLaneOverlapTests` and `ThermalCycleLaneCounterTests` (this cycle's firing episode and
 its take-back — with a lease that raced the latch to revoke — never have two requests in the class,

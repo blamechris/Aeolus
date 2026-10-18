@@ -651,7 +651,8 @@ cycle inside a D_cycle worth having (see the alternatives below).
   `FanRestoreCause.thermalEmergencyRevocation` causes. `SMCReadScheduler.nextTurn()` admits it
   ahead of every waiting turn, behind only the turn in flight, and it neither spends nor resets the
   snapshot's overtake quota.
-- **Only § 3 reaches it**, two ways (and the two words that reach it, `thermalCycle` and
+- **Only § 3 reaches it**, two ways *(one since the #440 amendment below, which supersedes the
+  second)* (and the two words that reach it, `thermalCycle` and
   `thermalEmergencyRevocation`, are counted file by file in `Sources/AeolusHelper`):
   - a **view** of the one plane, `FanControlPlane.admitted(at: .thermalCycle)`, which holds the
     plane's scheduler and connection (and, on a plane that can write, its channel and
@@ -890,22 +891,39 @@ label and decides nothing. Nothing on `main`, or on `e4/bring-up` before b2, rea
   again: `HelperFanRestorer` restores every cause at `.supervisor`.
 - **§ 3 holds its handback.** `ThermalCycleHandback` is a bound over the keystone attempt whose
   writer it admits at `.thermalCycle` itself, notifying through the one `HelperFanRestorer`. The
-  composition builds one, over § 3's writer, and gives it to `ThermalEmergency` alone, as a required
-  stored property.
+  composition builds one — over a writer at § 3's level on the plane, which the handback admits in
+  the lane — and gives it to `ThermalEmergency` alone, as a required stored property. Building a
+  handback is a mint, so the composition is the one place that does.
+- **The lease core now restores at two levels**, both provenance: its standing restorer at
+  `.leaseExpiry`, and § 3's lent handback at `.thermalEmergency`, the level § 3 itself writes at.
+  Nothing reads a writer's level today; if something comes to, the lent value is § 3's own, which
+  fails safe.
 - **The lease core borrows it for one call.** `LeaseAuthority.revokeEveryLease(handingBackThrough:)`
   takes it as a `borrowing` parameter of a generic constrained `FanRestoring & ~Copyable`, labels the
   revocation `.thermalEmergencyRevocation` itself, and hands back inside
   `restore(_:because:through:)` — the body and bracket every teardown uses, which
   `restore(_:because:)` forwards to with the lease core's own restorer.
-- **Lent, and never kept, by the compiler.** `FanRestoring` suppresses `Copyable`, which is additive:
-  every conformer, `any FanRestoring` and `some FanRestoring` stay copyable. A `borrowing` parameter
-  of a generic that suppresses it cannot be stored, boxed into an existential, cast, copied, consumed,
-  or captured by an escaping closure or a `Task`. The move checker refuses each at full compilation;
-  `-typecheck` alone accepts some of them.
+- **Lent, and never kept, by the compiler — in safe Swift, through the parameter.** `FanRestoring`
+  suppresses `Copyable`, which is additive: every conformer, `any FanRestoring` and
+  `some FanRestoring` stay copyable. A `borrowing` parameter of a generic that suppresses it cannot
+  be kept, and the refusals come from different places:
+  - the **type checker** refuses storing it, boxing it into an existential and casting it;
+  - the **move checker's final pass** refuses copying or consuming it, and capturing it in an
+    escaping closure, a `Task`, an `async let` or a deferred `Task` — so `-typecheck` alone accepts
+    some of these, and only a full compile refuses them;
+  - a **key path** to it is refused only by a compiler crash, and could not keep it anyway.
+
+  The guarantee has two stated limits. `withoutActuallyEscaping` and the `Unsafe*` family can move
+  the bits out of the move checker's sight — a bitwise copy into an `UnsafeMutablePointer` outlives
+  the call at every optimisation level — so nothing in `Lease/` may name them. And the borrower
+  reaches whatever `FanRestoring` offers, so a requirement that handed back something derived from
+  `self` would hand it a copy; the protocol is pinned to its one requirement, and nothing extends
+  it. Within those limits a borrower may still call the handback more than once in the call, which
+  is § 3's own sequential use and which K2 pins to one.
 - **`HelperFanRestorer` is cause-blind and holds no lane.** Its § 5-before, § 3-after notice sequence
   is written once, in `handBack(_:because:through:)`, which borrows on the same terms and serves
-  both routes. No second `HelperFanRestorer` is built: it would need a second `bind`, and a bind
-  that was missed would skip both notices with nothing to say so.
+  both routes. No second `HelperFanRestorer` is built: it would need a second `bind`, and a restore
+  through one that missed it would skip both notices — said at `.fault`, and lost all the same.
 - **Neither `LeaseAuthority` nor `HelperFanRestorer` names an admission, a priority or a view.**
   Only the composition, which mints views, the handback, and the plane, which honours them, know
   admission.
@@ -916,9 +934,12 @@ label and decides nothing. Nothing on `main`, or on `e4/bring-up` before b2, rea
 
 | Defence | Holds |
 |---|---|
-| The value-set pins and per-file counts | Where a view is minted |
+| The value-set pins and the per-file counts of the lane's word | Where the lane is named, under any name |
+| The count of `ThermalCycleHandback` per file, and the shape of the two files that may name the lane — the handback's holds the handback alone with its mint inside `init`, and the composition names the lane only inside its `init` | Where a lane writer is minted: by `admitted(at:)`, by building a handback, or by a property that returns a view |
 | The positive stored-plane census, at rest and after a firing | Who holds a lane plane |
-| The compiler, with a source pin on the three lending signatures | That a lent handback is not kept |
+| The compiler, with a source pin on the three lending signatures, `FanRestoring` pinned to its one requirement, and no unsafe spelling in `Lease/` | That a lent handback is not kept, in safe Swift, through the parameter |
+| CI's lending probes (`scripts/lending-probes/check.sh`), each refused shape compiled in full on the runner's own toolchain | That the toolchain CI ships with still refuses them |
+| K6: after a firing, every other teardown restores at `.supervisor` | That nothing was kept, by its effect — whatever route a kept handback took |
 | The overlap report | The one-producer premise, at run time |
 
 The cause census stays. Its reason is now provenance — who may label a restore § 3's — and not
@@ -932,11 +953,13 @@ All runs are local, over the whole non-hardware suite; CI does not run mutations
 |---|---|---|
 | K1 | `ThermalCycleLaneRoutingTests.theRestorerIsCauseBlind` — every `FanRestoreCause`, § 3's included, restores at `.supervisor` | A lane bound in `HelperFanRestorer`, chosen by a switch on the cause |
 | K2 | `ThermalCycleLaneRoutingTests.sectionThreesRevocationHandsBackThroughItsHandback` — a firing over two fans with every restore refused is three and three `.fan(n)` attempts, all in the lane, in one `cycle()` | `admitted(at: .thermalCycle)` dropped from the handback's initialiser. The verb lending `restorer` instead of its parameter. A second `restore(through: handback)` in the verb |
-| K3 | `HelperRestorerTests`' registry tests, run over the release and over § 3's handback | The handback restoring through its bound directly, bypassing `handBack` |
-| K4 | `HandbackLendingBracketTests` — the fan is mid-handback throughout, a grant meanwhile is refused `.releaseInProgress`, and a refusal is recorded abandoned | Lending outside `restore`'s bracket |
+| K3 | `HelperRestorerTests`' registry tests, run over the release and over § 3's handback; `HandbackLendingBracketTests.sectionThreesFiringTellsSectionFive`, § 3's own route through `cycle()` | The handback restoring through its bound directly, bypassing `handBack`. § 3's three revocations lending a hand-built bound over its writer instead of the handback |
+| K4 | `HandbackLendingBracketTests` — the fan is mid-handback throughout, a grant meanwhile is refused `.releaseInProgress`, and a refusal is recorded abandoned | Lending outside `restore`'s bracket. Lending the standing restorer, which fails at once rather than at the time limit |
 | K5 | `ThermalCycleLaneWriterTests`' census, at rest and after a full § 3 episode: the same four lane sites, the handback's at `ThermalEmergency.handback.bounded.attempting.writer.plane` | The signatures weakened to copyable and the handback stored in `LeaseAuthority` for `expireLapsedLeases`: red after the episode, naming the stored field. Unweakened, it does not compile |
 | K6 | `ThermalCycleLaneRoutingTests.afterAFiringEveryOtherPathRestoresAtSupervisor` — TTL, invalidation, release, § 5's revocation, the panic verb's drop, § 4, § 6 and the teardown | The handback given to `LeaseAuthority` as its standing restorer. Storing the revocation's cause and replaying it on the TTL path stays green, correctly: the cause routes nothing |
 | K7 | `ThermalCycleHandbackTripwireTests`, and the updated counts in `ThermalCycleLaneTripwireTests` | A lane view minted in `Lease/`. `~Copyable` dropped from a constraint. `borrowing` dropped (with `~Copyable`; alone, it does not compile) |
+| K7′ | `ThermalCycleHandbackShapeTripwireTests` — who builds a handback, the two lane files' shape, `FanRestoring`'s one requirement, no unsafe spelling in `Lease/` | A second handback built inside the signal teardown's closure (CX1), or by § 6 over its own plane (R6). A writer extension in the handback's file returning a lane view, used at § 5's re-assert (L2b). A defaulted requirement handing back a closure over `self`, kept by the lease core (M17). A bitwise copy of the borrowed handback into an `UnsafeMutablePointer` (M14) |
+| — | CI's `Lending probes` step | A refused shape that compiles; a probe failing for another reason; the positive control failing |
 | TBR | `ThermalCycleLaneOverlapTests.sectionThreesTakeBackRevokesARacedLeaseOneRequestAtATime` — a lease granted across the latch's engagement, revoked by the take-back through the handback, one request at a time | The revocation started as an `async let` beside the bridges |
 | K8 | One local `xcodebuild` of the shipping helper target, the repository's first use of noncopyable generics | — |
 
@@ -960,8 +983,43 @@ The per-file counts move with it: the lane's word leaves `HelperFanRestorer.swif
 - **Routing by cause, plus a sweep after each firing (rejected).** The sweep covers only the paths
   it names, so it is defence in depth at best.
 
-**Revisit if:** a toolchain accepts any of the refused shapes (fall back to the closure); a second
-user of the lane is proposed; a composition edit that hands the handback to a second holder survives
-review; the lease core gains a second verb that lends a restorer; or the overlap report ever fires.
+### What b2 must implement
+
+b2 brings the write plane's bodies to `e4/bring-up`, and with them the same properties on real
+write turns. Listed here because a pull request's body is not where an obligation should live:
+
+- **B1.** Every write turn takes and ends at its plane's own admission (`takeTurn(at:)`,
+  `endTurn(at:)`), and the write-turn API takes no admission and no cause. § 3's bridge jobs and its
+  handback's restore turns run in the lane; every other write at `.supervisor`. Mutations: a write
+  turn hard-wired to either admission; an admission parameter defaulted to `.supervisor` that a
+  restorer passes `.thermalCycle`.
+- **B2.** K6 again, on real write turns with the plane `.built`.
+- **B3.** K3 and K4 again, on the write plane; § 5's notice comes before the restore turn is
+  requested.
+- **B4.** A firing with every restore refused, at N = 12 and N = 40, with a TTL expiry and a § 5
+  revocation landing mid-firing at `.supervisor`: each lane turn granted after at most one other
+  turn, inside the allowance, and no overlap report. Mutation: the standing-restorer mutation (K6's),
+  which must report the overlap and exceed the allowance.
+- **B5.** K5 on the write-capable composition: the channel and the ledger shared through every view,
+  at rest and after a firing.
+- **B6 [HW].** W7/D8 also time the handback's lane restore turn, and a refused one, against the
+  86.98 ms break-even.
+
+#439's W-list — likewise recorded only in that pull request's body — still applies: W1, every write
+turn at its plane's admission (which B1 sharpens); W2, the bridge job as one `withWriteTurn` of the
+command's and the restore's bodies, in at most five round trips; W3, the bridge's restore requested
+before the job waits for its turn, and its order inside the turn; W4, a firing under sustained load
+within the allowance (which B4 extends); W5, § 3 completing cycles during an engagement's poll and
+under load; W6, the two-plane contract suite over the bridge verb, every command-half failure still
+restoring; W7 [HW], D8's per-round-trip latency of a bridge job, a `.fan` restore and a refused one.
+The sync that carries this amendment onto `e4/bring-up` must also scan a plane built with a write
+channel at all four lane sites, the handback's included: `PlaneViewTests` scans a plane with none.
+
+**Revisit if:** a toolchain accepts any of the refused shapes (fall back to the closure) — they were
+observed on Swift 6.4, and CI's lending probes compile them on every run's toolchain, so a toolchain
+upgrade that accepts one turns CI red; a second user of the lane is proposed; a composition edit
+that hands the handback to a second holder survives review; the lease core gains a second verb that
+lends a restorer; `FanRestoring` gains a requirement, or `Lease/` an unsafe spelling; or the overlap
+report ever fires.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary.
