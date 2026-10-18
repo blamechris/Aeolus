@@ -79,6 +79,10 @@ extension SetCommand {
     /// keeper is stopped, and any renewal on the wire answered, **before** anything is released
     /// or the hold's loop starts, so there is one renewal schedule and no renewal after a
     /// release.
+    ///
+    /// **A signal that landed while `apply` was outstanding** is noted on whatever report this
+    /// returns, and if everything else is well it ends the run before `started`: "Holding" is
+    /// not said to a person who has already asked to stop.
     static func establish(
         _ hold: Hold, leaseRequestedAt: ContinuousClock.Instant, in session: Session
     ) async -> Report {
@@ -99,12 +103,13 @@ extension SetCommand {
             attempt = .applyFailed(error)
         }
         let kept = await keeper.stop()
+        let signal = session.interrupt.pending
 
         let confirmation: Result<SystemSnapshot, any Error>
         switch attempt {
         case .applyFailed(let error):
             return await afterFailedApply(
-                error, hold: hold, renewal: kept.failure, in: session)
+                error, hold: hold, renewal: kept.failure, signal: signal, in: session)
         case .applied(let result):
             confirmation = result
         }
@@ -127,18 +132,26 @@ extension SetCommand {
             // engagement: ADR 0013's 2026-10-18 amendment records why.
             guard let loss = Self.loss(in: read, leaseID: hold.leaseID, covering: hold.fans)
             else {
-                return await begin(hold, from: read, kept: kept, in: session)
+                return await begin(hold, from: read, kept: kept, signal: signal, in: session)
             }
             lapse = Lapse(renewalFailure: nil, apply: .accepted, confirmation: .notHeld(loss))
         }
-        return await afterLapse(lapse, hold: hold, in: session)
+        return await afterLapse(lapse, hold: hold, signal: signal, in: session)
     }
 
-    /// The helper says the fans are held: say so, and hold them.
+    /// The helper says the fans are held. If nobody has asked to stop, say so and hold them.
     private static func begin(
         _ hold: Hold, from snapshot: SystemSnapshot, kept: LeaseKeeper.Handoff,
-        in session: Session
+        signal: HoldSignal?, in session: Session
     ) async -> Report {
+        // A stop that was asked for while the helper worked (a Ctrl-C in the middle of a fifty
+        // second unlock) ends the run before "Holding" is said. The lease is released and the
+        // safe state looked at, as for every ordinary ending.
+        if let signal {
+            return await finish(
+                .ended(.signal(signal)), hold: hold, snapshot: snapshot, in: session)
+        }
+
         // Handed over, not written: nothing the hold does waits on a reader. If standard output
         // has failed or is not taking them, the first look in `heartbeats` finds out.
         session.output.started(hold, snapshot: snapshot)
@@ -175,7 +188,8 @@ extension SetCommand {
     /// In every case the exit is the check's verdict where that is worse (9, then 8), and
     /// otherwise the failure's own code.
     static func afterFailedApply(
-        _ error: any Error, hold: Hold, renewal: LeaseKeeper.Failure?, in session: Session
+        _ error: any Error, hold: Hold, renewal: LeaseKeeper.Failure?, signal: HoldSignal? = nil,
+        in session: Session
     ) async -> Report {
         let classified = HelperCommandFailure(classifying: error, during: .beforeControl)
         let release = await release(hold.leaseID, using: session.client)
@@ -186,30 +200,32 @@ extension SetCommand {
                 answered ? .answered(describe(error)) : .unanswered(describe(error))
             return .lapsed(
                 Lapse(renewalFailure: reason, apply: said), hold: hold, release: release,
-                settlement: settlement)
+                settlement: settlement, signal: signal)
         }
         guard answered else {
             // The client's words for what it saw, not the error's own, which go on to claim what
             // the helper did with the fans and to advise what to do next (`describe`).
             let observed = HelperCommandFailure(classified.code, describe(error))
             return .applyUnanswered(
-                observed, hold: hold, release: release, settlement: settlement)
+                observed, hold: hold, release: release, settlement: settlement, signal: signal)
         }
         if let lapse = lapse(afterApplyFault: error) {
-            return .lapsed(lapse, hold: hold, release: release, settlement: settlement)
+            return .lapsed(
+                lapse, hold: hold, release: release, settlement: settlement, signal: signal)
         }
         return .applyFaulted(
-            classified, hold: hold, release: release, settlement: settlement)
+            classified, hold: hold, release: release, settlement: settlement, signal: signal)
     }
 
     /// Control was lost before the hold began, and `apply` was accepted or said nothing about
     /// it. Released, and the safe state looked at: that is all this run can say of the fans.
     private static func afterLapse(
-        _ lapse: Lapse, hold: Hold, in session: Session
+        _ lapse: Lapse, hold: Hold, signal: HoldSignal?, in session: Session
     ) async -> Report {
         let release = await release(hold.leaseID, using: session.client)
         let settlement = await checkSafeState(in: session)
-        return .lapsed(lapse, hold: hold, release: release, settlement: settlement)
+        return .lapsed(
+            lapse, hold: hold, release: release, settlement: settlement, signal: signal)
     }
 
     /// Whether `apply` answered that the lease is not live.

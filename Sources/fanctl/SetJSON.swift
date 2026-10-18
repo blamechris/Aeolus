@@ -71,7 +71,9 @@ struct SetClosingFacts: Sendable {
     /// answered something this build cannot read). A signal before the lease is `signal`.
     var endedBecause: String?
     /// `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`: the signal that
-    /// ended the hold, before the lease was taken, while it was in flight, or while holding.
+    /// ended the hold, before the lease was taken, while it was in flight, while `apply` was
+    /// outstanding, or while holding. Also set when a signal landed while `apply` was
+    /// outstanding and the run then ended some other way.
     var signal: String?
     /// Whether the helper accepted the request to release the lease. `false` is not "the lease
     /// is still there"; it is that no acceptance was heard.

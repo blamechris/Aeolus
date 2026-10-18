@@ -156,6 +156,13 @@ enum SetMessages {
 
     // MARK: - Other ways a run does not hold
 
+    /// A sentence for a signal that landed while the speed was being applied, which a failure
+    /// that followed it must not lose. Empty when none did.
+    static func signalNote(_ signal: HoldSignal?) -> String {
+        guard let signal else { return "" }
+        return "\n\n\(signal.name) was received while the speed was being applied."
+    }
+
     static func timerFailed(hold: Hold, release: Release) -> String {
         """
         fanctl's timer failed, so it can no longer pace the lease's heartbeat. \

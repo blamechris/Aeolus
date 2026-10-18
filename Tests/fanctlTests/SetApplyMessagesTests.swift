@@ -165,6 +165,16 @@ struct SetApplyMessagesTests {
         #expect(timer.contains("fanctl's timer failed"))
     }
 
+    /// A signal that landed while the speed was being applied is not lost from a failure that
+    /// follows it.
+    @Test("A signal during apply is named in the text of the failure that follows")
+    func signalNote() {
+        #expect(SetMessages.signalNote(nil).isEmpty)
+        #expect(
+            SetMessages.signalNote(.interrupt)
+                == "\n\nSIGINT was received while the speed was being applied.")
+    }
+
     /// `leaseExpired`'s own description says the fans "have returned to automatic control"; a
     /// restarted helper's says "any manual control it was holding ended with it; ask for the fans
     /// again"; a request nobody answered says the helper "returns those fans to automatic control

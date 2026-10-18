@@ -90,16 +90,17 @@ extension SetCommand {
         /// nothing behind, and a script reading `refused` would take it to.
         static func applyFaulted(
             _ failure: HelperCommandFailure, hold: Hold, release: Release,
-            settlement: SafeState.Settlement
+            settlement: SafeState.Settlement, signal: HoldSignal? = nil
         ) -> Report {
             let clean = settlement.verdict == .automatic
             return Report(
                 failure: HelperCommandFailure(
                     code(failure.code, after: settlement),
                     SetMessages.faultedApply(
-                        failure, hold: hold, release: release, settlement: settlement)),
+                        failure, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
                 leaseID: hold.leaseID, endedBecause: clean ? "refused" : "controlLost",
-                signal: nil, release: release, snapshot: settlement.snapshot,
+                signal: signal, release: release, snapshot: settlement.snapshot,
                 snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
                 closingLine: nil)
         }
@@ -108,14 +109,16 @@ extension SetCommand {
         /// held while the speed was being applied, never a refusal. Released, and the safe state
         /// looked at. Exit 6, or the check's verdict where that is worse.
         static func lapsed(
-            _ lapse: Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement
+            _ lapse: Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement,
+            signal: HoldSignal? = nil
         ) -> Report {
             Report(
                 failure: HelperCommandFailure(
                     code(.controlLost, after: settlement),
                     SetMessages.lapsed(
-                        lapse, hold: hold, release: release, settlement: settlement)),
-                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
+                        lapse, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: signal,
                 release: release,
                 snapshot: settlement.snapshot, snapshotFollowsRelease: settlement.snapshot != nil,
                 plans: hold.plans, closingLine: nil)
@@ -142,14 +145,15 @@ extension SetCommand {
         /// and the failure's code otherwise. The verdict is in the message and the facts.
         static func applyUnanswered(
             _ failure: HelperCommandFailure, hold: Hold, release: Release,
-            settlement: SafeState.Settlement
+            settlement: SafeState.Settlement, signal: HoldSignal? = nil
         ) -> Report {
             Report(
                 failure: HelperCommandFailure(
                     code(failure.code, after: settlement),
                     SetMessages.unansweredApply(
-                        failure, hold: hold, release: release, settlement: settlement)),
-                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
+                        failure, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: signal,
                 release: release,
                 snapshot: settlement.snapshot,
                 snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
