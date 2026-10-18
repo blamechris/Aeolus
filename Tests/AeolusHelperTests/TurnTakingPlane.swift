@@ -149,8 +149,18 @@ enum TurnHolderError: Error {
 }
 
 /// A provider whose read of a token runs the call registered under it, so the scheduler's turn is
-/// held for exactly as long as the call runs.
+/// held for as long as the call runs — and then for `holdYields` yields more.
+///
+/// The yields are what make two calls in flight together reliably **overlap**. A call to the
+/// scripted firmware is a few actor hops, and two concurrent callers that reach § 3's actor one
+/// after the other can each finish their turn before the other asks for one, so a task group
+/// would pass unseen. Held across the yields, the first turn is still outstanding when the
+/// second caller reaches the scheduler, which is the moment production's overlap is about: a
+/// real turn is round trips long. Suspending, never blocking the pool.
 final class CallRunningProvider: SensorProvider, @unchecked Sendable {
+
+    /// How many yields a turn is held for after its call returns.
+    static let holdYields = 64
 
     let identifier = "call-running"
 
@@ -173,6 +183,7 @@ final class CallRunningProvider: SensorProvider, @unchecked Sendable {
         for key in keys {
             let call = lock.withLock { calls.removeValue(forKey: key) }
             await call?()
+            for _ in 0..<Self.holdYields { await Task.yield() }
         }
         return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 0, kind: .unknown)) }
     }
