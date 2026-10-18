@@ -103,6 +103,8 @@ struct SeamScannerLiteralTests {
             (#"let r = /"/; await helper.bringUp() // trailing"#, #"/"/"#),
             (#"let r = #/a//b"/#; await helper.bringUp() // trailing"#, #"#/a//b"/#"#),
             (#"let r = ##/a/#b"/##; await helper.bringUp() // trailing"#, #"##/a/#b"/##"#),
+            // S2: an extended regex whose text begins `//` is not a comment.
+            (#"let r = #//a/#; await helper.bringUp() // trailing"#, #"#//a/#"#),
             (#"let r = /a\/"b/; await helper.bringUp() // trailing"#, #"/a\/"b/"#),
             (#"guard x.contains(/"/) else { return }; await helper.bringUp() // t"#, #"/"/"#),
             (#"return /a"b/ // trailing"# + "\nawait helper.bringUp()", #"/a"b/"#),

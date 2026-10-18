@@ -4,12 +4,13 @@ import Testing
 @testable import AeolusHelper
 
 /// The helper's strongest safety property on this branch is structural: **it cannot fail
-/// open into a write, because nothing in it calls one.**
+/// open into a write, because nothing in it reaches one.**
 ///
 /// `SMCConnection.write(_:to:)` has a body on `e4/bring-up`: one `WRITE_BYTES` round trip.
-/// The helper's write path is still not built — no helper file calls that body, and the
-/// plane answers `.notBuilt` — so what is asserted here is where the write may be named and
-/// which command codes exist, not that no write exists anywhere.
+/// The helper calls it in one place, the daemon's `private` forwarder (`DaemonWriteChannel`),
+/// and nothing calls the forwarder: no plane-to-channel invocation exists, and the plane
+/// answers `.notBuilt`. So what is asserted here is where the write may be named and which
+/// command codes exist, not that no write exists anywhere.
 ///
 /// That is a property of the source tree, not of a code path, so it is asserted against
 /// the source tree. Reading the files via `#filePath` rather than a test-bundle resource
@@ -19,9 +20,9 @@ import Testing
 /// This is a tripwire, not a proof. It cannot see a write reached by arithmetic on a
 /// selector, and it is not trying to — what it catches is the realistic regression: a
 /// second command constant nobody reviewed, or a helper file that starts calling the write.
-/// The real guard is that `SMCConnection.write(_:to:)` stays behind the `FanWrite` SPI group
-/// and that the helper does not call it. `WriteSeamAccessTests` guards the access level
-/// itself; this suite guards the calls.
+/// The real guard is that `SMCConnection.write(_:to:)` stays behind the `FanWrite` SPI group,
+/// and that the helper calls it only in the daemon's forwarder, which nothing invokes.
+/// `WriteSeamAccessTests` guards the access level itself; this suite guards the calls.
 @Suite("The helper has no write path in this tree")
 struct WritePathAbsenceTests {
 
@@ -34,8 +35,9 @@ struct WritePathAbsenceTests {
 
     /// The SMC's command codes this tree may declare are the three reads — 5 (`READ_BYTES`),
     /// 8 (`READ_INDEX`), 9 (`READ_KEYINFO`) — and the one write, 6 (`WRITE_BYTES`), which
-    /// `SMCConnection.write(_:to:)` alone uses and which nothing in the helper calls (the test
-    /// below). Any other code is a command nobody reviewed.
+    /// `SMCConnection.write(_:to:)` alone uses, and which the helper reaches only through the
+    /// daemon's forwarder, invoked by nothing (the test below). Any other code is a command
+    /// nobody reviewed.
     ///
     /// This is a **coverage pin**, not only an allowlist. The declared codes must be exactly
     /// `[5, 6, 8, 9]`, each once: an unknown code fails, a second `6` fails, and so does the
@@ -131,6 +133,19 @@ struct WritePathAbsenceTests {
             let name = file.lastPathComponent
             let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
                 .replacingOccurrences(of: "`", with: "")
+
+            // A bare `write` taken as a value is read in code with comments and strings gone,
+            // where prose cannot pass for one (B5).
+            let prose = WriteSeamTestIsolationTests.strippingStringLiterals(
+                SeamScanner.strippingAllComments(code))
+            for at in try Self.bareWriteUses(in: prose) {
+                let place = "\(name): \(try Self.container(of: at, in: prose))"
+                used.append(place)
+                #expect(
+                    place == "\(Self.daemonChannelFile): DaemonWriteChannel.write's body",
+                    "\(place) takes the write as a bare value; only DaemonWriteChannel may use it"
+                )
+            }
 
             let occurrences = try Self.writeOccurrences(in: code)
             guard !occurrences.isEmpty else { continue }

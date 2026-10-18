@@ -48,8 +48,11 @@ struct RuleZeroScannerTests {
 
     // MARK: - Construction sites
 
+    /// Each fixture is judged as a test function's body, where real constructions are: at file
+    /// scope a binding is a global, which the rule refuses outright (B2), and every fixture would
+    /// then be rejected for that reason instead of its own.
     private static func judged(_ source: String) throws -> [RuleZeroScan.Construction] {
-        try RuleZeroScan.constructions(in: Self.code(source))
+        try RuleZeroScan.constructions(in: Self.code("func fixture() async throws {\n\(source)\n}"))
     }
 
     @Test("A let required to hold no channel on its first use is accepted, for both kinds")
@@ -69,6 +72,13 @@ struct RuleZeroScannerTests {
                 + "try #require(!helper.plane.holdsWriteChannel)",
             "let plane =\n\n    SMCFanControlPlane(\n        scheduler: s, connection: c)\n"
                 + "try #require(!plane.holdsWriteChannel)",
+            // B3: the initialiser's other two spellings.
+            "let plane = SMCFanControlPlane.init(scheduler: s, connection: c)\n"
+                + "try #require(!plane.holdsWriteChannel, \"why\")",
+            "let plane: SMCFanControlPlane = .init(scheduler: s, connection: c)\n"
+                + "try #require(!plane.holdsWriteChannel)",
+            "func f() throws {\n    let helper = HelperComposition.production(log: log)\n"
+                + "    try #require(!helper.plane.holdsWriteChannel)\n}",
         ]
         for source in accepted {
             let found = try Self.judged(source)
@@ -107,11 +117,42 @@ struct RuleZeroScannerTests {
             // S-3: an optional binding's first use is not the require.
             "let helper: HelperComposition? = .production(log: log)\nawait helper?.bringUp()",
             "let helper = HC.production(log: log)\nawait helper.bringUp()",
+            // Codex: the whole first argument must be the negation.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel || true)",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel == false, \"why\")",
+            "let plane = SMCFanControlPlane(scheduler: s, connection: c)\n"
+                + "try #require(!plane.holdsWriteChannel && x)",
+            // B1: a require that a block can swallow or skip.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "do { try #require(!helper.plane.holdsWriteChannel) } catch {}\n_ = helper.plane",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "withKnownIssue { try #require(!helper.plane.holdsWriteChannel) }",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "if Bool.random() { try #require(!helper.plane.holdsWriteChannel) }",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "Task { try #require(!helper.plane.holdsWriteChannel) }",
+            // …or an argument, which an autoclosure can swallow.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "swallow(try #require(!helper.plane.holdsWriteChannel))",
+            // B2: a stored property, required or not, and `self.` is a use.
+            "struct S {\n    let helper = HelperComposition.production(log: log)\n"
+                + "    func t() throws { try #require(!helper.plane.holdsWriteChannel) }\n}",
+            "func t() async {\n    let helper = HelperComposition.production(log: log)\n"
+                + "    await self.helper.bringUp()\n"
+                + "    try #require(!helper.plane.holdsWriteChannel)\n}",
+            // B3: the other spellings, unrequired.
+            "let plane = SMCFanControlPlane.init(scheduler: s, connection: c)\n_ = plane.isOpen",
+            "let plane: SMCFanControlPlane = .init(scheduler: s, connection: c)\n_ = plane",
         ]
         for source in rejected {
             let found = try Self.judged(source)
             #expect(
                 !found.isEmpty && found.contains { $0.violation != nil }, "\(source): \(found)")
+            // Rejected for its own shape: only the stored-property fixture is refused as stored.
+            let asStored = found.contains { $0.violation?.contains("stored property") == true }
+            #expect(asStored == source.hasPrefix("struct"), "\(source): \(found)")
         }
     }
 

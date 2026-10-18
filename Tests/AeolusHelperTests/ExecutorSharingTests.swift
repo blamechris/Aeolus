@@ -10,10 +10,13 @@ import os
 ///
 /// No test can construct the daemon's forwarder: it is `private` to `main`'s file, which is the
 /// point. So its mechanism is tested here, on `SharingChannel` — the forwarder's text, member for
-/// member, over `InnerConnection` instead of `SMCConnection`. It adopts the inner actor's executor
-/// and forwards each requirement through `assumeIsolated`. Many write turns run interleaved with
-/// direct calls on the inner actor, and every operation records itself into one ledger that would
-/// see two of them at once if the executor were not shared.
+/// member, over `InnerConnection` instead of `SMCConnection`, and held to that text by
+/// `theStandInIsTheForwarder`. It adopts the inner actor's executor and forwards each requirement
+/// through `assumeIsolated`. Many write turns run interleaved with direct calls on the inner actor.
+///
+/// **The trap is the control; the ledger corroborates.** Were the executor not shared, the first
+/// `assumeIsolated` would trap before any operation ran. The ledger, into which every operation
+/// records itself, is what shows the shared executor also kept every operation one at a time.
 ///
 /// It runs in debug and, under CI's release step, at `-O`.
 ///
@@ -55,6 +58,36 @@ struct ExecutorSharingTests {
         #expect(
             seen.mostAtOnce == 1,
             "two operations ran on the connection at once: the executor is not shared — \(seen)")
+    }
+
+    /// The stand-in is the forwarder's pinned text with two names changed —
+    /// `DaemonWriteChannel` to `SharingChannel`, `SMCConnection` to `InnerConnection` — and its
+    /// `@available` line ignored. So a change to the forwarder that updates its pin
+    /// (`WriteChannelSeamTests.forwarder`) and not this stand-in is red here, and the mechanism
+    /// tested above stays the one that ships.
+    ///
+    /// **Mutation:** change one forwarder member in `AeolusHelperMain.swift` and in its pin, and
+    /// not here. Run: red here.
+    @Test("The stand-in is the daemon's forwarder, word for word, but for two names")
+    func theStandInIsTheForwarder() throws {
+        let expected = WriteChannelSeamTests.forwarder
+            .replacingOccurrences(of: "DaemonWriteChannel", with: "SharingChannel")
+            .replacingOccurrences(of: "SMCConnection", with: "InnerConnection")
+            .filter { !$0.isWhitespace }
+        // Strings go too, so the needle below is not found in this test's own literal.
+        let own = WriteSeamTestIsolationTests.strippingStringLiterals(
+            SeamScanner.strippingAllComments(
+                try String(contentsOf: URL(fileURLWithPath: #filePath), encoding: .utf8)))
+        let standIn = try #require(
+            own.range(of: "private actor SharingChannel"), "the stand-in is not declared")
+        let body = String(
+            RuleZeroScan.balanced(
+                in: own, from: try #require(own[standIn.upperBound...].firstIndex(of: "{"))))
+        let declared = ("private actor SharingChannel: SMCWriteChannel " + body)
+            .filter { !$0.isWhitespace }
+        #expect(
+            declared == expected,
+            "ExecutorSharingTests' SharingChannel is no longer the pinned forwarder's text")
     }
 }
 

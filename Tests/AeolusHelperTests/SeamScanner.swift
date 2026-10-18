@@ -397,7 +397,13 @@ enum SeamScanner {
                 continue
             }
 
-            if matches("/*", at: index) {
+            // A regex first: `#//a/#` is an extended regex whose text begins `//`, not a comment
+            // (#436's delta review, S2). A bare `/` followed by `/` or `*` opens no regex, so
+            // comments are unaffected.
+            if let end = regexLiteralEnd(at: index, in: source) {
+                output += source[index..<end]
+                index = end
+            } else if matches("/*", at: index) {
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {
@@ -405,9 +411,6 @@ enum SeamScanner {
                     output.append(source[index])
                     index = source.index(after: index)
                 }
-            } else if let end = regexLiteralEnd(at: index, in: source) {
-                output += source[index..<end]
-                index = end
             } else if source[index] == "\"" {
                 let delimiter = matches("\"\"\"", at: index) ? "\"\"\"" : "\""
                 index = copyDelimited(source, from: index, delimiter: delimiter, into: &output)

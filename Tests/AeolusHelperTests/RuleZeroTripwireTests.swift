@@ -64,31 +64,125 @@ struct NotBuiltRequireTripwireTests {
             judged.isSuperset(of: Self.knownBindings),
             "the scan judged \(judged.sorted()), not all of \(Self.knownBindings.sorted())")
     }
+
+    static let extendingComposition =
+        #"(?<![A-Za-z0-9_])extension\s+(?:AeolusHelper\s*\.\s*)?HelperComposition(?![A-Za-z0-9_])"#
+    static let aliasingComposition =
+        #"(?<![A-Za-z0-9_])typealias\s+\w+\s*(?:<[^=]*>)?\s*=\s*(?:AeolusHelper\s*\.\s*)?"#
+        + #"HelperComposition(?![A-Za-z0-9_])"#
+
+    /// Inside an extension of the composition, `production(` is called bare, a spelling neither
+    /// the reach nor the construction pattern reads (#436's delta review, B4); a typealias would
+    /// carry the extension past this check. So neither is written under `Tests/` or `Tools/`.
+    ///
+    /// **Mutation:** add `extension HelperComposition {}` to a test file. Run: red here.
+    @Test("No test or tool extends HelperComposition, or aliases it")
+    func noTestExtendsTheComposition() throws {
+        var found: [String] = []
+        var read = 0
+        for directory in ["Tests", "Tools"] {
+            for file in try RuleZeroScan.files(under: directory) {
+                read += 1
+                let named =
+                    try RuleZeroScan.count(Self.extendingComposition, in: file.code)
+                    + RuleZeroScan.count(Self.aliasingComposition, in: file.code)
+                if named > 0 { found.append(file.path) }
+            }
+        }
+        #expect(
+            found.isEmpty,
+            "\(found) extend or alias HelperComposition, where production( can be called bare")
+        #expect(read > 100, "the scan read \(read) files, which is not the tree")
+    }
+
+    /// **Mutation:** drop `(?:AeolusHelper\s*\.\s*)?` from both patterns. Run: red here.
+    @Test("An extension or alias of the composition is found in every spelling")
+    func compositionExtensionsAreFound() throws {
+        let found = [
+            "extension HelperComposition where Plane == SMCFanControlPlane {}",
+            "extension AeolusHelper . HelperComposition {}",
+            "typealias Graph = HelperComposition<SMCFanControlPlane>",
+            "typealias Graph = AeolusHelper.HelperComposition",
+        ]
+        for source in found {
+            let code = RuleZeroScan.code(of: source)
+            let named =
+                try RuleZeroScan.count(Self.extendingComposition, in: code)
+                + RuleZeroScan.count(Self.aliasingComposition, in: code)
+            #expect(named == 1, "\(source)")
+        }
+        let code = RuleZeroScan.code(
+            of: "extension HelperCompositionTests {}\nlet c = HelperComposition(plane: p)")
+        #expect(try RuleZeroScan.count(Self.extendingComposition, in: code) == 0)
+        #expect(try RuleZeroScan.count(Self.aliasingComposition, in: code) == 0)
+    }
 }
 
-/// A test that calls the daemon's entry point composes the daemon's graph, write channel and all
-/// (ADR 0014's B1 seam amendment, "What remains"). Nothing under `Tests/` or `Tools/` names it.
-@Suite("Rule zero: no test or tool runs the daemon's entry point")
+/// The daemon's entry point composes the daemon's graph, gives it the write channel, and runs
+/// bring-up before `dispatchMain()`; once the plane can write, a test that ran it would write.
+///
+/// **The compiler closes it** (ADR 0014's B1 seam amendment, fix round 2). `AeolusHelperMain` is
+/// `private`, so no other file names it — not through `@testable import AeolusHelper`, a
+/// typealias, `.self.main()` or the bare name (#436's probes, each "cannot find
+/// 'AeolusHelperMain' in scope"). The name scan it replaces missed the typealias and `.self`.
+/// What this suite holds is that the type stays private, and, as depth, that no code under
+/// `Tests/` or `Tools/` holds the token.
+@Suite("Rule zero: no test or tool can run the daemon's entry point")
 struct DaemonEntryPointTripwireTests {
 
-    static let entryPoint = #"(?<![A-Za-z0-9_])AeolusHelperMain\s*\.\s*main(?![A-Za-z0-9_])"#
-    static let extending = #"(?<![A-Za-z0-9_])extension\s+AeolusHelperMain(?![A-Za-z0-9_])"#
+    /// Every spelling contains the token, so the token is what is refused.
+    static let token = #"(?<![A-Za-z0-9_])AeolusHelperMain(?![A-Za-z0-9_])"#
 
-    /// **Mutation:** call `AeolusHelperMain.main()` from a test file. Run: red.
-    @Test("No file under Tests or Tools names AeolusHelperMain.main or extends AeolusHelperMain")
-    func nothingRunsTheDaemon() throws {
+    /// **Mutation:** drop `private` from `@main private enum AeolusHelperMain`. Run: red here.
+    @Test("The entry point is a private type")
+    func theEntryPointIsPrivate() throws {
+        let main = try #require(
+            try RuleZeroScan.files(under: "Sources").first {
+                $0.path == "Sources/AeolusHelper/AeolusHelperMain.swift"
+            })
+        #expect(
+            try RuleZeroScan.count(
+                #"@main\s+private\s+enum\s+AeolusHelperMain\s*\{"#, in: main.code)
+                == 1,
+            "the daemon's entry point is not a private type: any @testable file can run it")
+    }
+
+    /// Depth beneath the compiler. Comments and strings are code-stripped first, so the file
+    /// names tests read — `"AeolusHelperMain.swift"` — are not uses; any spelling in code is.
+    @Test("No code under Tests or Tools holds the AeolusHelperMain token")
+    func nothingNamesTheEntryPoint() throws {
         var naming: [String] = []
         var read = 0
         for directory in ["Tests", "Tools"] {
             for file in try RuleZeroScan.files(under: directory) {
                 read += 1
-                let found =
-                    try RuleZeroScan.count(Self.entryPoint, in: file.code)
-                    + RuleZeroScan.count(Self.extending, in: file.code)
-                if found > 0 { naming.append(file.path) }
+                if try RuleZeroScan.count(Self.token, in: file.code) > 0 {
+                    naming.append(file.path)
+                }
             }
         }
         #expect(naming.isEmpty, "\(naming) name the daemon's entry point")
         #expect(read > 100, "the scan read \(read) files, which is not the tree")
+    }
+
+    /// The token pattern on the spellings the round-1 scan missed. They no longer compile in a
+    /// test, so they are fixtures here.
+    ///
+    /// **Mutation:** make `token` match only `AeolusHelperMain.main`. Run: red here.
+    @Test("The token is found in every spelling of the entry point")
+    func theTokenIsFoundInEverySpelling() throws {
+        let spellings = [
+            "typealias Entry = AeolusHelperMain\ntry await Entry.main()",
+            "try await AeolusHelperMain.self.main()",
+            "try await AeolusHelperMain.main()",
+            "extension AeolusHelperMain {}",
+            "let entry = AeolusHelperMain.self",
+        ]
+        for spelling in spellings {
+            #expect(try RuleZeroScan.count(Self.token, in: RuleZeroScan.code(of: spelling)) > 0)
+        }
+        #expect(
+            try RuleZeroScan.count(
+                Self.token, in: RuleZeroScan.code(of: #"let f = "AeolusHelperMain.swift""#)) == 0)
     }
 }

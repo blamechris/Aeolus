@@ -243,27 +243,11 @@ extension WriteSeamTestIsolationTests {
     /// still says which two files import.
     ///
     /// **Mutation:** a new test file holding `#"a "b"#`, then `@_spi(FanWrite) import SMCCore`.
-    /// Run: red here. What rule 1's normalised scan does with it is recorded in #436.
+    /// Run: red here. Rule 1's normalised scan goes red too, now that the lexer reads that raw
+    /// string; this census is the layer that needs no lexer.
     @Test("The raw text under Tests and Tools mentions @_spi only in the known files")
     func everySPIMentionIsKnown() throws {
-        var mentioning: Set<String> = []
-        var read = 0
-        for directory in ["Tests", "Tools"] {
-            let root = RuleZeroScan.repositoryRoot.appendingPathComponent(directory)
-            let enumerator = try #require(
-                FileManager.default.enumerator(
-                    at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
-            let entries = enumerator.compactMap { $0 as? URL }
-            SeamScanner.refuseSymbolicLinks(in: entries, under: root)
-            for url in entries where url.pathExtension == "swift" {
-                read += 1
-                let raw = try String(contentsOf: url, encoding: .utf8)
-                if raw.range(of: #"@\s*_spi"#, options: .regularExpression) != nil {
-                    mentioning.insert(RuleZeroScan.relativePath(of: url))
-                }
-            }
-        }
-        #expect(read > 100, "the census read \(read) files, which is not the tree")
+        let mentioning = try Self.rawMentioners(of: #"@\s*_spi"#, under: ["Tests", "Tools"])
         #expect(
             mentioning == Self.spiMentioners,
             """
@@ -271,6 +255,64 @@ extension WriteSeamTestIsolationTests {
             \(Self.spiMentioners.subtracting(mentioning).sorted()). A file that opts in can \
             write through a real connection; justify a new mention here, or remove it.
             """)
+    }
+
+    /// The three other ways a test could reach a symbol its imports do not grant, each counted in
+    /// the raw text the same way (#436's delta review): `@_silgen_name` binds a declaration to any
+    /// mangled symbol, the write's included; `dlsym` finds one at run time; and an `@_private(…)`
+    /// import, with `-enable-private-imports`, sees every `private` declaration — the daemon's
+    /// forwarder and entry point among them.
+    static let escapeHatches: [(pattern: String, mentioners: Set<String>)] = [
+        (#"@\s*_silgen_name"#, ["Tests/AeolusHelperTests/WriteSeamTestIsolationTests.swift"]),
+        (
+            #"(?<![A-Za-z0-9_])dlsym(?![A-Za-z0-9_])"#,
+            [
+                "Tests/AeolusHelperTests/WriteSeamTestIsolationTests.swift",
+                "Tests/SMCCoreTests/RoundTripStampTripwireTests.swift",
+            ]
+        ),
+        (#"@\s*_private\s*\("#, ["Tests/AeolusHelperTests/WriteSeamTestIsolationTests.swift"]),
+    ]
+
+    /// **Mutation:** a new test file declaring `@_silgen_name("x") func probe()`. Run: red here.
+    @Test("The raw text under Tests and Tools names no symbol-binding escape hatch")
+    func noEscapeHatchIsWritten() throws {
+        for (pattern, known) in Self.escapeHatches {
+            let mentioning = try Self.rawMentioners(of: pattern, under: ["Tests", "Tools"])
+            #expect(
+                mentioning == known,
+                """
+                `\(pattern)` is mentioned by \(mentioning.sorted()), not \(known.sorted()): each \
+                binds a symbol no import grants, the SMC write's included.
+                """)
+        }
+    }
+
+    /// The repository-relative paths of every `.swift` file under `directories` whose raw text
+    /// matches `pattern`. Symbolic links are refused, so nothing the scan cannot see is compiled.
+    static func rawMentioners(
+        of pattern: String, under directories: [String]
+    ) throws -> Set<String> {
+        var mentioning: Set<String> = []
+        var read = 0
+        for directory in directories {
+            let root = RuleZeroScan.repositoryRoot.appendingPathComponent(directory)
+            let enumerator = try #require(
+                FileManager.default.enumerator(
+                    at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
+            let entries = enumerator.compactMap { $0 as? URL }
+            SeamScanner.refuseSymbolicLinks(in: entries, under: root)
+            for url in entries where url.pathExtension.lowercased() == "swift" {
+                read += 1
+                let raw = try String(contentsOf: url, encoding: .utf8)
+                if raw.range(of: pattern, options: .regularExpression) != nil {
+                    mentioning.insert(RuleZeroScan.relativePath(of: url))
+                }
+            }
+        }
+        #expect(
+            read > 100, "the census read \(read) files under \(directories), which is not the tree")
+        return mentioning
     }
 }
 

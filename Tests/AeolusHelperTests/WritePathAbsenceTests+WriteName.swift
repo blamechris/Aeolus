@@ -19,6 +19,32 @@ extension WritePathAbsenceTests {
     /// channel.write` is a use, and the call pattern above cannot see it (#436's review).
     static let writeMember = try? NSRegularExpression(pattern: #"\.\s*write(?![A-Za-z0-9_])"#)
 
+    /// The name `write` bare — not after a `.`, which `writeMember` reads — where it is neither
+    /// called (`writeCall` reads that), declared, nor a label: `let submit = write` inside an
+    /// extension, or `apply(write, key)`, takes the requirement as a value through an implicit
+    /// `self` (#436's delta review, B5).
+    static let bareWrite = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_.])(?<!func\s)write(?![A-Za-z0-9_])(?!\s*[(<])"#)
+
+    /// Every bare use of `write` in `code`, which must already have its comments and its string
+    /// literals' text removed: prose in a log message is not a use, an interpolation is code.
+    ///
+    /// A `write:` after `(`, `,` or a word is a label — an argument's, or a parameter's internal
+    /// name — and not a use; after `?` it is a ternary's operand, which is.
+    static func bareWriteUses(in code: String) throws -> [String.Index] {
+        let bare = try #require(Self.bareWrite)
+        return bare.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap {
+            guard let found = Range($0.range, in: code) else { return nil }
+            let next = code[found.upperBound...].first { !$0.isWhitespace }
+            let previous = code[..<found.lowerBound].last { !$0.isWhitespace }
+            let labelled =
+                next == ":"
+                && previous.map { "(,".contains($0) || $0.isLetter || $0.isNumber || $0 == "_" }
+                    ?? false
+            return labelled ? nil : found.lowerBound
+        }
+    }
+
     /// One occurrence of the name `write`.
     enum WriteOccurrence: Equatable {
         /// `func write(…)`.

@@ -49,8 +49,26 @@ struct WriteSeamAccessTests {
     /// `SeamScanner.swiftFiles()` enumerates `Sources/` only, so `Tests/SMCCoreTests`'s
     /// `@_spi(FanWrite) @testable import SMCCore` was never read by this scan and that
     /// branch was unreachable. It matches now only because *every* attribute does.
+    ///
+    /// And a scoped import is one too: `@_spi(FanWrite) import class SMCCore.SMCConnection` grants
+    /// the write as surely as the whole-module form, and the pattern that read only `import
+    /// SMCCore` passed it in a `fanctl` file and in a third helper file (#436's delta review, S1).
     private static let spiImport = try? NSRegularExpression(
-        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)import\s+SMCCore"#)
+        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)import\s+"#
+            + #"(?:(?:class|struct|enum|protocol|typealias|func|var|let)\s+)?"#
+            + #"SMCCore(?![A-Za-z0-9_])"#
+    )
+
+    /// The files under `Sources/` whose raw text mentions `@_spi` — the two members' declarations,
+    /// the two helper files that import the group, and the prose that explains them.
+    static let sourcesSPIMentioners: Set<String> = [
+        "Sources/AeolusHelper/AeolusHelperMain.swift",
+        "Sources/AeolusHelper/SMCWriteChannel.swift",
+        "Sources/AeolusHelper/WriteSeamReachability.swift",
+        "Sources/SMCCore/FanEnumeration.swift",
+        "Sources/SMCCore/SMCConnection.swift",
+        "Sources/SMCCore/SMCValue.swift",
+    ]
 
     /// Every `@_spi(…)` attribute, wherever one appears. Used both to read the group names
     /// out of an import's attribute run and to find declarations.
@@ -120,6 +138,42 @@ struct WriteSeamAccessTests {
     /// this file, `WriteSeamReachability.swift`'s own documentation, and the ADR all discuss
     /// the import in prose, and a tripwire that fires on the sentence describing it is a
     /// tripwire nobody keeps.
+    /// The fail-closed half, beneath the import pattern: no lexer or pattern stands between a new
+    /// mention and this list, so an import spelling the pattern has not met is still a new file.
+    ///
+    /// **Mutation:** `@_spi(FanWrite) import class SMCCore.SMCConnection` in a `fanctl` file. Run:
+    /// red here and at `spiImportAppearsOnlyInTheHelper`.
+    @Test("The raw text under Sources mentions @_spi only in the known files")
+    func everySourcesSPIMentionIsKnown() throws {
+        let mentioning = try WriteSeamTestIsolationTests.rawMentioners(
+            of: #"@\s*_spi"#, under: ["Sources"])
+        #expect(
+            mentioning == Self.sourcesSPIMentioners,
+            """
+            New: \(mentioning.subtracting(Self.sourcesSPIMentioners).sorted()). Gone: \
+            \(Self.sourcesSPIMentioners.subtracting(mentioning).sorted()). A Sources file that \
+            opts into the write SPI can write, and fanctl ships and is linked by the helper's tests.
+            """)
+    }
+
+    /// **Mutation:** drop the `(?:(?:class|…)\s+)?` kind from `spiImport`. Run: red here.
+    @Test("An SPI import is found whole-module or scoped")
+    func spiImportsAreFoundScopedOrNot() throws {
+        let pattern = try #require(Self.spiImport)
+        for spelling in [
+            "@_spi(FanWrite) import SMCCore",
+            "@_spi(FanWrite) import class SMCCore.SMCConnection",
+            "@_spi(FanWrite) @preconcurrency import struct SMCCore.SMCKeyType",
+            "@_spi(FanWrite)\nimport func SMCCore.resolveByteOrder",
+        ] {
+            let range = NSRange(spelling.startIndex..., in: spelling)
+            #expect(pattern.numberOfMatches(in: spelling, range: range) == 1, "\(spelling)")
+        }
+        let other = "@_spi(FanWrite) import SMCCoreExtras"
+        #expect(
+            pattern.numberOfMatches(in: other, range: NSRange(other.startIndex..., in: other)) == 0)
+    }
+
     @Test("The only SPI group imported under Sources is FanWrite, by exactly two helper files")
     func spiImportAppearsOnlyInTheHelper() throws {
         let pattern = try #require(Self.spiImport)

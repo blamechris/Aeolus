@@ -500,6 +500,11 @@ actor SMCReadScheduler {
     /// scheduler belong to the type rather than to a comment. A job cannot issue a read through
     /// this scheduler — it cannot `await` — and so cannot queue behind its own turn.
     ///
+    /// **A job cannot `await`; a `Task` it spawns escapes the turn.** `Task { try await
+    /// channel.write(…) }` typechecks inside a job and runs after the turn has ended, outside any
+    /// turn. So no write-turn job spawns one — a b2 obligation, which
+    /// `WriteSeamSpellingTests.noWriteTurnJobSpawnsATask` holds over every call site.
+    ///
     /// ## Why not `withExclusiveAccess(_:)`
     ///
     /// That verb waits for a walk in flight because a recycle **closes the handle** the walk is
@@ -524,9 +529,9 @@ actor SMCReadScheduler {
     /// and spending the overtake quota exactly as a read does, because it is `takeTurn(at:)` and
     /// `endTurn(at:)` and nothing more. The longest a job may hold it is
     /// `WatchdogLimits.writeTurnRoundTrips`, its caller's obligation. **The re-queue cost of a
-    /// firing cycle's write turns against D_cycle is unresolved** — recorded on
-    /// [#332](https://github.com/blamechris/Aeolus/issues/332), and to be ruled before any write
-    /// turn has a body.
+    /// firing cycle's write turns against D_cycle** is not counted by ADR 0012's derivation as it
+    /// stands; it is ruled on [#332](https://github.com/blamechris/Aeolus/issues/332), and that
+    /// ruling lands on `main` as its own change, before any write turn has a body.
     ///
     /// Nothing in the helper calls this yet: the plane's write turns, its only intended callers,
     /// are not built, and the plane answers `.notBuilt`.

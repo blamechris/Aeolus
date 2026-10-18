@@ -15,9 +15,10 @@ extension SeamScanner {
     ///
     /// Built on `strippingComments`, so block comments and whole-line comments are gone before
     /// this looks, on `copyDelimited` for string literals, so the `//` in `"https://…"` or in
-    /// `#"say "hi" // x"#` opens no comment, and on `regexLiteralEnd` for regex literals, so the
-    /// `//` in `#/a//b/#` opens none either. Until #436 this was a quote counter, and a raw string
-    /// with a `"` and a `//` put it out of step;
+    /// `#"say "hi" // x"#` opens no comment, and on `regexLiteralEnd` for regex literals, tried
+    /// before the `//` test, so the `//` in `#/a//b/#` or at the start of `#//a/#` opens none
+    /// either. Until #436 this was a quote counter, and a raw string with a `"` and a `//` put it
+    /// out of step;
     /// `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` still keeps that
     /// shape out of `Sources/AeolusHelper`, as depth.
     static func strippingAllComments(_ source: String) -> String {
@@ -26,13 +27,13 @@ extension SeamScanner {
         var index = code.startIndex
 
         while index < code.endIndex {
-            if code[index...].hasPrefix("//") {
+            if let end = regexLiteralEnd(at: index, in: code) {
+                output += code[index..<end]
+                index = end
+            } else if code[index...].hasPrefix("//") {
                 while index < code.endIndex, code[index] != "\n" {
                     index = code.index(after: index)
                 }
-            } else if let end = regexLiteralEnd(at: index, in: code) {
-                output += code[index..<end]
-                index = end
             } else if code[index...].hasPrefix("\"\"\"") {
                 index = copyDelimited(code, from: index, delimiter: "\"\"\"", into: &output)
             } else if code[index] == "\"" {

@@ -122,14 +122,15 @@ final class PlaneWriteLedger: Sendable {
         }
     }
 
-    /// The bytes a restore writes for `write`: zeros, as many as the preparation step recorded
+    /// The bytes a restore writes for `planned`: zeros, as many as the preparation step recorded
     /// for its key, or one when it recorded none (D5, D7; ADR 0014's B1 amendment). Pure: no read,
     /// and never `encode`, because zero is all-zero bytes in every numeric type and either byte
     /// order, so the keystone gains no way to fail. A recorded size no SMC payload can carry,
     /// outside one to 32 bytes, is not a size a write can be made with, and is taken as unknown.
-    func restorePayload(for write: RestorePlan.Write) -> [UInt8] {
+    func restorePayload(for planned: RestorePlan.Write) -> [UInt8] {
         let key: SMCKey?
-        switch write {
+        // `planned`, not `write`: the helper's write scan reads a bare `write` as a use of it.
+        switch planned {
         case .mode(let index): key = SMCKey.fanMode(index)
         case .forceKey: key = SMCKey.forceTest
         }
