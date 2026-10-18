@@ -742,7 +742,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
         let gateMonitor = GateWaitMonitor()
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection),
-            observer: SchedulerObservers([connectionHealth, gateMonitor]))
+            observer: SchedulerObservers([
+                connectionHealth, gateMonitor, ThermalCycleLaneWatch(log: SafetyLog()),
+            ]))
         let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         return HelperComposition(
             plane: plane,

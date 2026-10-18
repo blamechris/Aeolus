@@ -268,7 +268,8 @@ actor ConnectionHealth: SchedulerObserving {
                 return issued
             }
             continuation.yield(SequencedOutcome(sequence: next, event: event))
-        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
+        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted,
+            .thermalCycleLaneOverlapped:
             break
         }
     }
@@ -371,7 +372,8 @@ actor ConnectionHealth: SchedulerObserving {
             // A walk that threw, or returned nothing from a machine that declared keys: the
             // handle failed to answer. One outcome in the same run, never one per key.
             await countFailure(recovering: recovery)
-        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
+        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted,
+            .thermalCycleLaneOverlapped:
             // Never forwarded, so never seen. Handled exhaustively rather than with a
             // `default`, so adding a case to `SchedulerEvent` is a compile error here — the
             // one place a new event kind has to be thought about twice.

@@ -352,6 +352,22 @@ struct SafetyLog: Sendable {
         )
     }
 
+    // MARK: - docs/SAFETY.md § 3 — its lane (ADR 0012's 2026-10-18 amendment)
+
+    /// A second request arrived in § 3's lane while one was outstanding. Reported once per
+    /// helper process by the scheduler, and admitted in the lane anyway.
+    func thermalCycleLaneOverlapped(outstanding: Int) {
+        emit(
+            .fault,
+            """
+            \(outstanding) requests were outstanding at once in the thermal emergency \
+            override's own admission, which is the override's alone and serves one request at a \
+            time. The request was admitted; the override's cycle bound (ADR 0012) assumes one, \
+            so its waits are no longer the ones derived. Reported once per helper process.
+            """
+        )
+    }
+
     // MARK: - docs/SAFETY.md § 3 — its own restores (#300)
 
     /// A fan § 3 bridged and restored still reads manual, and the next emergency bridges it.

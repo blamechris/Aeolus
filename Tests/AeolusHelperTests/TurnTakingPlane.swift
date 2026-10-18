@@ -1,0 +1,179 @@
+import FanKit
+import Foundation
+import SMCCore
+import Testing
+
+@testable import AeolusHelper
+
+/// A scripted plane whose every call holds a real `SMCReadScheduler` turn, at its view's
+/// admission, for as long as the call runs — so the scheduler sees § 3's calls as production's
+/// would, one request per call, and reports two that overlap
+/// (`SchedulerEvent.thermalCycleLaneOverlapped`).
+///
+/// `ScriptedControlPlane` has no scheduler: its views record which admission a call came through
+/// and nothing waits. That cannot tell calls made one at a time from calls made together, and that
+/// is the premise ADR 0012's 2026-10-18 amendment rests both lane bounds on. This double puts the
+/// scheduler back under the scripted firmware: each call is registered with `TurnHolder`'s
+/// provider under a token, read through the scheduler at the view's priority, and run by the
+/// provider inside the turn that read is granted, so the turn is held across the whole call and
+/// two calls in flight together are two requests outstanding together.
+///
+/// A recycle is a supervisor turn whatever the view (`FanControlPlane.admitted(at:)`), and § 3's
+/// bridge requests its restore before it waits for the turn, as production's does.
+struct TurnTakingPlane: FanControlPlane {
+
+    let scripted: ScriptedControlPlane
+    let turns: TurnHolder
+
+    func admitted(at admission: PlaneAdmission) -> TurnTakingPlane {
+        TurnTakingPlane(scripted: scripted.admitted(at: admission), turns: turns)
+    }
+
+    var writeCapability: FanWriteCapability { scripted.writeCapability }
+
+    private var priority: SMCReadPriority { scripted.admission.priority }
+
+    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
+        let scripted = scripted
+        return try await turns.holding(at: priority) {
+            try await scripted.readCriticalTemperatures(keys)
+        }
+    }
+
+    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
+        let scripted = scripted
+        return try await turns.holding(at: priority) {
+            try await scripted.readEnvelope(ofFan: index)
+        }
+    }
+
+    func readControlState(ofFan index: Int) async throws -> FanControlState {
+        let scripted = scripted
+        return try await turns.holding(at: priority) {
+            try await scripted.readControlState(ofFan: index)
+        }
+    }
+
+    func reconnect() async throws {
+        let scripted = scripted
+        try await turns.holding(at: .supervisor) { try await scripted.reconnect() }
+    }
+
+    func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
+        let scripted = scripted
+        try await turns.holding(at: priority) { try await scripted.restoreToAutomatic(scope) }
+    }
+
+    func beginEngagement(fanAt index: Int) {
+        scripted.beginEngagement(fanAt: index)
+    }
+
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
+        let scripted = scripted
+        return try await turns.holding(at: priority) {
+            try await scripted.engageManualControl(of: fan)
+        }
+    }
+
+    @discardableResult
+    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+        let scripted = scripted
+        return try await turns.holding(at: priority) { try await scripted.commandTarget(target) }
+    }
+
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
+        scripted.ledger.restoreRequested(.fan(target.fanIndex))
+        let firmware = scripted.firmware
+        let admission = scripted.admission
+        do {
+            return try await turns.holding(at: priority) {
+                await firmware.bridgeTurn(target, at: admission)
+            }
+        } catch {
+            Issue.record("the scheduler refused § 3's bridge a turn: \(error)")
+            return BridgeOutcome(maximum: .failure(error), restore: .failure(error))
+        }
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await scripted.prepareWritePath(enumerating: fans)
+    }
+}
+
+/// The scheduler a `TurnTakingPlane` holds its turns at, and the provider that runs each call
+/// inside one.
+final class TurnHolder: Sendable {
+
+    let scheduler: SMCReadScheduler
+    private let provider = CallRunningProvider()
+
+    init(observer: some SchedulerObserving) {
+        scheduler = SMCReadScheduler(provider: provider, observer: observer)
+    }
+
+    /// Runs `call` inside a turn at `priority`, and answers what it answered.
+    func holding<T: Sendable>(
+        at priority: SMCReadPriority, _ call: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let answer = Answer<T>()
+        let token = provider.register {
+            do {
+                answer.set(.success(try await call()))
+            } catch {
+                answer.set(.failure(error))
+            }
+        }
+        _ = try await scheduler.read(keys: [token], at: priority)
+        return try answer.take()
+    }
+
+    /// One call's answer, set inside the turn and taken after it.
+    private final class Answer<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var result: Result<T, any Error>?
+
+        func set(_ result: Result<T, any Error>) {
+            lock.withLock { self.result = result }
+        }
+
+        func take() throws -> T {
+            let result = lock.withLock { self.result }
+            guard let result else { throw TurnHolderError.callNeverRan }
+            return try result.get()
+        }
+    }
+}
+
+enum TurnHolderError: Error {
+    case callNeverRan
+}
+
+/// A provider whose read of a token runs the call registered under it, so the scheduler's turn is
+/// held for exactly as long as the call runs.
+final class CallRunningProvider: SensorProvider, @unchecked Sendable {
+
+    let identifier = "call-running"
+
+    private let lock = NSLock()
+    private var calls: [String: @Sendable () async -> Void] = [:]
+
+    var isAvailable: Bool {
+        get async { true }
+    }
+
+    func readAll() async throws -> [SensorReading] { [] }
+
+    func register(_ call: @escaping @Sendable () async -> Void) -> String {
+        let token = UUID().uuidString
+        lock.withLock { calls[token] = call }
+        return token
+    }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        for key in keys {
+            let call = lock.withLock { calls.removeValue(forKey: key) }
+            await call?()
+        }
+        return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 0, kind: .unknown)) }
+    }
+}

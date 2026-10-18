@@ -209,6 +209,15 @@ enum SchedulerEvent: Sendable, Hashable {
     /// Emitted inside the walk's own isolation step, before the count that excludes a
     /// recycle is released — the same ordering every other outcome here has.
     case discoveryWalkEnded(DiscoveryWalkOutcome)
+
+    /// A request at `.thermalCycle` arrived while another was outstanding — queued, or holding the
+    /// connection. Reported **once** per scheduler; the request is admitted in the lane as normal.
+    ///
+    /// The run-time observation of ADR 0012's 2026-10-18 ruling that § 3 is the lane's one
+    /// producer and makes one call at a time (`SMCReadScheduler.noteThermalCycleRequest()` says
+    /// why it reports rather than refusing). `outstanding` counts the request that just arrived,
+    /// so it is at least 2. `ThermalCycleLaneWatch` writes it to the safety log at `.fault`.
+    case thermalCycleLaneOverlapped(outstanding: Int)
 }
 
 /// How one discovery walk ended, as the scheduler saw it.
@@ -261,6 +270,7 @@ extension SchedulerEvent {
         case wholeReadAbsentOnly
         case wholeReadFailed
         case discoveryWalkEnded
+        case thermalCycleLaneOverlapped
     }
 
     var kind: Kind {
@@ -274,6 +284,7 @@ extension SchedulerEvent {
         case .wholeReadAbsentOnly: return .wholeReadAbsentOnly
         case .wholeReadFailed: return .wholeReadFailed
         case .discoveryWalkEnded: return .discoveryWalkEnded
+        case .thermalCycleLaneOverlapped: return .thermalCycleLaneOverlapped
         }
     }
 }

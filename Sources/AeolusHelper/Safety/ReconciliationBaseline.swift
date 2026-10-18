@@ -152,11 +152,14 @@ protocol HandbackReadingBack: Sendable {
 /// at `.supervisor`, for the lease core's `fansReadingAutomatic(among:)`; § 3 is given it over the
 /// lane view of the same plane (`StartupReconciliation.handbackReadBack(admittedAt:)`). Two
 /// copies of the loop would be two answers to what a fan read, and the lease core and § 3 would
-/// come to disagree about one fan. `ThermalCycleLaneTripwireTests` counts the plane reads that
-/// could be a second copy.
+/// come to disagree about one fan. `ThermalCycleLaneTripwireTests` counts where it is built, and
+/// `ThermalCycleLaneSharingTests` pins § 3's reader to this type.
 ///
 /// Sequential, never a task group, for `StartupReconciliation.reconcile()`'s reason: what costs
 /// the scheduler is the number of outstanding reads, and § 3's lane holds one waiter at a time.
+/// A task group here would put several of § 3's requests in the lane at once, which the scheduler
+/// reports (`SchedulerEvent.thermalCycleLaneOverlapped`) and `ThermalCycleLaneOverlapTests`
+/// fails on.
 struct PlaneHandbackReadBack<Sensing: FanStateSensing>: HandbackReadingBack {
 
     let sensing: Sensing
