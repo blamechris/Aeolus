@@ -91,6 +91,27 @@ import SMCCore
 /// `CLAUDE.md` rule 6 is why the second bound is not "the supervisor always wins": a client
 /// that never receives a snapshot is a UI reporting nothing, which a user cannot act on.
 ///
+/// ## § 3's lane, and what it adds to both bounds
+///
+/// `.thermalCycle` is admitted ahead of every waiting turn and behind only the turn in flight
+/// ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+/// 2026-10-18 amendment). It is outside the quota in both directions: a lane turn neither counts
+/// as an overtake nor resets the count, so the arithmetic above is unchanged for the two queues
+/// it was written for. What the lane adds is its own turns.
+///
+/// - **Each lane turn waits for at most one turn in flight.** § 3 holds at most one waiter in
+///   the lane, and re-queues only after `admitNext()` has handed the connection on, so the lane
+///   never takes two turns in a row while anything else is parked. That rests on two facts
+///   outside this type, each held by a test of its own: § 3's calls are sequential under its
+///   `isCycling`, and its critical read is one turn because every curated set is at most
+///   `maxKeysPerTurn` keys (`WatchdogLimitsTests.everyCuratedSetFitsOneTurn`). A longer read
+///   would yield back into its own lane and run its slices back to back.
+/// - **Any other waiter waits for at most one lane turn more per turn it waits behind**, and for
+///   at most one § 3 cycle's turns per supervisor interval: 1 + F + F·attemptBudget in a firing
+///   cycle, 1 + F in a quiet one. G is re-derived with that occupancy
+///   (`WatchdogLimits.gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`), and a
+///   snapshot's completion bound grows by the same turns.
+///
 /// ### What that came out as, on the machine
 ///
 /// `HelperHardwareTests` drives the real thing and prints it. One run on `Mac16,5`, with the
@@ -237,9 +258,14 @@ actor SMCReadScheduler {
     private let provider: any SensorProvider
 
     /// Whether a turn is executing. The invariant that makes the rest simple: **when this
-    /// is `false`, both queues are empty**, because every release admits the next waiter in
+    /// is `false`, every queue is empty**, because every release admits the next waiter in
     /// the same actor-isolated step that clears it.
     private var isTurnInFlight = false
+
+    /// § 3's lane. Never more than one waiter in production: see this type's documentation on
+    /// the lane. An array rather than an optional so that a second waiter, which nothing in
+    /// the helper produces, is queued like any other rather than overwriting the first.
+    private var thermalCycleWaiters: [ParkedTurn] = []
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
     /// other either.
@@ -554,6 +580,7 @@ actor SMCReadScheduler {
     /// assertion, which is [#109](https://github.com/blamechris/Aeolus/issues/109).
     func queuedTurns(at priority: SMCReadPriority) -> Int {
         switch priority {
+        case .thermalCycle: return thermalCycleWaiters.count
         case .supervisor: return supervisorWaiters.count
         case .snapshot: return snapshotWaiters.count
         }
@@ -599,7 +626,12 @@ actor SMCReadScheduler {
 
     /// Waits for the connection, then holds it.
     private func takeTurn(at priority: SMCReadPriority) async {
-        if !isTurnInFlight && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty {
+        // Every queue, the lane's included. While the flag is kept the queue tests are
+        // redundant — see the invariant on `isTurnInFlight` — and they are the second line if it
+        // ever is not: `SchedulerTurnLifecycleTests.aQueuedLaneWaiterKeepsTheFastPathClosed`.
+        let nobodyWaits =
+            thermalCycleWaiters.isEmpty && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty
+        if !isTurnInFlight && nobodyWaits {
             isTurnInFlight = true
             // `queuedAt` is now, because this turn queued for nothing. A consumer computing
             // a wait therefore gets zero rather than a missing value, which is what lets
@@ -657,6 +689,7 @@ actor SMCReadScheduler {
         let parked = ParkedTurn(
             continuation: continuation, priority: priority, queuedAt: ContinuousClock.now)
         switch priority {
+        case .thermalCycle: thermalCycleWaiters.append(parked)
         case .supervisor: supervisorWaiters.append(parked)
         case .snapshot: snapshotWaiters.append(parked)
         }
@@ -671,13 +704,20 @@ actor SMCReadScheduler {
         next.continuation.resume()
     }
 
-    /// The policy itself: strict supervisor priority, spent down by a quota.
+    /// The policy itself: § 3's lane first, then strict supervisor priority, spent down by a
+    /// quota.
     ///
-    /// Deleting the middle branch is the mutation `SMCReadSchedulerTests` names — it leaves
+    /// Deleting the supervisor branch is the mutation `SMCReadSchedulerTests` names — it leaves
     /// a plain two-queue FIFO that compiles, answers every key correctly, and orders the
     /// supervisor behind the snapshot again. Run: the three ordering tests go red and the
     /// read-correctness ones stay green, which is the split worth having.
     private func nextTurn() -> ParkedTurn? {
+        // § 3's lane, ahead of everything that waits and outside the quota in both
+        // directions: it returns before the quota is read, so a lane turn neither spends it nor
+        // resets it, and the supervisor and snapshot turns around it are admitted exactly as
+        // they would have been without it. `SMCReadSchedulerLaneTests` holds both halves.
+        if !thermalCycleWaiters.isEmpty { return thermalCycleWaiters.removeFirst() }
+
         // Nobody to starve: the quota has nothing to protect, so it does not run down.
         guard !snapshotWaiters.isEmpty else {
             consecutiveOvertakes = 0
