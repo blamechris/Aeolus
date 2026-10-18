@@ -44,8 +44,9 @@ enum FanctlExitCode: Int32, CaseIterable, Sendable {
     /// Another client holds the manual-control lease. Only one lease exists at a time.
     case heldByAnotherClient = 5
 
-    /// Control was held and then lost: the lease was not renewed, the helper ended it, the
-    /// system reclaimed a fan, or a thermal emergency took over.
+    /// Control was held and then lost: the lease was not renewed, the helper ended it (including
+    /// while the speed was still being applied), the system reclaimed a fan, the helper stopped
+    /// stating a held target for a fan, or a thermal emergency took over.
     case controlLost = 6
 
     /// This `fanctl` and the installed helper speak protocol versions neither accepts.
@@ -62,8 +63,9 @@ enum FanctlExitCode: Int32, CaseIterable, Sendable {
     /// not change it — so it is not 8, which says "not yet". The message carries the reason and
     /// its `docs/RECOVERY.md` advice.
     ///
-    /// Only `fanctl auto` and `fanctl set`'s ending can produce it: they are the commands
-    /// that ask for the safe state and then look.
+    /// Only `fanctl auto` and `fanctl set` can produce it: they are the commands that ask for
+    /// the safe state and then look. `set` looks when a hold ends, and after any `apply` that did
+    /// not become a hold.
     case cannotReturnToAutomatic = 9
 
     /// A malformed command line. swift-argument-parser's, never thrown by `fanctl` itself.

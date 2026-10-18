@@ -342,7 +342,7 @@ this table stops listing every code.
 | 3 | `helperNotReachable` | Helper not installed, not approved, refused this binary's signature, or answered with a signature this binary refuses. These cannot be told apart from the client side. |
 | 4 | `manualControlRefused` | The helper refused manual control of a fan it can see — the message carries the reason and its advice. |
 | 5 | `heldByAnotherClient` | Another client holds the manual-control lease. There is one lease at a time. |
-| 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
+| 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended (including while the speed was still being applied), the system reclaimed a fan, the helper stopped stating a held target for a fan, or a thermal emergency took over. |
 | 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
 | 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
 | 9 | `cannotReturnToAutomatic` | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, **whatever mode the fan reads** (an unreadable mode is reported as automatic). Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. *2026-10-10:* on a plane that can write, the request includes the machine-wide restore ([ADR 0014](ADR/0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351). |
@@ -628,15 +628,16 @@ and `fans` are from the last snapshot the helper returned, captured at `captured
 ### `fanctl set <fan|all> <N%|Nrpm> --for <duration>`
 
 A bounded hold for the life of the process. It takes the manual-control lease, sets the speed,
-renews the lease every ten seconds, and releases it when the time is up, a signal arrives or its
-parent exits, and then checks what the helper reports the way `auto` does.
+renews the lease every ten seconds from the moment it asks for it, and releases it when the time
+is up, a signal arrives or its parent exits, and then checks what the helper reports the way
+`auto` does.
 
-> **Held.** `set` is built and tested against a simulated helper. It does not merge before the
-> safety subsystem (E5, [#7](https://github.com/blamechris/Aeolus/issues/7)) and the
+> **Held.** `set` is built and tested against a simulated helper. It does not reach `main`
+> before the safety subsystem (E5, [#7](https://github.com/blamechris/Aeolus/issues/7)) and the
 > owner-supervised E4 acceptance ([#9](https://github.com/blamechris/Aeolus/issues/9)), per
-> [#15](https://github.com/blamechris/Aeolus/issues/15). Nothing here has driven a fan. The
-> shipped helper answers every lease with `writePathNotBuilt`, so today `set` exits 4. The
-> Intel and M1/M2 paths are `untested`.
+> [#15](https://github.com/blamechris/Aeolus/issues/15). Nothing here has driven a fan. Today
+> `set` exits 4: the shipped helper answers every lease with `writePathNotBuilt`, and that holds
+> until the branch's write plane is built. The Intel and M1/M2 paths are `untested`.
 
 ```
 fanctl set 0 75% --for 30m            # fan 0 at 75% of its range for 30 minutes
@@ -684,23 +685,50 @@ before anything is acquired:
   be set refuses the whole command with nothing acquired.
 
 ```
-handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewing,
-  held by "fanctl <version> (pid N)") → apply → a snapshot that lists this lease → started
-  every 10 s: renewLease, then snapshot → holding
+handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s, not self-renewing,
+  held by "fanctl <version> (pid N)") → apply, with renewLease every 10 s from the clock read
+  until apply is answered → a snapshot in which every covered fan carries the helper's held
+  target → started
+  every 10 s, on the same schedule: renewLease, then snapshot → holding
   ends: --for elapsed │ SIGINT/SIGTERM/SIGHUP │ the parent exited │ stdout not draining
   then: releaseLease → the safe-state check (the one `auto` ends on) → ended
-  or, on any loss the helper reports: releaseLease (best effort) → failed, exit 6
+  or, on any loss the helper reports once holding: releaseLease (best effort) → failed, exit 6
+  or, when apply did not become a hold: releaseLease → the safe-state check → failed
 ```
 
-- **Control starts when `apply` is accepted.** If `apply` is **refused** (the helper answered
-  with a fault), the lease is released at once and the exit is the code the fault classifies to
-  (4 for a bounds refusal, 2 for an invalid parameter, …), `endedBecause: refused`.
+- **The lease is renewed from the moment it is asked for.** The helper's thirty seconds start at
+  the grant, and an `apply` may take 57 seconds for one fan and 109 for two. The first renewal is
+  due ten seconds after the instant read **before `acquireLease` is sent**, and renewals are sent
+  while `apply` and the confirming snapshot are outstanding. When they are answered the hold's
+  loop takes the same schedule over: there is one, and no renewal is sent after the release.
+  A renewal that fails is final (it is never retried), and is reported once `apply` has been
+  answered.
+- **Control starts when `apply` is accepted and the helper shows the fans held.** "Holding" is
+  said when the snapshot after `apply` lists this lease **and** every covered fan carries the
+  helper's held target (`observed.targetRPM`, `null` unless the same snapshot shows the fan in
+  manual under the live lease, with no reclamation and no thermal override). That snapshot is
+  read after `apply` was answered and cannot predate the engagement (ADR 0013, 2026-10-18), so
+  the first one decides.
+- **A lease that ended while the speed was being applied is control lost, never a refusal.** A
+  renewal failed while `apply` worked, or `apply` answered `leaseExpired`, `leaseUnknown` or
+  `leaseNotHeldByThisConnection`. The message opens "Control was lost before the hold began",
+  never says the helper refused or did not accept the speed, and `endedBecause` is
+  `controlLost`. The lease is released and the safe-state check **looks**: the exit is 6, or 9 or 8
+  if the check found something worse.
+- **An `apply` the helper answered with a fault is followed by a release and the safe-state
+  check, whatever the fault.** Level 6 can engage a fan, fail on the next, have the undo refused
+  and answer only the original fault, so a refusal is not taken to mean no fan was touched. The
+  exit is the check's verdict where that is worse (9, then 8) and otherwise the code the fault
+  classifies to (4 for a bounds refusal or a thermal emergency, 2 for an invalid parameter, …).
+  "Did not accept the speed" is said, and `endedBecause` is `refused`, **only if the check found
+  every fan automatic and no lease**; otherwise the text says the answer does not settle what
+  happened to the fans, and `endedBecause` is `controlLost`.
 - **An `apply` that got no answer is not a refusal.** The helper may have applied the speed, so
   the message says it got no answer and may have been applied, never "did not accept". The lease
   is released (best effort), the safe-state check **looks**, and the exit is still the code the
-  failure classifies to (a restart or a lost reply is 1; non-zero always), reported as
-  `endedBecause: controlLost`, with the check's verdict in the message and
-  `snapshotFollowsRelease` in the closing event.
+  failure classifies to (1 for a restart, a lost reply, an abandoned connection or no answer
+  within the deadline; non-zero always), reported as `endedBecause: controlLost`, with the
+  check's verdict in the message and `snapshotFollowsRelease` in the closing event.
 - **A signal that lands while `acquireLease` is in flight** stops the speed being sent: after the
   lease comes back and before `apply`, a pending signal releases the lease, sends nothing to a
   fan, and ends with exit 1, `endedBecause: signal`.
@@ -714,12 +742,17 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
   too (see **A write may park; the hold never waits on it**, below).
 - **Exit 6 on any loss the helper reports**, after a best-effort release: a renewal that errored
   (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on
-  a fan the lease covers, or `thermalEmergencyActive`. It never retries and **never
-  re-acquires**: a helper that restarts mid-hold sends exactly one `acquireLease` and ends in 6.
-  A covered fan the snapshot no longer reports at all is a loss too (not in the contract's list;
-  the safe direction). A fan that reads `automatic` beside a lease the helper lists is **not** a
-  loss: the helper reports an unread mode as automatic
-  ([#178](https://github.com/blamechris/Aeolus/issues/178)).
+  a fan the lease covers, `thermalEmergencyActive`, or **a covered fan the snapshot states no held
+  target for**. It never retries and **never re-acquires**: a helper that restarts mid-hold sends
+  exactly one `acquireLease` and ends in 6. A covered fan the snapshot no longer reports at all is
+  a loss too (not in the contract's list; the safe direction). The held target is the evidence
+  that a fan is held, at the confirming snapshot and at every heartbeat: a fan the firmware took
+  back before the reclamation watchdog marked it reads `automatic` with no target beside a lease
+  the helper still lists, and that ends the hold. **The mode alone is not a loss either way**:
+  the helper reports an unread mode as automatic
+  ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads `automatic`
+  beside a lease the helper lists and a held target is still held, and one that reads manual with
+  no target is not.
 - **SIGKILL and SIGSTOP** are beyond any of this: the 30-second lease expires on its own, a
   stopped process finds its lease gone on resume and ends in 6, and sleep drops the lease (SAFETY.md
   § 4). Whether the system reclaims a fan routinely and briefly on M3 and newer is **unobserved**;
@@ -729,14 +762,14 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
 | Code | When, for `set` |
 |---|---|
 | 0 | The hold ended in an ordinary way and the helper reports every fan automatic and no lease after the release. |
-| 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` refused with `invalidParameter` is also 2, after the lease was taken and released.) |
-| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and its failure classifies to 3 (a connection error that is neither a restart nor a lost reply): the lease was taken, and is released and checked as for 1. |
+| 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` answered with `invalidParameter` is also 2, after the lease was taken, released and checked, unless the check found something worse.) |
+| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and the failure is `clientCannotVerifyHelper`, `helperUnreachable` or `helperSignatureRejected`: the lease was taken, and is released and checked as for 1. |
 | 7 | Version mismatch. Nothing was acquired. |
-| 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was applied. (An `apply` refused with `boundsImplausible` is also 4, after the lease was taken and released.) |
-| 6 | Control was lost, or `apply` was refused with a lease-lost fault. Released. |
-| 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). |
-| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. |
-| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart or a lost reply); or the hold's own timer failed (released). |
+| 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was acquired or applied. (An `apply` answered with `boundsImplausible`, `thermalEmergencyActive`, `reclaimedBySystem` or `manualControlUnavailable` is also 4, or 5 for `leaseHeldByAnotherClient`, after the lease was taken, released and checked, unless the check found something worse.) |
+| 6 | Control was held and lost: a renewal failed, the helper does not list the lease, states no held target for a covered fan, reclaimed one, or set a thermal emergency. Released. Also a lease that **ended while `apply` was outstanding** (a failed renewal, or `apply` answered `leaseExpired`, `leaseUnknown` or `leaseNotHeldByThisConnection`): released and checked, and 8 or 9 instead if the check found them. |
+| 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). Also the exit for an `apply` fault or a lapse followed by that. |
+| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. Also the exit for an `apply` fault or a lapse that left a fan so. |
+| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, whatever the check finds), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed (released). |
 | 64 | Malformed command line (above). |
 
 **Text.** At the start, one line per fan and the lease; then nothing on standard output while
@@ -768,7 +801,7 @@ key a shape defines is always present, `null` for "not present".
 
 | Event | When |
 |---|---|
-| `started` | Once, after `apply` was accepted and a snapshot listed the lease. Never implies a fan reached its speed. |
+| `started` | Once, after `apply` was accepted and a snapshot listed the lease with the helper's held target for every covered fan (`observed.targetRPM` is not `null`). Never implies a fan reached its speed. |
 | `holding` | After every successful heartbeat: the liveness signal, and the line a consumer that is not draining is found out by. |
 | `ended` | Exactly one closing event for exit 0, on standard output or, when that cannot take it whole, standard error. |
 | `failed` | Exactly one closing event for every other exit — including one that never held anything — on the same terms. |
@@ -792,8 +825,10 @@ key a shape defines is always present, `null` for "not present".
   - `leaseID` — the lease this run took, or `null` if it never took one.
   - `endedBecause` — `durationElapsed`, `signal`, `parentExited`, `outputClosed`, `controlLost` or
     `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease).
-    `refused` is a "no" to the request: exit 2, 4 or 5 before a hold, or `apply` refused (the
-    helper answered). An `apply` that got no answer is `controlLost`. A signal that arrived
+    `refused` is a "no" to the request: exit 2, 4 or 5 before a hold, or an `apply` the helper
+    answered with a fault **and the safe-state check that followed found every fan automatic and
+    no lease**. An `apply` fault followed by anything else, an `apply` that got no answer, and a
+    lease that ended while `apply` was outstanding are `controlLost`. A signal that arrived
     before the lease, or while it was in flight, is `signal`.
   - `signal` — `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`.
   - `releaseAccepted` — whether the helper accepted the request to release the lease; `null` if

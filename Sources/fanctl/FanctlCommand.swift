@@ -214,7 +214,9 @@ extension Fanctl {
             abstract: "Hold one fan, or every fan, at a speed for a bounded time.",
             discussion: """
                 Takes the manual-control lease, sets the speed, and renews the lease every 10 \
-                seconds for as long as --for says and this process and its parent are alive. \
+                seconds from the moment it is asked for, including while the helper is still \
+                applying the speed, for as long as --for says and this process and its parent \
+                are alive. \
                 Then it releases the lease and checks what the helper reports, the way `auto` \
                 does. Ctrl-C (or SIGTERM or SIGHUP) ends it early; so does a closed standard \
                 output, or a reader that stops reading for a couple of seconds. If the process \
@@ -228,8 +230,9 @@ extension Fanctl {
 
                 It never retries and never takes the lease back: if the helper reports that \
                 control is lost (a renewal refused, the lease no longer listed, a fan reclaimed \
-                by the system, a thermal emergency) it releases and exits 6. The speed is a \
-                target; the fan's actual speed is what the helper reports.
+                by the system or one the helper no longer reports as held, a thermal emergency) \
+                it releases and exits 6. The speed is a target; the fan's actual speed is what \
+                the helper reports.
 
                 --for is required, from 10s to 8h (whole seconds, minutes or hours: 30s, 10m, \
                 2h). There is no way to hold longer or without an end.

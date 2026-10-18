@@ -36,8 +36,13 @@ struct HelperConnection: Decodable, Sendable {
     static let clientDescription = "fanctl \(Fanctl.toolVersion)"
 
     /// The installed daemon, pinned to the signature this build requires, on the shipping
-    /// deadlines — `HelperClientDeadlines.panicVerb` (10 s) for `reset --all`, `gatedVerb`
-    /// (5 s) for everything else.
+    /// deadlines (`HelperClientDeadlines.default`): 15 s for the handshake, `panicVerb` (10 s)
+    /// for `reset --all`, `gatedVerb` (5 s) for `snapshot`, `acquireLease`, `renewLease` and
+    /// `releaseLease`, and for `apply` that 5 s plus 52 s for each fan it names — 57 s for one
+    /// fan and 109 s for two, because an `apply` may lawfully take that long (#414). A message
+    /// the helper answers in order waits for the ones sent before it, and its deadline starts
+    /// when they have settled (`HelperMessage.sequenced`); `renewLease` and `releaseLease` are
+    /// not sequenced, so a renewal is answered while an `apply` is still working.
     static let production = HelperConnection(
         transport: .machService,
         pinning: SignedHelperPinning(),

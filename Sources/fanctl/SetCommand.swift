@@ -8,8 +8,10 @@ import Foundation
 ///
 /// The contract is [#317](https://github.com/blamechris/Aeolus/issues/317), decided on architect
 /// review, and [ADR 0013](../../docs/ADR/0013-fanctl-control-contract.md) D1. **This command does
-/// not merge before E5 and the owner-supervised E4 acceptance** (#7, #9, #15): it is built and
-/// tested against a simulated helper, and nothing here has driven a fan.
+/// not reach `main` before E5 and the owner-supervised E4 acceptance** (#7, #9, #15): it is
+/// built and tested against a simulated helper, and nothing here has driven a fan. Today `set`
+/// exits 4 against every helper that has shipped, and that holds until the branch's write plane
+/// is built.
 ///
 /// ## The sequence
 ///
