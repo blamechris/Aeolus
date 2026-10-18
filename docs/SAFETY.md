@@ -516,7 +516,17 @@ turn — hold in every case. The coalescing is
 [ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the admission class, which reopens that
 ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
 [ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
-amendment.
+amendment. The one-turn bound rests on this cycle being the admission class's only user, one call
+at a time: censuses at the source hold the first, and the scheduler reports, once, a second request
+in the class while one is outstanding.
+
+*Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
+flight, and leaves the overtake quota alone); `ThermalCycleLaneRoutingTests` (in the composed graph
+only this cycle's reads, bridges and restores take the class, and every other restore cause routes
+outside it); `ThermalCycleLaneTripwireTests` (who may name the class, counted per file);
+`ThermalCycleLaneOverlapTests` (this cycle's whole firing episode never has two requests in the
+class, and two that are outstanding together are reported once); and `WatchdogLimitsTests` (the
+bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
@@ -2031,6 +2041,14 @@ unconditionally, after and regardless of the lease teardown. And it is why § 7 
 a corrupted or blind helper state at all: there is nothing in the verb for the corruption to
 invalidate. § 2 carries the fan-bounds-local half of the same principle — the restore verb takes
 no permit, and must never acquire one — with source tripwires holding it.
+
+**One stated exception, and it is not the keystone: § 3's bridge.** `bridgeThenRestore(_:)` takes
+a permit, because its command half writes the fan's maximum, and runs a `.fan(n)` restore in the
+same job, attempted whatever the command answered and reading nothing of the permit but the fan's
+index ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment). The keystone verbs are untouched by it, and § 3's revocation restores every fan through
+them afterwards. `ThermalEmergencyBridgeTests.theBridgeIsTheOneRestoreInsideAPermit` holds that it
+is the only such verb.
 
 *Tested by:* `SafetyPrecedenceTests` — the six levels in this order, that a constraint cannot be
 made `Comparable`, and that `Ungoverned` is exactly `allCases` minus the control loop.
