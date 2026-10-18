@@ -42,7 +42,10 @@
 ///   turns in a row while another waiter is parked; see `SMCReadScheduler`).
 /// - *A level somebody will use.* Tripwires hold the case to the files that name it today
 ///   (`ThermalCycleLaneTripwireTests`): this enum, the scheduler, the plane view, the
-///   composition's § 3 wiring and `HelperFanRestorer`'s routing by cause.
+///   composition's § 3 wiring and `HelperFanRestorer`'s routing by cause. And the value set is
+///   pinned: `ThermalCycleLaneValueSetTests` switches over these three cases with no `default`, so
+///   a fourth, which the scheduler could queue in the lane under another name, does not compile
+///   until the pin decides where it goes.
 ///
 /// **Revisit when** a second user of the lane is proposed, or anything in ADR 0012's 2026-10-18
 /// amendment's revisit list happens. A supervisor-priority reader that can be neither coalesced

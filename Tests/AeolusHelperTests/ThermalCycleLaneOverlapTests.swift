@@ -5,23 +5,23 @@ import Testing
 
 @testable import AeolusHelper
 
-/// § 3 holds at most one request in its lane, and the scheduler says so the one time it does not
-/// (ADR 0012's 2026-10-18 amendment).
+/// § 3 holds at most one request in its lane, and the scheduler says so when it does not (ADR
+/// 0012's 2026-10-18 amendment).
 ///
 /// Both lane bounds rest on § 3 being the lane's one producer, making one call at a time: a lane
 /// turn waits for at most one turn in flight only while the lane holds at most one waiter. The
 /// source censuses in `ThermalCycleLaneTripwireTests` hold who names the lane. This suite holds the
-/// premise where it is spent: the scheduler counts lane requests outstanding, reports the first
-/// that arrives while another is (`SchedulerEvent.thermalCycleLaneOverlapped`) and admits it as
-/// normal, and § 3's whole firing episode, run over a plane whose every call holds a real turn,
-/// never makes it report.
+/// premise where it is spent: the scheduler counts lane requests outstanding, reports one that
+/// arrives while another is (`SchedulerEvent.thermalCycleLaneOverlapped`) and admits it as
+/// normal, and § 3's firing episode, run over a plane whose every call holds a real turn, never
+/// makes it report. `ThermalCycleLaneCounterTests` holds the count's lifetime and its re-arming.
 @Suite("§ 3's lane holds one request at a time", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneOverlapTests {
 
     /// The overlap reports `events` hold, as their `outstanding` counts.
-    private static func overlaps(in events: [SchedulerEvent]) -> [Int] {
+    static func overlaps(in events: [SchedulerEvent]) -> [Int] {
         events.compactMap { event in
-            if case .thermalCycleLaneOverlapped(let outstanding) = event { return outstanding }
+            if case .thermalCycleLaneOverlapped(let outstanding, _) = event { return outstanding }
             return nil
         }
     }
@@ -35,14 +35,13 @@ struct ThermalCycleLaneOverlapTests {
 
     // MARK: - The scheduler
 
-    /// Three lane requests outstanding at once — one holding the connection, two queued behind it
-    /// — are reported once, when the second arrives, and all three are admitted and answered.
-    /// Requests one after another, and lane requests among supervisor and snapshot ones, are not
-    /// reported at all.
+    /// Two lane requests outstanding at once — one holding the connection, one queued behind it —
+    /// are reported once, when the second arrives, and both are admitted and answered. Requests
+    /// one after another, and lane requests among supervisor and snapshot ones, are not reported at
+    /// all.
     ///
-    /// **Mutation:** delete the `report(.thermalCycleLaneOverlapped(…))` line from
+    /// **Mutation:** delete the `report(.thermalCycleLaneOverlapped(…))` call from
     /// `SMCReadScheduler.noteThermalCycleRequest()`. Run: red — nothing is reported.
-    /// **Mutation:** drop the `thermalCycleOverlapReported` latch. Run: red — reported twice.
     /// **Mutation:** in `endTurn(at:)`, do not count a lane request out. Run: red at the sequential
     /// requests, which then read as outstanding together.
     @Test("Two lane requests outstanding together are reported once, and both admitted")
@@ -69,11 +68,9 @@ struct ThermalCycleLaneOverlapTests {
         let gate = CallGate()
         let holding = observing { try await turns.holding(at: .thermalCycle) { await gate.wait() } }
         await yieldUntil("the first lane request to hold the connection") { await gate.isWaiting }
-        let queued = (0..<2).map { _ in
-            observing { try await turns.holding(at: .thermalCycle) { 1 } }
-        }
-        await yieldUntil("both later requests to queue in the lane") {
-            await turns.scheduler.queuedTurns(at: .thermalCycle) == 2
+        let queued = [observing { try await turns.holding(at: .thermalCycle) { 1 } }]
+        await yieldUntil("the later request to queue in the lane") {
+            await turns.scheduler.queuedTurns(at: .thermalCycle) == 1
         }
         await gate.open()
         _ = try await finished("the request holding the connection", holding)
@@ -86,12 +83,18 @@ struct ThermalCycleLaneOverlapTests {
 
     // MARK: - § 3
 
-    /// § 3's whole episode, composed over a plane whose every call holds a real scheduler turn:
+    /// § 3's firing episode, composed over a plane whose every call holds a real scheduler turn:
     /// two leased fans engaged, a firing cycle whose firmware refuses every write — two bridge jobs
     /// and the revocation's three restore attempts on each fan, all refused — a latched cycle, then
     /// the machine cooling and the firmware relenting, the latch released, and § 3's own restores
     /// read back for both fans. Every one of § 3's requests is in the lane, and no two are ever
     /// outstanding together.
+    ///
+    /// **Not every path § 3 has.** A latched cycle that takes a fan back with writes, and a blind
+    /// cycle, are not driven here. Both are sequential by inspection, inside `isCycling`:
+    /// `takeBackAnythingEngagedSinceFiring()` awaits each fan's bridge and then the revocation,
+    /// and a blind cycle reads nothing more and takes back what it finds the same way. The run-time
+    /// report covers them in production.
     ///
     /// **Mutation:** in `ThermalEmergency.fire(_:from:)`, bridge the held fans in a task group.
     /// Run: red — two bridge jobs outstanding in the lane.
@@ -182,10 +185,12 @@ struct ThermalCycleLaneOverlapTests {
             log: SafetyLog(recording: { level, line in lines.append(level, line) }))
         watch.schedulerDidObserve(.turnGranted(priority: .thermalCycle, queuedAt: .now))
         watch.schedulerDidObserve(.wholeReadSucceeded(priority: .thermalCycle))
-        watch.schedulerDidObserve(.thermalCycleLaneOverlapped(outstanding: 2))
+        watch.schedulerDidObserve(
+            .thermalCycleLaneOverlapped(outstanding: 2, overlappingArrivals: 1))
 
         let written = lines.lines(containing: "requests were outstanding at once")
         #expect(written.count == 1, "\(written)")
+        #expect(written.first?.contains("1 request(s) have arrived") == true, "\(written)")
         #expect(lines.levels(containing: "requests were outstanding at once") == [.fault])
     }
 }

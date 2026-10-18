@@ -104,11 +104,13 @@ import SMCCore
 ///   never takes two turns in a row while anything else is parked. That rests on two facts
 ///   outside this type. § 3's calls are sequential under its `isCycling`, and this type checks
 ///   that one where it is spent: a lane request arriving while another is outstanding is
-///   reported once (`SchedulerEvent.thermalCycleLaneOverlapped`) and admitted as normal, and
-///   `ThermalCycleLaneOverlapTests` drives § 3's firing cycle over a plane whose every call holds
-///   a real turn and hears nothing. And its critical read is one turn because every curated set
-///   is at most `maxKeysPerTurn` keys (`WatchdogLimitsTests.everyCuratedSetFitsOneTurn`). A
-///   longer read would yield back into its own lane and run its slices back to back.
+///   reported (`SchedulerEvent.thermalCycleLaneOverlapped`) and admitted as normal, and
+///   `ThermalCycleLaneOverlapTests` drives § 3's firing episode over a plane whose every call
+///   holds a real turn and hears nothing. What counts as a lane request is decided by the queue
+///   it joins (`isLane(_:)`), not by a name, so a priority folded into the lane is counted too.
+///   And its critical read is one turn because every curated set is at most `maxKeysPerTurn`
+///   keys (`WatchdogLimitsTests.everyCuratedSetFitsOneTurn`). A longer read would yield back into
+///   its own lane and run its slices back to back.
 /// - **Any other waiter waits for at most one lane turn more per turn it waits behind**, and for
 ///   one § 3 cycle's turns per supervisor interval: 1 + F + F·attemptBudget in a firing cycle,
 ///   1 + F in a quiet one. G is re-derived with that occupancy
@@ -275,12 +277,17 @@ actor SMCReadScheduler {
     private var thermalCycleWaiters: [ParkedTurn] = []
 
     /// Lane requests outstanding — queued, or holding the connection — counted from `takeTurn`
-    /// to `endTurn`, so a read's later slices are the same request and not a second one.
+    /// to `endTurn`, so a read's later slices are the same request and not a second one, and a
+    /// read that throws is counted out by the same `defer` that releases its turn.
     private var outstandingThermalCycleRequests = 0
 
-    /// Whether `SchedulerEvent.thermalCycleLaneOverlapped` has been reported. Latched: the
-    /// premise it observes is broken by a defect, not by a moment, and one line says so.
-    private var thermalCycleOverlapReported = false
+    /// The most lane requests reported outstanding at once. One until the first overlap, so the
+    /// first overlap reports; after that a report needs more outstanding than ever before.
+    private var mostThermalCycleRequestsReported = 1
+
+    /// Lane requests that arrived while another was outstanding, ever, reported or not: carried in
+    /// every report, so a later, larger overlap says how often the premise broke in between.
+    private var overlappingThermalCycleArrivals = 0
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
     /// other either.
@@ -594,8 +601,8 @@ actor SMCReadScheduler {
     /// a race test that infers it reports a regression as a CI timeout instead of a red
     /// assertion, which is [#109](https://github.com/blamechris/Aeolus/issues/109).
     func queuedTurns(at priority: SMCReadPriority) -> Int {
-        switch priority {
-        case .thermalCycle: return thermalCycleWaiters.count
+        switch Self.queue(for: priority) {
+        case .lane: return thermalCycleWaiters.count
         case .supervisor: return supervisorWaiters.count
         case .snapshot: return snapshotWaiters.count
         }
@@ -641,7 +648,7 @@ actor SMCReadScheduler {
 
     /// Waits for the connection, then holds it.
     private func takeTurn(at priority: SMCReadPriority) async {
-        if priority == .thermalCycle { noteThermalCycleRequest() }
+        if Self.isLane(priority) { noteThermalCycleRequest() }
 
         // Every queue, the lane's included. While the flag is kept the queue tests are
         // redundant — see the invariant on `isTurnInFlight` — and they are the second line if it
@@ -695,14 +702,14 @@ actor SMCReadScheduler {
 
     /// Releases the connection at the end of a read, or of an exclusive body.
     private func endTurn(at priority: SMCReadPriority) {
-        if priority == .thermalCycle { outstandingThermalCycleRequests -= 1 }
+        if Self.isLane(priority) { outstandingThermalCycleRequests -= 1 }
         isTurnInFlight = false
         report(.turnEnded(priority: priority))
         admitNext()
     }
 
-    /// Counts a lane request in, and reports the first time one arrives while another is
-    /// outstanding.
+    /// Counts a lane request in, and reports an arrival that makes more lane requests outstanding
+    /// at once than have ever been reported.
     ///
     /// **It reports and admits; it does not trap, block or demote.** ADR 0012's 2026-10-18
     /// amendment rules § 3 the lane's one producer, with its calls sequential, and both bounds
@@ -712,12 +719,46 @@ actor SMCReadScheduler {
     /// a request admitted while § 3 is idle would make § 3's own next request the newcomer, and
     /// § 3 would be the one demoted. Refusing it would fail a safety read. So the second request
     /// waits in the lane like the first, the bound it was owed is no longer the one derived, and
-    /// the log says so once.
+    /// the log says so.
+    ///
+    /// **Re-armed on a new maximum, not latched for good.** A report needs more lane requests
+    /// outstanding at once than any earlier report did, so a transient overlap at bring-up cannot
+    /// mask a sustained second producer later, and an overlap that recurs at the same depth is one
+    /// line, not one per arrival. Every report carries the overlapping arrivals so far.
     private func noteThermalCycleRequest() {
         outstandingThermalCycleRequests += 1
-        guard outstandingThermalCycleRequests > 1, !thermalCycleOverlapReported else { return }
-        thermalCycleOverlapReported = true
-        report(.thermalCycleLaneOverlapped(outstanding: outstandingThermalCycleRequests))
+        guard outstandingThermalCycleRequests > 1 else { return }
+        overlappingThermalCycleArrivals += 1
+        guard outstandingThermalCycleRequests > mostThermalCycleRequestsReported else { return }
+        mostThermalCycleRequestsReported = outstandingThermalCycleRequests
+        report(
+            .thermalCycleLaneOverlapped(
+                outstanding: outstandingThermalCycleRequests,
+                overlappingArrivals: overlappingThermalCycleArrivals))
+    }
+
+    /// The queues a request can join.
+    private enum Queue {
+        case lane, supervisor, snapshot
+    }
+
+    /// The queue a request at `priority` joins: **the one place a priority is mapped to a queue.**
+    /// `enqueue(_:at:)` and `queuedTurns(at:)` switch on it, and the lane's outstanding count
+    /// keys on it through `isLane(_:)`, so a priority folded into the lane's queue is counted as a
+    /// lane request by construction, and cannot be queued in the lane while the run-time report
+    /// looks for a different name. `SMCReadPriority`'s cases themselves are pinned by
+    /// `ThermalCycleLaneValueSetTests`.
+    private static func queue(for priority: SMCReadPriority) -> Queue {
+        switch priority {
+        case .thermalCycle: return .lane
+        case .supervisor: return .supervisor
+        case .snapshot: return .snapshot
+        }
+    }
+
+    /// Whether a request at `priority` joins § 3's lane — the queue's answer, not a name's.
+    private static func isLane(_ priority: SMCReadPriority) -> Bool {
+        queue(for: priority) == .lane
     }
 
     private func enqueue(
@@ -725,8 +766,8 @@ actor SMCReadScheduler {
     ) {
         let parked = ParkedTurn(
             continuation: continuation, priority: priority, queuedAt: ContinuousClock.now)
-        switch priority {
-        case .thermalCycle: thermalCycleWaiters.append(parked)
+        switch Self.queue(for: priority) {
+        case .lane: thermalCycleWaiters.append(parked)
         case .supervisor: supervisorWaiters.append(parked)
         case .snapshot: snapshotWaiters.append(parked)
         }

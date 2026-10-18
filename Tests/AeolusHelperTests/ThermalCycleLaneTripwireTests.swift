@@ -159,9 +159,11 @@ struct ThermalCycleLaneTripwireTests {
     // MARK: - The censuses
 
     /// The lane is named only where it is wired, and as often as it is wired: declared in
-    /// `SMCReadPriority` and `PlaneAdmission` (whose mapping names it twice more), queued, counted
-    /// and reported in the scheduler, given to § 3's telemetry, writer and read-back in the
-    /// composition, and taken by `HelperFanRestorer`'s lane view.
+    /// `SMCReadPriority` and `PlaneAdmission` (whose mapping names it twice more), mapped to its
+    /// queue once in the scheduler (`queue(for:)`, which queuing, counting and reporting all go
+    /// through), given to § 3's telemetry, writer and read-back in the composition, and taken by
+    /// `HelperFanRestorer`'s lane view. A case that reaches the lane under another name is the
+    /// value-set pin's (`ThermalCycleLaneValueSetTests`), not this count's.
     ///
     /// **Mutation:** in `ReclamationWatchdog.swift`, add
     /// `private var laneWriter: SafetyActorWriter<Plane> { writer.admitted(at: .lane) }`, with
@@ -170,7 +172,7 @@ struct ThermalCycleLaneTripwireTests {
     /// **Mutation:** in `HelperComposition.init`, build § 5's writer over
     /// `plane.admitted(at: .thermalCycle)`. Run: red — four in the file.
     /// **Mutation:** default `SMCReadScheduler.read(keys:at:)`'s priority to `.thermalCycle`.
-    /// Run: red — five in the file.
+    /// Run: red — two in the file.
     /// **Mutation:** break the file discovery — scan `under: "AeolusHelperX"`. Run: red.
     @Test("The lane is named only where it is wired, as often as it is wired")
     func theLaneIsNamedOnlyWhereItIsWired() throws {
@@ -178,7 +180,7 @@ struct ThermalCycleLaneTripwireTests {
         let named = try Self.census(of: "thermalCycle")
         #expect(
             named == [
-                "SMCReadPriority.swift": 1, "PlaneAdmission.swift": 3, "SMCReadScheduler.swift": 4,
+                "SMCReadPriority.swift": 1, "PlaneAdmission.swift": 3, "SMCReadScheduler.swift": 1,
                 "HelperComposition.swift": 3, "HelperFanRestorer.swift": 1,
             ],
             """

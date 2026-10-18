@@ -29,7 +29,13 @@
 /// by `FanRestoreCause.thermalEmergencyRevocation` through its lane view.
 /// `ThermalCycleLaneTripwireTests` counts both words file by file, and `SMCReadScheduler` reports
 /// at run time a lane request that arrives while another is outstanding.
-enum PlaneAdmission: Sendable, Hashable {
+///
+/// **The two cases are pinned.** A third case mapped to the lane's priority would reach the lane
+/// without naming it, from any file and at any call site, so `ThermalCycleLaneValueSetTests`
+/// switches over this enum exhaustively, with no `default`: a new case does not compile until the
+/// pin says where it maps, and the pin holds that only `.thermalCycle` maps to the lane.
+/// `CaseIterable` is for that test; nothing in `Sources` enumerates the cases.
+enum PlaneAdmission: Sendable, Hashable, CaseIterable {
 
     /// § 3's own cycle (`SMCReadPriority.thermalCycle`).
     case thermalCycle

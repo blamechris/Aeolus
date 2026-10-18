@@ -16,10 +16,19 @@ import Testing
 /// properties, found wherever it is stored and named by the path it was reached by; and
 /// **behaviourally**, § 4's sleep and the signal teardown driven, each restoring at `.supervisor`.
 ///
-/// `ConnectionHealth`'s recovery plane is the one plane neither can see: it is captured by the
-/// pump's task, not stored, and a recycle is a supervisor turn whatever view asks for it
-/// (`FanControlPlane.admitted(at:)`), so no call could tell. The count of lane namings in
-/// `HelperComposition.swift` (`ThermalCycleLaneTripwireTests`) is what holds it.
+/// **The census asserts positively, on the priority each stored plane's turns are admitted at**
+/// (`PlaneAdmission.priority`), not on which admission it names: every stored plane is at
+/// `.supervisor` but an explicit list of § 3's lane sites, and each of those is at the lane. A
+/// case that maps to the lane under another name therefore fails here as well as at the value-set
+/// pin (`ThermalCycleLaneValueSetTests`), which is what stops it compiling at all.
+///
+/// **What it cannot see.** A plane captured by a closure or a `Task` rather than stored is not a
+/// child any reflection walk reaches, and neither is a view built at a call site and dropped.
+/// Today `ConnectionHealth`'s recovery plane is the only plane held that way: it is captured by the
+/// pump's task, and a recycle is a supervisor turn whatever view asks for it
+/// (`FanControlPlane.admitted(at:)`), so no call could tell. A view built at a call site needs an
+/// admission that maps to the lane, and the value-set pin leaves only `.thermalCycle`, whose
+/// namings `ThermalCycleLaneTripwireTests` counts per file.
 @Suite("Every stored plane is at supervisor but § 3's", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneWriterTests {
 
@@ -92,9 +101,11 @@ struct ThermalCycleLaneWriterTests {
             ], "\(found)")
     }
 
-    /// The composed graph, bound as bring-up binds it: every plane it stores is at `.supervisor`
-    /// but § 3's three views — its telemetry's, its writer's and its read-back's — and the
-    /// restorer's lane view for § 3's revocation.
+    /// The composed graph, bound as bring-up binds it: every plane it stores is admitted at
+    /// `.supervisor` but § 3's three views — its telemetry's, its writer's and its read-back's —
+    /// and the restorer's lane view for § 3's revocation, which are admitted in the lane. Judged
+    /// by the priority each admission maps to, for every site, with the lane sites listed rather
+    /// than filtered for.
     ///
     /// **Mutation:** in `HelperComposition.init`, build § 5's `reclamationWriter` over
     /// `plane.admitted(at: .thermalCycle)`. Run: red, naming § 5's writer and its driver's.
@@ -102,6 +113,9 @@ struct ThermalCycleLaneWriterTests {
     /// Run: red, naming the power responder's.
     /// **Mutation:** the same for the signal teardown's `restore:` writer. Run: red.
     /// **Mutation:** the same for § 6's `panic:` writer. Run: red, naming reconciliation's.
+    /// **Mutation:** add `PlaneAdmission.reassert`, mapped with `.thermalCycle` to the lane, give
+    /// it to § 5's writer, and update the value-set pin to match. Run: red here, naming § 5's
+    /// writer, though no lane word was added and no admission is `.thermalCycle`.
     @Test("Every plane the composed graph stores is at supervisor but § 3's")
     func everyStoredPlaneIsAtSupervisorButSectionThrees() async throws {
         let firmware = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
@@ -109,18 +123,22 @@ struct ThermalCycleLaneWriterTests {
         await helper.bindSafetyRegistries()
 
         let found = Self.planes(reachableFrom: helper)
-        let lane = Set(found.filter { $0.value.contains(.thermalCycle) }.keys)
+        let laneSites: Set<String> = [
+            "HelperFanRestorer.thermalCycleBounded.attempting.writer.plane",
+            "ThermalEmergency.telemetry.plane",
+            "ThermalEmergency.writer.plane",
+            "ThermalEmergency.handbackReadBack.sensing",
+        ]
         #expect(found.count > 10, "the census found \(found.count) planes: \(found)")
         #expect(
-            lane == [
-                "HelperFanRestorer.thermalCycleBounded.attempting.writer.plane",
-                "ThermalEmergency.telemetry.plane",
-                "ThermalEmergency.writer.plane",
-                "ThermalEmergency.handbackReadBack.sensing",
-            ],
-            "the planes stored in the lane are \(lane.sorted()), of \(found)")
-        let mixed = found.filter { $0.value.count > 1 }
-        #expect(mixed.isEmpty, "a place stores planes at both admissions: \(mixed)")
+            laneSites.isSubset(of: Set(found.keys)),
+            "§ 3's lane sites \(laneSites.subtracting(found.keys).sorted()) are not stored there")
+        for (site, admissions) in found.sorted(by: { $0.key < $1.key }) {
+            let priorities = Set(admissions.map(\.priority))
+            let expected: Set<SMCReadPriority> =
+                laneSites.contains(site) ? [.thermalCycle] : [.supervisor]
+            #expect(priorities == expected, "\(site) is admitted at \(priorities), not \(expected)")
+        }
     }
 
     // MARK: - The mechanisms that write only in their own scenario

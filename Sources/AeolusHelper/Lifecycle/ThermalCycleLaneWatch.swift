@@ -1,7 +1,8 @@
 /// Writes `SchedulerEvent.thermalCycleLaneOverlapped` to the safety log, and hears nothing else.
 ///
-/// The scheduler reports the event once, the first time a request arrives in § 3's lane while
-/// another is outstanding (`SMCReadScheduler.noteThermalCycleRequest()`), and this is where the
+/// The scheduler reports the event when a request arrives in § 3's lane while another is
+/// outstanding, and again only when more are outstanding at once than ever before
+/// (`SMCReadScheduler.noteThermalCycleRequest()`), and this is where the
 /// report becomes a line somebody can find afterwards: a `.fault`, because the premise both of
 /// ADR 0012's lane bounds rest on did not hold, and the wait the second request had was not the
 /// one derived for it. Nothing is acted on — the request was admitted in the lane as normal — so
@@ -15,7 +16,9 @@ struct ThermalCycleLaneWatch: SchedulerObserving {
     let log: SafetyLog
 
     func schedulerDidObserve(_ event: SchedulerEvent) {
-        guard case .thermalCycleLaneOverlapped(let outstanding) = event else { return }
-        log.thermalCycleLaneOverlapped(outstanding: outstanding)
+        guard case .thermalCycleLaneOverlapped(let outstanding, let arrivals) = event else {
+            return
+        }
+        log.thermalCycleLaneOverlapped(outstanding: outstanding, overlappingArrivals: arrivals)
     }
 }
