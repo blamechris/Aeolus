@@ -240,11 +240,9 @@ struct SetMessagesTests {
         let accepted = SetMessages.lost(.thermalEmergency, hold: hold, release: .accepted)
         let unconfirmed = SetMessages.lost(.thermalEmergency, hold: hold, release: .failed("x"))
         let timer = SetMessages.timerFailed(hold: hold, release: .failed("x"))
-        let refused = SetMessages.refused(
-            HelperCommandFailure(.manualControlRefused, "no"), hold: hold, release: .failed("x"))
 
         #expect(accepted.contains("Nothing is held by this process now."))
-        for message in [unconfirmed, timer, refused] {
+        for message in [unconfirmed, timer] {
             #expect(!message.contains("Nothing is held"))
             #expect(message.contains("may keep listing the lease for up to 30 seconds"))
         }

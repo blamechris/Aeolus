@@ -6,13 +6,71 @@ import Testing
 
 @testable import fanctl
 
-/// The words `fanctl set` uses when the lease ended while the speed was being applied, and it was
-/// released and the safe state looked at. The rest of the words are `SetMessagesTests`.
+/// The words `fanctl set` uses when `apply` did not become a hold and the lease was released and
+/// the safe state looked at: the helper answered with a fault, or the lease ended while the speed
+/// was being applied. The rest of the words are `SetMessagesTests`.
 @Suite("fanctl set's words after an apply that did not hold")
 struct SetApplyMessagesTests {
 
     typealias Fixtures = SafeStateTests
     typealias Shared = SetFixtures
+
+    // MARK: - An apply the helper answered with a fault
+
+    /// "Did not accept the speed" is a statement about the fans, and the check that follows is
+    /// what earns it. Level 6 can engage a fan, fail on the next, have the undo refused and answer
+    /// only the original fault, so the words are said **only** for a verdict of `.automatic`.
+    ///
+    /// **Mutation:** return the `.automatic` lead for every verdict in
+    /// `SetMessages.faultedApplyLead`. Run: red on the `notConfirmed` and `cannotReturn` rows.
+    @Test("'Did not accept the speed' is said only when the check found every fan automatic")
+    func faultedApplyWording() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let failure = HelperCommandFailure(
+            .manualControlRefused, "Fan 0 cannot be controlled: its bounds are not usable.")
+        let pinned = Fixtures.snapshot([
+            Fixtures.fan(0, availability: .unavailable(.restoreToAutomaticFailed)),
+            Fixtures.fan(1),
+        ])
+        let rows: [(SafeState.Settlement, expectsClean: Bool)] = [
+            (Shared.settlement(Fixtures.automatic, verdict: .automatic), true),
+            (Shared.settlement(Fixtures.leasedManual, verdict: .notConfirmed), false),
+            (Shared.settlement(pinned, verdict: .cannotReturn(fans: [0])), false),
+            (Shared.settlement(nil, interruption: Shared.Gone()), false),
+        ]
+        for (settlement, expectsClean) in rows {
+            let message = SetMessages.faultedApply(
+                failure, hold: hold, release: .accepted, settlement: settlement)
+            #expect(message.contains("its bounds are not usable"), "the helper's words survive")
+            #expect(message.contains("The helper accepted the release"))
+            #expect(!message.contains("Nothing is held"))
+            #expect(!message.lowercased().contains("nothing was applied"))
+            #expect(
+                message.contains("did not accept the speed") == expectsClean,
+                "\(settlement.verdict): \(message)")
+            #expect(
+                message.contains("does not say whether the speed reached a fan") == !expectsClean)
+        }
+    }
+
+    @Test("A fault followed by a pinned fan reports the pinned fan and its recovery")
+    func faultedApplyThenPinned() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let pinned = Fixtures.snapshot([
+            Fixtures.fan(
+                0, mode: .manualFixed, availability: .unavailable(.restoreToAutomaticFailed)),
+            Fixtures.fan(1),
+        ])
+
+        let message = SetMessages.faultedApply(
+            HelperCommandFailure(.manualControlRefused, "refused"), hold: hold,
+            release: .accepted,
+            settlement: Shared.settlement(pinned, verdict: .cannotReturn(fans: [0])))
+
+        #expect(message.contains("(reason: restoreToAutomaticFailed)"))
+        #expect(message.contains("docs/RECOVERY.md"))
+        #expect(message.contains("launchctl bootout system/"))
+    }
 
     // MARK: - A lease that ended while the speed was being applied
 

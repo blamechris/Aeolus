@@ -109,32 +109,38 @@ extension SetCommand {
         return await finish(end, hold: hold, snapshot: latest, in: session)
     }
 
-    /// `apply` threw. Whether the helper **answered** decides what that means.
+    /// `apply` threw. The lease is given back, and **then the safe state is looked at, whatever
+    /// the error was.**
     ///
-    /// - **It answered that the lease is gone, or a renewal failed while it worked**: the lease
-    ///   lapsed. Control lost, with its own text and never a refusal, and the safe state is
-    ///   looked at after the release.
-    /// - **It answered with another fault**: it refused the speed. The lease is given back and
-    ///   the exit is the code the fault classifies to, with nothing to check afterwards.
+    /// An `apply` that engaged a fan can answer with a fault afterwards: it can engage fan 0,
+    /// fail on fan 1, have the undo refused and still answer only the original fault, or find
+    /// the lease gone or a thermal emergency set once every fan was written. A refusal tells
+    /// this run nothing about the fans, so it is never taken to mean none was touched.
+    ///
     /// - **It did not answer** (`helperNeverAnswered`, `replyNotDelivered`, `helperRestarted`,
-    ///   `connectionAbandoned`, or any transport failure): it may have applied the speed.
-    ///   "Refused" would be a statement about the machine nothing observed. The lease is given
-    ///   back as before, and then the safe-state check looks, because only a snapshot can say
-    ///   what the fans are doing; the exit is still the code the failure classifies to.
+    ///   `connectionAbandoned`, or any transport failure): it may have applied the speed. The
+    ///   exit is the code the failure classifies to, whatever the check finds.
+    /// - **It answered that the lease is gone, or a renewal failed while it worked**: the lease
+    ///   lapsed. Control lost, with its own text and never a refusal.
+    /// - **It answered with another fault**: the helper said no. That is still all the answer
+    ///   says: the words "did not accept the speed" are used only if the check that follows
+    ///   found every fan automatic and no lease.
+    ///
+    /// For the last two the exit is the check's verdict where that is worse (9, then 8), and
+    /// otherwise the fault's own code.
     static func afterFailedApply(
         _ error: any Error, hold: Hold, renewal: LeaseKeeper.Failure?, in session: Session
     ) async -> Report {
         let failure = HelperCommandFailure(classifying: error, during: .beforeControl)
         let release = await release(hold.leaseID, using: session.client)
-        if helperAnswered(error) {
-            guard let lapse = lapse(afterApplyFault: error, renewal: renewal) else {
-                return .refused(failure, hold: hold, release: release)
-            }
-            let settlement = await checkSafeState(in: session)
+        let settlement = await checkSafeState(in: session)
+        guard helperAnswered(error) else {
+            return .applyUnanswered(failure, hold: hold, release: release, settlement: settlement)
+        }
+        if let lapse = lapse(afterApplyFault: error, renewal: renewal) {
             return .lapsed(lapse, hold: hold, release: release, settlement: settlement)
         }
-        let settlement = await checkSafeState(in: session)
-        return .applyUnanswered(failure, hold: hold, release: release, settlement: settlement)
+        return .applyFaulted(failure, hold: hold, release: release, settlement: settlement)
     }
 
     /// The lease ended while the speed was being applied, and `apply` said nothing about it.

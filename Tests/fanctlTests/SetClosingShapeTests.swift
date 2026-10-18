@@ -138,7 +138,48 @@ struct SetClosingShapeTests {
         #expect(unread.facts.releaseAccepted == false)
     }
 
-    // MARK: - A lease that ended while the speed was being applied
+    // MARK: - An apply the helper answered with a fault
+
+    /// The exit is the check's verdict where it is worse (9, then 8) and the fault's own code
+    /// otherwise; `refused` is said only when the check found nothing left behind.
+    ///
+    /// **Mutation:** return the failure's own code whatever the verdict in
+    /// `SetCommand.Report.code(_:after:)`. Run: red on the 8 and 9 rows.
+    @Test(
+        "A fault keeps its code only if the check found nothing worse, and is 'refused' only then")
+    func applyFaultedShape() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let failure = HelperCommandFailure(.manualControlRefused, "no")
+        struct Row {
+            let verdict: SafeState.Verdict
+            let code: FanctlExitCode
+            let endedBecause: String
+        }
+        let rows = [
+            Row(verdict: .automatic, code: .manualControlRefused, endedBecause: "refused"),
+            Row(
+                verdict: .notConfirmed, code: .safeStateNotConfirmed, endedBecause: "controlLost"),
+            Row(
+                verdict: .cannotReturn(fans: [0]), code: .cannotReturnToAutomatic,
+                endedBecause: "controlLost"),
+        ]
+        for row in rows {
+            let report = SetCommand.Report.applyFaulted(
+                failure, hold: hold, release: .accepted,
+                settlement: Shared.settlement(Fixtures.automatic, verdict: row.verdict))
+            #expect(report.failure?.code == row.code, "\(row.verdict)")
+            #expect(report.facts.endedBecause == row.endedBecause, "\(row.verdict)")
+            #expect(report.facts.leaseID == hold.leaseID)
+            #expect(report.facts.snapshotFollowsRelease == true, "the check read one")
+            #expect(report.closingLine == nil)
+        }
+        let unread = SetCommand.Report.applyFaulted(
+            failure, hold: hold, release: .failed("x"),
+            settlement: Shared.settlement(nil, interruption: Shared.Gone()))
+        #expect(unread.failure?.code == .safeStateNotConfirmed)
+        #expect(unread.facts.endedBecause == "controlLost")
+        #expect(unread.facts.snapshotFollowsRelease == nil, "nothing was read to qualify")
+    }
 
     /// A lapse is control lost, exit 6, and worse only if the check found worse.
     ///

@@ -81,16 +81,26 @@ extension SetCommand {
                 plans: hold.plans, closingLine: nil)
         }
 
-        /// `apply` was **refused**: the helper answered with a fault. The lease was released; the
-        /// code is the one the fault classified to.
-        static func refused(
-            _ failure: HelperCommandFailure, hold: Hold, release: Release
+        /// `apply` was **answered with a fault**, and the lease was released and the safe state
+        /// looked at, as it is after every `apply` that did not become a hold.
+        ///
+        /// The exit is the fault's own code unless the check found something worse
+        /// (`code(_:after:)`). `endedBecause` is `refused` **only if the check found every fan
+        /// automatic and no lease**: until then it is not known that the helper's "no" left
+        /// nothing behind, and a script reading `refused` would take it to.
+        static func applyFaulted(
+            _ failure: HelperCommandFailure, hold: Hold, release: Release,
+            settlement: SafeState.Settlement
         ) -> Report {
-            Report(
+            let clean = settlement.verdict == .automatic
+            return Report(
                 failure: HelperCommandFailure(
-                    failure.code, SetMessages.refused(failure, hold: hold, release: release)),
-                leaseID: hold.leaseID, endedBecause: "refused", signal: nil, release: release,
-                snapshot: nil, snapshotFollowsRelease: false, plans: hold.plans,
+                    code(failure.code, after: settlement),
+                    SetMessages.faultedApply(
+                        failure, hold: hold, release: release, settlement: settlement)),
+                leaseID: hold.leaseID, endedBecause: clean ? "refused" : "controlLost",
+                signal: nil, release: release, snapshot: settlement.snapshot,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
                 closingLine: nil)
         }
 

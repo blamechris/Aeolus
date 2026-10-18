@@ -151,18 +151,6 @@ enum SetMessages {
 
     // MARK: - Other ways a run does not hold
 
-    /// `apply` was **refused**: the helper answered, and said no.
-    static func refused(
-        _ failure: HelperCommandFailure, hold: Hold, release: Release
-    ) -> String {
-        """
-        The helper took lease \(hold.leaseID.uuidString) and did not accept the speed: \
-        \(failure.message)
-
-        \(releaseSentence(release, hold: hold)) \(heldSentence(release))
-        """
-    }
-
     static func timerFailed(hold: Hold, release: Release) -> String {
         """
         fanctl's timer failed, so it can no longer pace the lease's heartbeat. \

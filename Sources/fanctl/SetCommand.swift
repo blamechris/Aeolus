@@ -304,11 +304,11 @@ enum SetCommand {
     /// Releases the lease, and for an ordinary ending checks the safe state.
     ///
     /// The release is **best-effort and nothing waits on its answer**: a refusal is reported and
-    /// the check that follows decides the exit. A loss once the hold is under way (6) and a
-    /// refusal skip the check — there is nothing to confirm a return to, and `fanctl auto` is how
-    /// to ask — and a signal that arrives from here on is ignored: the loop is no longer
-    /// looking. (A lease that ended while `apply` was outstanding does not skip it: see
-    /// `afterFailedApply`.)
+    /// the check that follows decides the exit. A loss once the hold is under way (6) skips the
+    /// check — there is nothing to confirm a return to, and `fanctl auto` is how to ask — and a
+    /// signal that arrives from here on is ignored: the loop is no longer looking. (A lease that
+    /// ended while `apply` was outstanding does not skip it, and neither does any `apply` fault:
+    /// see `afterFailedApply`.)
     static func finish(
         _ end: HoldEnd, hold: Hold, snapshot: SystemSnapshot?, in session: Session
     ) async -> Report {

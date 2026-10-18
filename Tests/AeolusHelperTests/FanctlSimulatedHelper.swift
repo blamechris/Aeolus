@@ -62,6 +62,18 @@ private struct LeaseTerm {
     }
 }
 
+/// What an `apply` that is scripted to fail leaves behind it, before it answers.
+private struct ApplyAftermath {
+    /// The fault it answers with.
+    let fault: AeolusXPCFault
+    /// A fan it leaves holding, for a reason no release can clear: `restoreToAutomaticFailed`,
+    /// say, when the undo of a half-landed engagement was refused.
+    let pinned: (fan: Int, reason: ManualControlAvailability.Reason)?
+    /// Whether it engaged every fan it was asked about before it failed: the thermal emergency
+    /// that sets once the last fan was written.
+    let engagedEveryFan: Bool
+}
+
 /// A renewal the helper takes and does not answer until it is told to.
 private struct HeldRenewal {
     /// Which renewal, counting from one.
@@ -128,6 +140,7 @@ actor SimulatedFanAuthority: FanAuthority {
     private var takenAfterRelease: String?
     private var heldAcquire: AsyncSignal?
     private var heldApply: AsyncSignal?
+    private var applyLeavesFans: ApplyAftermath?
     private var heldRenewal: HeldRenewal?
     private var renewalFailure: AeolusXPCFault?
     private var heldAcquireReply: AsyncSignal?
@@ -430,6 +443,7 @@ actor SimulatedFanAuthority: FanAuthority {
         // As `LeaseApplier` does before it replies (item 4): the lease again, so the reply never
         // says applied under a lease that has ended while the helper worked.
         _ = try held(leaseID, by: connection)
+        if let applyLeavesFans { throw leave(applyLeavesFans, applying: settings) }
         if let applyRefusal { throw applyRefusal }
         appliedSettings.append(settings)
         guard !ignoresApply else { return }
@@ -549,10 +563,28 @@ actor SimulatedFanAuthority: FanAuthority {
 
 // MARK: - What a hold that goes wrong in new ways needs
 
-/// Scripting and internals for lifetimes and renewals in flight.
+/// Scripting and internals for lifetimes, faults that leave fans behind, and renewals in flight.
 /// An extension in this file, so it reaches the private state, and so the actor's own body stays
 /// the size SwiftLint's `type_body_length` allows.
 extension SimulatedFanAuthority {
+
+    /// `apply` engages fan `fan`, fails on the next, has the undo refused, and answers **only the
+    /// original fault**: the fan is left in manual and pinned for `reason`, and every other fan
+    /// the lease covers is given back by the release as usual. A release that is accepted after
+    /// this is a release that "succeeded" while the restore of the pinned fan did not.
+    func refusingApply(
+        with fault: AeolusXPCFault, leavingPinned fan: Int,
+        as reason: ManualControlAvailability.Reason = .restoreToAutomaticFailed
+    ) {
+        applyLeavesFans = ApplyAftermath(
+            fault: fault, pinned: (fan, reason), engagedEveryFan: false)
+    }
+
+    /// `apply` writes every fan it was asked about and **then** answers `fault`: the thermal
+    /// emergency that sets once the last fan was written. The release returns the fans.
+    func refusingApplyAfterEngagingEveryFan(with fault: AeolusXPCFault) {
+        applyLeavesFans = ApplyAftermath(fault: fault, pinned: nil, engagedEveryFan: true)
+    }
 
     /// The `number`-th `renewLease` (counting from one) is taken and **not answered until
     /// `signal` fires**: a renewal on the wire when something else has finished.
@@ -581,5 +613,16 @@ extension SimulatedFanAuthority {
 
     private func sweepLapsedLease() {
         if lease != nil, term.hasLapsed { lapse() }
+    }
+
+    /// What `applyLeavesFans` leaves, and the fault it answers with.
+    private func leave(_ aftermath: ApplyAftermath, applying settings: [FanSetting]) -> any Error {
+        if aftermath.engagedEveryFan {
+            for setting in settings where leasedFans.contains(setting.fanIndex) {
+                set(setting.fanIndex, mode: .manualFixed, target: 2_500)
+            }
+        }
+        if let pinned = aftermath.pinned { pin(pinned.fan, as: pinned.reason) }
+        return aftermath.fault
     }
 }

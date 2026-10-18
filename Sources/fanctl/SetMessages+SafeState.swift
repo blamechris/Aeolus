@@ -3,7 +3,8 @@ import FanKit
 import Foundation
 
 // What `fanctl set` says when the check after the release did not find the safe state (8 and 9),
-// and when `apply` did not become a hold: it got no answer, or the lease ended while it worked.
+// and when `apply` did not become a hold: it got no answer, the helper answered with a fault, or
+// the lease ended while it worked.
 //
 // **Everything said about the lease and the fans here comes from a snapshot read after the
 // release, or is not said.** The snapshot the hold last read was taken while the lease was
@@ -171,6 +172,37 @@ extension SetMessages {
         afterApply(
             lead: unansweredApplyLead(failure, hold: hold), hold: hold, release: release,
             settlement: settlement)
+    }
+
+    /// The first sentence when the helper **answered `apply` with a fault**.
+    ///
+    /// "Did not accept the speed" is the helper's refusal read as the whole story, and it is the
+    /// whole story only if the check that followed found every fan automatic and no lease. Level
+    /// 6 can engage a fan, fail on the next, have the undo refused, and answer only the original
+    /// fault; it can also find a thermal emergency set once every fan was written. So that
+    /// phrase is said **only for `.automatic`**; otherwise the lead says what the answer was and
+    /// that it does not settle what happened to the fans.
+    static func faultedApplyLead(
+        _ failure: HelperCommandFailure, hold: Hold, verdict: SafeState.Verdict
+    ) -> String {
+        let id = hold.leaseID.uuidString
+        guard verdict == .automatic else {
+            return "The helper took lease \(id) and answered the request to apply the speed with "
+                + "a fault: \(failure.message) An answer like that does not say whether the "
+                + "speed reached a fan before it, so this run released the lease and looked."
+        }
+        return "The helper took lease \(id) and did not accept the speed: \(failure.message)"
+    }
+
+    /// The helper answered `apply` with a fault; the lease was released and the safe state looked
+    /// at. The exit is the fault's own code unless the check found something worse.
+    static func faultedApply(
+        _ failure: HelperCommandFailure, hold: Hold, release: Release,
+        settlement: SafeState.Settlement
+    ) -> String {
+        afterApply(
+            lead: faultedApplyLead(failure, hold: hold, verdict: settlement.verdict),
+            hold: hold, release: release, settlement: settlement)
     }
 
     /// The lease **ended while the speed was being applied**. Control lost, said as that: not a
