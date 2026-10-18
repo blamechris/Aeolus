@@ -29,8 +29,8 @@ struct ManifestScanTests {
 
     // MARK: - Flags
 
-    /// **Mutation:** in `openingFlags`, drop `-enable-private-imports`. Run: red here, at the
-    /// workflow fixture.
+    /// **Mutation:** in `openingFlags`, drop `-enable-private-imports`. Run: red here, at each
+    /// fixture that names it.
     @Test("A flag that opens private or SPI members is found wherever it is written")
     func openingFlagsAreFound() {
         let sources: [(text: String, found: [String])] = [
