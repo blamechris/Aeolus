@@ -135,15 +135,17 @@ extension SetCommand {
         }
 
         /// `apply` got **no answer**: the speed may have been applied, which is not a refusal.
-        /// The lease was released and the safe-state check looked; the exit is still the code the
-        /// failure classified to, and the check's verdict is in the message and the facts.
+        /// The lease was released and the safe-state check looked. An unanswered `apply` may have
+        /// engaged a fan exactly as a refused one may, so the exit follows the same rule
+        /// (`code(_:after:)`): the check's verdict where it is worse than the failure's own code,
+        /// and the failure's code otherwise. The verdict is in the message and the facts.
         static func applyUnanswered(
             _ failure: HelperCommandFailure, hold: Hold, release: Release,
             settlement: SafeState.Settlement
         ) -> Report {
             Report(
                 failure: HelperCommandFailure(
-                    failure.code,
+                    code(failure.code, after: settlement),
                     SetMessages.unansweredApply(
                         failure, hold: hold, release: release, settlement: settlement)),
                 leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil, release: release,

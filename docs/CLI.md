@@ -725,9 +725,10 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
   happened to the fans, and `endedBecause` is `controlLost`.
 - **An `apply` that got no answer is not a refusal.** The helper may have applied the speed, so
   the message says it got no answer and may have been applied, never "did not accept". The lease
-  is released (best effort), the safe-state check **looks**, and the exit is still the code the
+  is released (best effort), the safe-state check **looks**, and the exit follows the same rule
+  as a fault's: the check's verdict where that is worse (9, then 8), and otherwise the code the
   failure classifies to (1 for a restart, a lost reply, an abandoned connection or no answer
-  within the deadline; non-zero always), reported as `endedBecause: controlLost`, with the
+  within the deadline; non-zero always). It is reported as `endedBecause: controlLost`, with the
   check's verdict in the message and `snapshotFollowsRelease` in the closing event.
 - **A signal that lands while `acquireLease` is in flight** stops the speed being sent: after the
   lease comes back and before `apply`, a pending signal releases the lease, sends nothing to a
@@ -763,13 +764,13 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
 |---|---|
 | 0 | The hold ended in an ordinary way and the helper reports every fan automatic and no lease after the release. |
 | 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` answered with `invalidParameter` is also 2, after the lease was taken, released and checked, unless the check found something worse.) |
-| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and the failure is `clientCannotVerifyHelper`, `helperUnreachable` or `helperSignatureRejected`: the lease was taken, and is released and checked as for 1. |
+| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and the failure is `clientCannotVerifyHelper`, `helperUnreachable` or `helperSignatureRejected`: the lease was taken, and is released and checked. The exit is 3 only if the check then finds the safe state; it usually cannot read, and the exit is 8. |
 | 7 | Version mismatch. Nothing was acquired. |
 | 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was acquired or applied. (An `apply` answered with `boundsImplausible`, `thermalEmergencyActive`, `reclaimedBySystem` or `manualControlUnavailable` is also 4, or 5 for `leaseHeldByAnotherClient`, after the lease was taken, released and checked, unless the check found something worse.) |
 | 6 | Control was held and lost: a renewal failed, the helper does not list the lease, states no held target for a covered fan, reclaimed one, or set a thermal emergency. Released. Also a lease that **ended while `apply` was outstanding** (a failed renewal, or `apply` answered `leaseExpired`, `leaseUnknown` or `leaseNotHeldByThisConnection`): released and checked, and 8 or 9 instead if the check found them. |
-| 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). Also the exit for an `apply` fault or a lapse followed by that. |
-| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. Also the exit for an `apply` fault or a lapse that left a fan so. |
-| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, whatever the check finds), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed (released). |
+| 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). Also the exit for an `apply` fault, an `apply` that got no answer, or a lapse, followed by that. |
+| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. Also the exit for an `apply` fault, an `apply` that got no answer, or a lapse, that left a fan so. |
+| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, and 8 or 9 instead if the check found them), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed (released). |
 | 64 | Malformed command line (above). |
 
 **Text.** At the start, one line per fan and the lease; then nothing on standard output while

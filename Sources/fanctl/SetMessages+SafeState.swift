@@ -164,7 +164,8 @@ extension SetMessages {
     }
 
     /// `apply` got no answer: the lease was released, the safe-state check looked, and this is
-    /// what it found. The exit stays the code the failure classified to, whatever the check says.
+    /// what it found. The exit is the check's verdict where that is worse than the code the failure
+    /// classified to (`SetCommand.Report.code(_:after:)`).
     static func unansweredApply(
         _ failure: HelperCommandFailure, hold: Hold, release: Release,
         settlement: SafeState.Settlement

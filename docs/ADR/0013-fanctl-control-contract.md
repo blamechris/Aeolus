@@ -171,10 +171,10 @@ claims more.
   the helper answering. A transport failure after the request was sent (`helperNeverAnswered`,
   `replyNotDelivered`, `helperRestarted`) means the speed may have been applied: the lease is
   released best-effort, the safe-state check **looks**, and the exit is the failure's own
-  classified code (non-zero), reported as `endedBecause: controlLost`. This revised the "refused
-  `apply` skips the check" point above for the unanswered case; the 2026-10-18 amendment revises
-  it for every `apply` fault. The exit of the unanswered case is still the failure's own code,
-  whatever the check finds; a fault's exit is the check's verdict where that is worse.
+  classified code (non-zero) unless the check found something worse, reported as `endedBecause:
+  controlLost`. This revised the "refused `apply` skips the check" point above for the unanswered
+  case; the 2026-10-18 amendment revises it for every `apply` fault, and gives the unanswered
+  case a fault's exit rule: the check's verdict where that is worse (9, then 8).
 - **A signal ends the hold, whenever it lands.** Before the lease it is exit 1 with
   `endedBecause: signal`; while `acquireLease` is in flight it releases the lease and sends no
   speed (exit 1, `signal`); while holding it is the ordinary signal ending.
@@ -270,9 +270,11 @@ a hold earlier or says less.
      `refused`, **only if the check found every fan automatic and no lease**. In every other case
      the text says the answer does not settle what happened to the fans, and `endedBecause` is
      `controlLost`.
-   - *Left as it was.* The unanswered `apply` keeps its exit (the failure's own code, whatever
-     the check finds). It has the same shape as a fault now, and whether its exit should follow
-     the check too is open.
+   - *The unanswered `apply` follows the same rule.* It may have engaged a fan exactly as a
+     refused one may, so the operator gets exit 9 and its recovery advice in both cases: the
+     exit is the check's verdict where that is worse (9, then 8) and otherwise the failure's own
+     classified code. `endedBecause` is `controlLost` either way. A failure that classifies to 3
+     (the helper unreachable) is therefore usually 8, because the check cannot read either.
 
 3. **"Holding" needs the helper's evidence that the fan is held.**
    - *The defect.* `loss(in:)` checked the lease ID, a thermal emergency, missing fans and the

@@ -318,7 +318,9 @@ struct FanctlSetLossTests {
     /// An `apply` the helper took and never answered. The helper may have written the speed, so
     /// "did not accept the speed" and `refused` would say something nothing observed. The lease
     /// is given back, the safe-state check looks, and the exit is the code the failure
-    /// classifies to (a restart: 1), reported as `controlLost`.
+    /// classifies to (a restart: 1) when the check finds nothing worse (see
+    /// `FanctlSetApplyFaultTests.anUnansweredApplyThatLeftAFanPinned` for when it does), reported
+    /// as `controlLost`.
     ///
     /// **Mutation:** treat every `apply` error as an answer in `SetCommand.helperAnswered`
     /// (`true`). Run: red — the run says it was refused and does not look.

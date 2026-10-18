@@ -120,16 +120,16 @@ extension SetCommand {
     /// this run nothing about the fans, so it is never taken to mean none was touched.
     ///
     /// - **It did not answer** (`helperNeverAnswered`, `replyNotDelivered`, `helperRestarted`,
-    ///   `connectionAbandoned`, or any transport failure): it may have applied the speed. The
-    ///   exit is the code the failure classifies to, whatever the check finds.
+    ///   `connectionAbandoned`, or any transport failure): it may have applied the speed, as a
+    ///   refused `apply` may have engaged a fan.
     /// - **It answered that the lease is gone, or a renewal failed while it worked**: the lease
     ///   lapsed. Control lost, with its own text and never a refusal.
     /// - **It answered with another fault**: the helper said no. That is still all the answer
     ///   says: the words "did not accept the speed" are used only if the check that follows
     ///   found every fan automatic and no lease.
     ///
-    /// For the last two the exit is the check's verdict where that is worse (9, then 8), and
-    /// otherwise the fault's own code.
+    /// In every case the exit is the check's verdict where that is worse (9, then 8), and
+    /// otherwise the failure's own code.
     static func afterFailedApply(
         _ error: any Error, hold: Hold, renewal: LeaseKeeper.Failure?, in session: Session
     ) async -> Report {

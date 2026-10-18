@@ -113,27 +113,43 @@ struct SetClosingShapeTests {
         #expect(message.contains("Nothing was sent to a fan"))
     }
 
-    /// An unanswered apply is `controlLost` with the failure's own code, and carries the check's
-    /// verdict as a snapshot only when the check read one.
-    @Test("An unanswered apply keeps the failure's code and is reported as controlLost")
+    /// An unanswered apply is always `controlLost`. Its exit follows the same rule as a refused
+    /// one's: the failure's own code if the check found every fan automatic and no lease, and the
+    /// check's verdict where that is worse (9, then 8), because it may have engaged a fan exactly
+    /// as a refused one may. The snapshot is the check's, only when the check read one.
+    ///
+    /// **Mutation:** return the failure's own code whatever the verdict in
+    /// `SetCommand.Report.applyUnanswered`. Run: red on the 8 and 9 rows.
+    @Test("An unanswered apply keeps the failure's code only if the check found nothing worse")
     func applyUnansweredShape() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let failure = HelperCommandFailure(
             classifying: HelperClientError.helperNeverAnswered(after: .seconds(5)),
             during: .beforeControl)
-        let read = SetCommand.Report.applyUnanswered(
-            failure, hold: hold, release: .accepted,
-            settlement: Shared.settlement(Fixtures.automatic, verdict: .automatic))
+        struct Row {
+            let verdict: SafeState.Verdict
+            let code: FanctlExitCode
+        }
+        let rows = [
+            Row(verdict: .automatic, code: .failure),
+            Row(verdict: .notConfirmed, code: .safeStateNotConfirmed),
+            Row(verdict: .cannotReturn(fans: [0]), code: .cannotReturnToAutomatic),
+        ]
+        for row in rows {
+            let report = SetCommand.Report.applyUnanswered(
+                failure, hold: hold, release: .accepted,
+                settlement: Shared.settlement(Fixtures.automatic, verdict: row.verdict))
+            #expect(report.failure?.code == row.code, "\(row.verdict)")
+            #expect(report.facts.endedBecause == "controlLost")
+            #expect(report.facts.leaseID == hold.leaseID)
+            #expect(report.facts.snapshotFollowsRelease == true)
+        }
+
         let unread = SetCommand.Report.applyUnanswered(
             failure, hold: hold, release: .failed("x"),
             settlement: Shared.settlement(nil, interruption: Shared.Gone()))
-
-        for report in [read, unread] {
-            #expect(report.failure?.code == .failure, "the apply's classified code")
-            #expect(report.facts.endedBecause == "controlLost")
-            #expect(report.facts.leaseID == hold.leaseID)
-        }
-        #expect(read.facts.snapshotFollowsRelease == true)
+        #expect(unread.failure?.code == .safeStateNotConfirmed, "nothing could be confirmed")
+        #expect(unread.facts.endedBecause == "controlLost")
         #expect(unread.facts.snapshotFollowsRelease == nil, "nothing was read to qualify")
         #expect(unread.facts.releaseAccepted == false)
     }

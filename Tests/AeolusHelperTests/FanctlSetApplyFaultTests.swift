@@ -171,4 +171,56 @@ struct FanctlSetApplyFaultTests {
         #expect(failed["snapshotFollowsRelease"] as? Bool == true, "\(fault)")
         _ = harness.sessions
     }
+
+    // MARK: - An apply nobody answered
+
+    /// An `apply` that got no answer may have engaged a fan exactly as a refused one may, so it
+    /// follows the same rule: the operator gets exit 9 and its recovery advice. Here the helper
+    /// engaged fan 0 and the connection died before it answered; the restore failed, so fan 0
+    /// stays pinned, and the check after the release finds it.
+    ///
+    /// **Mutation (the unanswered case keeps its own code):** in
+    /// `SetCommand.Report.applyUnanswered`, use `failure.code` in place of
+    /// `code(failure.code, after: settlement)`. Run: red on the exit and the document's kind.
+    @Test("An apply nobody answered, that left a fan pinned, is exit 9 with the recovery")
+    func anUnansweredApplyThatLeftAFanPinned() async throws {
+        let authority = SimulatedFanAuthority()
+        let gate = AsyncSignal()
+        await authority.holdingApply(until: gate)
+        let harness = ClientListenerHarness(authority: authority)
+        let output = RecordingTerminal()
+        let command = try Harness.command(
+            Self.bothFans, endpoint: harness.endpoint, output: output, time: VirtualHoldTime(),
+            desk: SignalDesk())
+
+        let running = Task { await exitCode { try await command.run() } }
+        try await waitUntil("the apply reached the helper") {
+            await authority.calls.contains("apply")
+        }
+        await authority.pin(0, as: .restoreToAutomaticFailed)
+        harness.killHelperSideOfEveryConnection()
+        let code = await running.value
+        await gate.signal()
+
+        #expect(code == FanctlExitCode.cannotReturnToAutomatic.rawValue)
+        #expect(await Harness.count("acquireLease", in: authority) == 1)
+        #expect(await Harness.count("releaseLease", in: authority) == 1, "given back, best effort")
+        let events = try output.events()
+        #expect(events.map { $0["event"] as? String } == ["failed"], "nothing says started")
+        let failed = try #require(events.first)
+        #expect(failed["endedBecause"] as? String == "controlLost")
+        #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the check looked")
+        let failure = try #require(failed["failure"] as? [String: Any])
+        #expect(failure["kind"] as? String == "cannotReturnToAutomatic")
+        #expect(failure["exitCode"] as? Int == 9)
+        let message = output.standardError
+        #expect(message.contains("did not answer the request to apply the speed"))
+        #expect(message.contains("may have applied it"))
+        #expect(message.contains("(reason: restoreToAutomaticFailed)"))
+        #expect(message.contains("docs/RECOVERY.md"))
+        #expect(message.contains("launchctl bootout system/"))
+        #expect(!message.contains("did not accept the speed"))
+        #expect(!message.contains("Nothing is held"))
+        #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
+    }
 }
