@@ -71,7 +71,7 @@ struct ManifestScanTests {
 
     // MARK: - Targets
 
-    private static func target(
+    static func target(
         _ source: String
     ) throws -> ManifestScan.Target {
         let found = try ManifestScan.targets(in: source)
@@ -105,6 +105,11 @@ struct ManifestScanTests {
                 .literal("Frameworks/G.xcframework"), .literal("Tests/../Probe"),
                 .computed("probePath"),
             ])
+        #expect(
+            targets.map(\.dependencies) == [
+                .absent, .named(["A"]), .named(["Probe"]), .absent, .absent, .absent, .absent,
+                .absent, .absent,
+            ])
     }
 
     /// A constructor used as a dependency or a plugin declares nothing, and a comment is not a
@@ -123,7 +128,12 @@ struct ManifestScanTests {
                 resources: [.copy("path: nothing")], path: "Sources/Real"),
             """
         let targets = try ManifestScan.targets(in: manifest)
-        #expect(targets == [.init(kind: "target", name: "Real", path: .literal("Sources/Real"))])
+        #expect(
+            targets == [
+                .init(
+                    kind: "target", name: "Real", path: .literal("Sources/Real"),
+                    dependencies: .named(["Dep", "Other"]))
+            ])
     }
 
     /// **Mutation:** in `topLevelArguments`, split on every comma and ignore strings. Run: red
@@ -229,7 +239,7 @@ struct ManifestScanTests {
     }
 
     /// The problem found in `target` when every directory exists, and the directories asked about.
-    private static func lookingFor(
+    static func lookingFor(
         _ target: ManifestScan.Target, existing: Bool = true
     ) -> (problem: String?, asked: [String]) {
         var asked: [String] = []

@@ -343,8 +343,8 @@ enum SeamScanner {
 
     // MARK: - Parsing
 
-    /// Source with comments removed: every `/* … */` span, and then every whole line that is
-    /// a `//` comment.
+    /// Source with comments removed: every `/* … */` span, replaced by one space, and then every
+    /// whole line that is a `//` comment.
     ///
     /// The prose describing a forbidden signature is not that signature, and a tripwire that
     /// fires on the sentence explaining the rule is a tripwire nobody keeps. That argument
