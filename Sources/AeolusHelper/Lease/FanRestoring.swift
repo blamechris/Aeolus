@@ -127,7 +127,13 @@ protocol FanRestoring: Sendable {
 /// paths to be independent, and "independent" is only checkable if an observer can tell
 /// which one acted. A restore whose cause cannot be named is a restore whose mechanism
 /// cannot be audited.
-enum FanRestoreCause: Sendable, Hashable {
+///
+/// `CaseIterable` for one assertion: `ThermalCycleLaneRoutingTests` drives every cause through
+/// `HelperFanRestorer` and holds that only § 3's routes into § 3's lane, so a cause added here is
+/// driven the day it is added. Nothing in `Sources` enumerates the cases
+/// (`ThermalCycleLaneTripwireTests` holds that too), because an enumeration reaches the lane's
+/// cause without naming it.
+enum FanRestoreCause: Sendable, Hashable, CaseIterable {
 
     /// `docs/SAFETY.md` § 3 fired: a curated critical temperature went above its ceiling
     /// while this lease held the fans. Actor level 2.
@@ -142,14 +148,20 @@ enum FanRestoreCause: Sendable, Hashable {
     /// `ThermalEmergency` performs its own restore before this revocation reaches the lease
     /// core, per ADR 0007's keystone; the restore this cause labels is the idempotent second
     /// one.
-    case thermalEmergency
+    ///
+    /// **Named for the revocation, not for § 3**, so that the word is this case's alone:
+    /// `SafetyActorLevel.thermalEmergency` is § 3's actor level, and this case is the key
+    /// `HelperFanRestorer` routes a restore into § 3's lane by. A word nothing else spells can be
+    /// counted file by file, whatever expression it sits in, and
+    /// `ThermalCycleLaneTripwireTests.theEmergencyCauseIsNamedOnlyWhereItIsWired` counts it.
+    case thermalEmergencyRevocation
 
     /// `docs/SAFETY.md` § 5 confirmed divergence: the system took a fan back, and either
     /// the bounded re-assert was refused, its budget was spent, or § 3 was holding and
     /// level 3 must not fight level 2 for the fans. Actor level 3.
     ///
-    /// Like `.thermalEmergency`, this is a lease being **taken** rather than a lease ending
-    /// — but for the opposite reason. § 3 takes fans because the machine is too hot; this
+    /// Like `.thermalEmergencyRevocation`, this is a lease being **taken** rather than a lease
+    /// ending — but for the opposite reason. § 3 takes fans because the machine is too hot; this
     /// one records that the fans were *already* gone and Aeolus has stopped pretending
     /// otherwise. `CLAUDE.md` rule 6 is the whole of it: a lease left alive over a fan the
     /// firmware is no longer honouring is a client told it has control it does not have.

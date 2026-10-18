@@ -155,12 +155,15 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// `docs/SAFETY.md` § 3 revokes every lease when it fires, and the restores that revocation
 /// causes are part of § 3's cycle: ADR 0012's 2026-10-18 amendment counts up to
 /// `RestoreLimits.attemptBudget` of them per fan in D_cycle's allowance, each waiting for at
-/// most one turn in flight. So a restore whose cause is `FanRestoreCause.thermalEmergency` goes
+/// most one turn in flight. So a restore whose cause is
+/// `FanRestoreCause.thermalEmergencyRevocation` goes
 /// through the writer's lane view (`SafetyActorWriter.admitted(at:)`), and every other cause
 /// through the writer at `.supervisor`. Both are `BoundedFanRestorer` over the same keystone
 /// attempt, so the budget, the order and the registries' notices are the same; only what each
 /// attempt waits for differs. The cause is the routing key because it names who caused the
-/// restore and nothing else, and `HelperRestorerTests`' composed routing test drives each one.
+/// restore and nothing else, and `ThermalCycleLaneRoutingTests.everyCauseRoutesByWhoCausedIt`
+/// drives every case of the enum through this type, so a cause added later is routed by a
+/// decision and tested the day it lands.
 actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
 
     private let bounded: BoundedFanRestorer<KeystoneRestoreAttempt<Plane>>
@@ -241,7 +244,7 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
         for cause: FanRestoreCause
     ) -> BoundedFanRestorer<KeystoneRestoreAttempt<Plane>> {
         switch cause {
-        case .thermalEmergency:
+        case .thermalEmergencyRevocation:
             return thermalCycleBounded
         case .systemReclaimed, .supervisorBlind, .leaseExpired, .connectionInvalidated,
             .leaseReleased, .allLeasesDropped, .startupReconciliation:

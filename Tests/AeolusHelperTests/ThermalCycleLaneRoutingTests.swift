@@ -9,7 +9,8 @@ import Testing
 ///
 /// On the lane: § 3's critical read, its owed read-backs and the restores its own revocation
 /// causes. At `.supervisor`: the cache's source, § 6, § 7's read-back, the grant's foreign-control
-/// and bounds reads, § 5 and level 6. Every call the scripted firmware receives is recorded with
+/// and bounds reads, § 5's and § 6's reads, and level 6. `ThermalCycleLaneWriterTests` holds the
+/// other mechanisms' writes. Every call the scripted firmware receives is recorded with
 /// the admission of the view it came through (`ScriptedControlPlane.admittedAttempts`), so each
 /// mechanism is driven in turn and its calls are read off by phase.
 @Suite("Only § 3 takes § 3's lane, in the composed graph", .timeLimit(.minutes(1)))
@@ -160,10 +161,13 @@ struct ThermalCycleLaneRoutingTests {
     }
 
     /// The production plane in the same graph, through the real scheduler: § 3's critical read is
-    /// granted in the lane, and the cache's flight at `.supervisor`.
+    /// granted in the lane, the cache's flight at `.supervisor`, and a client snapshot read through
+    /// the production `snapshotReader` at `.snapshot`.
     ///
     /// **Mutation:** in `HelperComposition.init`, give § 3 `telemetry:` itself. Run: red — § 3's
     /// read is granted at `.supervisor`.
+    /// **Mutation:** default `SMCReadScheduler.read(keys:at:)`'s priority to `.thermalCycle` and
+    /// drop `SnapshotSensorReads`' `at: .snapshot`. Run: red — the snapshot is granted in the lane.
     @Test("In the production plane, § 3's read is granted in the lane and the cache's is not")
     func theProductionPlaneGrantsSectionThreeInTheLane() async throws {
         let observer = RecordingSchedulerObserver()
@@ -181,19 +185,22 @@ struct ThermalCycleLaneRoutingTests {
         _ = try await helper.sightings.sighting()
         let afterFlight = observer.events.count
         await helper.thermalEmergency.cycle()
+        let afterCycle = observer.events.count
+        _ = try await scheduler.snapshotReader.read(keys: ["TC0P"])
 
-        let grants = observer.events.compactMap { event -> SMCReadPriority? in
-            if case .turnGranted(let priority, _) = event { return priority }
-            return nil
+        func grants(_ events: ArraySlice<SchedulerEvent>) -> [SMCReadPriority] {
+            events.compactMap { event -> SMCReadPriority? in
+                if case .turnGranted(let priority, _) = event { return priority }
+                return nil
+            }
         }
-        let flight = observer.events.prefix(afterFlight).compactMap { event -> SMCReadPriority? in
-            if case .turnGranted(let priority, _) = event { return priority }
-            return nil
-        }
+        let events = observer.events
+        let flight = grants(events[..<afterFlight])
+        let cycle = grants(events[afterFlight..<afterCycle])
+        let snapshot = grants(events[afterCycle...])
         #expect(flight == [.supervisor], "the cache's flight was granted at \(flight)")
-        #expect(
-            Array(grants.dropFirst(flight.count)) == [.thermalCycle],
-            "§ 3's read was granted at \(grants.dropFirst(flight.count))")
+        #expect(cycle == [.thermalCycle], "§ 3's read was granted at \(cycle)")
+        #expect(snapshot == [.snapshot], "the client's snapshot read was granted at \(snapshot)")
     }
 
     /// § 3's writes in a firing cycle — its bridge job and its revocation's restore — are all in
@@ -226,8 +233,8 @@ struct ThermalCycleLaneRoutingTests {
     ///
     /// **Mutation:** in `HelperFanRestorer.bound(for:)`, return `bounded` for every cause.
     /// Run: red.
-    /// **Mutation:** swap the `.thermalEmergency` and `.systemReclaimed` arms. Run: red here and in
-    /// `everyOtherCauseRestoresAtSupervisor`.
+    /// **Mutation:** swap the `.thermalEmergencyRevocation` and `.systemReclaimed` arms. Run: red
+    /// here and in `everyCauseRoutesByWhoCausedIt`.
     @Test("§ 3's revocation puts every restore attempt in the lane")
     func sectionThreesRevocationRestoresInTheLane() async throws {
         let machine = await Machine(stages: [Self.nominal, Self.refusing])
@@ -235,7 +242,7 @@ struct ThermalCycleLaneRoutingTests {
         await machine.firmware.advance()
 
         let revocation = await machine.calls {
-            await machine.helper.leases.revokeEveryLease(because: .thermalEmergency)
+            await machine.helper.leases.revokeEveryLease(because: .thermalEmergencyRevocation)
         }
         let attempts = revocation.filter {
             if case .restoreToAutomatic = $0.attempt { return true }
@@ -249,6 +256,32 @@ struct ThermalCycleLaneRoutingTests {
             attempts.map(\.attempt) == expected,
             "\(attempts)")
         #expect(Self.admissions(attempts) == [.thermalCycle], "§ 3's revocation: \(attempts)")
+    }
+
+    /// Every cause, `FanRestoreCause.allCases`, through the composed graph's restorer: § 3's
+    /// revocation restores in the lane and every other cause at `.supervisor`. All of them, so a
+    /// cause moved into the lane's arm, or added to the enum and routed there, is a second producer
+    /// in the lane and fails here.
+    ///
+    /// **Mutation:** in `HelperFanRestorer.bound(for:)`, move `.leaseExpired` into the lane's arm.
+    /// Run: red, naming it.
+    /// **Mutation:** move `.supervisorBlind`, `.connectionInvalidated` and
+    /// `.startupReconciliation` there instead. Run: red, naming each.
+    @Test("Every cause routes by who caused it: § 3's to the lane, every other to supervisor")
+    func everyCauseRoutesByWhoCausedIt() async throws {
+        let machine = await Machine(stages: [Self.nominal], fans: 1)
+        #expect(FanRestoreCause.allCases.count == 8, "a cause was added; it is driven below")
+
+        for cause in FanRestoreCause.allCases {
+            let calls = await machine.calls {
+                _ = await machine.helper.restorer.restoreToAutomatic(fans: [0], because: cause)
+            }
+            let restores = calls.filter { $0.attempt == .restoreToAutomatic(.fan(0)) }
+            let expected: Set<PlaneAdmission> =
+                cause == .thermalEmergencyRevocation ? [.thermalCycle] : [.supervisor]
+            #expect(restores.count == 1, "\(cause): \(calls)")
+            #expect(Self.admissions(restores) == expected, "\(cause) restored at \(restores)")
+        }
     }
 
     /// Every other cause, through its own path, restores at `.supervisor`: a release, the panic

@@ -206,7 +206,7 @@ struct ThermalEmergencyTests {
         await machine.emergency.cycle()
 
         #expect(await machine.leases.leaseCount == 0)
-        #expect(await machine.restorer.causes == [.thermalEmergency])
+        #expect(await machine.restorer.causes == [.thermalEmergencyRevocation])
         #expect(await machine.restorer.restoredFans == [Set([0, 1])])
     }
 

@@ -97,7 +97,11 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// **Required, with no default**, for `sightings`' reason: a defaulted reader would
     /// compile and answer from something no firmware stands behind, and every owed fan
     /// would either clear on nothing or never clear, with every test still passing. The
-    /// composition root passes `StartupReconciliation`, whose plane reads are `.supervisor`.
+    /// composition root passes `StartupReconciliation.handbackReadBack(admittedAt: .thermalCycle)`:
+    /// reconciliation's own read loop, `PlaneHandbackReadBack`, over the plane's view at § 3's
+    /// lane, so the read § 3 clears a fan on and the one the lease core confirms a handback on are
+    /// one loop (#295), and § 3's is admitted in its own lane
+    /// (`ThermalCycleLaneSharingTests`, `ThermalCycleLaneTripwireTests`).
     private let handbackReadBack: any HandbackReadingBack
 
     /// The ceiling this instance compares against, after the downward-only rule.
@@ -576,7 +580,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         guard !engagedFans.isEmpty else {
             // Still revoke, because a lease can exist without a fan having been engaged
             // under it yet — that is the case the registry cannot see.
-            await leases.revokeEveryLease(because: .thermalEmergency)
+            await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
             return
         }
         let engagedSince = engagedFans.values.sorted { $0.index < $1.index }
@@ -585,7 +589,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         for fan in engagedSince {
             await bridgeThenFileRestored(fan)
         }
-        await leases.revokeEveryLease(because: .thermalEmergency)
+        await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
     }
 
     // MARK: - Accepted handbacks (#295)
@@ -602,7 +606,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// again mid-bridge, which stays registered and is bridged again (#305, see
     /// `bridgeThenFileRestored(_:)`); a latched cycle takes back whatever is registered, the
     /// same way; and a blind cycle is a machine whose
-    /// SMC is not answering, where one more `.supervisor` read would only fail. A read that
+    /// SMC is not answering, where one more read, in the lane or out of it, would only fail.
+    /// The read is `PlaneHandbackReadBack`'s, over the plane's lane view. A read that
     /// never runs keeps the fan owed — a machine blind between episodes still bridges it in
     /// the next one. Taken last so it
     /// never delays a decision the cycle exists to make. It runs inside `isCycling`, so an
@@ -779,7 +784,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // having engaged manual control under it yet, and such a fan is in no registry —
         // selecting on `engagedFans` here left exactly that lease alive through an
         // emergency. See `LeaseAuthority.revokeEveryLease(because:)`.
-        await leases.revokeEveryLease(because: .thermalEmergency)
+        await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
     }
 
     /// Bridges one fan, then files it as restored by § 3 — **unless it was engaged again
@@ -821,6 +826,13 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// either error here would convert "the fans are still pinned" into "the emergency
     /// completed" — the inversion this subsystem exists to prevent, which is why this
     /// repository's `no_silent_write_failure` rule refuses `try?` outright.
+    ///
+    /// **Both lines are written after the job, not between its halves.** The halves run inside
+    /// one turn and nothing inside a turn suspends, so there is no point between them at which
+    /// this actor runs; a line written there would be written by the plane, from inside the turn
+    /// that holds the connection, which is the one place a log call must not add latency. The
+    /// log keeps the order of the writes — the maximum's line, then the restore's failure if it
+    /// failed — and what separates them is one job, not a wait.
     private func bridgeToMaximumThenRelease(_ fan: CommandableFan) async {
         let outcome = await writer.bridgeToMaximumThenRestore(of: fan)
 

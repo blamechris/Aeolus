@@ -25,9 +25,10 @@
 /// ## Who names the lane
 ///
 /// Only § 3 uses it: the composition's § 3 wiring builds § 3's telemetry, read-back reader and
-/// writer over `admitted(at: .thermalCycle)`, and `HelperFanRestorer` routes the restores caused by
-/// `FanRestoreCause.thermalEmergency` through its lane view. `ThermalCycleLaneTripwireTests` holds
-/// both lists.
+/// writer over `admitted(at: .thermalCycle)`, and `HelperFanRestorer` routes the restores caused
+/// by `FanRestoreCause.thermalEmergencyRevocation` through its lane view.
+/// `ThermalCycleLaneTripwireTests` counts both words file by file, and `SMCReadScheduler` reports
+/// at run time a lane request that arrives while another is outstanding.
 enum PlaneAdmission: Sendable, Hashable {
 
     /// § 3's own cycle (`SMCReadPriority.thermalCycle`).
