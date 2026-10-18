@@ -41,8 +41,8 @@ struct ToolsSeamTests {
     /// so this scan is the only guard on an import there. Each fixture is a spelling the compiler
     /// accepts that the literal match read as clean (#441, T07).
     ///
-    /// **Mutation:** in `ToolsSeamScanner.normalised`, keep the backticks. Run: red here, at the
-    /// backticked import. Keeping the whitespace instead is red at the next fixture.
+    /// **Mutations:** in `ToolsSeamScanner.normalised`, keep the backticks. Run: red here, at the
+    /// backticked import. Keeping the whitespace instead is red at the spaced `@_spi( FanWrite )`.
     @Test("A forbidden token is found however the compiler lets it be spelled")
     func spellingsOfAForbiddenTokenAreFound() {
         let attribute = [

@@ -168,9 +168,9 @@ struct WriteSeamSpellingTests {
     /// The first group is what the pattern read before #441; the second is what it did not. The
     /// tree has no job to hold one, so these fixtures are the scan's only evidence today.
     ///
-    /// **Mutations:** in `taskSpawn`, require a `{` after the argument list again,
-    /// `(?:\([^()]*\))?\s*\{` in place of `[({]`. Run: red here, at `Task(operation:`. Dropping
-    /// `immediate|immediateDetached` is red at its own fixture.
+    /// **Mutations:** put the pre-#441 `taskSpawn` back, which needs a `{` after the argument
+    /// list. Run: red here, at `Task(operation:`. Dropping `immediate|immediateDetached` from the
+    /// new one is red at their own fixtures.
     @Test("A Task spawned inside a job is found in every spelling, and a lookalike is not")
     func taskSpawnsAreFoundInEverySpelling() throws {
         let before = [
@@ -288,9 +288,7 @@ struct SeamBuildSettingTests {
     ///
     /// **Mutations:** in `Package.swift`, give a test target `path: "Tests/../Probe"` (P04); add
     /// `.target(name: "Probe", path: "Probe")` and make a test target depend on it (P06); give a
-    /// target `path: probePath` over a `let probePath = "Probe"` (P03). Run: red here, each. P02's
-    /// `Package@swift-6.swift` with a target outside the roots is red here too, and the manifest
-    /// must then be a full copy: SwiftPM reads it instead of `Package.swift`.
+    /// target `path: probePath` over a `let probePath = "Probe"` (P03). Run: red here, each.
     @Test("Every target in every manifest takes its sources from a directory the scans read")
     func everyTargetIsUnderAScannedRoot() throws {
         let root = RuleZeroScan.repositoryRoot
