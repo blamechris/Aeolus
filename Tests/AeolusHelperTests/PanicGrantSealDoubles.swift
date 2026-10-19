@@ -1,5 +1,6 @@
 import FanKit
 import SMCCore
+import Testing
 
 @testable import AeolusHelper
 
@@ -16,20 +17,27 @@ import SMCCore
 /// Every park suspends on an `AsyncSignal`, never on a blocked thread. A test's `.timeLimit` does
 /// not unpark it: the parked restore runs in `observing`'s unstructured task, or in the task
 /// `BoundedFanRestorer` starts for a per-fan restore, and the test's cancellation reaches
-/// neither. So every test lets through what it parks before it returns.
+/// neither. So every test lets through what it parks before it returns, and every park carries a
+/// ceiling (`parkCeiling`): one nobody lets through records an issue, stops parking, lets every
+/// parked restore through and goes on, so a restore a mutation adds fails the test instead of
+/// hanging the run (#451).
 actor ScopeParkingPlane: AdmissionBlindPlane {
 
     /// The firmware below, with its mode-read gate.
     let reads: ControlStateGatePlane
 
+    private let ceiling: Duration
     private var parking: FanRestoreScope?
     private var parked: [AsyncSignal] = []
 
     /// Every scope a restore was asked for, in order, recorded before it parks.
     private(set) var restoreScopes: [FanRestoreScope] = []
 
-    init(_ firmware: ScriptedControlPlane) {
+    /// `ceiling` is how long a park waits to be let through. Only a test of the ceiling itself
+    /// passes anything but `parkCeiling`.
+    init(_ firmware: ScriptedControlPlane, ceiling: Duration = parkCeiling) {
         reads = ControlStateGatePlane(firmware)
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -63,7 +71,12 @@ actor ScopeParkingPlane: AdmissionBlindPlane {
         if scope == parking {
             let signal = AsyncSignal()
             parked.append(signal)
-            try await signal.wait()
+            if try await !signal.wait(atMost: ceiling) {
+                recordAbandonedPark(by: "ScopeParkingPlane", of: scope, after: ceiling)
+                // The test is red already. Stop parking, so a later restore of this scope does
+                // not wait out a ceiling of its own, and let the other parks go.
+                await releaseAll()
+            }
         }
         try await reads.restoreToAutomatic(scope)
     }
