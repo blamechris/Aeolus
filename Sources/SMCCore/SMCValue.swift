@@ -250,14 +250,18 @@ extension SMCKeyType {
     ///   - a magnitude above `Float.greatestFiniteMagnitude` is refused. That is `NaN`, an
     ///     infinity, and a value just past the bound, which would round down to it and be
     ///     written as less than was asked for;
-    ///   - **a non-zero value that underflows to zero**, such as `1e-50`, is refused. Written to
-    ///     `F<n>Tg`, a zero asks the fan to stop, which `CLAUDE.md` rule 3 forbids, so a request
-    ///     that is not zero must never be written as one. Zero itself is exact and encodes, and
-    ///     a value that underflows to a subnormal stays non-zero and rounds, as any value between
-    ///     two floats does.
+    ///   - **a non-zero value that underflows to zero**, such as `1e-50`, is refused, for the same
+    ///     reason: its bytes would say something other than what was asked for, and nothing
+    ///     after this function could tell. Zero itself is exact and encodes, and a value that
+    ///     underflows to a subnormal stays non-zero and rounds, as any value between two floats
+    ///     does.
     ///
-    ///   ADR 0008's clamp only ever produces finite targets inside the fan's envelope, and this
-    ///   does not trust that it did (ADR 0004).
+    ///   **Neither refusal is `CLAUDE.md` rule 3's control.** This function cannot see the key it
+    ///   encodes for, and it accepts zero, `-0.0`, `1e-30`, `0.5`, subnormals and negatives,
+    ///   each of them a stop or worse on `F<n>Tg`. Rule 3 rests on ADR 0008's clamp:
+    ///   `FanControlEnvelope` never produces a target below `lowestCommandableRPM`, which is
+    ///   `max(F0Mn, FanSafetyLimits.minimumManualRPM)`. The command turn that encodes a target is
+    ///   to refuse one below that floor before it encodes (#447's review; b2's).
     ///
     /// A refusal throws `SMCError.notPermitted`. `encodingFailed(key:type:)` is the case for
     /// "the value does not fit the type", but it carries a key, and this function — whose

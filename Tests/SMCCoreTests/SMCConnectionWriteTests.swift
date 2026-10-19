@@ -291,19 +291,31 @@ private struct SMCKeyTypeEncodeTests {
                 }
             }
         }
-        #expect(
-            try SMCKeyType.flt.encode(scalar: largest, byteOrder: .littleEndian) == [
-                0xFF, 0xFF, 0x7F, 0x7F,
-            ])
-        #expect(
-            try SMCKeyType.flt.encode(scalar: -largest, byteOrder: .bigEndian) == [
-                0xFF, 0x7F, 0xFF, 0xFF,
-            ])
+        let accepted: [(value: Double, littleEndian: [UInt8])] = [
+            (largest, [0xFF, 0xFF, 0x7F, 0x7F]), (-largest, [0xFF, 0xFF, 0x7F, 0xFF]),
+        ]
+        try Self.expectEncodedInBothOrders(accepted)
     }
 
-    /// Written to `F<n>Tg`, a zero asks the fan to stop (`CLAUDE.md` rule 3), so a request that
-    /// is not zero is never written as one. Zero itself is exact, and so is the smallest
-    /// non-zero `Float`; a value that rounds to that one stays non-zero and encodes (#433).
+    /// Each value's `flt` bytes: `littleEndian` in that order, and the same four reversed.
+    private static func expectEncodedInBothOrders(
+        _ accepted: [(value: Double, littleEndian: [UInt8])]
+    ) throws {
+        for (value, littleEndian) in accepted {
+            #expect(
+                try SMCKeyType.flt.encode(scalar: value, byteOrder: .littleEndian) == littleEndian,
+                "\(value)")
+            #expect(
+                try SMCKeyType.flt.encode(scalar: value, byteOrder: .bigEndian)
+                    == Array(littleEndian.reversed()),
+                "\(value)")
+        }
+    }
+
+    /// A non-zero request is never written as zero, for the reason a value past the bound is
+    /// refused: the bytes would not say what was asked for. Zero itself is exact, and so is the
+    /// smallest non-zero `Float`; a value that rounds to that one stays non-zero and encodes
+    /// (#433). This is not rule 3's control, which is the clamp: see `encode`'s documentation.
     @Test("flt refuses a non-zero Double that underflows to zero, and encodes zero itself")
     func fltRefusesAnUnderflowToZero() throws {
         let smallest = Double(Float.leastNonzeroMagnitude)
@@ -316,12 +328,10 @@ private struct SMCKeyTypeEncodeTests {
                 }
             }
         }
-        #expect(try SMCKeyType.flt.encode(scalar: 0, byteOrder: .littleEndian) == [0, 0, 0, 0])
-        for value in [smallest, smallest * 0.75] {
-            #expect(
-                try SMCKeyType.flt.encode(scalar: value, byteOrder: .littleEndian) == [1, 0, 0, 0],
-                "\(value)")
-        }
+        try Self.expectEncodedInBothOrders([
+            (0, [0, 0, 0, 0]), (smallest, [1, 0, 0, 0]), (-smallest, [1, 0, 0, 0x80]),
+            (smallest * 0.75, [1, 0, 0, 0]),
+        ])
     }
 
     @Test("flt with no resolved byte order is refused rather than guessed")
