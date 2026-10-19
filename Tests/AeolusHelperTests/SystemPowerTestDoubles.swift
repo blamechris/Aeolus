@@ -181,13 +181,17 @@ actor AcknowledgementWitness {
 actor WedgedRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
+    private let ceiling: Duration
     private let held = AsyncSignal()
 
     /// Every scope the restore was asked for, recorded before it parks.
     private(set) var restoreScopes: [FanRestoreScope] = []
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// `ceiling` is how long the wedge holds a restore. Only a test of the ceiling itself passes
+    /// anything but `parkCeiling`.
+    init(_ wrapped: ScriptedControlPlane, ceiling: Duration = parkCeiling) {
         self.wrapped = wrapped
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -201,7 +205,12 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         restoreScopes.append(scope)
-        try await held.wait()
+        // A wedge nobody releases gives up at the ceiling, and a mutation that adds a restore to
+        // a path the test did not park fails it instead of hanging the run (#451). The latch is
+        // open after that, so no later restore waits out a ceiling of its own.
+        if try await !held.wait(atMost: ceiling) {
+            recordAbandonedPark(by: "WedgedRestorePlane", of: scope, after: ceiling)
+        }
         try await wrapped.restoreToAutomatic(scope)
     }
 
