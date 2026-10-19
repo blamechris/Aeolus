@@ -39,16 +39,27 @@ struct FanctlResetTests {
         let exitCode: ExitCode
     }
 
-    /// Deadlines long enough that a loaded runner cannot fake a failure — **for this suite, and
-    /// no other**.
+    /// The deadlines every other `fanctl` suite against a real helper session runs under, and
+    /// `emitted(over:waiting:)`'s default: 10 s gated, 10 s panic, and the product's handshake.
+    /// They are the values this constant had before #439 made it stall-tolerant (`7b19422^`),
+    /// restored and not newly chosen, so that a request nothing answers fails at 10 s, inside the
+    /// one-minute limits those suites carry (#443).
+    /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds it
+    /// no tighter than the product's.
+    static let unhurried = HelperClientDeadlines(
+        gatedVerb: .seconds(10),
+        panicVerb: .seconds(10),
+        handshakeVerb: HelperClientDeadlines.handshakeVerb)
+
+    /// Deadlines long enough that a loaded runner cannot fake a failure — **for this suite's
+    /// answering tests, and no other**.
     ///
     /// `private` on purpose. A deadline this long is only safe under a time limit that sits above
-    /// it, and this is the one suite whose limit does. When it was `unhurried` and internal, six
-    /// other suites took it by default ([#443](https://github.com/blamechris/Aeolus/issues/443)):
-    /// two with one-minute limits ended on "Time limit was exceeded" before the client's own
-    /// "did not confirm" could surface, and three with no limit at all ran for two to three
-    /// minutes when a request was dropped. Every other suite takes
-    /// `ClientListenerHarness.defaultDeadlines`, the product's trio, and the compiler now says so.
+    /// it, and this is the one suite whose limit does. When this was `unhurried` and internal, six
+    /// other suites took it by default: two with one-minute limits ended on "Time limit was
+    /// exceeded" before the client's own "did not confirm" could surface, and three with no limit
+    /// at all ran for two to three minutes when a request was dropped. Those suites are back on
+    /// `unhurried`, and the compiler now keeps this one out of their reach.
     ///
     /// **Mutation:** make the harness drop the panic request — `ClientListenerHarness`'s
     /// `restoreAllToAutomatic(reply:)` neither forwards it nor replies. Run: red, at the
@@ -114,8 +125,8 @@ struct FanctlResetTests {
     /// (#341), so a change to either moves them, rather than leaving a literal that has drifted
     /// from its reason. Its handshake term is the product's own: nothing here sends a `hello`, so
     /// a stall allowance on it would be inert, and an invented one is what the first test that
-    /// did send one would inherit. `noHarnessDefaultImposesATighterDeadlineThanTheProduct` used to
-    /// read this constant; being `private`, it cannot, so this is where all three terms are held.
+    /// did send one would inherit. `noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds
+    /// `unhurried`; it cannot read this `private` constant, so this is where all three are held.
     ///
     /// **Mutation:** set `stallTolerant`'s panic term to `.seconds(10)`. Run: red.
     /// **Mutation:** set `stallTolerant`'s handshake term to `.seconds(10)`. Run: red.
@@ -151,12 +162,12 @@ struct FanctlResetTests {
     /// Only the connection is substituted — where to look, who may answer, how long to wait.
     /// The verb, the teardown and the report all come from the function under test.
     ///
-    /// `deadlines` defaults to the product's, through the harness, so a suite that calls this
-    /// without naming one is bounded as the client is shipped. This suite's own answering tests
-    /// pass `stallTolerant`, which only they may.
+    /// `deadlines` defaults to `unhurried`, so a suite that calls this without naming one is not
+    /// given the stall allowance. This suite's own answering tests pass `stallTolerant`, which only
+    /// they may.
     static func emitted(
         over harness: ClientListenerHarness,
-        waiting deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
+        waiting deadlines: HelperClientDeadlines = unhurried
     ) async throws -> Emitted {
         var command = try resetAll()
         command.helper = HelperConnection(

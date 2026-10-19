@@ -132,25 +132,29 @@ struct HelperClientDeadlineTests {
     /// `HelperClientTests.theHandshakeIsSentWithinItsOwnDeadline` and
     /// `aMessageNobodyAnswersHasItsOwnError` are both that shape already, and always were.
     ///
-    /// **What this covers, exactly.** Every deadline a test can *inherit*, and there is one:
-    /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take and which
-    /// `FanctlAutoTests.run`, `FanctlStatusTests` and `FanctlResetTests.emitted(over:waiting:)`
-    /// take by reference. `grep 'HelperClientDeadlines('` over `Tests/` finds no default written
-    /// as a literal. The one construction deliberately *looser* than the product's,
-    /// `FanctlResetTests.stallTolerant`, is `private` to the suite that passes it, so no other
-    /// suite can inherit it ([#443](https://github.com/blamechris/Aeolus/issues/443)); that suite
-    /// holds its three terms itself, in
-    /// `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling`. So no test can acquire a tighter
-    /// bound than the product's without naming one.
+    /// **What this covers, exactly.** Every deadline a test can *inherit*:
+    /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take, and
+    /// `FanctlResetTests.unhurried`, the default of `FanctlResetTests.emitted(over:waiting:)` and
+    /// `FanctlAutoTests.run`, and what `FanctlStatusTests` passes. Those two are the whole set —
+    /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The one construction
+    /// deliberately *looser* than `unhurried`, `FanctlResetTests.stallTolerant`, is `private` to
+    /// the suite that passes it, so no other suite can inherit it
+    /// ([#443](https://github.com/blamechris/Aeolus/issues/443)); that suite holds its three terms
+    /// itself, in `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling`. So no test can acquire
+    /// a tighter bound than the product's without naming one.
     ///
-    /// **What it compares is a value against itself, and that is what it is for.**
+    /// **Most of what it compares is a value against itself, and that is what it is for.**
     /// `ClientListenerHarness.defaultDeadlines` *is* `HelperClientDeadlines.default`
-    /// (`HelperClientHarness.swift`). This is therefore a **source tripwire**: it cannot fail
-    /// while the default is defined by reference, and it goes red the moment a literal is written
-    /// back into it — which is the only way #250 returns. It is asserted as *equality* for that
-    /// reason: there is no reason for the default the tests inherit to differ from the product in
-    /// either direction, and equality catches a literal that merely *differs* rather than only
-    /// one that is tighter.
+    /// (`HelperClientHarness.swift`), and `FanctlResetTests.unhurried`'s handshake term *is*
+    /// `HelperClientDeadlines.handshakeVerb`, so of the four terms read here only `unhurried`'s
+    /// gated (10 s against 5 s) and panic (10 s against 10 s) compare distinct values. This is
+    /// therefore a **source tripwire**: it cannot fail while the defaults are defined by
+    /// reference, and it goes red the moment a literal is written back into either of them —
+    /// which is the only way #250 returns. The harness half is asserted as *equality* for that
+    /// reason: there is no reason for the default eighteen tests inherit to differ from the
+    /// product in either direction, and equality catches a literal that merely *differs* rather
+    /// than only one that is tighter. `unhurried` keeps `>=`, because being generous is
+    /// deliberate there.
     ///
     /// **What it does not cover, and what now does.** Eleven constructions pass a deadline
     /// explicitly, and this test reads none of them. A bound below the product's is legitimate at
@@ -183,7 +187,8 @@ struct HelperClientDeadlineTests {
     /// **Mutation:** set `ClientListenerHarness.defaultDeadlines` back to
     /// `HelperClientDeadlines(gatedVerb: .milliseconds(750), panicVerb: .milliseconds(750),
     /// handshakeVerb: .milliseconds(750))`. Run: red on the first expectation, naming all three
-    /// harness bounds and the shipping trio they undercut.
+    /// harness bounds and the shipping trio they undercut. Or put `FanctlResetTests.unhurried`'s
+    /// handshake term back to `.seconds(10)`: red on the third expectation of the loop below.
     @Test("No harness default imposes a tighter deadline than the product")
     func noHarnessDefaultImposesATighterDeadlineThanTheProduct() {
         let shipping = HelperClientDeadlines.default
@@ -205,6 +210,47 @@ struct HelperClientDeadlineTests {
             product's can only fail them on a slow machine (#250), and a literal here is how \
             the 750 ms triple got in.
             """)
+
+        // The other default a test can inherit without naming it, and `>=` rather than equality
+        // because being *looser* is deliberate here: `unhurried` sits at 10 s on both verbs the
+        // suites that take it exercise, as it did before #439. Those two terms are also the only
+        // distinct comparisons in this test — the handshake term is
+        // `HelperClientDeadlines.handshakeVerb` itself.
+        let fanctlDefaults = FanctlResetTests.unhurried
+        for (verb, harnessBound, productBound, consequence) in [
+            (
+                "a gated verb", fanctlDefaults.gatedVerb, shipping.gatedVerb,
+                """
+                The suites that inherit this assert text, exit codes and call counts, \
+                so a bound below the product's can only report a helper that answered as one \
+                that did not — the misreport those suites exist to forbid.
+                """
+            ),
+            (
+                "the panic path", fanctlDefaults.panicVerb, shipping.panicVerb,
+                """
+                `fanctl reset --all` *is* the panic path, so this is the bound its round trip \
+                actually runs under in the suites that inherit this, and a value below the \
+                product's reports a helper that answered as one that did not.
+                """
+            ),
+            (
+                "a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb,
+                """
+                No test in that suite sends a `hello` at all — `theCommandSendsNoHandshake` \
+                asserts precisely that — so this term is inert there and misreports nothing \
+                today. It is held to the product's value because a fourth invented handshake \
+                bound is what the first test that *does* send one would inherit.
+                """
+            ),
+        ] {
+            #expect(
+                harnessBound >= productBound,
+                """
+                `FanctlResetTests.unhurried` allows \(verb) \(harnessBound) where the product \
+                allows \(productBound). \(consequence)
+                """)
+        }
     }
 
     /// How long the peer is made to sit on a message in the two tests below.

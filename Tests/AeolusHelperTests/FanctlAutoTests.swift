@@ -39,7 +39,7 @@ struct FanctlAutoTests {
         over harness: ClientListenerHarness,
         time: VirtualSettleTime = VirtualSettleTime(),
         realClock: Bool = false,
-        deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
+        deadlines: HelperClientDeadlines = FanctlResetTests.unhurried
     ) async throws -> Run {
         let output = RecordingTerminal()
         var command = try auto(arguments)
