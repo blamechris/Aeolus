@@ -3554,6 +3554,69 @@ writes", which described the architect's model package, not this repository's te
 `main()`, now a `private` entry point. It also adds `-enable-private-imports` to Revisit if. None of
 this changes the decision.
 
+## Amendment (2026-10-19, B1 b2) — the write plane's bodies, and what the plan left open
+
+Cited elsewhere as the b2 amendment.
+
+b2 gives `SMCFanControlPlane` its write bodies and `.built`, on `e4/bring-up` only, as the B1 and B1
+seam amendments decide. It also settles five points those amendments left to the conformer, and it
+marks the points that wait on P1, the owner-present read-only pre-flight, which has not run.
+
+**Decided.**
+- **The turn bodies are `SMCWriteTurns`**, a free `enum` whose functions take an `isolated any
+  SMCWriteChannel`. The plane takes one write turn per verb, at its own `admission`, through
+  `SMCReadScheduler.withWriteTurn(at:on:_:)`, whose admission has no default. The ledger's
+  admission, or a restore's issue, is each turn's first statement.
+- **The preparation step also takes each enumerated fan's `F<n>Tg` key info, and records it
+  nowhere.**
+  - *Why:* the step that reads back engaged also reads the raw target, which the A6 amendment's D3
+    bullet asks run 1 to log. That read costs one round trip only when the key's info is cached.
+    Taking it here keeps that turn at five, inside `writeTurnRoundTrips`. Nothing in the helper
+    clears the cache.
+  - *Cost:* one round trip per fan at bring-up, so 34 at ten fans, inside D_bringUp.
+  - *Residual:* a fan whose target key info did not answer here costs its first engaged turn one
+    more round trip, if the key answers later.
+- **The forward encoder has a file of its own, `SMCWriteEncoding`.** It is the third importer of
+  `@_spi(FanWrite)`, beside the daemon's forwarder and the reachability probe, and it names `encode`
+  alone. The turn file writes only through the channel's requirement and holds no opt-in, so it
+  cannot name `SMCConnection.write(_:to:)`. The SPI's members stay two.
+- **The command refuses a target below the permit's floor, before it encodes or reads.**
+  - `AuthorisedFanTarget` carries the envelope it was clamped through, from the same read, and the
+    floor is `max(lowestCommandableRPM, minimumManualRPM)`.
+  - No permit can carry such a target, so the refusal is defence in depth: `encode` accepts zero,
+    negatives and subnormals.
+  - The refusal is `WriteTurnRefusal`, not a new `FanControlPlaneError` case, so the vocabulary
+    shared with `main` does not move. Every caller routes it as a refused command.
+- **Every write failure without a result byte is `.unanswered`.** That includes a refusal SMCCore
+  makes before any round trip. It is the conservative reading — counted as issued, thrown, and
+  undone — and nothing distinguishes the two causes of `connectionFailed`.
+- **§ 3's telemetry holds a read-only role**, `CriticalTemperatureReading`, which `FanControlPlane`
+  refines. On a plane that can write, the telemetry site therefore names no write verb by the
+  compiler's rule.
+
+**What waits on P1.**
+- **`Ftst`'s not-found answer.** `SMCWriteTurns.forceKeyNotFoundAnswer` is `nil` until P1 observes
+  one. Until then, no failure classifies the key absent: every one is unknown, and D5 treats it as
+  present. On a machine that truly lacks the key (M1/M2, untested), the cost is one logged
+  machine-wide restore at every start.
+- **The yield signal.** Every later step is a Y-write. If P1 shows a non-zero raw mode under
+  Apple's management, the poll becomes Y-read (D3).
+- **U14's premise.** The preparation step takes a non-zero `Ftst` at start to be a dead holder's,
+  and clears it.
+- **U0 and D3/D5's raw values.** `0` before a write and `1` after it are D3's automatic and engaged.
+  A non-zero value under Apple's own management re-decides both, through P1′.
+
+**What remains.** The real write body, `freshKeyInfo` and the forwarder meet the plane first at
+run 1. Write latency (U8) is measured from the per-write log lines, never by a test. Restore turns
+on machines with more than four fans exceed `writeTurnRoundTrips`.
+
+**Revisit if:**
+- P1 defines a not-found answer, or shows any non-zero raw mode or `Ftst`;
+- the helper gains a call to `SMCConnection.invalidate()`, which voids the priming premise;
+- a second caller of the channel's write is proposed.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
