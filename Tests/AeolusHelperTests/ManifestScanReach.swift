@@ -54,15 +54,21 @@ extension ManifestScan {
     /// - **A target inside the helper's directory.** The helper-only scans skip
     ///   `Sources/AeolusHelper/` wholesale, so a `.target` at `Sources/AeolusHelper/Sub`, with the
     ///   helper `exclude:`-ing `Sub`, imports the helper where nothing looks. The `path:` is
-    ///   resolved as text first, `.` and `..` applied to the components as SwiftPM applies them
-    ///   (`resolved(_:)`), and the result is then resolved by the file system and compared, as a
-    ///   real path, with the helper's. A `..` after a symbolic link is therefore not followed
-    ///   through the link: `realpath` would, and SwiftPM does not. A directory that does not
-    ///   resolve, a path that is absolute or climbs out of the repository, and a path that cannot
-    ///   be read are each refused (fail closed), each with its own message.
+    ///   resolved as text first, `.` and `..` applied to the components as SwiftPM appears to
+    ///   apply them (`resolved(_:)`), and the result is then resolved by the file system and
+    ///   compared, as a real path, with the helper's. A `..` after a symbolic link is therefore
+    ///   not followed through the link: `realpath` would, and SwiftPM, by the outcome of SYMDOT2,
+    ///   does not. That is inferred from that outcome, not read from SwiftPM's source. A
+    ///   directory that does not resolve, a path that is absolute or climbs out of the repository,
+    ///   and a path that cannot be read are each refused (fail closed), each with its own message.
+    ///   **What it costs:** it refuses `plugins:` on any target, and a `.plugin` target, outright,
+    ///   which is what SwiftLint's build-tool plugin would need (and a package dependency, which
+    ///   the pin refuses too). The PR that needs one changes this rule, with its own review.
     /// - **A helper that excludes or adds sources.** `exclude:` and `sources:` are how the helper
     ///   would hand part of its directory to another target, or take files from elsewhere; it has
-    ///   neither.
+    ///   neither. **What it costs:** the usual way to keep a non-Swift file under
+    ///   `Sources/AeolusHelper/` is refused outright. None exists today (the helper's Info.plist is
+    ///   in `Configs/`). The PR that adds one changes this rule, with its own review.
     ///
     /// It does not read anything done to a target after its constructor.
     static func reachProblem(with target: Target, under root: URL) -> String? {
@@ -120,6 +126,10 @@ extension ManifestScan {
     ///
     /// It does not read inside the constructor: an expression there is the constructor's arguments,
     /// which `targets(in:)`, `dependencyProblem`, `reachProblem` and `packageDependencies` read.
+    ///
+    /// **What it costs:** an ordinary idiom is refused outright, because it is a statement after
+    /// the constructor: `package.dependencies += […]`, used for example to add a docc plugin
+    /// conditionally. The PR that needs one changes this rule, with its own review.
     static func shapeProblem(in manifest: String) -> String? {
         let code = SeamScanner.strippingAllComments(manifest)
             .trimmingCharacters(in: .whitespacesAndNewlines)
