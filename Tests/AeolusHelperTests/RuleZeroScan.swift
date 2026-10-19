@@ -33,9 +33,15 @@ enum RuleZeroScan {
         let urls = entries.filter { $0.pathExtension == "swift" }
         #expect(!urls.isEmpty, "no Swift files were found under \(directory)")
         return try urls.map { url in
-            File(
-                path: relativePath(of: url),
-                code: code(of: try String(contentsOf: url, encoding: .utf8)))
+            let path = relativePath(of: url)
+            let text = try String(contentsOf: url, encoding: .utf8)
+            // Refused here, where the path is known, so that the issue names the file; the lexer's
+            // own refusal, which cannot, is not reached. Its code is empty, so a scan that needs
+            // the file will say so too.
+            if SeamScanner.refuseCarriageReturns(in: text, file: path) {
+                return File(path: path, code: "")
+            }
+            return File(path: path, code: code(of: text))
         }
         .sorted { $0.path < $1.path }
     }
