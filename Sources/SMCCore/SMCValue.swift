@@ -239,7 +239,8 @@ extension SMCKeyType {
     /// single byte has no byte order to apply — and so do `fpe2`/`fp78`/`sp78`, which are
     /// big-endian by definition of the type.
     ///
-    /// Two types are encoded, the two the Apple Silicon write plane writes (ADR 0014 B1):
+    /// Two types are encoded, the two the Apple Silicon write plane writes (ADR 0014's B1
+    /// amendment):
     /// - **`ui8`**, for `F<n>Md` and `Ftst`: one byte, exactly an integer in `0...255`. A
     ///   fraction, a value out of range, `NaN` or an infinity is refused rather than rounded
     ///   or wrapped, because a rounded mode byte is a different mode. The order is ignored.
@@ -257,7 +258,7 @@ extension SMCKeyType {
     ///
     /// Encoding is type-level only. Whether a value is a *safe* RPM is `FanKit`'s
     /// `FanControlEnvelope`'s question, answered before anything reaches here, and a
-    /// restore's zero bytes never come through this function at all (ADR 0014 B1).
+    /// restore's zero bytes never come through this function at all (ADR 0014's B1 amendment).
     ///
     /// - Note: `flt`'s little-endian output is pinned to the bytes `F0Tg` and `F1Tg` were
     ///   observed holding on `Mac16,5`, so a byte swap made symmetrically here and in

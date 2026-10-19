@@ -191,7 +191,9 @@ opened or on a dead port that sends no message, so whether `AppleSMC` on `Mac16,
 write laid out this way is first seen at the first supervised write. Two differences from the
 sources are deliberate, and are design rather than observation. Aeolus does not read the key
 inside the write: `SMCWriteKey2` reads it first to compare sizes, and Aeolus's write plane
-takes fresh key info itself, before the write and in the same turn (ADR 0004; ADR 0014 D7).
+takes fresh key info itself before a forward write, in the same turn (ADR 0004; ADR 0014 D7).
+A restore reads nothing before it writes: it writes zero bytes of the size the preparation step
+recorded, so no read that can fail stands in front of the keystone (D7 and its B1 amendment).
 And a non-zero `result` byte in the reply is a failure: Stats checks that byte
 ([L709](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L709)),
 and `SMCWriteKey2` returns only the kernel's answer. Constants and field usage were read; no
