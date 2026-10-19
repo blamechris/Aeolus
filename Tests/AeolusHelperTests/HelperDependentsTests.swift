@@ -32,11 +32,17 @@ import Testing
 ///    shares, and as raw text, with no lexer at all, against a pinned list of the files that name
 ///    the module even in prose.
 /// 3. **What neither layer can see.** The source layer skips `Sources/AeolusHelper/`, and the
-///    manifest layer reads the constructor's `dependencies:`, so three constructs this package
-///    does not use are refused outright (`ManifestScan.reachProblem`, `mutationProblem`): a target
-///    inside the helper's directory, or a helper that `exclude:`s or takes `sources:`; a plugin,
-///    whose generated source no scan reads; and a change to a target after the package is
-///    constructed.
+///    manifest layer reads the constructor's `dependencies:`. So `ManifestScan.reachProblem`
+///    refuses, as arguments a constructor was written with, three things this package does not
+///    use: a target whose `path:` is inside the helper's directory, a helper that takes
+///    `exclude:` or `sources:`, and a plugin (a `.plugin` target or a `plugins:` argument), whose
+///    generated source no scan reads. That is exactly the constructor's arguments and no more.
+///    `mutationProblem` is a tripwire and not a rule: it matches two raw-text spellings of a
+///    change after the package is constructed, by accident, and does not catch a subscript
+///    assignment, `replaceSubrange`, a rebinding of `package`, or a `path`, `exclude`, `sources`
+///    or `plugins` set on a let-bound target. For every file outside `Sources/AeolusHelper/` the
+///    control is the import census above, whatever the manifest says; inside that directory
+///    nothing reads a file another target compiles unless the constructor declared it.
 ///
 /// This catches the accident, and every spelling met so far. It does not see an Xcode target
 /// (`project.yml` is not read for dependencies), and against a determined author the compiler's
@@ -80,11 +86,12 @@ struct HelperDependentsTests {
         #expect(declared >= 15, "the manifests declare \(declared) targets, not this package's")
     }
 
-    /// The constructs the dependency rule cannot see past, each refused where it would otherwise
-    /// have to be read (#445's review). None is used today, so the real manifests must be clean:
-    /// no plugin, no target inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the
-    /// helper, and no change to a target after the package is constructed. The unit fixtures are
-    /// `ManifestScanReachTests`.
+    /// What the constructor arguments refuse, and what the raw text trips on (#445's review). None
+    /// is used today, so the real manifests must be clean: no plugin, no target whose `path:` is
+    /// inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the helper, and neither of
+    /// the two raw-text spellings of a change after the package is constructed. The second is a
+    /// tripwire that catches by accident; the unit fixtures, `ManifestScanReachTests`, say what it
+    /// misses.
     ///
     /// **Mutations**, each in `Package.swift` and restored: (P3b) a `.target` at
     /// `Sources/AeolusHelper/ZZSub` with no declared dependency, the helper `exclude:`-ing

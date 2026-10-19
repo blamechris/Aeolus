@@ -8,8 +8,19 @@ extension ManifestScan {
     /// The helper's directory, as components. Nothing but the helper takes its sources from it.
     static let helperDirectory = ["Sources", "AeolusHelper"]
 
-    /// Why `target` could put source in front of the compiler that the scans here do not read, or
-    /// `nil` when it cannot (#445). Each is a refusal of a construct this package does not use:
+    /// Whether `parts`, a resolved path, is inside the helper's directory. The components compare
+    /// without case, as `manifestNames` compares names: this volume is case-insensitive, where
+    /// `Sources/aeolushelper/Sub` is the helper's directory, and SwiftPM did not take the two for
+    /// an overlap (#445's review).
+    static func isInsideHelperDirectory(_ parts: [String]) -> Bool {
+        parts.map { $0.lowercased() }.starts(with: helperDirectory.map { $0.lowercased() })
+    }
+
+    /// Why the arguments `target` was constructed with could put source in front of the compiler
+    /// that the scans here do not read, or `nil` when they cannot (#445). Each is a refusal of a
+    /// construct this package does not use, **read from the constructor's arguments and from
+    /// nothing else**: a `path`, `exclude`, `sources` or `plugins` set on a let-bound target after
+    /// construction is not seen. The refused arguments are:
     /// - **A plugin**, a `.plugin` target or a `plugins:` argument. A build-tool plugin generates
     ///   source into the target it is applied to, and no scan here reads generated source: not rule
     ///   zero, not the SPI censuses, not the import census.
@@ -36,7 +47,7 @@ extension ManifestScan {
                 + "sources skip Sources/AeolusHelper/ wholesale"
         }
         guard case .literal(let path) = target.path, let parts = resolved(path),
-            parts.starts(with: helperDirectory)
+            isInsideHelperDirectory(parts)
         else { return nil }
         return
             "\(called) takes its sources from \(path), inside Sources/AeolusHelper/. The scans of "
@@ -44,19 +55,29 @@ extension ManifestScan {
             + "the helper and build its real graph where nothing looks"
     }
 
-    /// Why `manifest`, read as raw text, changes a target after the package is constructed, or
-    /// `nil` when it does not (#445). The dependency rule reads only the constructor's
-    /// `dependencies:`, so `package.targets[3].dependencies.append("AeolusHelper")` would pass it.
-    /// Raw text, comments included, as `flags(in:)` reads: prose naming one is a line to reword.
+    /// Why `manifest`, read as raw text, matches one of two spellings of a change made after the
+    /// package is constructed, or `nil` when it matches neither (#445). **A tripwire that catches
+    /// by accident, not a rule.** The dependency rule reads only the constructor's `dependencies:`,
+    /// so `target.dependencies.append("AeolusHelper")` placed after `Package(...)` would pass it;
+    /// this matches that, `+=`, `=` and `.insert` on `.dependencies`, and any use of
+    /// `package.targets`. It therefore also refuses the ordinary `package.dependencies +=
+    /// [.package(…)]`, and keeps refusing it (fail closed).
+    ///
+    /// It does **not** catch a subscript assignment (`target.dependencies[0] = …`),
+    /// `replaceSubrange`, a rebinding of `package`, or a `path`, `exclude`, `sources` or `plugins`
+    /// set on a let-bound target after construction, which also gets past `reachProblem`. For a
+    /// file outside `Sources/AeolusHelper/` the control is the import census, whatever the
+    /// manifest says. Raw text, comments included, as `flags(in:)` reads: prose naming one of the
+    /// two spellings is a line to reword.
     static func mutationProblem(in manifest: String) -> String? {
-        let mutations = [
-            #"\.dependencies\s*(?:\+?=|\.\s*(?:append|insert))"#,
-            #"(?<![A-Za-z0-9_])package\s*\.\s*targets(?![A-Za-z0-9_])"#,
+        let spellings: [(pattern: String, found: String)] = [
+            (#"\.dependencies\s*(?:\+?=|\.\s*(?:append|insert))"#, "changes a dependency list"),
+            (#"(?<![A-Za-z0-9_])package\s*\.\s*targets(?![A-Za-z0-9_])"#, "uses package.targets"),
         ]
-        for pattern in mutations
+        for (pattern, found) in spellings
         where manifest.range(of: pattern, options: .regularExpression) != nil {
-            return "the manifest changes a target after the package is constructed (\(pattern)), "
-                + "which the dependency rule does not read"
+            return "the manifest \(found) after the package is constructed (\(pattern)), which "
+                + "the dependency rule does not read"
         }
         return nil
     }

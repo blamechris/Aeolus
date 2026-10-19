@@ -7,8 +7,10 @@ import Foundation
 /// Not a Swift parser, and it does not try to be one. It fails closed: a `path:` it cannot read as
 /// a single string literal, a `name:` it cannot read, a `dependencies:` it cannot read as one array
 /// of names, and a path that resolves outside the directories every other scan here reads are all
-/// findings, never exemptions (#441, #445). So is a plugin, a target inside the helper's directory,
-/// and a change to a target after the package is constructed.
+/// findings, never exemptions (#441, #445). So is a plugin, a target whose `path:` is inside the
+/// helper's directory, and an `exclude:` or `sources:` on the helper, each read from a
+/// constructor's arguments and from nothing else (`ManifestScanReach.swift`). A change made after
+/// the package is constructed is only tripped on, by two raw-text spellings, by accident.
 enum ManifestScan {
 
     // MARK: - Flags

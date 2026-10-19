@@ -1,10 +1,19 @@
 import Foundation
 import Testing
 
-/// What the manifest scan refuses beyond a dependency on the helper (#445's review): a plugin, a
-/// target inside the helper's directory, a helper that excludes or adds sources, and a change to a
-/// target after the package is constructed. Each is a construct this package does not use, refused
-/// where it would otherwise have to be read; none is a spelling hunt. A manifest is a string.
+/// What the manifest scan refuses beyond a dependency on the helper (#445's review). Two different
+/// things, and the difference is the point:
+/// - **Constructor arguments, refused outright:** a `.plugin` target or a `plugins:` argument, a
+///   target whose `path:` is inside the helper's directory, and an `exclude:` or `sources:` on the
+///   helper. Each is read from the arguments a constructor was written with, and none is used
+///   today. A `path`, `exclude`, `sources` or `plugins` set on a let-bound target after
+///   construction is not a constructor argument, and is not seen.
+/// - **A tripwire that catches by accident:** `mutationProblem` matches two raw-text spellings of a
+///   change after the package is constructed. It does not catch a subscript assignment,
+///   `replaceSubrange`, or a rebinding of `package`. For a file outside `Sources/AeolusHelper/`
+///   the control is the import census, whatever the manifest says.
+///
+/// A manifest is a string.
 @Suite("The manifest scan's refusal of what could hide source from the scans")
 struct ManifestScanReachTests {
 
@@ -15,17 +24,20 @@ struct ManifestScanReachTests {
     // MARK: - A target inside the helper's directory
 
     /// The helper-only scans skip `Sources/AeolusHelper/`, so a target nested there imports the
-    /// helper unseen. The path is resolved before it is compared, and compared by component.
+    /// helper unseen. The path is resolved before it is compared, and compared by component and
+    /// without case: this volume is case-insensitive, where `Sources/aeolushelper/ZZSub` is inside.
     ///
     /// **Mutations:** in `reachProblem`, drop the nested-path rule (red at the first fixture);
     /// compare the written path rather than the resolved one (red at the `./` and `..` fixtures);
-    /// compare as a string prefix (red at `Sources/AeolusHelperKit`, which is not inside).
+    /// compare as a string prefix (red at `Sources/AeolusHelperKit`, which is not inside); compare
+    /// with case (red at the three differently-cased fixtures).
     @Test("A target other than the helper that takes its sources from inside the helper is refused")
     func aNestedTargetIsRefused() throws {
         for path in [
             "Sources/AeolusHelper/ZZSub", "Sources/AeolusHelper", "Sources/AeolusHelper/",
             "Sources/./AeolusHelper/ZZ", "Tests/../Sources/AeolusHelper/ZZ/Deep",
-            "Sources//AeolusHelper/ZZ",
+            "Sources//AeolusHelper/ZZ", "Sources/aeolushelper/ZZSub", "sources/AeolusHelper/ZZ",
+            "SOURCES/AEOLUSHELPER",
         ] {
             for kind in ["target", "executableTarget"] {
                 let found = try Self.problem(#".\#(kind)(name: "ZZSupport", path: "\#(path)")"#)
@@ -110,15 +122,21 @@ struct ManifestScanReachTests {
     /// The constructor's `dependencies:` is all the dependency rule reads, so a dependency added
     /// afterwards passes it. The raw text is refused, comments included, as the flags are.
     ///
+    /// This is a tripwire that matches two spellings, by accident, and the fixtures say no more
+    /// than that. The package-level `package.dependencies +=` is refused too, because the first
+    /// pattern cannot tell it from a target's.
+    ///
     /// **Mutations:** in `mutationProblem`, drop the first pattern (red at the fixtures that name
-    /// only `.dependencies`); drop the second (red at the ones that name only `package.targets`).
-    @Test("A manifest that changes a target after the package is constructed is refused")
+    /// only `.dependencies`, the package-level one included); drop the second (red at the ones
+    /// that name only `package.targets`).
+    @Test("A manifest that matches either spelling of a change after construction is refused")
     func aChangeAfterConstructionIsRefused() throws {
         for source in [
             #"for target in everyTarget { target.dependencies.append("AeolusHelper") }"#,
             #"target.dependencies += ["AeolusHelper"]"#,
             #"target.dependencies = ["AeolusHelper"]"#,
             #"target.dependencies . insert("AeolusHelper", at: 0)"#,
+            #"package.dependencies += [.package(url: "https://example.com/x.git", from: "1.0.0")]"#,
             "let all = package.targets",
             "package . targets.removeAll()",
             #"package.targets[3].dependencies.append("AeolusHelper")"#,
@@ -136,5 +154,24 @@ struct ManifestScanReachTests {
         ] {
             #expect(ManifestScan.mutationProblem(in: source) == nil, "\(source)")
         }
+    }
+
+    /// The message says which spelling matched. The first pattern matches a package's own
+    /// dependency list as well as a target's, and the message used to say it "changes a target".
+    ///
+    /// **Mutations:** in `mutationProblem`, say "changes a target" for the first pattern (red at
+    /// the first fixture); say it for the second (red at the second).
+    @Test("The refusal of a change after construction says what it matched")
+    func theRefusalSaysWhatItMatched() throws {
+        let package = try #require(
+            ManifestScan.mutationProblem(
+                in:
+                    #"package.dependencies += [.package(url: "https://example.com/x.git", from: "1.0.0")]"#
+            ))
+        #expect(package.contains("changes a dependency list after the package is constructed"))
+        #expect(!package.contains("changes a target"), "\(package)")
+        let targets = try #require(ManifestScan.mutationProblem(in: "let all = package.targets"))
+        #expect(targets.contains("uses package.targets after the package is constructed"))
+        #expect(!targets.contains("changes a target"), "\(targets)")
     }
 }
