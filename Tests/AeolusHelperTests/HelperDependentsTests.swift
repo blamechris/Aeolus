@@ -17,7 +17,8 @@ import Testing
 /// `HelperComposition.production(log:)`. It builds, every test stays green, and any test target
 /// can depend on it. Once the plane can write, that is a test that writes to this Mac.
 ///
-/// Two layers close it, each failing closed:
+/// Two layers hold it as far as each reads, each failing closed, and a third item says what
+/// neither reads:
 /// 1. **The manifest.** Only a test target lists `AeolusHelper` among its dependencies, in any
 ///    spelling `ManifestScan` can read, and the set that does is pinned. A dependency list it
 ///    cannot read is a finding for every target.
@@ -38,12 +39,13 @@ import Testing
 ///    refuses only what it reads:
 ///    - `ManifestScan.reachProblem` reads a target's constructor arguments, and the file system
 ///      for one rule. It refuses a target whose `path:` resolves on disk to the helper's
-///      directory or inside it (the text is resolved first, as SwiftPM resolves it, and then
-///      compared as a real path, so another case, a folded letter, a `..` or a link before a `..`
-///      does not hide it, and a directory that cannot be located is refused), a helper that takes
-///      `exclude:` or `sources:`, and a plugin (a `.plugin` target or a `plugins:` argument),
-///      whose generated source no scan reads. It does not read anything done to a target after
-///      its constructor.
+///      directory or inside it (the text is resolved first, as SwiftPM appears to resolve it, and
+///      then compared as a real path, so another case, a folded letter, a `..` or a link before a
+///      `..` does not hide it, and a directory that cannot be located is refused), a helper that
+///      takes `exclude:` or `sources:`, and a plugin (a `.plugin` target or a `plugins:`
+///      argument), whose generated source no scan reads. That SwiftPM applies `..` to the text
+///      before it follows a link is inferred from the outcome of SYMDOT2, not read from SwiftPM's
+///      source. It does not read anything done to a target after its constructor.
 ///    - `ManifestScan.shapeProblem` reads the top level of a manifest and refuses anything but
 ///      `import PackageDescription` and one `let package = Package(…)`. A manifest of that shape
 ///      has no statement after the constructor to change a target or the package, and no
@@ -121,7 +123,7 @@ struct HelperDependentsTests {
     /// `AeolusHelperTests`, and `ZZLocal/Sources/ZZ/ZZ.swift` doing `@testable import
     /// AeolusHelper`. Run: red here.
     @Test("The root Package(...) lists swift-argument-parser and no other package")
-    func theRootPackageDependsOnNoOtherPackage() throws {
+    func theRootConstructorListsOnlyThePinnedPackages() throws {
         var found: [String] = []
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
             switch try ManifestScan.packageDependencies(in: try SeamBuildSettingTests.text(name)) {
@@ -156,7 +158,7 @@ struct HelperDependentsTests {
     /// `.plugin` at `Sources/ZZGen` applied to `AeolusHelperTests`, generating a file that
     /// references `production()`. Run: red here, each.
     @Test("No target's constructor nests it in the helper or applies a plugin")
-    func noManifestHidesSourceFromTheScans() throws {
+    func noTargetConstructorNestsInTheHelperOrAppliesAPlugin() throws {
         var read = 0
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
             let text = try SeamBuildSettingTests.text(name)
