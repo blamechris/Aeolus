@@ -31,22 +31,31 @@ import Testing
 ///    with comments, strings and backticks removed by the scanner every rule-zero tripwire
 ///    shares, and as raw text, with no lexer at all, against a pinned list of the files that name
 ///    the module even in prose.
-/// 3. **What neither layer can see.** The source layer skips `Sources/AeolusHelper/`, and the
-///    manifest layer reads the constructor's `dependencies:`. So `ManifestScan.reachProblem`
-///    refuses, as arguments a constructor was written with, three things this package does not
-///    use: a target whose `path:` is inside the helper's directory, a helper that takes
-///    `exclude:` or `sources:`, and a plugin (a `.plugin` target or a `plugins:` argument), whose
-///    generated source no scan reads. That is exactly the constructor's arguments and no more.
-///    `mutationProblem` is a tripwire and not a rule: it matches two raw-text spellings of a
-///    change after the package is constructed, by accident, and does not catch a subscript
-///    assignment, `replaceSubrange`, a rebinding of `package`, or a `path`, `exclude`, `sources`
-///    or `plugins` set on a let-bound target. For every file outside `Sources/AeolusHelper/` the
-///    control is the import census above, whatever the manifest says; inside that directory
-///    nothing reads a file another target compiles unless the constructor declared it.
+/// 3. **What neither layer can see.** The source layer skips `Sources/AeolusHelper/` and reads only
+///    the files under `Sources/` outside it and under `Tools/`; the manifest layer reads the
+///    constructor's `dependencies:`. Three more things hold the rest, and each says what it is:
+///    - `ManifestScan.reachProblem` refuses, as arguments a constructor was written with, three
+///      things this package does not use: a target whose `path:` resolves on disk to the helper's
+///      directory or inside it (both are resolved by the file system and compared as real paths,
+///      so another case, a folded letter or a `..` does not hide it, and a directory that does not
+///      resolve is refused), a helper that takes `exclude:` or `sources:`, and a plugin (a
+///      `.plugin` target or a `plugins:` argument), whose generated source no scan reads. That is
+///      exactly the constructor's arguments and no more.
+///    - The root package's own `dependencies:` are pinned (`pinnedPackages`). A file from another
+///      package, local (`.package(path: "ZZLocal")`) or remote, is not under `Sources/` or
+///      `Tools/`, so the import census does not read it; the pin refuses the package instead. The
+///      pinned package's own sources are read by nothing. The pin also closes the `.macro` route,
+///      which needs swift-syntax, a package the pin does not list.
+///    - `mutationProblem` is a tripwire and not a rule: it matches two raw-text spellings of a
+///      change after the package is constructed, by accident. It does not catch, for example, a
+///      subscript assignment, `replaceSubrange`, an inout pass, a backticked `.dependencies`, a
+///      key-path write, a rebinding of `package`, or a `path`, `exclude`, `sources` or `plugins`
+///      set on a let-bound target. Inside the helper's directory the census skips the files, so a
+///      target pointed there after construction is not seen.
 ///
-/// This catches the accident, and every spelling met so far. It does not see an Xcode target
-/// (`project.yml` is not read for dependencies), and against a determined author the compiler's
-/// seam (ADR 0014's B1 seam amendment) is the control, as everywhere in this directory.
+/// These scans catch accidents, and every spelling met so far. ADR 0014's compiler seam (the B1
+/// seam amendment) is the real control, as everywhere in this directory. They do not see an Xcode
+/// target (`project.yml` is not read for dependencies).
 @Suite("Only a test target depends on, or imports, the helper")
 struct HelperDependentsTests {
 
@@ -55,12 +64,17 @@ struct HelperDependentsTests {
     /// Each target that lists the helper, as `<manifest>: <target>`. One: the helper's own tests.
     static let pinnedDependents = ["Package.swift: AeolusHelperTests"]
 
+    /// Each package the root `Package(...)` lists, as `<manifest>: <label>: <value>`. One.
+    static let pinnedPackages = [
+        "Package.swift: url: https://github.com/apple/swift-argument-parser.git"
+    ]
+
     /// **Mutations**, each in `Package.swift` and restored: (D04) add `.target(name: "ZZSupport",
     /// dependencies: ["AeolusHelper"], path: "Sources/ZZSupport")` and a file there that does
     /// `@testable import AeolusHelper` and builds `HelperComposition.production(log:)`; (D04c) the
     /// same at `Tools/ZZSupport`. Run: red here, at the target. (D04b) the same with no
     /// `dependencies:` is not red here, and is red at `theHelperIsImportedByNoSourceOrTool`.
-    @Test("No target but a test target lists the helper, and only the helper's tests do")
+    @Test("No target but AeolusHelperTests lists the helper in its constructor")
     func onlyAHelperTestTargetListsTheHelper() throws {
         let manifests = ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries())
         #expect(manifests.contains("Package.swift"), "the root manifest was not found")
@@ -86,21 +100,55 @@ struct HelperDependentsTests {
         #expect(declared >= 15, "the manifests declare \(declared) targets, not this package's")
     }
 
+    /// The package's own dependencies are pinned, because a file from another package is under
+    /// neither `Sources/` nor `Tools/` and the import census never reads it (#445's review). A
+    /// local package whose source does `@testable import AeolusHelper` and refers to
+    /// `production(log:)`, added to the root `dependencies:` and to `AeolusHelperTests`, built
+    /// incrementally and left the suite green; a clean build fails to resolve it. A list that
+    /// cannot be read is a finding. The reading is `ManifestScanPackageTests`'.
+    ///
+    /// **Mutation**, in `Package.swift` and restored: (LOCALPKG) add `.package(path: "ZZLocal")`
+    /// to the root `dependencies:`, `.product(name: "ZZ", package: "ZZLocal")` to
+    /// `AeolusHelperTests`, and `ZZLocal/Sources/ZZ/ZZ.swift` doing `@testable import
+    /// AeolusHelper`. Run: red here.
+    @Test("The root package depends on swift-argument-parser and on no other package")
+    func theRootPackageDependsOnNoOtherPackage() throws {
+        var found: [String] = []
+        for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
+            switch try ManifestScan.packageDependencies(in: try SeamBuildSettingTests.text(name)) {
+            case .listed(let identities):
+                found += identities.map { "\(name): \($0)" }
+            case .absent:
+                found.append("\(name): (no package-level dependencies:)")
+            case .unreadable(let text):
+                found.append("\(name): (unreadable: \(text))")
+            }
+        }
+        #expect(
+            found.sorted() == Self.pinnedPackages,
+            """
+            The packages the manifests list are \(found.sorted()), not \(Self.pinnedPackages). \
+            A package that is not this one compiles Swift no scan here reads, and can import the \
+            helper (#445); put what it needs under Tests/.
+            """)
+    }
+
     /// What the constructor arguments refuse, and what the raw text trips on (#445's review). None
-    /// is used today, so the real manifests must be clean: no plugin, no target whose `path:` is
-    /// inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the helper, and neither of
-    /// the two raw-text spellings of a change after the package is constructed. The second is a
-    /// tripwire that catches by accident; the unit fixtures, `ManifestScanReachTests`, say what it
-    /// misses.
+    /// is used today, so the real manifests must be clean: no plugin, no target whose `path:`
+    /// resolves to or inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the helper,
+    /// and neither of the two raw-text spellings of a change after the package is constructed.
+    /// The second is a tripwire that catches by accident, and misses the changes
+    /// `ManifestScanReachTests` lists.
     ///
     /// **Mutations**, each in `Package.swift` and restored: (P3b) a `.target` at
     /// `Sources/AeolusHelper/ZZSub` with no declared dependency, the helper `exclude:`-ing
     /// `ZZSub`, and a file there that does `@testable import AeolusHelper`, with and without a
-    /// dependency appended after construction; (P3c) a dependency appended to a target after
-    /// construction, with a file that imports nothing; (P4) a `.plugin` at `Sources/ZZGen` applied
-    /// to `AeolusHelperTests`, generating a file that references `production()`. Run: red here,
-    /// each; P3c's with nothing else red.
-    @Test("No manifest nests a target in the helper, uses a plugin, or changes a target afterwards")
+    /// dependency appended after construction; (P3b-case, FOLD) the same target with its path
+    /// spelled `Sources/aeolushelper/ZZSub` or `Sources/AeoluſHelper/ZZSub`; (P3c) a dependency
+    /// appended to a target after construction, with a file that imports nothing; (P4) a `.plugin`
+    /// at `Sources/ZZGen` applied to `AeolusHelperTests`, generating a file that references
+    /// `production()`. Run: red here, each; P3c's with nothing else red.
+    @Test("No manifest nests a target, uses a plugin, or uses either after-construction spelling")
     func noManifestHidesSourceFromTheScans() throws {
         var read = 0
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
@@ -109,7 +157,8 @@ struct HelperDependentsTests {
             let mutation = ManifestScan.mutationProblem(in: text)
             #expect(mutation == nil, "\(name): \(mutation ?? "")")
             for target in try ManifestScan.targets(in: text) {
-                let problem = ManifestScan.reachProblem(with: target)
+                let problem = ManifestScan.reachProblem(
+                    with: target, under: RuleZeroScan.repositoryRoot)
                 #expect(problem == nil, "\(name): \(problem ?? "")")
             }
         }

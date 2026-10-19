@@ -1,54 +1,115 @@
 import Foundation
 import Testing
 
-/// What the manifest scan refuses beyond a dependency on the helper (#445's review). Two different
-/// things, and the difference is the point:
+/// What the manifest scan refuses beyond a dependency on the helper (#445's review). Three
+/// different things, and the difference is the point:
 /// - **Constructor arguments, refused outright:** a `.plugin` target or a `plugins:` argument, a
-///   target whose `path:` is inside the helper's directory, and an `exclude:` or `sources:` on the
-///   helper. Each is read from the arguments a constructor was written with, and none is used
-///   today. A `path`, `exclude`, `sources` or `plugins` set on a let-bound target after
-///   construction is not a constructor argument, and is not seen.
+///   target whose `path:` resolves on disk to the helper's directory or inside it, and an
+///   `exclude:` or `sources:` on the helper. Each is read from the arguments a constructor was
+///   written with, and none is used today. A `path`, `exclude`, `sources` or `plugins` set on a
+///   let-bound target after construction is not a constructor argument, and is not seen.
 /// - **A tripwire that catches by accident:** `mutationProblem` matches two raw-text spellings of a
-///   change after the package is constructed. It does not catch a subscript assignment,
-///   `replaceSubrange`, or a rebinding of `package`. For a file outside `Sources/AeolusHelper/`
-///   the control is the import census, whatever the manifest says.
+///   change after the package is constructed. It does not catch, for example, a subscript
+///   assignment, `replaceSubrange`, an inout pass such as `zzAdd(&zzSupport.dependencies)`, a
+///   backticked ``.`dependencies` ``, a key-path write, or a rebinding of `package`. The list is
+///   not exhaustive.
+/// - **A pin:** the root `Package(...)`'s package-level `dependencies:` are pinned in
+///   `HelperDependentsTests`. The import census reads the files under `Sources/` outside the
+///   helper and under `Tools/`; a file from another package is refused by the pin, not read by the
+///   census, and the pinned package's own sources are read by nothing.
 ///
-/// A manifest is a string.
+/// These scans catch accidents. ADR 0014's compiler seam is the real control.
+///
+/// A manifest is a string. The nested-path rule asks the file system where a directory is, so its
+/// fixtures run against a temporary repository-shaped directory, built per test and removed after.
 @Suite("The manifest scan's refusal of what could hide source from the scans")
 struct ManifestScanReachTests {
 
-    private static func problem(_ source: String) throws -> String? {
-        ManifestScan.reachProblem(with: try ManifestScanTests.target(source))
+    /// A root for a fixture whose rule never asks the file system.
+    private static let unused = URL(fileURLWithPath: "/")
+
+    private static func problem(_ source: String, in root: URL = unused) throws -> String? {
+        ManifestScan.reachProblem(with: try ManifestScanTests.target(source), under: root)
+    }
+
+    /// A temporary directory shaped like the repository: `Sources/AeolusHelper`, `Tests` and
+    /// `Tools`, and every directory `paths` names, resolved. A fixture that spells a directory
+    /// another way than it is stored (case, `.`, `..`) names the stored one here.
+    private static func withTree<T>(
+        containing paths: [String] = [], _ body: (URL) throws -> T
+    ) throws -> T {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aeolus-reach-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories =
+            ["Sources/AeolusHelper", "Tests", "Tools"]
+            + paths.compactMap { ManifestScan.resolved($0)?.joined(separator: "/") }
+        for directory in directories {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+        }
+        return try body(root)
     }
 
     // MARK: - A target inside the helper's directory
 
     /// The helper-only scans skip `Sources/AeolusHelper/`, so a target nested there imports the
-    /// helper unseen. The path is resolved before it is compared, and compared by component and
-    /// without case: this volume is case-insensitive, where `Sources/aeolushelper/ZZSub` is inside.
+    /// helper unseen. The target's directory and the helper's are both resolved by the file system
+    /// and compared as real paths.
     ///
-    /// **Mutations:** in `reachProblem`, drop the nested-path rule (red at the first fixture);
-    /// compare the written path rather than the resolved one (red at the `./` and `..` fixtures);
-    /// compare as a string prefix (red at `Sources/AeolusHelperKit`, which is not inside); compare
-    /// with case (red at the three differently-cased fixtures).
+    /// **Mutations:** in `reachProblem`, resolve the helper's directory to another directory (red
+    /// at the first fixture); compare the written path rather than the resolved one (red at the
+    /// `./` and `..` fixtures); compare as a string prefix (red at `Sources/AeolusHelperKit`, in
+    /// the neighbours test).
     @Test("A target other than the helper that takes its sources from inside the helper is refused")
     func aNestedTargetIsRefused() throws {
-        for path in [
+        let paths = [
             "Sources/AeolusHelper/ZZSub", "Sources/AeolusHelper", "Sources/AeolusHelper/",
             "Sources/./AeolusHelper/ZZ", "Tests/../Sources/AeolusHelper/ZZ/Deep",
-            "Sources//AeolusHelper/ZZ", "Sources/aeolushelper/ZZSub", "sources/AeolusHelper/ZZ",
-            "SOURCES/AEOLUSHELPER",
-        ] {
-            for kind in ["target", "executableTarget"] {
-                let found = try Self.problem(#".\#(kind)(name: "ZZSupport", path: "\#(path)")"#)
-                #expect(
-                    found?.contains("inside Sources/AeolusHelper/") == true,
-                    "\(kind) at \(path): \(found ?? "nil")")
+            "Sources//AeolusHelper/ZZ",
+        ]
+        try Self.withTree(containing: paths) { root in
+            for path in paths {
+                for kind in ["target", "executableTarget"] {
+                    let found = try Self.problem(
+                        #".\#(kind)(name: "ZZSupport", path: "\#(path)")"#, in: root)
+                    #expect(
+                        found?.contains("inside Sources/AeolusHelper/") == true,
+                        "\(kind) at \(path): \(found ?? "nil")")
+                }
+            }
+            // No name to compare is not the helper.
+            let unnamed = try Self.problem(
+                #".target(name: zz, path: "Sources/AeolusHelper/ZZ")"#, in: root)
+            #expect(
+                unnamed?.contains("inside Sources/AeolusHelper/") == true, "\(unnamed ?? "nil")")
+            // …nor is a default directory that is the helper's under another case.
+            let defaulted = try Self.problem(#".target(name: "aeolushelper")"#, in: root)
+            #expect(defaulted != nil, "\(defaulted ?? "nil")")
+        }
+    }
+
+    /// The same directory under a spelling the volume treats as equal: other case, and a letter
+    /// APFS folds to another (`ſ`, U+017F, folds to `s`). Compared as written, SwiftPM took none of
+    /// them for an overlap with the helper and the suite stayed green (#445's review, P3b-case
+    /// and FOLD). Resolved by the file system, each is the helper's directory where the volume
+    /// folds, and a directory that does not resolve where it does not: refused either way.
+    ///
+    /// **Mutation:** compare the written path rather than the resolved one (red at all four).
+    @Test("A directory the volume treats as the helper's under another spelling is refused")
+    func aRespelledNestedDirectoryIsRefused() throws {
+        let spellings = [
+            "Sources/aeolushelper/ZZSub", "sources/AeolusHelper/ZZ", "SOURCES/AEOLUSHELPER",
+            "Sources/AeoluſHelper/ZZSub",
+        ]
+        let stored = ["Sources/AeolusHelper/ZZSub", "Sources/AeolusHelper/ZZ"]
+        try Self.withTree(containing: stored) { root in
+            for path in spellings {
+                let found = try Self.problem(
+                    #".target(name: "ZZSupport", path: "\#(path)")"#, in: root)
+                #expect(found != nil, "\(path): \(found ?? "nil")")
             }
         }
-        // No name to compare is not the helper.
-        let unnamed = try Self.problem(#".target(name: zz, path: "Sources/AeolusHelper/ZZ")"#)
-        #expect(unnamed?.contains("inside Sources/AeolusHelper/") == true, "\(unnamed ?? "nil")")
     }
 
     /// The helper's own directory is the helper's, and so are lookalikes of it that are not inside.
@@ -58,7 +119,7 @@ struct ManifestScanReachTests {
     /// compare as a string prefix (red at `AeolusHelperKit`).
     @Test("The helper in its own directory, and a neighbour that only shares its prefix, are not")
     func theHelperAndItsNeighboursAreNotNested() throws {
-        for source in [
+        let sources = [
             #".executableTarget(name: "AeolusHelper", dependencies: ["SMCCore"])"#,
             #".executableTarget(name: "AeolusHelper", path: "Sources/AeolusHelper")"#,
             #".executableTarget(name: "AeolusHelper", path: "Sources/AeolusHelper/")"#,
@@ -67,8 +128,39 @@ struct ManifestScanReachTests {
             #".target(name: "AeolusUI", path: "Sources/Aeolus")"#,
             #".testTarget(name: "AeolusHelperTests", path: "Tests/AeolusHelperTests")"#,
             #".executableTarget(name: "tool", path: "Tools/Tool", exclude: ["README.md"])"#,
-        ] {
-            #expect(try Self.problem(source) == nil, "\(source)")
+        ]
+        let directories = [
+            "Sources/AeolusHelperKit", "Sources/Other", "Sources/Aeolus", "Tests/AeolusHelperTests",
+            "Tools/Tool",
+        ]
+        try Self.withTree(containing: directories) { root in
+            for source in sources {
+                let found = try Self.problem(source, in: root)
+                #expect(found == nil, "\(source): \(found ?? "")")
+            }
+        }
+    }
+
+    /// A directory that does not resolve cannot be told from the helper's, so it is refused: a
+    /// path that is not there, one that is absolute, one that climbs out of the repository, one
+    /// that is computed.
+    ///
+    /// **Mutation:** in `reachProblem`, accept a directory that does not resolve (red at all
+    /// four).
+    @Test("A target whose directory does not resolve is refused, not passed")
+    func aDirectoryThatDoesNotResolveIsRefused() throws {
+        try Self.withTree { root in
+            for source in [
+                #".target(name: "Ghost", path: "Sources/Ghost")"#,
+                #".target(name: "Absolute", path: "/etc")"#,
+                #".target(name: "Climbing", path: "../Elsewhere")"#,
+                #".target(name: "Computed", path: probePath)"#,
+            ] {
+                let found = try Self.problem(source, in: root)
+                #expect(
+                    found?.contains("does not resolve on disk") == true,
+                    "\(source): \(found ?? "nil")")
+            }
         }
     }
 

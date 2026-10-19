@@ -7,10 +7,13 @@ import Foundation
 /// Not a Swift parser, and it does not try to be one. It fails closed: a `path:` it cannot read as
 /// a single string literal, a `name:` it cannot read, a `dependencies:` it cannot read as one array
 /// of names, and a path that resolves outside the directories every other scan here reads are all
-/// findings, never exemptions (#441, #445). So is a plugin, a target whose `path:` is inside the
+/// findings, never exemptions (#441, #445). So is a plugin, a target whose `path:` resolves to the
 /// helper's directory, and an `exclude:` or `sources:` on the helper, each read from a
-/// constructor's arguments and from nothing else (`ManifestScanReach.swift`). A change made after
-/// the package is constructed is only tripped on, by two raw-text spellings, by accident.
+/// constructor's arguments and from nothing else, and a package-level dependency other than the
+/// pinned one (`ManifestScanReach.swift`). A change made after the package is constructed is
+/// only tripped on, by two raw-text spellings, by accident.
+///
+/// These scans catch accidents. ADR 0014's compiler seam is the real control.
 enum ManifestScan {
 
     // MARK: - Flags
@@ -168,7 +171,7 @@ enum ManifestScan {
     }
 
     /// The text inside `value` when it is exactly one plain string literal.
-    private static func literal(_ value: String) -> String? {
+    static func literal(_ value: String) -> String? {
         guard value.range(of: #"^"[^"\\]*"$"#, options: .regularExpression) != nil else {
             return nil
         }
