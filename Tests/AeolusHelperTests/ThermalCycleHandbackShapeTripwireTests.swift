@@ -24,9 +24,10 @@ import Testing
 /// **What these scans are, and are not.** They catch the shapes an edit makes by accident, and
 /// claim nothing more: a lexical scan never converges on a deliberate evasion — every round of
 /// #436's and #439's review found a new spelling past one. The consequence those spellings would
-/// buy, a mechanism other than § 3 writing in § 3's lane, is held by behaviour instead:
-/// `SupervisorWriterAdmissionTests`, K6 in `ThermalCycleLaneRoutingTests`, and the reachable
-/// stored-plane census in `ThermalCycleLaneWriterTests`.
+/// buy, a mechanism other than § 3 writing in § 3's lane, is held by behaviour instead, on the
+/// paths each drives: `SupervisorWriterAdmissionTests`, K6 in `ThermalCycleLaneRoutingTests`, and
+/// the reachable stored-plane census in `ThermalCycleLaneWriterTests`. A path none of them drives
+/// is held by these scans alone.
 @Suite("Nothing builds, launders, extends or copies § 3's handback, at the source")
 struct ThermalCycleHandbackShapeTripwireTests {
 
@@ -90,6 +91,35 @@ struct ThermalCycleHandbackShapeTripwireTests {
         return TeardownSweepTripwireTests.bracedBody(in: code, after: declaration.upperBound)
     }
 
+    /// `code` with each line break that continues a declaration joined to the line it continues,
+    /// so a scan that reads one line sees a wrapped declaration whole. A break continues one when
+    /// the line before it ends in `=`, `<`, `(`, `[`, `,`, `&`, `:`, `|` or `->`, or the line after
+    /// it begins with `=`, `&`, `.`, `>`, `)`, `]`, `,`, `|` or `where`: the places a formatter
+    /// wraps a `typealias`, and a hand edit after it. Every other break stays, so a declaration
+    /// that ends at its line does not run into the next one.
+    static func joinedContinuations(of code: String) throws -> String {
+        let afterOpener = try NSRegularExpression(pattern: #"(=|<|\(|\[|,|&|:|\||->)[ \t]*\n\s*"#)
+        let beforeCloser = try NSRegularExpression(
+            pattern: #"\s*\n\s*(?==|&|\.|>|\)|\]|,|\||where\b)"#)
+        var joined = code
+        for (expression, replacement) in [(afterOpener, "$1 "), (beforeCloser, " ")] {
+            joined = expression.stringByReplacingMatches(
+                in: joined, range: NSRange(joined.startIndex..., in: joined),
+                withTemplate: replacement)
+        }
+        return joined
+    }
+
+    /// A `typealias` whose right-hand side names `ThermalCycleHandback`, read on one line: pass
+    /// the code through `joinedContinuations(of:)` first.
+    static let aliasOfTheHandback =
+        #"\btypealias\s+[A-Za-z_]\w*[^=\n]*=[^\n]*\bThermalCycleHandback\b"#
+
+    /// An initialiser call that names no type: `Self(…)`, `Self.init(…)`, `.init(…)`. In an
+    /// instance method it builds a handback, and so mints a lane writer, under no name the
+    /// per-file count of the type's name sees.
+    static let anonymousConstruction = #"(?<![A-Za-z0-9_])Self\s*\(|\.\s*init\s*\("#
+
     /// The spellings that move a borrowed value's bits out of the move checker's sight.
     static let unsafeSpelling =
         #"(?<![A-Za-z0-9_])(withoutActuallyEscaping|Unsafe[A-Za-z]*Pointer|withUnsafe[A-Za-z]*|"#
@@ -102,6 +132,8 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// **Mutation:** in `topLevel(of:)`, keep characters inside braces. Run: red.
     /// **Mutation:** in `memberInitBodies(in:of:)`, drop the depth filter. Run: red — the nested
     /// type's initialiser is found first.
+    /// **Mutation:** in `joinedContinuations(of:)`, drop the `afterOpener` pass. Run: red — a
+    /// `typealias` wrapped after `=` stays on two lines.
     @Test("The shape scans read their fixtures")
     func theShapeScansReadTheirFixtures() throws {
         #expect(
@@ -125,6 +157,31 @@ struct ThermalCycleHandbackShapeTripwireTests {
                 try Self.ranges(of: Self.unsafeSpelling, in: spelling).count == 1, "\(spelling)")
         }
         #expect(try Self.ranges(of: Self.unsafeSpelling, in: "let unsafeLane = safeLane").isEmpty)
+        for wrapped in [
+            "typealias A =\n    ThermalCycleHandback<P>",
+            "typealias A<P>\n    = ThermalCycleHandback<P>",
+            "typealias A = Optional<\n    ThermalCycleHandback<P>>",
+            "typealias A = (Int,\n    ThermalCycleHandback<P>)",
+        ] {
+            let joined = try Self.joinedContinuations(of: wrapped)
+            #expect(!joined.contains("\n"), "\(wrapped) is still wrapped: \(joined)")
+            #expect(
+                try Self.ranges(of: Self.aliasOfTheHandback, in: joined).count == 1, "\(wrapped)")
+        }
+        let unrelated = try Self.joinedContinuations(
+            of: "typealias A = Int\nlet h: ThermalCycleHandback<P>\nvar b = 1")
+        #expect(unrelated == "typealias A = Int\nlet h: ThermalCycleHandback<P>\nvar b = 1")
+        #expect(try Self.ranges(of: Self.aliasOfTheHandback, in: unrelated).isEmpty)
+        for building in ["Self(notifying: n)", "Self.init(n)", "return .init(n)", "Self (n)"] {
+            #expect(
+                try Self.ranges(of: Self.anonymousConstruction, in: building).count == 1,
+                "\(building)")
+        }
+        for notBuilding in ["-> Self {", "Self.self", "let initial = 1", "x.initialize(1)"] {
+            #expect(
+                try Self.ranges(of: Self.anonymousConstruction, in: notBuilding).isEmpty,
+                "\(notBuilding)")
+        }
     }
 
     // MARK: - Who builds a handback
@@ -133,8 +190,10 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// holds and takes it, and where the composition builds it — once. A construction written
     /// anywhere else by the type's name, in any expression and by `.init(…)` too, names it one
     /// more time in some file. A construction under another name — a `typealias`, or an inferred
-    /// `Self(…)` — is not a name of it: `noTypealiasNamesTheHandback` and the handback's own shape
-    /// close the two spellings an edit reaches for, and the behavioural suites hold the rest.
+    /// `Self(…)` or `.init(…)` — is not a name of it: `noTypealiasNamesTheHandback`, which reads a
+    /// wrapped `typealias` whole, and the handback's own shape, which refuses any such call outside
+    /// its `init`, close the two spellings an edit reaches for, and the behavioural suites hold the
+    /// rest.
     ///
     /// **Mutation (CX1):** in `HelperComposition.bringUp()`, build a second handback inside the
     /// signal teardown's closure and restore through it. Run: red — two in the file.
@@ -162,8 +221,10 @@ struct ThermalCycleHandbackShapeTripwireTests {
 
     /// The handback's file declares the handback and nothing else, and its one lane mint is inside
     /// the handback's own `init`: no extension of any type, no second top-level declaration, no
-    /// nested type, no `static` member and no `typealias` in its body, and exactly one initialiser
-    /// declared directly in that body, found by brace depth.
+    /// nested type, no `static` member and no `typealias` in its body, exactly one initialiser
+    /// declared directly in that body, found by brace depth, and no `Self(…)`, `Self.init(…)` or
+    /// `.init(…)` outside that initialiser — an instance method that builds another handback is a
+    /// factory the type's name never appears in.
     ///
     /// **Mutation (L2b):** add `extension SafetyActorWriter { var inTheLane: Self {
     /// admitted(at: .thermalCycle) } }` to the file, build the handback's bound over
@@ -173,6 +234,9 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// `init` admits a writer in the lane. Run: red here — a nested type, and a mint outside the
     /// handback's own `init`.
     /// **Mutation:** a `static func lane(…) -> Self` factory in the handback. Run: red here.
+    /// **Mutation (G2):** an instance factory in the handback, `func rebuilt(over writer:
+    /// SafetyActorWriter<Plane>, log: LeaseLog) -> Self { Self(notifying: notices, writer: writer,
+    /// log: log) }`. Run: red here.
     @Test("The handback's file holds the handback alone, with its mint inside its own init")
     func theHandbacksFileHoldsTheHandbackAlone() throws {
         let code = try #require(try Self.helperCode["Lease/ThermalCycleHandback.swift"])
@@ -198,20 +262,28 @@ struct ThermalCycleHandbackShapeTripwireTests {
         #expect(
             lane.allSatisfy { initBody.contains($0.lowerBound) },
             "the handback's lane mint is not inside its own init")
+        let building = try Self.ranges(of: Self.anonymousConstruction, in: code, within: structBody)
+            .filter { !initBody.contains($0.lowerBound) }
+        #expect(
+            building.isEmpty,
+            "the handback builds a value outside its own init: \(building.map { String(code[$0]) })"
+        )
     }
 
-    /// No `typealias` anywhere in `Sources/AeolusHelper` names `ThermalCycleHandback`. An alias
-    /// is a way to build one without naming the type, which `onlyTheCompositionBuildsTheHandback`
-    /// counts by name.
+    /// No `typealias` anywhere in `Sources/AeolusHelper` names `ThermalCycleHandback`, however its
+    /// lines are wrapped (`joinedContinuations(of:)`). An alias is a way to build one without
+    /// naming the type, which `onlyTheCompositionBuildsTheHandback` counts by name.
     ///
     /// **Mutation (C1):** `typealias LaneHandback = ThermalCycleHandback` in the composition's
     /// file. Run: red here.
+    /// **Mutation (G1):** the same alias broken after its `=`, used to build the handback in the
+    /// composition. Run: red here.
     @Test("No typealias names § 3's handback")
     func noTypealiasNamesTheHandback() throws {
         var aliased: [String] = []
         for (file, code) in try Self.helperCode
         where try !Self.ranges(
-            of: #"\btypealias\s+[A-Za-z_]\w*[^=\n]*=[^\n]*\bThermalCycleHandback\b"#, in: code
+            of: Self.aliasOfTheHandback, in: Self.joinedContinuations(of: code)
         ).isEmpty {
             aliased.append(file)
         }
