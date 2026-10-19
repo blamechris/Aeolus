@@ -136,12 +136,10 @@ struct HelperClientDeadlineTests {
     /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take, and
     /// `FanctlResetTests.unhurried`, the default of `FanctlResetTests.emitted(over:waiting:)` and
     /// `FanctlAutoTests.run`, and what `FanctlStatusTests` passes. Those two are the whole set —
-    /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The one construction
-    /// deliberately *looser* than `unhurried`, `FanctlResetTests.stallTolerant`, is `private` to
-    /// the suite that passes it, so no other suite can inherit it
-    /// ([#443](https://github.com/blamechris/Aeolus/issues/443)); that suite holds its three terms
-    /// itself, in `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling`. So no test can acquire
-    /// a tighter bound than the product's without naming one.
+    /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The deliberately
+    /// looser `FanctlResetTests.stallTolerant` is `private` to the suite that passes it (#443),
+    /// and that suite holds its three terms itself. So no test can acquire a tighter bound than
+    /// the product's without naming one.
     ///
     /// **Most of what it compares is a value against itself, and that is what it is for.**
     /// `ClientListenerHarness.defaultDeadlines` *is* `HelperClientDeadlines.default`
