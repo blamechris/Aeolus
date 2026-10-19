@@ -243,9 +243,9 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// **Mutation (G2):** an instance factory in the handback, `func rebuilt(over writer:
     /// SafetyActorWriter<Plane>, log: LeaseLog) -> Self { Self(notifying: notices, writer: writer,
     /// log: log) }`. Run: red here.
-    /// **Mutation (G2b):** the same factory through an unapplied initialiser, `let make = Self.init;
-    /// return make(notices, writer, log)`. Run: red here. The pattern before the `.init` fix,
-    /// `\.\s*init\s*\(`, left it green.
+    /// **Mutation (G2b):** the same factory through an unapplied initialiser,
+    /// `let make = Self.init; return make(notices, writer, log)`. Run: red here. The pattern
+    /// before the `.init` fix, `\.\s*init\s*\(`, left it green.
     @Test("The handback's file holds the handback alone, with its mint inside its own init")
     func theHandbacksFileHoldsTheHandbackAlone() throws {
         let code = try #require(try Self.helperCode["Lease/ThermalCycleHandback.swift"])
