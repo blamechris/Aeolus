@@ -159,7 +159,8 @@ actor AcknowledgementWitness {
     }
 }
 
-/// The firmware that takes the keystone restore and never comes back.
+/// The firmware that takes the keystone restore and does not come back until a test releases it,
+/// or the parking ceiling (`parkCeiling`, #451) gives up on it.
 ///
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t`, which
 /// `FanRestoreAttempting` names as the case no attempt budget can bound: *"a single
@@ -173,7 +174,7 @@ actor AcknowledgementWitness {
 /// differently.
 ///
 /// **It models a restore that never returns *cooperatively*, which is not quite #68's shape.**
-/// `try await held.wait()` suspends and yields its thread; a synchronous IOKit call that never
+/// `held.wait(atMost:)` suspends and yields its thread; a synchronous IOKit call that never
 /// comes back occupies a cooperative-pool thread for as long as it is stuck. A review was
 /// right that the budget test therefore proved the budget beats an *awaiting* restore rather
 /// than a blocking one. `ThreadBlockingRestorePlane` below is the other half, and
@@ -181,13 +182,17 @@ actor AcknowledgementWitness {
 actor WedgedRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
+    private let ceiling: Duration
     private let held = AsyncSignal()
 
     /// Every scope the restore was asked for, recorded before it parks.
     private(set) var restoreScopes: [FanRestoreScope] = []
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// `ceiling` is how long the wedge holds a restore. Only a test of the ceiling itself passes
+    /// anything but `parkCeiling`.
+    init(_ wrapped: ScriptedControlPlane, ceiling: Duration = parkCeiling) {
         self.wrapped = wrapped
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -201,7 +206,12 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         restoreScopes.append(scope)
-        try await held.wait()
+        // A wedge nobody releases gives up at the ceiling, and a mutation that adds a restore to
+        // a path the test did not park fails it instead of hanging the run (#451). The latch is
+        // open after that, so no later restore waits out a ceiling of its own.
+        if try await !held.wait(atMost: ceiling) {
+            recordAbandonedPark(by: "WedgedRestorePlane", of: scope, after: ceiling)
+        }
         try await wrapped.restoreToAutomatic(scope)
     }
 
