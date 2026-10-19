@@ -517,8 +517,9 @@ public actor SMCConnection {
     ///
     /// **A restore never calls this.** D7 scopes ADR 0004 to forward writes: a restore issues
     /// no read before it writes, and writes zero bytes of the size the preparation step
-    /// recorded (ADR 0014's B1 amendment). A read in front of a restore would put a round trip
-    /// that can fail ahead of the keystone (`docs/SAFETY.md`).
+    /// recorded, or one zero byte when it recorded none or a size outside 1–32
+    /// (`PlaneWriteLedger.restorePayload(for:)`; ADR 0014's B1 amendment). A read in front of a
+    /// restore would put a round trip that can fail ahead of the keystone (`docs/SAFETY.md`).
     ///
     /// On success the answer replaces the cache entry, so a later read uses what the
     /// firmware just said. A failure throws and leaves the cache as it was: the read path
@@ -675,8 +676,9 @@ public actor SMCConnection {
     ///   encode, retry, or decide what an answer means. Those are the caller's. A forward
     ///   write's caller takes fresh key info for the key first, through `freshKeyInfo(for:)`
     ///   (ADR 0004; ADR 0014 D7). A restore's caller reads nothing: it passes zero bytes of the
-    ///   size the preparation step recorded, so no read stands in front of the keystone
-    ///   (ADR 0014 D7 and its B1 amendment).
+    ///   size the preparation step recorded, or one zero byte when it recorded none or a size
+    ///   outside 1–32 (`PlaneWriteLedger.restorePayload(for:)`), so no read stands in front of
+    ///   the keystone (ADR 0014 D7 and its B1 amendment).
     ///
     /// - Important: Meant to be called as root from inside `AeolusHelper` only, and every
     ///   fan-speed write must already have been clamped and rate-limited. See E5. Whether the

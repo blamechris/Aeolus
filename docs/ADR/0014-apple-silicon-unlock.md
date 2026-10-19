@@ -3236,12 +3236,13 @@ before. It lands on `main` before run 1.
   same table entry in the same hop, as `LeaseAccountability.leasedFans`.
 - **Not yet a confirmation.** The record is one only once B1's command turn reads the target back
   and throws outside `targetToleranceRPM` ([#9](https://github.com/blamechris/Aeolus/issues/9)).
-  Until then the tests here pin the rule against the scripted double's read-back:
-  `ScriptedControlPlane.commandTarget` returns the requested value only for `.reverted`, a target
-  held at the command's in-turn read-back and discarded after it, and a target the firmware never
+  Until then the tests here pin the rule against the scripted double's read-back.
+  `ScriptedControlPlane.commandTarget` returns the requested value for a target its in-turn
+  read-back finds: an `.honoured` write's, and, of the writes the firmware discards, only a
+  `.reverted` one's, held at the read-back and discarded after it. A target the firmware never
   held (`Stage.targetsNotHeldAtReadBack`) throws `.targetNotConfirmed`. *(Corrected on
   `e4/bring-up`: this said the double returned the requested value even for a write its firmware
-  discarded, which has held only for `.reverted` since
+  discarded, which, of the discarded writes, has held only for `.reverted` since
   [#430](https://github.com/blamechris/Aeolus/pull/430).)*
 
 **What remains.**

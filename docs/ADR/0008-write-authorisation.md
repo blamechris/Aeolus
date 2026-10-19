@@ -188,7 +188,7 @@ this repository's `Sources/`, which a downstream consumer is not in, so nothing 
 The exposure is bounded by what the members do — both threw when this amendment was written,
 and E3/E4 put them behind the safety subsystem — and by the fact that no such consumer exists;
 it is recorded so the next reader does not have to rediscover it. *(Corrected on `e4/bring-up`:
-since [#431](https://github.com/blamechris/Aeolus/pull/431) neither throws there.
+since [#431](https://github.com/blamechris/Aeolus/pull/431) neither always throws there.
 `write(_:to:)` sends one `WRITE_BYTES` round trip and `encode(scalar:byteOrder:)` encodes `ui8`
 and `flt`, so on that branch the bound is the second fact alone, with whatever the kernel asks
 of a writer, which is not observed.)*
