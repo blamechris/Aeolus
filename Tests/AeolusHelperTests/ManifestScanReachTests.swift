@@ -21,7 +21,7 @@ import Testing
 ///
 /// A manifest is a string. The nested-path rule asks the file system where a directory is, so its
 /// fixtures run against a temporary repository-shaped directory, built per test and removed after.
-@Suite("The manifest scan's refusal of what could hide source from the scans")
+@Suite("The manifest scan's reading of constructor arguments that could hide source")
 struct ManifestScanReachTests {
 
     /// A root for a fixture whose rule never asks the file system.
@@ -49,8 +49,9 @@ struct ManifestScanReachTests {
                 at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
         }
         // A decoy with the helper's directory in it, and a link to a directory inside the decoy:
-        // `Link/../Sources/AeolusHelper/ZZ` is the helper's directory as SwiftPM reads it (`..`
-        // applied to the text first) and the decoy's as `realpath` reads it (the link followed).
+        // `Link/../Sources/AeolusHelper/ZZ` is the helper's directory as SwiftPM appears to read
+        // it (`..` applied to the text first; inferred from SYMDOT2) and the decoy's as `realpath`
+        // reads it (the link followed).
         let inner = root.appendingPathComponent("decoy/inner")
         try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
@@ -99,11 +100,13 @@ struct ManifestScanReachTests {
         }
     }
 
-    /// SwiftPM applies `..` to the components of a `path:` as text; `realpath` follows a symbolic
-    /// link before it applies `..`. For `Link/../Sources/AeolusHelper/ZZ`, with `Link` a link into
-    /// a decoy, SwiftPM compiled the helper's directory and `realpath` of the written path named
-    /// the decoy's, so the nested target was not seen and the suite stayed green (#445's review,
-    /// SYMDOT2). The path is resolved as text first and only then by the file system.
+    /// SwiftPM appears to apply `..` to the components of a `path:` as text; `realpath` follows a
+    /// symbolic link before it applies `..`. For `Link/../Sources/AeolusHelper/ZZ`, with `Link` a
+    /// link into a decoy, SwiftPM compiled the helper's directory and `realpath` of the written
+    /// path named the decoy's, so the nested target was not seen and the suite stayed green
+    /// (#445's review, SYMDOT2). That SwiftPM resolves the text first is inferred from that
+    /// outcome, not read from SwiftPM's source. The path is resolved as text first and only then
+    /// by the file system.
     ///
     /// **Mutation:** call `realPath` on the written path rather than on the resolved components.
     /// Run: red here.
