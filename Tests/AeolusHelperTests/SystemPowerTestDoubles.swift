@@ -164,7 +164,7 @@ actor AcknowledgementWitness {
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t`, which
 /// `FanRestoreAttempting` names as the case no attempt budget can bound: *"a single
 /// synchronous IOKit call that never comes back on a wedged connection parks
-/// `revokeEveryLease(because:)`"*. `BoundedFanRestorer` runs each attempt inside a `Task` that
+/// `revokeLease(id:forFan:because:)`"*. `BoundedFanRestorer` runs each attempt inside a `Task` that
 /// does not inherit cancellation, so the caller cannot escape by being cancelled either — which
 /// is exactly why § 4 needs a budget rather than a `withTimeout`.
 ///
@@ -178,7 +178,7 @@ actor AcknowledgementWitness {
 /// right that the budget test therefore proved the budget beats an *awaiting* restore rather
 /// than a blocking one. `ThreadBlockingRestorePlane` below is the other half, and
 /// `theBudgetSurvivesARestoreThatBlocksItsThread` is what makes the stronger claim.
-actor WedgedRestorePlane: FanControlPlane {
+actor WedgedRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private let held = AsyncSignal()
@@ -261,7 +261,7 @@ actor WedgedRestorePlane: FanControlPlane {
 /// The semaphore is released by `release()` exactly as the wedge above is, so a test leaves
 /// no thread parked behind it. A `DispatchSemaphore` rather than an `AsyncSignal` precisely
 /// because blocking is the property under test.
-final class ThreadBlockingRestorePlane: FanControlPlane, @unchecked Sendable {
+final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable {
 
     private let wrapped: ScriptedControlPlane
     private let held = DispatchSemaphore(value: 0)
@@ -355,7 +355,7 @@ final class ThreadBlockingRestorePlane: FanControlPlane, @unchecked Sendable {
 /// "the request is parked" and "now let it through" as two statements rather than as a sleep.
 /// Only the **first** read is held: § 5's watchdog and § 3's supervisor are not started in the
 /// test that uses this, but a second read arriving from anywhere must not deadlock a suite.
-actor ParkedTelemetryPlane: FanControlPlane {
+actor ParkedTelemetryPlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private var hasParked = false

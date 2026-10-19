@@ -112,6 +112,8 @@ struct LeaseAuthorityAccessTests {
         "var machineWideRestoresInFlight = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
+        // #440's: the bracket's body, through a lent restorer, reached only through the verbs.
+        "func restore<Handback: FanRestoring & ~Copyable>(",
         "func outwaitHandback(of fan: Int) async {",
         "func refuseIfInvalidated(_ connection: ConnectionID) throws {",
         "func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {",
@@ -225,7 +227,8 @@ struct LeaseAuthorityAccessTests {
         // if lapsed (#361's panel). The fan only chooses which handback a `.gone` outwaits
         // (#368): a caller can park itself, and it resumes nothing and restores nothing.
         "revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
-        "revokeEveryLease(because: FanRestoreCause)",
+        // § 3's revocation (#440): it cannot keep what it borrows, and only § 3 calls it.
+        "revokeEveryLease(handingBackThrough: borrowing Handback)",
         "releaseEveryLease()",
         "confirmAcceptedHandbacks()",
         "sealForSleep(generation: UInt64)",

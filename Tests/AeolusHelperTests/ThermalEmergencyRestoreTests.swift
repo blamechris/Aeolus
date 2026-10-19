@@ -40,7 +40,7 @@ struct ThermalEmergencyRestoreTests {
     /// Every maximum command fan 0 was sent, in order.
     private static func bridges(_ machine: ThermalMachine) async -> Int {
         await machine.attempts.filter {
-            if case .commandTarget(fan: 0, _) = $0 { return true }
+            if case .bridgeThenRestore(fan: 0, _) = $0 { return true }
             return false
         }.count
     }

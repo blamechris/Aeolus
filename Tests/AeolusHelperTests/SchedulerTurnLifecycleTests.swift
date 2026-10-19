@@ -151,6 +151,90 @@ struct SchedulerTurnLifecycleTests {
         try await finished("the read that arrived last", arrival)
     }
 
+    /// The same instant with § 3's lane in it (ADR 0012's 2026-10-18 amendment): a fresh **lane**
+    /// arrival as the queue empties must queue too. The lane is admitted first, but only by
+    /// `admitNext()`, never past a turn in flight.
+    ///
+    /// **Mutation:** delete `isTurnInFlight = true` from `admitNext()`. Run: red at `queued` —
+    /// the lane arrival barges onto the waiter that is still inside the provider.
+    @Test("A lane arrival as the queue empties cannot barge onto a held turn")
+    func aLaneArrivalCannotBargeOntoAHeldTurn() async throws {
+        let provider = GatedSensorProvider(holdingSubsetReads: true)
+        let scheduler = SMCReadScheduler(provider: provider)
+
+        let held = observing { try await scheduler.read(keys: ["A0"], at: .snapshot) }
+        await yieldUntil("the first turn to reach the provider") { await provider.turns.count == 1 }
+        let waiter = observing { try await scheduler.read(keys: ["B0"], at: .supervisor) }
+        await yieldUntil("the supervisor read to queue") {
+            await scheduler.queuedTurns(at: .supervisor) == 1
+        }
+        await provider.releaseOneTurn()
+        await yieldUntil("the waiter to take the connection") { await provider.turns.count == 2 }
+
+        let arrival = observing { try await scheduler.read(keys: ["L0"], at: .thermalCycle) }
+        let queued = await yieldUntil("the lane arrival to queue behind the held turn") {
+            await scheduler.queuedTurns(at: .thermalCycle) == 1
+        }
+        #expect(queued, "the lane arrival never queued — it barged onto the held turn")
+        #expect(await provider.peakConcurrentTurns == 1, "two turns were held at once")
+        #expect(await provider.turns.count == 2, "a third turn reached the provider early")
+
+        await provider.releaseEveryTurn()
+        try await finished("the held read", held)
+        try await finished("the queued read", waiter)
+        try await finished("the lane read that arrived last", arrival)
+    }
+
+    /// The fast path tests the lane's queue as it tests the other two: with a lane waiter still
+    /// queued behind the one just admitted — two lane waiters, which § 3 never produces and this
+    /// test does — a fresh supervisor arrival queues.
+    ///
+    /// **This test is the second line, and is green under any one mutation.** While `admitNext()`
+    /// keeps the flag, the flag is never `false` with a waiter queued, so every queue test in the
+    /// fast path is redundant — the lane's exactly as the other two are — and deleting
+    /// `thermalCycleWaiters.isEmpty` from the fast path alone is an equivalent mutant. What this
+    /// holds is that the lane's test is there when the flag is not.
+    ///
+    /// **Mutation:** delete `isTurnInFlight = true` from `admitNext()`. Run: green — the queued
+    /// lane waiter keeps the gate closed.
+    /// **Mutation:** that, and delete `thermalCycleWaiters.isEmpty` from `takeTurn`'s fast path.
+    /// Run: red at `queued` — the supervisor arrival barges onto the lane turn being admitted.
+    @Test("A queued lane waiter keeps the fast path closed")
+    func aQueuedLaneWaiterKeepsTheFastPathClosed() async throws {
+        let provider = GatedSensorProvider(holdingSubsetReads: true)
+        let scheduler = SMCReadScheduler(provider: provider)
+
+        let held = observing { try await scheduler.read(keys: ["A0"], at: .snapshot) }
+        await yieldUntil("the first turn to reach the provider") { await provider.turns.count == 1 }
+        let first = observing { try await scheduler.read(keys: ["L0"], at: .thermalCycle) }
+        await yieldUntil("a lane waiter to queue") {
+            await scheduler.queuedTurns(at: .thermalCycle) == 1
+        }
+        let second = observing { try await scheduler.read(keys: ["M0"], at: .thermalCycle) }
+        await yieldUntil("a second lane waiter to queue") {
+            await scheduler.queuedTurns(at: .thermalCycle) == 2
+        }
+        await provider.releaseOneTurn()
+        await yieldUntil("the first lane waiter to take the connection") {
+            await provider.turns.count == 2
+        }
+
+        let arrival = observing { try await scheduler.read(keys: ["C0"], at: .supervisor) }
+        let queued = await yieldUntil("the supervisor arrival to queue behind the lane") {
+            await scheduler.queuedTurns(at: .supervisor) == 1
+        }
+        #expect(queued, "a supervisor arrival barged past a queued lane waiter")
+        #expect(await provider.peakConcurrentTurns == 1, "two turns were held at once")
+
+        await provider.releaseEveryTurn()
+        try await finished("the held read", held)
+        try await finished("the first lane read", first)
+        try await finished("the second lane read", second)
+        try await finished("the supervisor read that arrived last", arrival)
+        let trace = await provider.turns.compactMap(\.first)
+        #expect(trace == ["A0", "L0", "M0", "C0"], "trace \(trace)")
+    }
+
     /// The same property under undirected load, as a soak.
     ///
     /// **This test could not fail for its first two commits**, and the reason is worth more

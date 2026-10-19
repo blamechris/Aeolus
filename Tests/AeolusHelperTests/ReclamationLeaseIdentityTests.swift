@@ -295,7 +295,8 @@ struct ReclamationLeaseIdentityTests {
     /// `finaliseRelease(fanAt:heldUnder:because:)` calls after the hand-back, also drop `index`
     /// whatever lease holds it — `held[index] = nil`. Run: red on the registry.
     /// **Mutation (b):** replace the `revokeLease(id:forFan:because:)` guard with
-    /// `await leases.revokeEveryLease(because: cause)`. Run: red on L2 and the restorer.
+    /// `await leases.revokeEveryLease(because: cause)`. Run: red on L2 and the restorer. (Run
+    /// before #440, when that verb took a cause; it now borrows § 3's handback instead.)
     @Test("A terminal action leaves a newer lease's record and lease alone")
     func aTerminalActionLeavesANewerLeasesRecordAlone() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 2_400)])

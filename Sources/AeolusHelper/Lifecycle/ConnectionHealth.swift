@@ -17,7 +17,9 @@ import os
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s render-unavailable-forever case.
 ///
 /// So this counts whole-read failures **on either path** — the client snapshot and the
-/// supervisor cycle both — and fires one reconnect when a run of them says the connection
+/// supervisor cycle both, § 3's lane counted as the supervisor's (ADR 0012's 2026-10-18
+/// amendment; it reads no priority at all) — and fires one reconnect when a run of them says the
+/// connection
 /// rather than a sensor is the problem. A success ends the run. A request that asked only for
 /// keys this Mac does not have — `SchedulerEvent.wholeReadAbsentOnly`, ruling D25 — does
 /// neither, because nothing in it reached IOKit: it proved the handle neither dead nor
@@ -266,7 +268,8 @@ actor ConnectionHealth: SchedulerObserving {
                 return issued
             }
             continuation.yield(SequencedOutcome(sequence: next, event: event))
-        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
+        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted,
+            .thermalCycleLaneOverlapped:
             break
         }
     }
@@ -369,7 +372,8 @@ actor ConnectionHealth: SchedulerObserving {
             // A walk that threw, or returned nothing from a machine that declared keys: the
             // handle failed to answer. One outcome in the same run, never one per key.
             await countFailure(recovering: recovery)
-        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
+        case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted,
+            .thermalCycleLaneOverlapped:
             // Never forwarded, so never seen. Handled exhaustively rather than with a
             // `default`, so adding a case to `SchedulerEvent` is a compile error here — the
             // one place a new event kind has to be thought about twice.

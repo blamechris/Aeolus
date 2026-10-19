@@ -494,7 +494,7 @@ struct StartupReconciliationReadBackTests {
 /// it to named fans — the firmware behaviour #204 is about.
 ///
 /// Everything else is `ScriptedControlPlane`'s, verbatim.
-actor ReadBackScriptedPlane: FanControlPlane {
+actor ReadBackScriptedPlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private var modeReadsFailingFirst: Int

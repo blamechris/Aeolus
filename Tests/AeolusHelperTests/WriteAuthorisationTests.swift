@@ -343,6 +343,10 @@ struct WriteAuthorisationTests {
     /// `FanRestoring.restoreToAutomatic(fans:because:)` is deliberately non-throwing — it is
     /// the declaration `LeaseAuthority` actually calls — and an `async throws` pattern put the
     /// keystone seam outside the scan entirely.
+    ///
+    /// **One stated exception, outside this scan: § 3's bridge**, whose command half takes a
+    /// permit and whose restore half runs in the same job. `docs/SAFETY.md` states it, and
+    /// `ThermalEmergencyBridgeTests.theBridgeIsTheOneRestoreInsideAPermit` pins it.
     @Test("No restore verb in Sources takes an authorisation of any kind")
     func theRestoreVerbTakesNoAuthorisation() throws {
         let declarations = try SeamScanner.writeVerbs(named: #"restore\w*"#)

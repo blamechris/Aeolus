@@ -344,7 +344,8 @@ struct SystemPowerTests {
     ///
     /// **Mutation:** in `SystemPowerResponder.handBackEveryFan`, replace `releaseEveryLease()`
     /// with `revokeEveryLease(because: .allLeasesDropped)`. Run: red on the attempt count — that
-    /// sweep restores the table's fans, and the table is empty.
+    /// sweep restores the table's fans, and the table is empty. (Run before #440, when that verb
+    /// took a cause; its table-only sweep is unchanged.)
     @Test("Sleep asks again for a fan whose lease-end handback the firmware refused")
     func sleepRetriesAFanWhoseLeaseEndHandbackWasRefused() async throws {
         let plane = Self.machine(writes: .refused(reason: "the firmware refused the mode write"))

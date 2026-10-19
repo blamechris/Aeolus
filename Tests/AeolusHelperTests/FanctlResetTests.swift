@@ -28,7 +28,7 @@ import Testing
 /// `fanctl` is admitted by an **installed** helper. A `swift build` binary carries no Team ID
 /// and is refused at both ends by design (ADR 0005), so hardware acceptance of this command is
 /// blocked on [#82](https://github.com/blamechris/Aeolus/issues/82).
-@Suite("fanctl reset --all against a real helper session")
+@Suite("fanctl reset --all against a real helper session", .timeLimit(.minutes(3)))
 struct FanctlResetTests {
 
     /// One run's observable result: what swift-argument-parser would print, and what it
@@ -40,6 +40,10 @@ struct FanctlResetTests {
     }
 
     /// Deadlines long enough that a loaded runner cannot fake a failure.
+    ///
+    /// **Mutation:** make the harness drop the panic request — `ClientListenerHarness`'s
+    /// `restoreAllToAutomatic(reply:)` neither forwards it nor replies. Run: red, at the
+    /// deadline, within the suite's time limit: the answering tests report "did not confirm".
     ///
     /// **Three of these tests assert text and an exit code and nothing about timing**, so a
     /// short deadline buys them nothing and costs a red CI run — a working helper reported as
@@ -68,10 +72,42 @@ struct FanctlResetTests {
     /// *does* send one would silently inherit.
     /// `noHarnessDefaultImposesATighterDeadlineThanTheProduct` reads this constant, which is why
     /// it is not `private`.
+    ///
+    /// ## Stall-tolerant: the product's term plus the stall ceiling
+    ///
+    /// [#341](https://github.com/blamechris/Aeolus/issues/341) made the suite's *waits* count only
+    /// the time the waiter ran, and these deadlines were the one wall-clock bound left in front of
+    /// a reply. Twice on #439's CI the runner was CPU-starved for the first ~30 s of the run —
+    /// 2,675 tests in 41 s, every test in this suite taking ~34 s — and a 10 s panic deadline
+    /// expired before the request was even delivered: `harness.arrivals` empty, "did not confirm
+    /// the reset request", and a refused connection reported as an unanswered one. A deadline the
+    /// client enforces cannot be compensated the way a poll is, because the poll is not the one
+    /// waiting, so each term the answering tests run under is the product's own **plus
+    /// `StallTolerantWait.ceiling`**, the most compensation #341 grants any wait: 55 s gated, 60 s
+    /// on the panic path. A request that genuinely never arrives still fails, at that deadline,
+    /// and the suite's `.timeLimit` sits above it so it fails rather than hangs. The one test
+    /// that asserts a deadline passes its own (`observableDeadline`).
+    ///
+    /// Written as literals because `HelperClientDeadlineLiteralTests` reads every deadline passed
+    /// in the test target and must resolve each to a duration;
+    /// `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling` holds the derivation.
     static let unhurried = HelperClientDeadlines(
-        gatedVerb: .seconds(10),
-        panicVerb: .seconds(10),
+        gatedVerb: .seconds(55),
+        panicVerb: .seconds(60),
         handshakeVerb: HelperClientDeadlines.handshakeVerb)
+
+    /// `unhurried`'s two terms are the product's plus `StallTolerantWait.ceiling` (#341), so a
+    /// change to either moves them, rather than leaving a literal that has drifted from its
+    /// reason.
+    ///
+    /// **Mutation:** set `unhurried`'s panic term to `.seconds(10)`. Run: red.
+    @Test("The answering tests' deadlines are the product's plus the stall ceiling")
+    func theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling() {
+        #expect(
+            Self.unhurried.gatedVerb == HelperClientDeadlines.gatedVerb + StallTolerantWait.ceiling)
+        #expect(
+            Self.unhurried.panicVerb == HelperClientDeadlines.panicVerb + StallTolerantWait.ceiling)
+    }
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
     ///
