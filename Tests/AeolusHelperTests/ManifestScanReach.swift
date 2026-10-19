@@ -51,6 +51,9 @@ extension ManifestScan {
     /// **Refuses**, of what it reads and nothing else:
     /// - **A plugin**, a `.plugin` target or a `plugins:` argument. A build-tool plugin generates
     ///   source into the target it is applied to, and no scan here reads generated source.
+    ///   **What it costs:** it refuses `plugins:` on any target, and a `.plugin` target, outright,
+    ///   which is what SwiftLint's build-tool plugin would need (and a package dependency, which
+    ///   the pin refuses too). The PR that needs one changes this rule, with its own review.
     /// - **A target inside the helper's directory.** The helper-only scans skip
     ///   `Sources/AeolusHelper/` wholesale, so a `.target` at `Sources/AeolusHelper/Sub`, with the
     ///   helper `exclude:`-ing `Sub`, imports the helper where nothing looks. The `path:` is
@@ -61,9 +64,6 @@ extension ManifestScan {
     ///   does not. That is inferred from that outcome, not read from SwiftPM's source. A
     ///   directory that does not resolve, a path that is absolute or climbs out of the repository,
     ///   and a path that cannot be read are each refused (fail closed), each with its own message.
-    ///   **What it costs:** it refuses `plugins:` on any target, and a `.plugin` target, outright,
-    ///   which is what SwiftLint's build-tool plugin would need (and a package dependency, which
-    ///   the pin refuses too). The PR that needs one changes this rule, with its own review.
     /// - **A helper that excludes or adds sources.** `exclude:` and `sources:` are how the helper
     ///   would hand part of its directory to another target, or take files from elsewhere; it has
     ///   neither. **What it costs:** the usual way to keep a non-Swift file under

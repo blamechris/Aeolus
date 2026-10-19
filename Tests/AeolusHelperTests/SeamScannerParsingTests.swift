@@ -347,7 +347,7 @@ struct SeamScannerParsingTests {
 
     // MARK: - The premise the block-comment stripper rests on
 
-    /// `strippingBlockComments` argues that its quote-counter cannot weaken a scan because
+    /// `strippingBlockAndLineComments` argues that its quote-counter cannot weaken a scan because
     /// `depth` never rises over this tree. That is a claim about `Sources`, not about the
     /// code, and it was resting on nobody having checked. It is checked here, so the day a
     /// block comment is written is the day the argument is re-read rather than the day it
@@ -359,10 +359,10 @@ struct SeamScannerParsingTests {
             #expect(
                 !source.contains("/*"),
                 """
-                \(file.lastPathComponent) contains a block comment. `strippingBlockComments` \
-                argues its quote-counting string handling cannot weaken a scan because \
-                `depth` never rises over this tree — re-read that argument, because it no \
-                longer holds by inspection.
+                \(file.lastPathComponent) contains a block comment. \
+                `strippingBlockAndLineComments` argues its quote-counting string handling cannot \
+                weaken a scan because `depth` never rises over this tree — re-read that argument, \
+                because it no longer holds by inspection.
                 """
             )
         }
