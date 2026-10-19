@@ -129,25 +129,18 @@ struct CompositionWriteChannelTests {
 
     /// An explicit access level that can widen a member past `private`. `private`, `fileprivate`
     /// and `private(set)` are the narrowing ones and are not matched; a longer word is not either,
-    /// nor is a member access (`connection.open()`).
+    /// nor is a member access (`connection.open()`, `privacy: .public`).
     ///
     /// `internal` and `public` are matched wherever they stand. `open` and `package` are also
     /// ordinary words, so they are matched only as modifiers: followed, past any other modifiers
-    /// and attributes, by a declaration keyword. `func open()`, the forwarder's own verb, is a name
-    /// and not a widening (#442's review, N1), and `open class`, `package static func` and
-    /// `@MainActor open var` are.
+    /// and attributes, by one of `declarationKeywords`, and standing where a declaration starts
+    /// (`widenedAccess(in:)`, beside that list in `CompositionWriteChannelAccessTests.swift`).
+    /// `func open()`, the forwarder's own verb, is a name and not a widening (#442's review, N1),
+    /// and `open class`, `package static func` and `@MainActor open var` are.
     static let widenedAccessToken =
         #"(?<![.\w])(?:internal|public)(?!\w)|(?<![.\w])(?:open|package)(?!\w)"#
         + #"(?=\s+(?:@?\w+(?:\([^()]*\))?\s+){0,8}?"#
-        + #"(?:func|var|let|class|struct|enum|actor|protocol|extension|init|subscript|typealias"#
-        + #"|associatedtype|import)(?!\w))"#
-
-    /// Every widening access word in `code`, in order.
-    static func widenedAccess(in code: String) throws -> [String] {
-        try NSRegularExpression(pattern: widenedAccessToken)
-            .matches(in: code, range: NSRange(code.startIndex..., in: code))
-            .compactMap { Range($0.range, in: code).map { String(code[$0]) } }
-    }
+        + #"(?:"# + declarationKeywords.joined(separator: "|") + #")(?!\w))"#
 
     /// **Mutations:** in `widenedAccessToken`, drop `internal|`; match `open` and `package`
     /// wherever they stand. Run: red here, the first at the first fixture and the second at the

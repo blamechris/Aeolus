@@ -230,13 +230,13 @@ struct WriteSeamSpellingTests {
 @Suite("No build setting opens the seam to a test")
 struct SeamBuildSettingTests {
 
-    private static func text(_ path: String) throws -> String {
+    static func text(_ path: String) throws -> String {
         let url = RuleZeroScan.repositoryRoot.appendingPathComponent(path)
         return String(decoding: try Data(contentsOf: url), as: UTF8.self)
     }
 
     /// The names in the repository root: a manifest is only ever a root file.
-    private static func rootEntries() throws -> [String] {
+    static func rootEntries() throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             atPath: RuleZeroScan.repositoryRoot.path)
     }
