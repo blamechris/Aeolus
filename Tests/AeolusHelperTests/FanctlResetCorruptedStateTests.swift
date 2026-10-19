@@ -168,7 +168,8 @@ struct FanctlResetCorruptedStateTests {
         let before = await plane.attempts.count
 
         let harness = ClientListenerHarness(authority: helper.authority)
-        let emitted = try await FanctlResetTests.emitted(over: harness)
+        let emitted = try await FanctlResetTests.emitted(
+            over: harness, waiting: FanctlResetTests.unhurried)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))
@@ -242,7 +243,8 @@ struct FanctlResetCorruptedStateTests {
         await helper.plane.setForceKey(true)
 
         let harness = ClientListenerHarness(authority: helper.authority)
-        let emitted = try await FanctlResetTests.emitted(over: harness)
+        let emitted = try await FanctlResetTests.emitted(
+            over: harness, waiting: FanctlResetTests.unhurried)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))

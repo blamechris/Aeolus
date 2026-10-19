@@ -134,10 +134,12 @@ struct HelperClientDeadlineTests {
     ///
     /// **What this covers, exactly.** Every deadline a test can *inherit*:
     /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take, and
-    /// `FanctlResetTests.unhurried`, the default of `FanctlResetTests.emitted(over:waiting:)`.
-    /// Those two are the whole set — `grep 'HelperClientDeadlines('` over `Tests/` finds no
-    /// third default. So no test can acquire a tighter bound than the product's without
-    /// naming one.
+    /// `FanctlResetTests.unhurried`, the default of `FanctlAutoTests.run` and named by
+    /// `FanctlStatusTests` and the corrupted-state suite. Those two are the whole set —
+    /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The deliberately
+    /// looser `FanctlResetTests.stallTolerant` is `private` to the suite that passes it (#443),
+    /// and that suite holds its three terms itself. So no test can acquire a tighter bound than
+    /// the product's without naming one.
     ///
     /// **Most of what it compares is a value against itself, and that is what it is for.**
     /// `ClientListenerHarness.defaultDeadlines` *is* `HelperClientDeadlines.default`
@@ -208,35 +210,35 @@ struct HelperClientDeadlineTests {
             """)
 
         // The other default a test can inherit without naming it, and `>=` rather than equality
-        // because being *looser* is deliberate here: `unhurried` is each product term plus the
-        // stall ceiling on both verbs that suite's tests exercise (#341). Those two terms are also
-        // the only distinct comparisons in this test — the handshake term is
+        // because being *looser* is deliberate here: `unhurried` sits at 10 s on both verbs the
+        // suites that take it exercise, as it did before #439. Those two terms are also the only
+        // distinct comparisons in this test — the handshake term is
         // `HelperClientDeadlines.handshakeVerb` itself.
         let fanctlDefaults = FanctlResetTests.unhurried
         for (verb, harnessBound, productBound, consequence) in [
             (
                 "a gated verb", fanctlDefaults.gatedVerb, shipping.gatedVerb,
                 """
-                Three of that suite's four tests inherit this and assert text and an exit code, \
+                The suites that inherit this assert text, exit codes and call counts, \
                 so a bound below the product's can only report a helper that answered as one \
-                that did not — the misreport that suite exists to forbid.
+                that did not — the misreport those suites exist to forbid.
                 """
             ),
             (
                 "the panic path", fanctlDefaults.panicVerb, shipping.panicVerb,
                 """
                 `fanctl reset --all` *is* the panic path, so this is the bound its round trip \
-                actually runs under, and a value below the product's reports a helper that \
-                answered as one that did not.
+                actually runs under in the suites that inherit this, and a value below the \
+                product's reports a helper that answered as one that did not.
                 """
             ),
             (
                 "a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb,
                 """
-                No test in that suite sends a `hello` at all — `theCommandSendsNoHandshake` \
-                asserts precisely that — so this term is inert there and misreports nothing \
-                today. It is held to the product's value because a fourth invented handshake \
-                bound is what the first test that *does* send one would inherit.
+                `FanctlResetTests` sends no `hello` (`theCommandSendsNoHandshake`), but the \
+                `fanctl auto` and `fanctl status` suites that take this do, so a bound below \
+                the product's can report a helper still starting as one that did not answer. \
+                It is held to the product's value for that reason.
                 """
             ),
         ] {
