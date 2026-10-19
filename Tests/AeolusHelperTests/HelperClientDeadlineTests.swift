@@ -134,8 +134,8 @@ struct HelperClientDeadlineTests {
     ///
     /// **What this covers, exactly.** Every deadline a test can *inherit*:
     /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take, and
-    /// `FanctlResetTests.unhurried`, the default of `FanctlResetTests.emitted(over:waiting:)` and
-    /// `FanctlAutoTests.run`, and what `FanctlStatusTests` passes. Those two are the whole set —
+    /// `FanctlResetTests.unhurried`, the default of `FanctlAutoTests.run` and named by
+    /// `FanctlStatusTests` and the corrupted-state suite. Those two are the whole set —
     /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The deliberately
     /// looser `FanctlResetTests.stallTolerant` is `private` to the suite that passes it (#443),
     /// and that suite holds its three terms itself. So no test can acquire a tighter bound than
@@ -235,10 +235,10 @@ struct HelperClientDeadlineTests {
             (
                 "a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb,
                 """
-                No test in that suite sends a `hello` at all — `theCommandSendsNoHandshake` \
-                asserts precisely that — so this term is inert there and misreports nothing \
-                today. It is held to the product's value because a fourth invented handshake \
-                bound is what the first test that *does* send one would inherit.
+                `FanctlResetTests` sends no `hello` (`theCommandSendsNoHandshake`), but the \
+                `fanctl auto` and `fanctl status` suites that take this do, so a bound below \
+                the product's can report a helper still starting as one that did not answer. \
+                It is held to the product's value for that reason.
                 """
             ),
         ] {

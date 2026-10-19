@@ -178,6 +178,29 @@ struct StallTolerantWaitTests {
         #expect(StallTolerantWait.ceiling < .seconds(60))
     }
 
+    /// The deadlines the one-minute suites run under leave their client room to fail first.
+    ///
+    /// `FanctlResetCorruptedStateTests` and `FanctlAutoUnreadModeTests` carry
+    /// `.timeLimit(.minutes(1))` and take `FanctlResetTests.unhurried`. With a request dropped, the
+    /// client's own "did not confirm" must surface before that limit fires with a message that
+    /// says nothing about why (#443). So each verb's deadline plus `margin` stays under 60 s. The
+    /// limit is restated here and not read, as above: a suite's trait cannot be read at run time.
+    ///
+    /// **The margin is 30 s.** That is the stall #439's CI runner showed before a suite's first
+    /// request went out (the first ~30 s of the run, every test taking ~34 s), and it is three
+    /// times the ~7 s the dropped-request runs spent outside the deadline (17.0 s at 10 s; 65.4 s
+    /// at 60 s, which is 5.4 s). At 10 s that leaves 20 s unspent; at 55 s and 60 s it leaves
+    /// none, which is what #439 gave these suites.
+    ///
+    /// **Mutation:** set `FanctlResetTests.unhurried` back to 55 s gated and 60 s panic. Run: red.
+    @Test("The deadlines the one-minute suites run under leave their client room to fail first")
+    func theOneMinuteSuitesDeadlinesFitInsideTheirTimeLimit() {
+        let margin = Duration.seconds(30)
+        let deadlines = FanctlResetTests.unhurried
+        #expect(deadlines.gatedVerb + margin < .seconds(60))
+        #expect(deadlines.panicVerb + margin < .seconds(60))
+    }
+
     // MARK: - Cancellation
 
     /// A cancelled wait ends with the cancellation. It is how a wait inside a test whose
