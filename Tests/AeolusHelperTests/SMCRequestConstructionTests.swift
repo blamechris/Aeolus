@@ -13,9 +13,14 @@ import Testing
 /// initialiser in an extension that assigns a field, however the extension names the type:
 /// `extension (SMCConnection.Request)` and an extension of an alias fail with "'key' is a get-only
 /// property", as `extension SMCConnection.Request` does, and the stored names are inaccessible.
-/// So no request built there can carry a selector no factory sends, or a payload that
-/// `write(_:to:)`'s size guard never saw. `WritePathAbsenceTests`' selector pin reads declared
-/// constants only, and a literal `selector: 6` in such a call would pass it.
+/// So no request built there can carry a selector no factory sends. `WritePathAbsenceTests`'
+/// selector pin reads declared constants only, and a literal `selector: 6` in such a call would
+/// pass it.
+///
+/// **The payload's size is `write(_:to:)`'s to check, not `Request`'s.** `writeBytes(_:payload:)`
+/// accepts any payload, so a write's payload is 1 to 32 bytes only because `write` is its one
+/// caller. `writeBytesHasOneCallerAndItIsWrite` holds SMCCore to that call (#456's delta review,
+/// B3).
 ///
 /// **What the compiler does not see, two run-time checks ask.** A key path to a property with a
 /// setter is a `WritableKeyPath` at run time even where the setter is out of reach (SR-5218), which
@@ -24,16 +29,18 @@ import Testing
 /// synthesise an initialiser no member list shows: `Decodable`'s `init(from:)` builds a request
 /// with any selector from a JSON object (#447's review, S2). The source pin reads the names
 /// `Request` lists, and `theRequestIsNotCodable` asks what the type conforms to. Both questions
-/// are asked in `StandardLibraryQuery.swift`, which imports nothing, so no name SMCCore declares
-/// can change them (#456's review, B2).
+/// are asked in `StandardLibraryQuery.swift`, which imports nothing, so SMCCore's internal names
+/// cannot change them (#456's review, B2). A public SMCCore name that a test-target file
+/// re-exports, or a name the test target declares, still can (#456's delta review, X1 and T2).
 ///
 /// **Inside that file, the source pin is the second layer.** `private` reaches an extension in
 /// the same file, so there the compiler refuses nothing. The pin holds the file to its one
-/// declaration and `Request` to its members, none with an attribute. It catches the init being
-/// widened, deleted (which brings the internal memberwise one back) or joined by a second, a
-/// stored field written `var`, the factories joined by a fifth, and an extension written beside
-/// the type, however its name is spelled. It reads source, so a widening a macro expanded is not
-/// seen; SMCCore uses none.
+/// declaration, `Request` to its members, its body to no `@` at all, and each accessor's body to
+/// exactly its stored field. It catches the init being widened, deleted (which brings back a
+/// memberwise one, as wide as the stored fields) or joined by a second, a stored field written
+/// `var`, an accessor given a setter or an `init` accessor, the factories joined by a fifth, and
+/// an extension written beside the type, however its name is spelled. It reads source, so a
+/// widening a macro expanded is not seen; SMCCore uses none, and a macro needs an `@` or a `#`.
 @Suite("SMCConnection.Request is built by its factories alone")
 struct SMCRequestConstructionTests {
 
@@ -67,7 +74,7 @@ struct SMCRequestConstructionTests {
     /// `theRequestIsNotCodable`. Append to `SMCConnectionRequest.swift` itself an extension of
     /// `(SMCConnection.Request)` whose initialiser assigns the stored fields, which compiles
     /// there. Run: red here, at the file's one declaration. Mark the `key` accessor
-    /// `@usableFromInline`. Run: red here, at the attributes.
+    /// `@usableFromInline`. Run: red here, at the attributes, and at the body's `@` below.
     @Test("Request has one initialiser, private, and its factories are the four")
     func theInitialiserIsPrivateAndTheFactoriesAreFour() throws {
         let url = try #require(
@@ -114,9 +121,118 @@ struct SMCRequestConstructionTests {
             "\(request.declarations.filter { !$0.attributes.isEmpty }.map(\.attributes))")
     }
 
+    /// `struct Request`'s declaration, read off `SMCConnectionRequest.swift` with its comments
+    /// and string literals gone.
+    private static func requestDeclaration() throws -> DeclarationCensus.Declaration {
+        let url = try #require(
+            try SeamScanner.swiftFiles(under: "SMCCore").first {
+                $0.lastPathComponent == Self.requestFile
+            })
+        let file = DeclarationCensus.outermost(
+            inSource: try String(contentsOf: url, encoding: .utf8))
+        let holder = DeclarationCensus.outermost(
+            inCode: try #require(file.declarations.first?.body))
+        return try #require(holder.declarations.first { $0.introducer == "struct" })
+    }
+
+    /// Each accessor and the one stored field it reads.
+    static let accessors = [
+        "key": "storedKey", "selector": "storedSelector", "data32": "storedData32",
+        "dataSize": "storedDataSize", "payload": "storedPayload",
+    ]
+
+    /// An attribute can change what a member is from inside its body, where the member list does
+    /// not look. `var selector: UInt8 { @storageRestrictions(initializes: storedSelector) init {
+    /// storedSelector = newValue } get { storedSelector } }` spells `var selector` and has no
+    /// setter, so neither the member list nor the key-path check sees it, yet an extension in
+    /// `SMCConnection.swift` can then assign every field in an initialiser (#456's delta review,
+    /// B1). `@storageRestrictions` is what such an `init` accessor needs, so no `@` is allowed
+    /// anywhere in `Request`'s body, comments and strings aside. Each accessor's body is also held
+    /// to exactly its stored field, so a setter, an `init` accessor or an addressor is refused
+    /// even if it needed no `@`.
+    ///
+    /// **Mutation (A8):** each of the five accessors written as the `init` accessor above, with
+    /// #452's P1 extension appended to `SMCConnection.swift`, which then compiles. Run: red here,
+    /// at the `@` and at every accessor's body.
+    @Test("Request's body holds no attribute anywhere, and each accessor reads its field alone")
+    func eachAccessorReadsItsStoredFieldAlone() throws {
+        let request = try Self.requestDeclaration()
+        let body = try #require(request.body)
+        #expect(
+            !body.contains("@"),
+            """
+            SMCConnection.Request's body holds an @. An attribute inside a member, such as an init \
+            accessor's @storageRestrictions, can let code outside the file assign a field.
+            """)
+
+        let members = DeclarationCensus.outermost(inCode: body).declarations
+        for (accessor, field) in Self.accessors {
+            let declared = members.filter { $0.introducer == "var" && $0.name == accessor }
+            #expect(declared.count == 1, "\(accessor)")
+            let read = declared.first?.body.map { SeamScanner.collapsingWhitespace($0) }
+            #expect(
+                read == field,
+                "the \(accessor) accessor's body is \(read ?? "absent"), not exactly \(field)")
+        }
+    }
+
+    /// The call that makes a write's payload 1 to 32 bytes: the one mention of `writeBytes` in
+    /// `SMCConnection.swift`, inside `write(_:to:)`, after its size guard. `writeBytes` itself
+    /// accepts any payload, so a second caller, or a `Request` built from it by an extension's
+    /// initialiser, sends a payload no guard saw (#456's delta review, A6 and A7). The count is
+    /// per file and the call is located in `write`'s body, so moving it into a helper that
+    /// `write` calls is refused too.
+    static let writeBytesMention = #"(?<![A-Za-z0-9_])writeBytes(?![A-Za-z0-9_])"#
+
+    /// **Mutations:** `extension SMCConnection { private func a7() throws { _ = try
+    /// call(.writeBytes(0, payload: [])) } }` in `SMCConnection.swift`, never invoked (A7).
+    /// Run: red here, at the per-file count. `self = .writeBytes(0, payload: [])` in an
+    /// extension's initialiser there (A6). Run: red here, at the count. `write`'s call moved into
+    /// a `private func sendWrite` that `write` calls (A9). Run: red here, at `write`'s body only.
+    @Test("writeBytes is declared once and called once in SMCCore, by write(_:to:)")
+    func writeBytesHasOneCallerAndItIsWrite() throws {
+        var mentions: [String: Int] = [:]
+        let files = try SeamScanner.swiftFiles(under: "SMCCore")
+        #expect(files.count > 5, "the scan read \(files.count) files, which is not SMCCore")
+        for file in files {
+            let code = RuleZeroScan.code(of: try String(contentsOf: file, encoding: .utf8))
+            let count = try RuleZeroScan.count(Self.writeBytesMention, in: code)
+            if count > 0 { mentions[file.lastPathComponent] = count }
+        }
+        #expect(
+            mentions == ["SMCConnectionRequest.swift": 1, "SMCConnection.swift": 1],
+            """
+            writeBytes is mentioned \(mentions) in SMCCore. It accepts any payload, so its only \
+            caller must be write(_:to:), which refuses a payload that is empty or over 32 bytes.
+            """)
+
+        // And the one call is inside `write(_:to:)`.
+        let connection = try #require(files.first { $0.lastPathComponent == "SMCConnection.swift" })
+        let census = DeclarationCensus.outermost(
+            inSource: try String(contentsOf: connection, encoding: .utf8))
+        let writes = census.declarations.compactMap(\.body).flatMap {
+            DeclarationCensus.outermost(inCode: $0).declarations.filter {
+                $0.introducer == "func" && $0.name == "write"
+            }
+        }
+        #expect(writes.count == 1, "\(writes.count) func write in SMCConnection.swift")
+        let writeBody = RuleZeroScan.code(of: writes.first?.body ?? "")
+        #expect(try RuleZeroScan.count(Self.writeBytesMention, in: writeBody) == 1)
+    }
+
     /// A struct whose `Codable` conformance is synthesised, so each check below is seen to
     /// answer yes for one.
     private struct SynthesisedCodable: Codable {
+        let selector: UInt8
+    }
+
+    /// A struct that is `Decodable` and nothing more, spelled `Swift.Decodable` so a `Decodable`
+    /// the test target declares cannot change it (P4's `enum Swift` in SMCCore can: it is then
+    /// not `Decodable`, and this premise goes red). Under T2, a test-target `typealias Decodable =
+    /// Swift.Decodable & Swift.Encodable`, and under X1, the same alias public in SMCCore and
+    /// re-exported, `isDecodable` answers no for it, and yes for `SynthesisedCodable`. That is
+    /// this premise's reach: it is not a general guard against what the test target declares.
+    private struct DecodableOnly: Swift.Decodable {
         let selector: UInt8
     }
 
@@ -134,11 +250,13 @@ struct SMCRequestConstructionTests {
     /// **Mutations:** in `SMCConnection.swift`, `extension SMCConnection { typealias Equatable =
     /// Swift.Equatable & Swift.Decodable }`, which leaves `Request`'s list reading `Sendable,
     /// Equatable` (#452's P2). Run: red here, at `Decodable`, and nowhere else. The same, with a
-    /// top-level `typealias Decodable = Swift.Decodable & Swift.Hashable` beside it (P3), or with
-    /// an internal `enum Swift { typealias Decodable = Hashable }` and P2 written without
-    /// `Swift.` (P4). Run: red here, at `Decodable`, for each. Add `Decodable` to the list (R3).
+    /// top-level `typealias Decodable = Swift.Decodable & Swift.Hashable` beside it (P3). Run: the
+    /// same. An internal `enum Swift { typealias Decodable = Hashable }`, P2 written without
+    /// `Swift.` (P4). Run: red at `Decodable` and at `DecodableOnly`. P2 with T2 or with X1: red
+    /// at `DecodableOnly`'s premise only; the check on `Request` itself passes, because
+    /// `Decodable` in the query file then means the alias. Add `Decodable` to the list (R3).
     /// Run: red here, at `Decodable`, and at the conformance check above.
-    @Test("Request is not Decodable, Encodable or Codable, whatever its list's names resolve to")
+    @Test("Request is not Decodable, Encodable or Codable, asked of the type rather than its list")
     func theRequestIsNotCodable() {
         let request = SMCConnection.Request.self
         #expect(
@@ -151,6 +269,7 @@ struct SMCRequestConstructionTests {
         #expect(StandardLibraryQuery.isDecodable(SynthesisedCodable.self))
         #expect(StandardLibraryQuery.isEncodable(SynthesisedCodable.self))
         #expect(StandardLibraryQuery.isCodable(SynthesisedCodable.self))
+        #expect(StandardLibraryQuery.isDecodable(DecodableOnly.self))
     }
 
     /// No key path into `Request` can be written through, by a dynamic cast or otherwise.
@@ -163,9 +282,9 @@ struct SMCRequestConstructionTests {
     /// way to send any 80 bytes.
     ///
     /// **Mutations:** the fields back to `private(set) var`, as at `d730054`. Run: red here, at
-    /// each of the five fields, and at the member list. #456's K1 in `SMCConnection.swift`, with
-    /// the fields as they are. Run: green, and K1's cast returns `nil`; with the fields
-    /// `private(set) var`, the same K1 writes selector 6, data size 40 and a 32-byte payload.
+    /// each of the five fields, the member list and the accessor bodies. #456's K1 in
+    /// `SMCConnection.swift`, with the fields as they are: green, and its cast returns `nil`; with
+    /// the fields `private(set) var`, the same K1 writes selector 6, size 40 and 32 bytes.
     @Test("No key path into Request is writable, even by a dynamic cast")
     func noKeyPathIntoTheRequestIsWritable() {
         // Spelled in full: an alias of a seam type is refused outside SMCCore
@@ -184,12 +303,14 @@ struct SMCRequestConstructionTests {
 
     static let queryFile = "StandardLibraryQuery.swift"
 
-    /// `StandardLibraryQuery.swift` imports nothing, so no SMCCore name can stand in for the
-    /// standard library's there.
+    /// `StandardLibraryQuery.swift` imports nothing, so SMCCore's internal names cannot stand in
+    /// for the standard library's there. This does not reach names visible to the whole test
+    /// target: a public SMCCore name another test file re-exports (X1), or one the test target
+    /// declares (T2). See that file's documentation.
     ///
     /// **Mutation:** `@testable import SMCCore` in that file, with P3. Run: red here, and at
-    /// `theRequestIsNotCodable`'s premise, since `SynthesisedCodable` is not `Hashable`. The check
-    /// on `Request` itself passes, because `Decodable` in that file now means SMCCore's.
+    /// `theRequestIsNotCodable`'s two premises, neither of which is `Hashable`. The check on
+    /// `Request` itself passes, because `Decodable` in that file now means SMCCore's.
     @Test("The file the run-time questions are asked in imports nothing")
     func theQueryFileImportsNothing() throws {
         let url = try #require(

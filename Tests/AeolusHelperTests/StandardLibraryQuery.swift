@@ -5,9 +5,18 @@
 /// top-level `typealias Decodable = Swift.Decodable & Swift.Hashable` in SMCCore turns
 /// `is any Decodable.Type` there into a question about `Decodable & Hashable`, which a `Decodable`
 /// type that is not `Hashable` answers no (P3). An internal `enum Swift` does the same to
-/// `Swift.Decodable` (P4), and `WritableKeyPath` can be shadowed the same way. Here no SMCCore
-/// name is in scope, so each name below is the standard library's. `SMCRequestConstructionTests`
-/// holds this file to importing nothing.
+/// `Swift.Decodable` (P4), and `WritableKeyPath` can be shadowed the same way. This file imports
+/// nothing, so SMCCore's internal names are not in scope here, and `SMCRequestConstructionTests`
+/// holds it to that.
+///
+/// **That is all it protects against.** Names visible to the whole test target are in scope here
+/// too. A public SMCCore `typealias Decodable` re-exported by another test file's
+/// `@_exported import SMCCore` (X1), or a `typealias Decodable` the test target declares (T2),
+/// changes what `Decodable` means below, as an alias of any other name used here would change its
+/// question. Neither is caught by the import pin. Under both, with `Decodable & Encodable` as the
+/// alias, the check on `Request` passes and only `theRequestIsNotCodable`'s premise spelled
+/// `Swift.Decodable` goes red; that premise is not a general guard against what the test target
+/// can declare.
 enum StandardLibraryQuery {
 
     static func isDecodable(_ type: Any.Type) -> Bool { type is any Decodable.Type }

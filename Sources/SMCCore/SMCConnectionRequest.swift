@@ -21,16 +21,19 @@ extension SMCConnection {
     ///   `Request(key:selector:data32:dataSize:payload:)` or name a stored field. An initialiser
     ///   it writes in an extension cannot assign an accessor, however the extension names the
     ///   type: `extension (SMCConnection.Request)` is refused with "'key' is a get-only
-    ///   property", as the plain spelling is. Nor can that code change a field of a request a
-    ///   factory built.
+    ///   property", as the plain spelling is. Nor can that code, in safe Swift, change a field of
+    ///   a request a factory built.
     /// - **Anywhere, two run-time checks.** `SMCRequestConstructionTests` checks that no key path
     ///   to an accessor, or to `bytes`, is a `WritableKeyPath`, and that `Request` is not
     ///   `Decodable`, whose synthesised `init(from:)` would build one with any selector. Both are
-    ///   asked in a test file that imports nothing, so no name SMCCore declares can change what
-    ///   they ask.
+    ///   asked in a test file that imports nothing, so SMCCore's internal names cannot change
+    ///   what they ask. A public SMCCore name that a test-target file re-exports, or a name the
+    ///   test target declares, still can (#456's delta review, X1 and T2).
     /// - **Inside this file, a source pin.** `private` reaches an extension written in the same
     ///   file, so here the compiler refuses nothing. The same suite holds the file to this one
-    ///   declaration, and `Request` to the members below, none of them with an attribute.
+    ///   declaration, `Request` to the members below, its body to no `@` at all, and each
+    ///   accessor's body to exactly its stored field. An `init` accessor, which needs
+    ///   `@storageRestrictions`, would let an extension anywhere assign the fields again.
     ///
     /// **Why the accessors are computed rather than `private(set) var` (SR-5218).** A
     /// `private(set)` property still has a setter, and the key path to it is a `WritableKeyPath`
@@ -42,8 +45,13 @@ extension SMCConnection {
     ///
     /// The file boundary is therefore part of the control, not only a way to keep
     /// `SMCConnection.swift` under the length limit. Either way, no request carries a selector no
-    /// factory sends, or a payload `write(_:to:)`'s size guard never saw. `WritePathAbsenceTests`'
-    /// selector pin reads declared constants only, and a literal in such a call would pass it.
+    /// factory sends. `WritePathAbsenceTests`' selector pin reads declared constants only, and a
+    /// literal in such a call would pass it.
+    ///
+    /// **The payload's size is not this type's to check.** `writeBytes(_:payload:)` accepts any
+    /// payload. A write's payload is 1 to 32 bytes because `write(_:to:)` refuses any other
+    /// before it calls `writeBytes`, and it is `writeBytes`'s only caller:
+    /// `SMCRequestConstructionTests` holds SMCCore to that one call.
     struct Request: Sendable, Equatable {
         private let storedKey: FourCharCode
         private let storedSelector: UInt8
@@ -59,9 +67,11 @@ extension SMCConnection {
         var dataSize: UInt32 { storedDataSize }
         var payload: [UInt8] { storedPayload }
 
-        /// Written out, not synthesised, because Swift's memberwise initialiser would be internal.
-        /// Declaring one in the body suppresses it. `SMCRequestConstructionTests` holds this one
-        /// to `private` and to being the only one.
+        /// Written out, not synthesised. With the fields stored `private`, Swift's memberwise
+        /// initialiser would be private too, but its access would follow the storage's, so
+        /// widening a stored field would widen it. This one stays `private` whatever the storage
+        /// is, and declaring it in the body suppresses the memberwise one.
+        /// `SMCRequestConstructionTests` holds it to `private` and to being the only one.
         private init(
             key: FourCharCode, selector: UInt8, data32: UInt32, dataSize: UInt32, payload: [UInt8]
         ) {
@@ -95,8 +105,9 @@ extension SMCConnection {
         }
 
         /// `WRITE_BYTES` (6): `payload` written to the key. `dataSize` is the payload's own
-        /// length, so the two cannot disagree. `write(_:to:)` has already refused a payload
-        /// that is empty or longer than 32 bytes.
+        /// length, so the two cannot disagree. This accepts any payload: its one caller,
+        /// `write(_:to:)`, has already refused one that is empty or longer than 32 bytes, and
+        /// `SMCRequestConstructionTests` holds it to that one caller.
         static func writeBytes(_ key: FourCharCode, payload: [UInt8]) -> Request {
             Request(
                 key: key, selector: SMCConnection.selectorWriteBytes, data32: 0,
