@@ -30,7 +30,9 @@ extension CompositionWriteChannelTests {
     static let expressionKeywords: Set<String> = ["case", "return"]
     static let expressionSeparators: Set<Character> = ["=", ","]
 
-    /// Whether the token before `index` makes the word at it a name: see `expressionKeywords`.
+    /// Whether the token before `index` makes the word at it a name: see `expressionKeywords`. A
+    /// keyword after a `.` is a member of that name, as in `K.case`, and makes nothing a name: a
+    /// real widening after it is still found.
     static func followsExpressionContext(_ index: String.Index, in code: String) -> Bool {
         var end = index
         while end > code.startIndex, code[code.index(before: end)].isWhitespace {
@@ -42,7 +44,9 @@ extension CompositionWriteChannelTests {
         while start > code.startIndex, isWordCharacter(code[code.index(before: start)]) {
             start = code.index(before: start)
         }
-        return expressionKeywords.contains(String(code[start..<end]))
+        guard expressionKeywords.contains(String(code[start..<end])) else { return false }
+        // `K.case` and `K.return` are members named for the keyword, not the keyword (#445).
+        return start == code.startIndex || code[code.index(before: start)] != "."
     }
 
     private static func isWordCharacter(_ character: Character) -> Bool {
@@ -143,13 +147,24 @@ extension CompositionWriteChannelTests {
     /// The same layouts with a real widening beside the name: only the widening is found, so the
     /// check that drops a name does not drop the declaration next to it.
     ///
-    /// **Mutation:** skip the check altogether. Run: red here, at the first fixture.
+    /// `K.case` and `K.return` end the shape: a member named for an expression keyword is not the
+    /// keyword, and `swiftc` accepts both. Reading the member as the keyword hid the widening
+    /// after it (#445's review, S2; the loosening of N-1 introduced it).
+    ///
+    /// **Mutations:** skip the check altogether (red at the first fixture); read a keyword after a
+    /// `.` as the keyword (red at the last two).
     @Test("A real widening beside a name is still found")
     func aWideningBesideANameIsFound() throws {
         let mixed: [(source: String, words: [String])] = [
             ("private class E {\n    var x = open\n    open var y = 2\n}", ["open"]),
             ("private enum E {\n    case open\n    public var isOpen: Bool {}\n}", ["public"]),
             ("private enum E {\n    case closed, open\n    package func f() {}\n}", ["package"]),
+            // A member named for a keyword is not the keyword, so what follows it still widens.
+            (
+                "private enum E {\n    static let a = K.case\n    package static func f() {}\n}",
+                ["package"]
+            ),
+            ("private enum E {\n    static let b = K.return\n    open class C {}\n}", ["open"]),
         ]
         for (source, words) in mixed {
             #expect(try Self.widenedAccess(in: Self.mainCode(source)) == words, "\(source)")
