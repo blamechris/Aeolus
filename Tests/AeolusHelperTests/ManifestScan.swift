@@ -7,13 +7,14 @@ import Foundation
 /// Not a Swift parser, and it does not try to be one. It fails closed: a `path:` it cannot read as
 /// a single string literal, a `name:` it cannot read, a `dependencies:` it cannot read as one array
 /// of names, and a path that resolves outside the directories every other scan here reads are all
-/// findings, never exemptions (#441, #445). So is a plugin, a target whose `path:` resolves to the
-/// helper's directory, and an `exclude:` or `sources:` on the helper, each read from a
-/// constructor's arguments and from nothing else, and a package-level dependency other than the
-/// pinned one (`ManifestScanReach.swift`). A change made after the package is constructed is
-/// only tripped on, by two raw-text spellings, by accident.
+/// findings, never exemptions (#441, #445). `ManifestScanReach.swift` holds three rules that say
+/// what each reads: a target's constructor arguments (a plugin, a `path:` that resolves to the
+/// helper's directory, an `exclude:` or `sources:` on the helper), the top level of the manifest
+/// (exactly `import PackageDescription` and one `let package = Package(…)`), and the package-level
+/// `dependencies:` as constructed (pinned in `HelperDependentsTests`).
 ///
-/// These scans catch accidents. ADR 0014's compiler seam is the real control.
+/// These scans catch accidents; a deliberate author can evade a lexical reading. ADR 0014's
+/// compiler seam is the control.
 enum ManifestScan {
 
     // MARK: - Flags

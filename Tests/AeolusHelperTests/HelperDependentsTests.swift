@@ -31,31 +31,38 @@ import Testing
 ///    with comments, strings and backticks removed by the scanner every rule-zero tripwire
 ///    shares, and as raw text, with no lexer at all, against a pinned list of the files that name
 ///    the module even in prose.
-/// 3. **What neither layer can see.** The source layer skips `Sources/AeolusHelper/` and reads only
-///    the files under `Sources/` outside it and under `Tools/`; the manifest layer reads the
-///    constructor's `dependencies:`. Three more things hold the rest, and each says what it is:
-///    - `ManifestScan.reachProblem` refuses, as arguments a constructor was written with, three
-///      things this package does not use: a target whose `path:` resolves on disk to the helper's
-///      directory or inside it (both are resolved by the file system and compared as real paths,
-///      so another case, a folded letter or a `..` does not hide it, and a directory that does not
-///      resolve is refused), a helper that takes `exclude:` or `sources:`, and a plugin (a
-///      `.plugin` target or a `plugins:` argument), whose generated source no scan reads. That is
-///      exactly the constructor's arguments and no more.
-///    - The root package's own `dependencies:` are pinned (`pinnedPackages`). A file from another
-///      package, local (`.package(path: "ZZLocal")`) or remote, is not under `Sources/` or
-///      `Tools/`, so the import census does not read it; the pin refuses the package instead. The
-///      pinned package's own sources are read by nothing. The pin also closes the `.macro` route,
-///      which needs swift-syntax, a package the pin does not list.
-///    - `mutationProblem` is a tripwire and not a rule: it matches two raw-text spellings of a
-///      change after the package is constructed, by accident. It does not catch, for example, a
-///      subscript assignment, `replaceSubrange`, an inout pass, a backticked `.dependencies`, a
-///      key-path write, a rebinding of `package`, or a `path`, `exclude`, `sources` or `plugins`
-///      set on a let-bound target. Inside the helper's directory the census skips the files, so a
-///      target pointed there after construction is not seen.
+/// 3. **What neither layer reads.** The source layer skips `Sources/AeolusHelper/` and reads only
+///    the files under `Sources/` outside it and under `Tools/`; the manifest layer reads each
+///    target's constructor `dependencies:`. Three more rules hold what those do not, and each
+///    refuses only what it reads:
+///    - `ManifestScan.reachProblem` reads a target's constructor arguments, and the file system
+///      for one rule. It refuses a target whose `path:` resolves on disk to the helper's
+///      directory or inside it (the text is resolved first, as SwiftPM resolves it, and then
+///      compared as a real path, so another case, a folded letter, a `..` or a link before a `..`
+///      does not hide it, and a directory that cannot be located is refused), a helper that takes
+///      `exclude:` or `sources:`, and a plugin (a `.plugin` target or a `plugins:` argument),
+///      whose generated source no scan reads. It does not read anything done to a target after
+///      its constructor.
+///    - `ManifestScan.shapeProblem` reads the top level of a manifest and refuses anything but
+///      `import PackageDescription` and one `let package = Package(…)`. A manifest of that shape
+///      has no statement after the constructor to change a target or the package, and no
+///      top-level declaration for the constructor to read from. It does not read inside the
+///      constructor.
+///    - `ManifestScan.packageDependencies` reads the root `Package(...)`'s `dependencies:` as
+///      constructed, and `pinnedPackages` pins it. A file from another package, local
+///      (`.package(path: "ZZLocal")`) or remote, is not under `Sources/` outside the helper or
+///      under `Tools/`, which is what the import census reads; the pin refuses the package
+///      instead. The pinned package's own sources are read by nothing.
 ///
-/// These scans catch accidents, and every spelling met so far. ADR 0014's compiler seam (the B1
-/// seam amendment) is the real control, as everywhere in this directory. They do not see an Xcode
-/// target (`project.yml` is not read for dependencies).
+///    A `.macro` target needs `import CompilerPluginSupport`, where `Target.macro` is declared,
+///    and the shape rule refuses that import. Observed on Swift 6.4: without the import `.macro`
+///    is not a member of `Target`; with it, and with no swift-syntax dependency, a macro target
+///    built and the suite stayed green (MACRO). So the shape rule closes the `.macro` route, and
+///    the pin does not.
+///
+/// These scans catch accidents, and every spelling met so far; a deliberate author can evade a
+/// lexical reading. ADR 0014's compiler seam (the B1 seam amendment) is the control, as everywhere
+/// in this directory. They do not see an Xcode target (`project.yml` is not read for dependencies).
 @Suite("Only a test target depends on, or imports, the helper")
 struct HelperDependentsTests {
 
@@ -100,8 +107,10 @@ struct HelperDependentsTests {
         #expect(declared >= 15, "the manifests declare \(declared) targets, not this package's")
     }
 
-    /// The package's own dependencies are pinned, because a file from another package is under
-    /// neither `Sources/` nor `Tools/` and the import census never reads it (#445's review). A
+    /// The package's own dependencies, as constructed, are pinned, because a file from another
+    /// package is under neither `Sources/` nor `Tools/` and the import census never reads it
+    /// (#445's review). This reads the constructor only; the top level is
+    /// `ManifestScanShapeTests`'. A
     /// local package whose source does `@testable import AeolusHelper` and refers to
     /// `production(log:)`, added to the root `dependencies:` and to `AeolusHelperTests`, built
     /// incrementally and left the suite green; a clean build fails to resolve it. A list that
@@ -133,29 +142,25 @@ struct HelperDependentsTests {
             """)
     }
 
-    /// What the constructor arguments refuse, and what the raw text trips on (#445's review). None
-    /// is used today, so the real manifests must be clean: no plugin, no target whose `path:`
-    /// resolves to or inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the helper,
-    /// and neither of the two raw-text spellings of a change after the package is constructed.
-    /// The second is a tripwire that catches by accident, and misses the changes
-    /// `ManifestScanReachTests` lists.
+    /// What a target's constructor arguments refuse (#445's review). None of it is used today, so
+    /// the real manifests must be clean: no plugin, no target whose `path:` resolves to or inside
+    /// `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the helper. It reads constructor
+    /// arguments only; the top level is `ManifestScanShapeTests`'.
     ///
     /// **Mutations**, each in `Package.swift` and restored: (P3b) a `.target` at
     /// `Sources/AeolusHelper/ZZSub` with no declared dependency, the helper `exclude:`-ing
-    /// `ZZSub`, and a file there that does `@testable import AeolusHelper`, with and without a
-    /// dependency appended after construction; (P3b-case, FOLD) the same target with its path
-    /// spelled `Sources/aeolushelper/ZZSub` or `Sources/AeoluſHelper/ZZSub`; (P3c) a dependency
-    /// appended to a target after construction, with a file that imports nothing; (P4) a `.plugin`
-    /// at `Sources/ZZGen` applied to `AeolusHelperTests`, generating a file that references
-    /// `production()`. Run: red here, each; P3c's with nothing else red.
-    @Test("No manifest nests a target, uses a plugin, or uses either after-construction spelling")
+    /// `ZZSub`, and a file there that does `@testable import AeolusHelper`; (P3b-case, FOLD) the
+    /// same target with its path spelled `Sources/aeolushelper/ZZSub` or
+    /// `Sources/AeoluſHelper/ZZSub`;
+    /// (SYMDOT2) a path `ZZA/../Sources/aeolushelper/ZZSym` with `ZZA` a link into a decoy; (P4) a
+    /// `.plugin` at `Sources/ZZGen` applied to `AeolusHelperTests`, generating a file that
+    /// references `production()`. Run: red here, each.
+    @Test("No manifest nests a target in the helper or applies a plugin")
     func noManifestHidesSourceFromTheScans() throws {
         var read = 0
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
             let text = try SeamBuildSettingTests.text(name)
             read += 1
-            let mutation = ManifestScan.mutationProblem(in: text)
-            #expect(mutation == nil, "\(name): \(mutation ?? "")")
             for target in try ManifestScan.targets(in: text) {
                 let problem = ManifestScan.reachProblem(
                     with: target, under: RuleZeroScan.repositoryRoot)

@@ -1,13 +1,15 @@
 import Foundation
 import Testing
 
-/// The part of the manifest scan that reads the root package's own `dependencies:` (#445's
-/// review), on synthetic text. A package that is not this one, local or remote, compiles Swift the
-/// scans here do not read, so `HelperDependentsTests` pins the list; this holds the reading that
-/// pin stands on to the spellings it must see and the ones it must refuse. A list it cannot read is
-/// `.unreadable`, never an empty list.
+/// The part of the manifest scan that reads the root package's own `dependencies:` as constructed
+/// (#445's review), on synthetic text. A package that is not this one, local or remote, compiles
+/// Swift the scans here do not read, so `HelperDependentsTests` pins the list; this holds the
+/// reading that pin stands on to the spellings it must see and the ones it must refuse. A list it
+/// cannot read is `.unreadable`, never an empty list. It reads nothing after the constructor; the
+/// top level is `ManifestScanShapeTests`'.
 ///
-/// These scans catch accidents. ADR 0014's compiler seam is the real control.
+/// These scans catch accidents; a deliberate author can evade a lexical reading. ADR 0014's
+/// compiler seam is the control.
 @Suite("The manifest scan's reading of the package-level dependencies")
 struct ManifestScanPackageTests {
 

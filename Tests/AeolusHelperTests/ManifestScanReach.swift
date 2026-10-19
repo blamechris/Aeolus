@@ -4,7 +4,13 @@ import Foundation
 /// `ManifestScan` and not in it: that enum is at its length ceilings, and `SeamScannerComments` is
 /// the precedent for a sibling file holding more of the same type.
 ///
-/// These scans catch accidents. ADR 0014's compiler seam is the real control.
+/// Three rules live here, and each says what it reads and refuses only that: `reachProblem` reads
+/// one target's constructor arguments and the file system; `shapeProblem` reads the top level of
+/// a manifest; `packageDependencies` reads the root `Package(...)`'s `dependencies:` as
+/// constructed.
+///
+/// These scans catch accidents; a deliberate author can evade a lexical reading. ADR 0014's
+/// compiler seam is the control.
 extension ManifestScan {
 
     // MARK: - A target inside the helper's directory
@@ -38,22 +44,27 @@ extension ManifestScan {
     }
 
     /// Why the arguments `target` was constructed with could put source in front of the compiler
-    /// that the scans here do not read, or `nil` when they cannot (#445). Each is a refusal of a
-    /// construct this package does not use, **read from the constructor's arguments and from
-    /// nothing else**: a `path`, `exclude`, `sources` or `plugins` set on a let-bound target after
-    /// construction is not seen. `root` is the repository root, which the nested-path rule needs
-    /// to ask the file system where a directory is. The refused arguments are:
+    /// that the scans here do not read, or `nil` when they cannot (#445).
+    ///
+    /// **Reads:** the constructor's `kind`, `name:`, `path:`, `exclude:`, `sources:` and
+    /// `plugins:`, and for the nested-path rule the file system under `root`, the repository root.
+    /// **Refuses**, of what it reads and nothing else:
     /// - **A plugin**, a `.plugin` target or a `plugins:` argument. A build-tool plugin generates
-    ///   source into the target it is applied to, and no scan here reads generated source: not rule
-    ///   zero, not the SPI censuses, not the import census.
+    ///   source into the target it is applied to, and no scan here reads generated source.
     /// - **A target inside the helper's directory.** The helper-only scans skip
     ///   `Sources/AeolusHelper/` wholesale, so a `.target` at `Sources/AeolusHelper/Sub`, with the
-    ///   helper `exclude:`-ing `Sub`, imports the helper and builds its real graph where nothing
-    ///   looks. The target's directory and the helper's are both resolved by the file system and
-    ///   compared as real paths; a directory that does not resolve is refused (fail closed).
+    ///   helper `exclude:`-ing `Sub`, imports the helper where nothing looks. The `path:` is
+    ///   resolved as text first, `.` and `..` applied to the components as SwiftPM applies them
+    ///   (`resolved(_:)`), and the result is then resolved by the file system and compared, as a
+    ///   real path, with the helper's. A `..` after a symbolic link is therefore not followed
+    ///   through the link: `realpath` would, and SwiftPM does not. A directory that does not
+    ///   resolve, a path that is absolute or climbs out of the repository, and a path that cannot
+    ///   be read are each refused (fail closed), each with its own message.
     /// - **A helper that excludes or adds sources.** `exclude:` and `sources:` are how the helper
     ///   would hand part of its directory to another target, or take files from elsewhere; it has
     ///   neither.
+    ///
+    /// It does not read anything done to a target after its constructor.
     static func reachProblem(with target: Target, under root: URL) -> String? {
         let called = ".\(target.kind)(\(target.name ?? "?"))"
         if target.kind == "plugin" || target.labels.contains("plugins") {
@@ -69,14 +80,23 @@ extension ManifestScan {
                 + "with another target or filled from elsewhere, and the scans of the helper's "
                 + "sources skip Sources/AeolusHelper/ wholesale"
         }
-        guard let declared = declaredDirectory(of: target), resolved(declared) != nil,
-            let real = realPath(root.path + "/" + declared),
+        guard let declared = declaredDirectory(of: target) else {
+            return
+                "\(called) takes its sources from a path this cannot read (a computed path, or a "
+                + "name that is not a literal), so whether it is inside Sources/AeolusHelper/ "
+                + "cannot be told"
+        }
+        guard let parts = resolved(declared) else {
+            return
+                "\(called) takes its sources from \(declared), which is absolute or climbs out of "
+                + "the repository, so whether it is inside Sources/AeolusHelper/ cannot be told"
+        }
+        guard let real = realPath(root.path + "/" + parts.joined(separator: "/")),
             let helper = realPath(root.path + "/" + helperDirectory)
         else {
             return
-                "\(called) takes its sources from a directory that does not resolve on disk "
-                + "(\(declaredDirectory(of: target) ?? "a path that cannot be read")), so whether "
-                + "it is inside Sources/AeolusHelper/ cannot be told"
+                "\(called) takes its sources from \(declared), which does not resolve on disk, so "
+                + "whether it is inside Sources/AeolusHelper/ cannot be told"
         }
         guard real == helper || real.hasPrefix(helper + "/") else { return nil }
         return
@@ -85,33 +105,47 @@ extension ManifestScan {
             + "the helper and build its real graph where nothing looks"
     }
 
-    // MARK: - A change after the package is constructed
+    // MARK: - The top level of the manifest
 
-    /// Why `manifest`, read as raw text, matches one of two spellings of a change made after the
-    /// package is constructed, or `nil` when it matches neither (#445). **A tripwire that catches
-    /// by accident, not a rule.** The dependency rule reads only the constructor's `dependencies:`,
-    /// so `target.dependencies.append("AeolusHelper")` placed after `Package(...)` would pass it;
-    /// this matches that, `+=`, `=` and `.insert` on `.dependencies`, and any use of
-    /// `package.targets`. It therefore also refuses the ordinary `package.dependencies +=
-    /// [.package(…)]`, and keeps refusing it (fail closed).
+    /// Why the top level of `manifest` is not exactly `import PackageDescription` followed by one
+    /// `let package = Package(…)`, or `nil` when it is (#445's review).
     ///
-    /// It does **not** catch, for example, a subscript assignment (`target.dependencies[0] = …`),
-    /// `replaceSubrange`, an inout pass (`zzAdd(&zzSupport.dependencies)`), a backticked
-    /// ``.`dependencies` ``, a key-path write, a rebinding of `package`, or a `path`, `exclude`,
-    /// `sources` or `plugins` set on a let-bound target after construction, which also gets past
-    /// `reachProblem`. The list is not exhaustive. What the import census reads is the files under
-    /// `Sources/` outside the helper and under `Tools/`; a file from another package is refused by
-    /// the package-level dependency pin below, whatever the target lists. Raw text, comments
-    /// included, as `flags(in:)` reads: prose naming one of the two spellings is a line to reword.
-    static func mutationProblem(in manifest: String) -> String? {
-        let spellings: [(pattern: String, found: String)] = [
-            (#"\.dependencies\s*(?:\+?=|\.\s*(?:append|insert))"#, "changes a dependency list"),
-            (#"(?<![A-Za-z0-9_])package\s*\.\s*targets(?![A-Za-z0-9_])"#, "uses package.targets"),
-        ]
-        for (pattern, found) in spellings
-        where manifest.range(of: pattern, options: .regularExpression) != nil {
-            return "the manifest \(found) after the package is constructed (\(pattern)), which "
-                + "the dependency rule does not read"
+    /// **Reads:** the manifest with its comments removed, at the top level only: what comes before
+    /// the constructor, where the constructor ends, and what comes after it. **Refuses** anything
+    /// else there: another import (`import CompilerPluginSupport`, which `.macro` needs), a `let`,
+    /// `var`, `func`, `#if` or expression before or after, a package bound to another name or with
+    /// a type annotation. That leaves no top-level statement to change a target or the package once
+    /// it is constructed, and no top-level declaration for the constructor to read a dependency
+    /// list from. Today's manifest is exactly this shape.
+    ///
+    /// It does not read inside the constructor: an expression there is the constructor's arguments,
+    /// which `targets(in:)`, `dependencyProblem`, `reachProblem` and `packageDependencies` read.
+    static func shapeProblem(in manifest: String) -> String? {
+        let code = SeamScanner.strippingAllComments(manifest)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let importEnd = code.range(
+                of: #"^import\s+PackageDescription(?![A-Za-z0-9_])"#, options: .regularExpression)
+        else {
+            return
+                "the manifest does not begin with import PackageDescription and nothing before it"
+        }
+        let rest = code[importEnd.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let head = rest.range(
+                of: #"^let\s+package\s*=\s*Package\s*\("#, options: .regularExpression)
+        else {
+            return "import PackageDescription is not followed by let package = Package( and "
+                + "nothing else: \(rest.prefix(60))"
+        }
+        let open = rest.index(before: head.upperBound)
+        guard let close = SeamScanner.closingParenthesis(in: rest, openingAt: open) else {
+            return "the manifest's Package( never closes"
+        }
+        let after = rest[rest.index(after: close)...].trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        guard after.isEmpty else {
+            return "something follows Package(…) at the top level: \(after.prefix(60))"
         }
         return nil
     }
@@ -130,15 +164,17 @@ extension ManifestScan {
         case unreadable(String)
     }
 
-    /// The package-level dependencies `manifest` declares (#445's review). The target-level rule
-    /// pins who may depend on the helper; this pins what else is in the build. A package that is
-    /// not this one, local (`.package(path: "ZZLocal")`) or remote, compiles Swift this package's
-    /// scans do not read: its sources can `@testable import AeolusHelper`, and under an
-    /// incremental build they compile. The import census reads files under `Sources/`
-    /// outside the helper and under `Tools/`, and a file from another package is none of those, so
-    /// the package list is pinned instead (`HelperDependentsTests.pinnedPackages`). That also
-    /// closes the `.macro` route, which needs swift-syntax, a package the pin does not list. The
-    /// pinned package's own sources are read by nothing.
+    /// The package-level dependencies `manifest` declares as constructed (#445's review).
+    ///
+    /// **Reads:** the root `Package(...)`'s `dependencies:` argument, and nothing after it. The
+    /// target-level rule pins who may depend on the helper; this pins what else is in the build. A
+    /// package that is not this one, local (`.package(path: "ZZLocal")`) or remote, compiles Swift
+    /// no scan here reads: its sources can `@testable import AeolusHelper`, and under an
+    /// incremental build they compile. A file from another package is not under `Sources/` outside
+    /// the helper or under `Tools/`, which is what the import census reads, so the list is pinned
+    /// instead (`HelperDependentsTests.pinnedPackages`). The pinned package's own sources are read
+    /// by nothing. Nothing here stops a change to the list after the constructor;
+    /// `shapeProblem` refuses a manifest that has anything after it.
     static func packageDependencies(in manifest: String) throws -> PackageDependencies {
         let code = SeamScanner.strippingAllComments(manifest)
         let constructor = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9_.])Package\s*\("#)

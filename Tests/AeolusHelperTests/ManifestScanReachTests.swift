@@ -1,24 +1,23 @@
 import Foundation
 import Testing
 
-/// What the manifest scan refuses beyond a dependency on the helper (#445's review). Three
-/// different things, and the difference is the point:
-/// - **Constructor arguments, refused outright:** a `.plugin` target or a `plugins:` argument, a
-///   target whose `path:` resolves on disk to the helper's directory or inside it, and an
-///   `exclude:` or `sources:` on the helper. Each is read from the arguments a constructor was
-///   written with, and none is used today. A `path`, `exclude`, `sources` or `plugins` set on a
-///   let-bound target after construction is not a constructor argument, and is not seen.
-/// - **A tripwire that catches by accident:** `mutationProblem` matches two raw-text spellings of a
-///   change after the package is constructed. It does not catch, for example, a subscript
-///   assignment, `replaceSubrange`, an inout pass such as `zzAdd(&zzSupport.dependencies)`, a
-///   backticked ``.`dependencies` ``, a key-path write, or a rebinding of `package`. The list is
-///   not exhaustive.
-/// - **A pin:** the root `Package(...)`'s package-level `dependencies:` are pinned in
-///   `HelperDependentsTests`. The import census reads the files under `Sources/` outside the
-///   helper and under `Tools/`; a file from another package is refused by the pin, not read by the
-///   census, and the pinned package's own sources are read by nothing.
+/// What the manifest scan refuses beyond a dependency on the helper (#445's review), and what each
+/// rule reads. Saying what a rule reads is the point: "refused" is true of that and of nothing
+/// else.
+/// - **`reachProblem` reads a target's constructor arguments**, and the file system for one rule:
+///   a `.plugin` target or a `plugins:` argument, a target whose `path:` resolves on disk to the
+///   helper's directory or inside it, and an `exclude:` or `sources:` on the helper. Anything done
+///   to a target after its constructor is not read.
+/// - **`shapeProblem` reads the top level of a manifest:** exactly `import PackageDescription` and
+///   one `let package = Package(…)`. Nothing after the constructor can then change it, and
+///   `.macro`, which needs `import CompilerPluginSupport`, cannot be declared.
+/// - **`packageDependencies` reads the package list as constructed**, which `HelperDependentsTests`
+///   pins. The import census reads the files under `Sources/` outside the helper and under
+///   `Tools/`; a file from another package is neither, and the pinned package's own sources are
+///   read by nothing.
 ///
-/// These scans catch accidents. ADR 0014's compiler seam is the real control.
+/// These scans catch accidents; a deliberate author can evade a lexical reading. ADR 0014's
+/// compiler seam is the control.
 ///
 /// A manifest is a string. The nested-path rule asks the file system where a directory is, so its
 /// fixtures run against a temporary repository-shaped directory, built per test and removed after.
@@ -33,8 +32,9 @@ struct ManifestScanReachTests {
     }
 
     /// A temporary directory shaped like the repository: `Sources/AeolusHelper`, `Tests` and
-    /// `Tools`, and every directory `paths` names, resolved. A fixture that spells a directory
-    /// another way than it is stored (case, `.`, `..`) names the stored one here.
+    /// `Tools`, every directory `paths` names (resolved), and a decoy with a symbolic link to it. A
+    /// fixture that spells a directory another way than it is stored (case, `.`, `..`) names the
+    /// stored one here.
     private static func withTree<T>(
         containing paths: [String] = [], _ body: (URL) throws -> T
     ) throws -> T {
@@ -48,6 +48,16 @@ struct ManifestScanReachTests {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
         }
+        // A decoy with the helper's directory in it, and a link to a directory inside the decoy:
+        // `Link/../Sources/AeolusHelper/ZZ` is the helper's directory as SwiftPM reads it (`..`
+        // applied to the text first) and the decoy's as `realpath` reads it (the link followed).
+        let inner = root.appendingPathComponent("decoy/inner")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("decoy/Sources/AeolusHelper/ZZ"),
+            withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Link"), withDestinationURL: inner)
         return try body(root)
     }
 
@@ -86,6 +96,23 @@ struct ManifestScanReachTests {
             // …nor is a default directory that is the helper's under another case.
             let defaulted = try Self.problem(#".target(name: "aeolushelper")"#, in: root)
             #expect(defaulted != nil, "\(defaulted ?? "nil")")
+        }
+    }
+
+    /// SwiftPM applies `..` to the components of a `path:` as text; `realpath` follows a symbolic
+    /// link before it applies `..`. For `Link/../Sources/AeolusHelper/ZZ`, with `Link` a link into
+    /// a decoy, SwiftPM compiled the helper's directory and `realpath` of the written path named
+    /// the decoy's, so the nested target was not seen and the suite stayed green (#445's review,
+    /// SYMDOT2). The path is resolved as text first and only then by the file system.
+    ///
+    /// **Mutation:** call `realPath` on the written path rather than on the resolved components.
+    /// Run: red here.
+    @Test("A symbolic link before a .. does not hide the helper's directory")
+    func aLinkBeforeADotDotDoesNotHideTheDirectory() throws {
+        try Self.withTree(containing: ["Sources/AeolusHelper/ZZ"]) { root in
+            let found = try Self.problem(
+                #".target(name: "ZZSupport", path: "Link/../Sources/AeolusHelper/ZZ")"#, in: root)
+            #expect(found?.contains("inside Sources/AeolusHelper/") == true, "\(found ?? "nil")")
         }
     }
 
@@ -141,25 +168,29 @@ struct ManifestScanReachTests {
         }
     }
 
-    /// A directory that does not resolve cannot be told from the helper's, so it is refused: a
-    /// path that is not there, one that is absolute, one that climbs out of the repository, one
-    /// that is computed.
+    /// A directory that cannot be located cannot be told from the helper's, so it is refused, and
+    /// each cause says its own: a path that is not there, one that is absolute or climbs out of the
+    /// repository (the text check refuses these before the file system is asked), one that is
+    /// computed.
     ///
-    /// **Mutation:** in `reachProblem`, accept a directory that does not resolve (red at all
-    /// four).
-    @Test("A target whose directory does not resolve is refused, not passed")
-    func aDirectoryThatDoesNotResolveIsRefused() throws {
+    /// **Mutations:** in `reachProblem`, accept a directory that does not resolve (red at the
+    /// first fixture); say "does not resolve on disk" for every cause (red at the other three).
+    @Test("A target whose directory cannot be located is refused, and each cause says why")
+    func aDirectoryThatCannotBeLocatedIsRefused() throws {
+        let causes: [(source: String, message: String)] = [
+            (#".target(name: "Ghost", path: "Sources/Ghost")"#, "does not resolve on disk"),
+            (#".target(name: "Absolute", path: "/etc")"#, "absolute or climbs out"),
+            (#".target(name: "Climbing", path: "../Elsewhere")"#, "absolute or climbs out"),
+            (#".target(name: "Computed", path: probePath)"#, "a path this cannot read"),
+        ]
         try Self.withTree { root in
-            for source in [
-                #".target(name: "Ghost", path: "Sources/Ghost")"#,
-                #".target(name: "Absolute", path: "/etc")"#,
-                #".target(name: "Climbing", path: "../Elsewhere")"#,
-                #".target(name: "Computed", path: probePath)"#,
-            ] {
+            for (source, message) in causes {
                 let found = try Self.problem(source, in: root)
-                #expect(
-                    found?.contains("does not resolve on disk") == true,
-                    "\(source): \(found ?? "nil")")
+                #expect(found?.contains(message) == true, "\(source): \(found ?? "nil")")
+                if message != "does not resolve on disk" {
+                    #expect(
+                        found?.contains("does not resolve") != true, "\(source): \(found ?? "")")
+                }
             }
         }
     }
@@ -207,63 +238,5 @@ struct ManifestScanReachTests {
             in: #".target(name: "X", plugins: [.plugin(name: "Tool", package: "P")])"#)
         #expect(targets.map(\.kind) == ["target"])
         #expect(targets.first?.labels == ["name", "plugins"])
-    }
-
-    // MARK: - A change after construction
-
-    /// The constructor's `dependencies:` is all the dependency rule reads, so a dependency added
-    /// afterwards passes it. The raw text is refused, comments included, as the flags are.
-    ///
-    /// This is a tripwire that matches two spellings, by accident, and the fixtures say no more
-    /// than that. The package-level `package.dependencies +=` is refused too, because the first
-    /// pattern cannot tell it from a target's.
-    ///
-    /// **Mutations:** in `mutationProblem`, drop the first pattern (red at the fixtures that name
-    /// only `.dependencies`, the package-level one included); drop the second (red at the ones
-    /// that name only `package.targets`).
-    @Test("A manifest that matches either spelling of a change after construction is refused")
-    func aChangeAfterConstructionIsRefused() throws {
-        for source in [
-            #"for target in everyTarget { target.dependencies.append("AeolusHelper") }"#,
-            #"target.dependencies += ["AeolusHelper"]"#,
-            #"target.dependencies = ["AeolusHelper"]"#,
-            #"target.dependencies . insert("AeolusHelper", at: 0)"#,
-            #"package.dependencies += [.package(url: "https://example.com/x.git", from: "1.0.0")]"#,
-            "let all = package.targets",
-            "package . targets.removeAll()",
-            #"package.targets[3].dependencies.append("AeolusHelper")"#,
-            #"// package.targets is read here"#,
-        ] {
-            #expect(ManifestScan.mutationProblem(in: source) != nil, "\(source)")
-        }
-        for source in [
-            #".target(name: "A", dependencies: ["B"]),"#,
-            "let package = Package(name: \"Aeolus\", targets: [])",
-            "let mypackage = 1; mypackage.targets",
-            "package.targetsCount",
-            #"dependencies: [.package(url: "https://example.com/x.git", from: "1.0.0")],"#,
-            "// the dependencies are listed in the constructor",
-        ] {
-            #expect(ManifestScan.mutationProblem(in: source) == nil, "\(source)")
-        }
-    }
-
-    /// The message says which spelling matched. The first pattern matches a package's own
-    /// dependency list as well as a target's, and the message used to say it "changes a target".
-    ///
-    /// **Mutations:** in `mutationProblem`, say "changes a target" for the first pattern (red at
-    /// the first fixture); say it for the second (red at the second).
-    @Test("The refusal of a change after construction says what it matched")
-    func theRefusalSaysWhatItMatched() throws {
-        let package = try #require(
-            ManifestScan.mutationProblem(
-                in:
-                    #"package.dependencies += [.package(url: "https://example.com/x.git", from: "1.0.0")]"#
-            ))
-        #expect(package.contains("changes a dependency list after the package is constructed"))
-        #expect(!package.contains("changes a target"), "\(package)")
-        let targets = try #require(ManifestScan.mutationProblem(in: "let all = package.targets"))
-        #expect(targets.contains("uses package.targets after the package is constructed"))
-        #expect(!targets.contains("changes a target"), "\(targets)")
     }
 }
