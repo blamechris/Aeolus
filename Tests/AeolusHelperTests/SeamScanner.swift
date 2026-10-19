@@ -353,9 +353,11 @@ enum SeamScanner {
     /// signature quoted inside `/* … */` was scanned as a declaration and would have
     /// reddened the tripwire it was explaining.
     ///
-    /// A line is dropped when only blanks precede its `//` — a block comment before it, which the
-    /// walker has turned into a space, is blank — and the walker reaches that `//` as code
-    /// (`SeamScannerCommentLineTests` pins `/* x */ // c`). A line of a multi-line string literal
+    /// A line is dropped when only blanks precede its `//` on its line of the source — a block
+    /// comment before it, which the walker has turned into a space, is blank
+    /// (`SeamScannerCommentLineTests` pins `/* x */ // c`), and the text after `\(` in an
+    /// interpolation is not a line of its own — and the walker reaches that `//` as code. A line
+    /// of a multi-line string literal
     /// that begins `//` is the literal's text, and an interpolation on it is code: filtering lines
     /// by their text, before the literal walker had looked, removed such a line and the call in
     /// it, so no rule-zero scan saw a `production` in `"""` / `//\(X.production(log: L()))` /
@@ -392,7 +394,9 @@ enum SeamScanner {
     ///
     /// **An interpolation is code, so this walks it too.** `copyDelimited` hands the code of each
     /// interpolation back to this function, and a comment in it — a line, a trailing one or a
-    /// block — is dropped or kept as it would be outside a literal (#460).
+    /// block — is dropped or kept as it would be outside a literal, with one difference:
+    /// `startsLine` is false for it, because its first line follows `\(`. A `//` right after `\(`
+    /// trails code, as Swift reads it, and keeps its newline (#460's review, B1).
     ///
     /// Literals are walked by `copyDelimited`, which reads raw delimiters and interpolations (see
     /// it), so a `"` inside `"\(row["key"])"` or `#"a "b"#` does not end the literal early, and
@@ -400,7 +404,9 @@ enum SeamScanner {
     /// comment anywhere in `Sources`, `depth` never rises and the only change to the input is
     /// the whole-line comments dropped — `SeamScannerParsingTests`'
     /// `noBlockCommentIsWrittenInSources` fails the day one is written.
-    private static func strippingBlockAndLineComments(_ source: String) -> String {
+    private static func strippingBlockAndLineComments(
+        _ source: String, startsLine: Bool = true
+    ) -> String {
         var output = ""
         var index = source.startIndex
         var depth = 0
@@ -437,11 +443,12 @@ enum SeamScanner {
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {
-                index = copyOrDropLineComment(in: source, from: index, into: &output)
+                index = copyOrDropLineComment(
+                    in: source, from: index, into: &output, startsLine: startsLine)
             } else if source[index] == "\"" {
                 let delimiter = matches("\"\"\"", at: index) ? "\"\"\"" : "\""
                 index = copyDelimited(source, from: index, delimiter: delimiter, into: &output) {
-                    strippingBlockAndLineComments(String(source[$0]))
+                    strippingBlockAndLineComments(String(source[$0]), startsLine: false)
                 }
             } else {
                 output.append(source[index])

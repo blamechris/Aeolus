@@ -95,6 +95,10 @@ struct SeamScannerInterpolationCommentTests {
                 """
             """#
         ),
+        (
+            "a block comment holding a parenthesis and a quote, in a single-line literal",
+            ##"let s = "\(f(1, /* ) " GONE */ KEPT(2)))""##
+        ),
     ]
 
     /// **Mutation:** put `copyDelimited`'s copy of an interpolation back to the text as it stands.
@@ -255,6 +259,53 @@ struct SeamScannerInterpolationCommentTests {
                 }
             }
         }
+    }
+
+    /// The lexer is given a string, so its refusal says "the source". Given a file, as
+    /// `RuleZeroScan.files(under:)` has, it names it.
+    ///
+    /// **Mutation:** drop `file` from the message in `refuseCarriageReturns`. Run: red here.
+    @Test("A carriage return refused with a file's path names the file")
+    func theRefusalNamesTheFile() {
+        var refused = false
+        withKnownIssue {
+            refused = SeamScanner.refuseCarriageReturns(
+                in: "let a = 1\r", file: "Tests/Some/File.swift")
+        } matching: { issue in
+            issue.comments.contains {
+                $0.rawValue.contains("Tests/Some/File.swift holds a carriage")
+            }
+        }
+        #expect(refused, "a source with a carriage return was not refused")
+        #expect(
+            !SeamScanner.refuseCarriageReturns(in: "let a = 1\n", file: "Tests/Some/File.swift"))
+    }
+
+    /// The file is named for the scans that go through `RuleZeroScan.files(under:)`, and by this
+    /// for the rest: every `.swift` file under `Sources`, `Tests` and `Tools`, and every package
+    /// manifest at the root, `Package.swift` and `Package@swift-*.swift`, read as bytes.
+    ///
+    /// **Mutation:** add a file under `Tests/` that holds a `\r`. Run: red here, naming it, and at
+    /// every scan that reads through `RuleZeroScan.files(under:)`, naming it again.
+    @Test("No Swift source or package manifest in the tree holds a carriage return")
+    func noFileInTheTreeHoldsACarriageReturn() throws {
+        let root = RuleZeroScan.repositoryRoot
+        var urls: [URL] = []
+        for directory in ["Sources", "Tests", "Tools"] {
+            let enumerator = try #require(
+                FileManager.default.enumerator(
+                    at: root.appendingPathComponent(directory), includingPropertiesForKeys: nil))
+            urls += enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        }
+        let entries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        let manifests = ManifestScan.manifestNames(among: entries)
+        #expect(manifests.contains("Package.swift"), "found \(manifests)")
+        urls += manifests.map { root.appendingPathComponent($0) }
+
+        let holding = try urls.filter { try Data(contentsOf: $0).contains(0x0D) }
+            .map(RuleZeroScan.relativePath(of:))
+        #expect(holding.isEmpty, "\(holding) hold a carriage return, which the lexer refuses")
+        #expect(urls.count > 500, "read \(urls.count) files, which is not the tree")
     }
 
     /// The escape `\r` in a literal is two characters of source, and is no carriage return.

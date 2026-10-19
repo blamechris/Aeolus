@@ -71,14 +71,22 @@ extension SeamScanner {
     /// the source split on newlines (`SeamScannerCommentLineTests.aDroppedLineTakesItsOwnNewline`).
     /// This is not offered a line inside a literal, which `copyDelimited` has carried across whole
     /// (#457).
+    ///
+    /// **`startsLine` says whether the start of `output` is the start of a line.** It is for a
+    /// source, and not for the code of an interpolation, whose first line follows `\(`: Swift
+    /// reads `\( // c` as a comment trailing code, so with no newline in `output` yet the comment
+    /// is not the whole of its line, and keeps its newline (#460's review, B1).
     static func copyOrDropLineComment(
-        in source: String, from start: String.Index, into output: inout String
+        in source: String, from start: String.Index, into output: inout String,
+        startsLine: Bool = true
     ) -> String.Index {
-        let lineStart =
-            output.lastIndex(of: "\n").map { output.index(after: $0) } ?? output.startIndex
-        let wholeLine = output[lineStart...].allSatisfy {
-            $0.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains)
-        }
+        let lastNewline = output.lastIndex(of: "\n")
+        let lineStart = lastNewline.map { output.index(after: $0) } ?? output.startIndex
+        let wholeLine =
+            (lastNewline != nil || startsLine)
+            && output[lineStart...].allSatisfy {
+                $0.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains)
+            }
         if wholeLine { output.removeSubrange(lineStart...) }
 
         var index = start
@@ -101,14 +109,30 @@ extension SeamScanner {
     /// what it returns, that `\r` and `\r\n` end a line too, and refusing the source, **failing
     /// closed** as one that ends inside a literal is. The second: it is one check, at the front of
     /// the walk, and the tree has no carriage return in a `.swift` file, so it costs nothing today.
-    /// `grep -rl $'\r' Sources Tests Tools` finds the file.
-    static func refuseCarriageReturns(in source: String) {
-        guard holdsCarriageReturn(source) else { return }
+    ///
+    /// **Where the file is named.** The lexer is given a string and cannot name it.
+    /// `RuleZeroScan.files(under:)` refuses per file, with its path, for every scan that reads
+    /// through it, and `SeamScannerInterpolationCommentTests.noFileInTheTreeHoldsACarriageReturn`
+    /// names each `.swift` file under `Sources`, `Tests` and `Tools` and each package manifest
+    /// (`Package.swift`, `Package@swift-*.swift`) that holds one. So does
+    /// `grep -rl $'\r' Sources Tests Tools Package*.swift`.
+    ///
+    /// **The scans with a stripper of their own do not refuse it.** `ToolsSeamScanner` in
+    /// `PowerObserverTests`, `SMCSamplerTests` and `AppIconTests`, `XPCDeclarationNormaliser` and
+    /// `PayloadRefusalTests` in `IntegrationTests`, and `StampSiteScanner` in `SMCCoreTests` read
+    /// files under the same three directories. A carriage return in one is a red in the tree test
+    /// above, in this target, and not in theirs.
+    ///
+    /// - Returns: whether it refused, for a caller that has the file and would rather not read it.
+    @discardableResult
+    static func refuseCarriageReturns(in source: String, file: String? = nil) -> Bool {
+        guard holdsCarriageReturn(source) else { return false }
         Issue.record(
             """
-            the source holds a carriage return, which the comment walker does not read as a line \
-            end: refused rather than read with the code after it taken for a comment
+            \(file ?? "the source") holds a carriage return, which the comment walker does not \
+            read as a line end: refused rather than read with the code after it taken for a comment
             """)
+        return true
     }
 
     /// Whether `source` holds a `\r`. The test is on `utf8`: `\r\n` is a single `Character`, so a
