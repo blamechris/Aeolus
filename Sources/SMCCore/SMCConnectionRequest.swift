@@ -14,29 +14,50 @@ extension SMCConnection {
     /// `SMCConnection.swift`, sends one. The offsets and command codes it uses are declared
     /// there.
     ///
-    /// **The four factories below are the only way to build one.** Two layers hold that:
-    /// - **Outside this file, the compiler.** The initialiser is `private` and every field is
-    ///   `private(set)`. Code anywhere else, `SMCConnection.swift` included, cannot call
-    ///   `Request(key:selector:data32:dataSize:payload:)`. An initialiser it writes in an
-    ///   extension cannot assign a field, however the extension names the type: `extension
-    ///   (SMCConnection.Request)` is refused with "setter is inaccessible", as the plain spelling
-    ///   is. Nor can that code change a field of a request a factory built.
+    /// **The four factories below are the only way to build one.** Three things hold that:
+    /// - **Outside this file, the compiler.** The initialiser is `private`. Each field is stored
+    ///   as a `private let`, and the rest of SMCCore reads it through a get-only accessor. Code
+    ///   anywhere else, `SMCConnection.swift` included, cannot call
+    ///   `Request(key:selector:data32:dataSize:payload:)` or name a stored field. An initialiser
+    ///   it writes in an extension cannot assign an accessor, however the extension names the
+    ///   type: `extension (SMCConnection.Request)` is refused with "'key' is a get-only
+    ///   property", as the plain spelling is. Nor can that code change a field of a request a
+    ///   factory built.
+    /// - **Anywhere, two run-time checks.** `SMCRequestConstructionTests` checks that no key path
+    ///   to an accessor, or to `bytes`, is a `WritableKeyPath`, and that `Request` is not
+    ///   `Decodable`, whose synthesised `init(from:)` would build one with any selector. Both are
+    ///   asked in a test file that imports nothing, so no name SMCCore declares can change what
+    ///   they ask.
     /// - **Inside this file, a source pin.** `private` reaches an extension written in the same
-    ///   file, so here the compiler refuses nothing. `SMCRequestConstructionTests` holds the file
-    ///   to this one declaration and `Request` to the members below. It also checks at run time
-    ///   that `Request` is not `Decodable`, whose synthesised `init(from:)` would build one with
-    ///   any selector.
+    ///   file, so here the compiler refuses nothing. The same suite holds the file to this one
+    ///   declaration, and `Request` to the members below, none of them with an attribute.
+    ///
+    /// **Why the accessors are computed rather than `private(set) var` (SR-5218).** A
+    /// `private(set)` property still has a setter, and the key path to it is a `WritableKeyPath`
+    /// at run time, whatever its static type. In `SMCConnection.swift`,
+    /// `(\Request.selector as AnyKeyPath) as? WritableKeyPath<Request, UInt8>` succeeded and
+    /// wrote selector 6 into a request a factory built (#456's review, K1). A `let` and a get-only
+    /// accessor have no setter, so that cast returns `nil`. A property wrapper cannot be applied
+    /// to either. Do not turn the accessors back into `private(set) var`.
     ///
     /// The file boundary is therefore part of the control, not only a way to keep
     /// `SMCConnection.swift` under the length limit. Either way, no request carries a selector no
     /// factory sends, or a payload `write(_:to:)`'s size guard never saw. `WritePathAbsenceTests`'
     /// selector pin reads declared constants only, and a literal in such a call would pass it.
     struct Request: Sendable, Equatable {
-        private(set) var key: FourCharCode
-        private(set) var selector: UInt8
-        private(set) var data32: UInt32
-        private(set) var dataSize: UInt32
-        private(set) var payload: [UInt8]
+        private let storedKey: FourCharCode
+        private let storedSelector: UInt8
+        private let storedData32: UInt32
+        private let storedDataSize: UInt32
+        private let storedPayload: [UInt8]
+
+        /// The fields as the rest of SMCCore reads them: get-only, so nothing can assign one and
+        /// no key path to one is writable, by a dynamic cast or otherwise. See SR-5218 above.
+        var key: FourCharCode { storedKey }
+        var selector: UInt8 { storedSelector }
+        var data32: UInt32 { storedData32 }
+        var dataSize: UInt32 { storedDataSize }
+        var payload: [UInt8] { storedPayload }
 
         /// Written out, not synthesised, because Swift's memberwise initialiser would be internal.
         /// Declaring one in the body suppresses it. `SMCRequestConstructionTests` holds this one
@@ -44,11 +65,11 @@ extension SMCConnection {
         private init(
             key: FourCharCode, selector: UInt8, data32: UInt32, dataSize: UInt32, payload: [UInt8]
         ) {
-            self.key = key
-            self.selector = selector
-            self.data32 = data32
-            self.dataSize = dataSize
-            self.payload = payload
+            storedKey = key
+            storedSelector = selector
+            storedData32 = data32
+            storedDataSize = dataSize
+            storedPayload = payload
         }
 
         /// `READ_KEYINFO` (9): the key's declared type, size and attributes.
