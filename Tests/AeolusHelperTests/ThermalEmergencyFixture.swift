@@ -167,14 +167,14 @@ struct ThermalMachine {
 
     /// Just the write attempts, which is what an ordering assertion is usually about.
     var writes: [ScriptedControlPlane.Attempt] {
-        get async { await plane.attempts.filter(Self.isWrite) }
+        get async { await plane.attempts.filter(\.isWrite) }
     }
 
     /// The writes § 3 made through its own writer: `writes` without its handback's restores.
     var sectionThreesOwnWrites: [ScriptedControlPlane.Attempt] {
         get async {
             await plane.admittedAttempts.filter {
-                $0.admission != .thermalCycle && Self.isWrite($0.attempt)
+                $0.admission != .thermalCycle && $0.attempt.isWrite
             }.map(\.attempt)
         }
     }
@@ -189,19 +189,6 @@ struct ThermalMachine {
                 }
                 return true
             }.map(\.attempt)
-        }
-    }
-
-    /// Whether `attempt` is a write.
-    private static func isWrite(_ attempt: ScriptedControlPlane.Attempt) -> Bool {
-        switch attempt {
-        case .commandTarget, .restoreToAutomatic, .engageManualControl, .bridgeThenRestore:
-            return true
-        // A reconnect is recovery of the read path, not a write. It belongs with the reads for
-        // the same reason `readControlState` does: an ordering assertion about what a mechanism
-        // *wrote* must not shift because it also tried to see again.
-        case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
-            return false
         }
     }
 }
