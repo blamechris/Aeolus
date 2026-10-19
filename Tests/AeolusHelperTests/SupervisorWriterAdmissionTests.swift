@@ -5,8 +5,8 @@ import Testing
 
 @testable import AeolusHelper
 
-/// Every write that is not § 3's is admitted at `.supervisor`, through the path that makes it
-/// (#440's second review round).
+/// On the paths it drives, every write that is not § 3's is admitted at `.supervisor`, through
+/// the path that makes it (#440's second review round).
 ///
 /// The source scans say where the lane may be *named*; a lane view built in a file that may name
 /// it and handed to another mechanism keeps every count (`ThermalCycleHandbackShapeTripwireTests`
@@ -24,7 +24,7 @@ import Testing
 /// `ThermalEmergency` reads one. A `.thermalCycle` restore, command, engagement, bridge or
 /// envelope read in either is a mechanism other than § 3. **What this cannot tell apart:** a
 /// control-state or critical-temperature read in the lane is indistinguishable from § 3's own
-/// reads and is not checked in these two drives; the five others check every call.
+/// reads and is not checked in these two drives; every other drive here checks every call.
 ///
 /// The paths are the ones `ThermalCycleLaneRoutingTests`' K6 does not already drive: level 6's
 /// engagement and command, § 5's re-assert and its give-up, § 5's hand-back of a fan whose lease
