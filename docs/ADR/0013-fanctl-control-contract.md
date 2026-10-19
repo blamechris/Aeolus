@@ -123,10 +123,9 @@ than on first sight, because a fan mid-handback can carry a transient reason tha
 `fans` and `lease` were read after the request was sent, so a script need not parse prose to know
 whether the document describes the helper before the request or after it.
 
-### D1 — `set` is a bounded hold for the life of the process (decided; lands with #317)
+### D1 — `set` is a bounded hold for the life of the process (decided; built in #317, held)
 
-Recorded here so the three decisions read as one contract. Nothing in this ADR's change
-implements it.
+Recorded here so the three decisions read as one contract.
 
 `fanctl set` requires `--for`, from 10 seconds to 8 hours, and holds its lease for that long,
 renewing it for the life of the process **and its parent**. It exits 6 on any loss the helper
@@ -134,6 +133,251 @@ reports: a renewal error, a snapshot without its lease ID, a covered fan reclaim
 or a thermal emergency. It never retries and never re-acquires. When it ends it releases and runs
 D2's safe-state check. The reasoning and the output contract are
 [#317](https://github.com/blamechris/Aeolus/issues/317)'s.
+
+**As built.** `set` is implemented against the simulated helper and **does not reach `main`
+before E5 (#7) and the owner-supervised E4 acceptance (#9), per #15**; nothing here has driven a
+fan. Today it exits 4 against every helper that has shipped, and that holds until the branch's
+write plane is built. The points below are where building it had to decide something the contract
+left open. Each is the direction that ends a hold earlier or reports less, never the one that
+claims more.
+
+- **The percentage mapping is `FanControlEnvelope.target(forPercent:)`**, once, in `FanKit`. The
+  gate is `FanState.controlEnvelope == .success` for a percentage and an rpm alike; an rpm outside
+  `[lowest, highest]` (`0rpm` included) is exit 2 and never clamped on the client.
+- **A covered fan the snapshot no longer reports** ends the hold as a loss (6). The contract's
+  list names `isReclaimedBySystem`; a fan that is simply absent cannot be called held.
+- **Every ending and every loss releases the lease and checks the safe state.** The ordinary
+  endings (`--for`, a signal, a parent that exited, a standard output that stopped draining) ran
+  it from the first version. *Amended 2026-10-18, below:* so does **every outcome before
+  `started`** (an `apply` that was refused or got no answer, a lease that could no longer be
+  shown to be held, a confirming snapshot that failed or showed no hold, a keeper that could not
+  pace itself) and **every loss once the hold is under way** (a renewal refused, a snapshot that
+  does not list the lease, a fan reclaimed or without a held target at a heartbeat, a thermal
+  emergency). The first version skipped it for a loss and for a refused `apply`, on the
+  assumption that there was nothing to confirm a return to and that the check can take its whole
+  ten-second window against a thermal emergency that will not clear; both assumptions are
+  withdrawn.
+- **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
+  holder; for `set` the lease may be its own (the release did not take), and the message says
+  whose it is.
+- **A signal that arrives before the lease is taken is exit 1**, with nothing written to a fan.
+- **`endedBecause` is `refused` for 2, 4 and 5 before a hold, and for an `apply` the helper
+  answered with a fault only if the safe-state check that followed found every fan automatic and
+  no lease**; `null` for 3, 7 and 1 before a lease: those are not a "no" to this request. An
+  `apply` fault followed by anything else is `controlLost`, because "the helper said no" is then
+  not known to be all that happened (*amended 2026-10-18*).
+- **Standard output is written with `write(2)`, and never polled before a write.** A hold's
+  failure to write is an ending, not a crash. (A first version polled pipes and sockets for room
+  and wrote in chunks; "A write may park", below, is why that was withdrawn.)
+- **No stderr output while holding in text mode.** There is no change during a hold that does not
+  end it, so there is nothing for the contract's "changes to stderr" to carry.
+- **An `apply` that got no answer is not a refusal** (review of #324). Only an `AeolusXPCFault` is
+  the helper answering. A transport failure after the request was sent (`helperNeverAnswered`,
+  `replyNotDelivered`, `helperRestarted`) means the speed may have been applied: the lease is
+  released best-effort, the safe-state check **looks**, and the exit is the failure's own
+  classified code (non-zero) unless the check found something worse, reported as `endedBecause:
+  controlLost`. This revised the "refused `apply` skips the check" point above for the unanswered
+  case; the 2026-10-18 amendment revises it for every `apply` fault, and gives the unanswered
+  case a fault's exit rule: the check's verdict where that is worse (9, then 8).
+- **A signal ends the hold, whenever it lands.** Before the lease it is exit 1 with
+  `endedBecause: signal`; while `acquireLease` is in flight it releases the lease and sends no
+  speed (exit 1, `signal`); while `apply` is outstanding it takes effect when `apply` returns and
+  ends the run before `started` (*amended 2026-10-18*, below); while holding it is the ordinary
+  signal ending.
+- **A write may park; the hold never waits on it** (review of #324, which closed the case it
+  found three times and found the next each time). On macOS `poll` calls a pipe writable at
+  `PIPE_BUF` (512) bytes free and a `set --json` line is 560 to 1,127 bytes; a pipe at the
+  system's pipe-memory ceiling is called writable while full and cannot grow; a terminal under
+  XOFF parks a write; a pipe shared with another writer can lose the room it was promised. No
+  check before a write holds, so `set` does not write: each line is handed to a `LinePump`, a
+  writer thread of its own per stream, which may park in `write(2)` for as long as the kernel
+  makes it. The hold never waits on it.
+  - *A consumer that is not draining* is judged by the writer's **progress**: the oldest line
+    handed over not completely written within 2 s, or a failed write, ends the hold as
+    `outputClosed`. A stop request (signal, parent exit, deadline) is the reason whenever there is
+    one and never waits on the writer.
+  - *On every ending the lease is released and the safe state checked first.* Only then is the
+    closing event handed over, and the run waits for each stream at most 1 s.
+  - *The closing event goes to exactly one stream, whole:* standard output if it is idle (so at a
+    line boundary), otherwise standard error as the same line. Standard output is never given an
+    event to glue onto a fragment; both streams unable to take it within the bound means it is
+    dropped and the exit code stands alone.
+  - *Process exit abandons a parked writer thread.* That is deliberate. Bytes already written
+    stay in the pipe, so standard output can end with an incomplete final line.
+  - This replaces the first as-built description (chunks of `PIPE_BUF`, a `poll` between them, a
+    2 s bound on the wait), which was right for the state the first review found and wrong for
+    each state after it.
+- **SIGPIPE is ignored for the length of each write**, not blocked on the writing thread: measured
+  on macOS, the signal is raised at the process and delivered to another thread that has it
+  unblocked, so a thread mask does not stop a multi-threaded command being killed by it.
+- **`status` and `auto` write to the end.** A write that gave up on a slow reader, applied to
+  every command, dropped a line whenever a pipe had under 512 bytes free while its reader was
+  still there. EPIPE leaves their exit codes alone, and an inherited non-blocking descriptor
+  (`EAGAIN`) is waited on with `poll` and retried, so "delivered whole" holds there too.
+  `reset --all` does not use `Terminal`.
+- **Each renewal is scheduled from the last one**, not from the end of the work after it, so a
+  slow write shortens the next sleep instead of eating the two heartbeats the lease can miss.
+- **After the release, only what was read after the release is described.** When the check read
+  nothing, the text says the helper accepted the release and then stopped answering and that the
+  state of the lease and the fans is unknown; `snapshotFollowsRelease: false` in `--json` says the
+  same of the data.
+
+*Amended 2026-10-18 ([#324](https://github.com/blamechris/Aeolus/pull/324), fix rounds 1 to 3).*
+Two independent reviews of the carried `set` found that three things on `main` had changed underneath
+it: [#414](https://github.com/blamechris/Aeolus/issues/414) let `apply` take up to 57 seconds for
+one fan and 109 for two; level 6 (`LeaseApplier`) can engage a fan and then answer with a fault; and
+[#426](https://github.com/blamechris/Aeolus/issues/426) states a fan's held target only when the
+same snapshot shows the fan held. None of it is reachable on hardware until the branch's write
+plane is built, and all of it is when it is. Three rulings follow, each in the direction that ends
+a hold earlier or says less.
+
+1. **The lease is renewed from the moment it is asked for, a lapse is control lost, and a lapse is
+   not a refusal.**
+   - *The defect.* The helper's thirty seconds start at the grant (`LeaseAuthority`: deadline =
+     grant + `timeToLive`). `set` took its first `renewedAt` only after `apply` **and** the
+     confirming snapshot, so the first renewal landed ten seconds after those. An `apply` of 20
+     seconds or more left no margin and one of 30 or more let the lease lapse in the middle of
+     the `apply`. The helper restores automatic control when that happens, which is safe, but
+     `set` then said "Holding … under lease X" over a lease that had ended (the `apply` was
+     accepted, the lease lapsed before the first renewal), or "did not accept the speed" for a
+     speed that may have been applied (`apply` answered `leaseExpired` once it found the lease
+     gone).
+   - *The ruling.* `LeaseKeeper` renews on the heartbeat from the first instant, **read before
+     `acquireLease` is sent** (never after its answer: the grant is no earlier than the send, so a
+     schedule from the send is never later than the helper's own clock), for as long as `apply`
+     and the confirming snapshot are outstanding. `renewLease` is not sequenced behind `apply`
+     (`HelperMessage.sequenced`), so a renewal sent now is answered now. When both are answered,
+     the keeper is stopped **and any renewal on the wire is waited for** before anything is
+     released or the hold's loop starts, and the loop takes the keeper's `renewedAt` as its own.
+     There is one schedule, and no renewal is sent after the release. Only the keeper's wait is
+     cancelled, never a call in flight: a cancelled task's XPC call can fail at once for no reason
+     the helper gave. The first renewal that fails is final; nothing retries.
+   - *A lapse is control lost.* A renewal that failed while `apply` was outstanding, or `apply`
+     answered `leaseExpired`, `leaseUnknown` or `leaseNotHeldByThisConnection`, is **control lost,
+     in its own words**: "Control was lost before the hold began", never "refused" and never "did
+     not accept". `endedBecause` is `controlLost`. The lease is released and the safe state
+     **looked at**. The exit is 6, or 9 or 8 if the check found something worse.
+   - *What the text claims.* That control of the lease "could no longer be shown to be held", and
+     not that the lease **ended**: nobody saw an end (a reply that is not delivered leaves the
+     lease live, and a renewal still in flight leaves it unknown). It then states what was seen,
+     in order (the renewal that failed, what `apply` said, what the snapshot after it showed),
+     and, after the release, the check's verdict and nothing else about the fans.
+   - *Words that are not quoted.* `leaseExpired`'s own description says the fans "have returned
+     to automatic control" and tells the client to acquire a new lease; `helperRestarted`'s says
+     any manual control "ended with it; ask for the fans again"; `helperNeverAnswered`'s and
+     `connectionAbandoned`'s say the helper "returns those fans to automatic control when it
+     handles that". Nothing here observed any of that (`CLAUDE.md` rule 6), and a run that never
+     re-acquires has no use for the advice. `set` says what it saw instead ("The helper answered
+     that the manual-control lease had expired."; "The connection to the helper was interrupted
+     while the request was in flight."), in a lapse, in an unanswered `apply` and in a renewal
+     refused during the hold.
+   - *A renewal that failed takes precedence.* If the keeper recorded a failed renewal while
+     `apply` was outstanding, that is the diagnosis whatever `apply` then said, and the text
+     states both facts. A renewal that times out makes the client give up the connection
+     (`HelperClient`), and the `apply` in flight is then answered `connectionAbandoned`: judged
+     first, that is "`apply` got no answer", exit 1 if every fan is automatic, and the renewal is
+     never mentioned.
+   - *A signal during `apply`.* It is remembered and cannot cut `apply` short: releasing the lease
+     under an `apply` that is working is a design change this contract does not make. The wait is
+     bounded by `apply`'s own deadline. When `apply` returns, a pending signal ends the run
+     **before `started`** (release, check, an ordinary ending with `endedBecause: signal`), so
+     "Holding" is never said to a person who has already asked to stop; and if the run ends in
+     any other way, the signal stays in the report (`signal` is not null) and in the text.
+
+2. **Every outcome before `started` is followed by a release and the safe-state check.**
+   - *The defect.* Every `AeolusXPCFault` from `apply` skipped the check, on the assumption that a
+     refused `apply` had changed nothing. Level 6 can engage fan 0, fail on fan 1, have the undo
+     refused and still answer only the original fault, and a release whose restore is refused is
+     still answered "accepted". `set` then said "Nothing is held" and exited 1 without reading a
+     snapshot, where exit 9 and its recovery advice exist for exactly this. The same goes for
+     `thermalEmergencyActive` after every fan was written.
+   - *The ruling.* After **any** `apply` fault, release, then the check `apply`'s unanswered case
+     already ran. The exit is the check's verdict where it is **worse** (9, then 8) and otherwise
+     the fault's own code. The words "did not accept the speed" are said, and `endedBecause` is
+     `refused`, **only if the check found every fan automatic and no lease**. In every other case
+     the text says the answer does not settle what happened to the fans, and `endedBecause` is
+     `controlLost`.
+   - *The unanswered `apply` follows the same rule.* It may have engaged a fan exactly as a
+     refused one may, so the operator gets exit 9 and its recovery advice in both cases: the
+     exit is the check's verdict where that is worse (9, then 8) and otherwise the failure's own
+     classified code. `endedBecause` is `controlLost` either way. A failure that classifies to 3
+     (the helper unreachable) is therefore usually 8, because the check cannot read either.
+   - *So does everything after an **accepted** `apply` that is not yet a hold* (fix round 2): a
+     confirming snapshot that cannot be read, one that `loss(in:)` rejects (a fan with no held
+     target, a lease not listed, a thermal emergency), and a keeper that could not pace the
+     heartbeat. These went to the hold's loss path, which releases and exits 6 **without** the
+     check, and said "Nothing is held by this process now". The failure that matters is the one
+     the first hardware run is most likely to meet: the fan is engaged, the first snapshot reads
+     its mode as automatic (the mode-register lag this ADR predicts), the release is answered
+     accepted and its restore is refused. The operator must get exit 9's recovery advice, not a
+     6 and "nothing is held". All three are now "control lost before the hold began": released,
+     the check looked at, exit 6 or the check's verdict where that is worse, and "Nothing is held"
+     is not said unless the check confirmed it. A keeper that cannot pace itself is 6 here (it was
+     1): control could no longer be shown to be held.
+   - *And so does every loss once the hold is under way* (fix round 3): a renewal refused, a
+     snapshot that does not list the lease, a fan reclaimed or without a held target at a
+     heartbeat, a thermal emergency, and the hold's own timer failing. This **reverses** the
+     original point that "exit 6 skips the safe-state check", and the reason is the same as for
+     B1 moved into the hold: a fan is engaged, the release is accepted, its restore is refused,
+     and `set` said "Nothing is held by this process now" while the fan stayed pinned. That is a
+     claim nothing observed (`CLAUDE.md` rule 6), made by the tool the first hardware run relies
+     on. The exit is 6, or the check's verdict where that is worse (9, then 8); the hold's own
+     timer is 1 in the same way. **"Nothing is held" is no longer said at all:** the only
+     confirmation is the check's own sentence, in the helper's voice. The original reason for
+     skipping the check against a thermal emergency, that it would spend its ten-second window,
+     does not hold: waiting costs the fans nothing, because § 3 is driving them either way, and
+     an honest 8 or 9 is worth ten seconds. During an emergency the text says that the helper's
+     thermal protection, not this run, is in control of the fans, and what the check saw.
+
+3. **"Holding" needs the helper's evidence that the fan is held.**
+   - *The defect.* `loss(in:)` checked the lease ID, a thermal emergency, missing fans and the
+     reclaimed flag, but neither mode nor `targetRPM`. A snapshot that lists our lease while the
+     fan reads `automatic` with `targetRPM: nil` (the firmware took it back, and the reclamation
+     watchdog has not marked it yet) gave `started` and then `holding` every ten seconds, and a
+     test held that to be right.
+   - *The ruling.* `started`, and each `holding`, require that **every covered fan carries the
+     helper's held target**: `targetRPM` non-nil and positive. #426 sets it only when the same
+     snapshot shows the fan in manual under the live lease, with no reclamation and no thermal
+     override. At the confirming snapshot, a covered fan without one is control lost before the
+     hold began (released and checked, as above); during the hold it is a loss and ends the hold
+     with `controlLost`. The mode is still never read on its own: the held target
+     is what says what the mode cannot (#178).
+   - *Freshness: the snapshot `set` reads after `apply` cannot predate the engagement, so the
+     first one decides.* A snapshot is a fresh round trip with nothing cached on the client
+     (`HelperClient`'s own documentation). `snapshot` and `apply` are both in
+     `HelperMessage.sequenced`, and the helper's `MessageSequencer` starts a message only after
+     the one before it has returned and its reply block has been called, so the helper begins
+     reading after `apply`'s reply, and `set` sends it only after that reply arrives.
+     `ReadOnlyFanAuthority.observe()` reads each fan's `F<n>Md` and every sensor afresh for each
+     snapshot (its cache "holds metadata only"), and stamps `capturedAt` after those reads.
+     `LeaseApplier` replies only after each fan's step has engaged it (a plane step is "a fresh
+     key info, the write, and its read-back"), § 5 has recorded the target, and the lease and § 3's
+     latch have been checked again. So there is no snapshot that is older than the engagement and
+     answers it. The snapshot carries `capturedAt`, the helper's **wall-clock** `Date`, and no
+     sequence number; `set` does not compare it with anything, because a step in the wall clock
+     would then decide whether a hold is confirmed, which is what this contract refuses for its
+     deadline.
+   - *What remains, and what it would change.* A completed write that the firmware's mode
+     register does not yet reflect on the next read would show as "not held", and `set` would end
+     with exit 6: the safe direction, and a false negative that would be visible. The record the
+     held target comes from is "a confirmation only once B1's command turn reads the target back"
+     (`HeldTargetReport`), which is not built. No write has been performed on hardware by this
+     branch, so this is **unobserved**.
+     If the owner-supervised E4 acceptance sees it, the remedy is a bounded wait in
+     `SetCommand.establish` for a snapshot that shows every covered fan held (a window of two
+     supervisor cycles plus the snapshot's age), ending as "the helper accepted the speed, but no
+     snapshot showed the fan held", release, check, and exit 6 or worse. It would not be a client-side
+     sequence number. The reliance on ordering is held by `HelperClientSequencingCensusTests` (the
+     census of sequenced messages) and by `FanctlSetRenewalTests`, which asserts the confirming
+     snapshot follows `apply`'s answer.
+
+The tests that hold these are `FanctlSetRenewalTests` (virtual time, with a simulated helper whose
+leases have a real lifetime), `FanctlSetLostBeforeHoldTests`, `FanctlSetApplyFaultTests`,
+`FanctlSetLapseWordingTests`, `FanctlSetSignalDuringApplyTests`, `FanctlSetHeldTargetTests` and
+`SetLossTests`. The simulated helper keeps a lookup of a lapsed lease (refused `leaseExpired`,
+nothing changed, as `LeaseAuthority.heldLease` does) apart from the sweep that takes the lease and
+returns its fans; it has no supervisor to run one at the deadline, so a test calls
+`sweepExpiredLeases()` where it wants one to have run.
 
 ## Rationale
 
