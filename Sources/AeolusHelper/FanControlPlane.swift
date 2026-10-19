@@ -211,20 +211,15 @@ protocol KeystoneRestoring: Sendable {
 /// protocol for why the answer is synchronous and why it must be asked before any read.
 /// `KeystoneRestoring` is refined for the same reason, one verb wider: § 7's panic verb is
 /// handed the restore and nothing that commands a fan.
-protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, KeystoneRestoring {
+protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, KeystoneRestoring,
+    CriticalTemperatureReading
+{
 
     // MARK: - Reads
 
-    /// Reads the curated critical temperature keys, as one subset read.
-    ///
-    /// The set is the caller's — #102 curates it in code, per family, never from
-    /// configuration — so it crosses as a parameter rather than being fixed here.
-    ///
-    /// - Throws: `FanControlPlaneError.criticalTelemetryUnavailable` when **no** requested
-    ///   key produced a usable reading, including when the requested set is empty. A
-    ///   supervisor that cannot see any temperature is blind, and blindness must not arrive
-    ///   as a successful report of nothing — see `CriticalTemperatureReport`.
-    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport
+    // `readCriticalTemperatures(_:)` and `admitted(at:)` are `CriticalTemperatureReading`'s
+    // requirements, refined above rather than restated: one declaration each, so the telemetry's
+    // read-only role and the plane cannot come to differ.
 
     // MARK: - The keystone
 
@@ -349,28 +344,6 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// read, no write — and returns `nil`. It reaches a write only through
     /// `restoreToAutomatic(_:)`, so it is no new verb.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation?
-
-    // MARK: - Admission
-
-    /// This plane at `admission`: the same plane, every turn it takes admitted as `admission`
-    /// says ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
-    /// 2026-10-18 amendment). A plane is built at `.supervisor`.
-    ///
-    /// **The view is the plane.** It holds the scheduler and the connection this plane holds and,
-    /// on a plane that can write, its channel and its `PlaneWriteLedger`: a restore through the
-    /// view supersedes a step through the plane and the reverse, and every in-turn rule is decided
-    /// from the one state (`PlaneAdmission`). A view with state of its own would be a second plane,
-    /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
-    /// composition's § 3 wiring and `ThermalCycleHandback`, the restorer § 3 holds, ask for the
-    /// lane (`ThermalCycleLaneTripwireTests`, `ThermalCycleHandbackTripwireTests`).
-    ///
-    /// **One verb is not admitted at the view's class: `reconnect()`.** A recycle is
-    /// `SMCReadScheduler.withExclusiveAccess(_:)`, which waits out every discovery walk before it
-    /// takes its turn and then takes it at `.supervisor` (ruling D22), so a recycle through the
-    /// lane view would be a lane request with an unbounded wait in front of it, and the lane would
-    /// buy it nothing. § 3 must not reconnect, and does not: `ConnectionHealth` owns the recycle,
-    /// over the plane. The scripted double records a recycle at `.supervisor` through any view.
-    func admitted(at admission: PlaneAdmission) -> Self
 }
 
 // MARK: - Scope
