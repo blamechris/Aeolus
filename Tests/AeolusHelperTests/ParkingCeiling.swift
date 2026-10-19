@@ -17,14 +17,35 @@ import Testing
 ///
 /// **Failure-only, by margin, not by construction.** Passing tests do hold parks on purpose: across
 /// one or more of § 4's 50 ms wall-clock acknowledgement budgets (the sleep suites,
-/// `SystemPowerTests.theAcknowledgementIsBoundedByItsBudget`). Measured over a whole clean run, the
-/// longest legitimate park was 0.18 s, and 1.4 s with the CPU twice oversubscribed; so 5 s leaves
-/// about 3.7 times the worst seen. Lowering it below those figures makes those parks expire,
-/// record an issue and release mid-test. It is wall-clock time on the real `ContinuousClock`, as
-/// `outwaitCeiling` is, because the virtual clock a test moves by hand would have it expire at
-/// once. And it is well under the parking suites' one-minute `.timeLimit`, so a test that hits it
-/// more than once still ends before the limit does.
-let parkCeiling = Duration.seconds(5)
+/// `SystemPowerTests.theAcknowledgementIsBoundedByItsBudget`). #459 measured the longest
+/// legitimate park at 0.18 s over a whole clean run, and at 1.4 s with the CPU twice
+/// oversubscribed.
+///
+/// #464 measured it again, with the ceiling at 5 s: an instrumented `wait(atMost:)`, since
+/// reverted, wrote a line per return, over twelve runs of the whole non-hardware suite on the
+/// 16-core development machine, which was never idle (its load average read 197 to 570 as a run
+/// began). Each run made 35 parks under the ceiling, every one was let through, and none expired.
+/// The longest park was 0.19 to 0.31 s in three runs with nothing added, and in three each with
+/// `yes` added at 2, 6 and 10 times the core count it was 0.42 to 0.47 s, 0.74 to 1.00 s and 1.03
+/// to 1.40 s. 10 s leaves at least 7 times the longest park seen (1.40 s), and at least 2.7 times
+/// the longest return of any wait (3.62 s, the 150 ms wait at `ParkingCeilingTests.swift:92`);
+/// both ratios are floored. Lowering it below 1.40 s would make legitimate parks expire, record an
+/// issue and release mid-test.
+///
+/// **Why it is not 5 s.** In every run all 45 returns, the 35 parks and the ten waits
+/// `ParkingCeilingTests` makes, directly or through its doubles, fell within 0.2 to 1.1 s of one
+/// another. One of the ten has a 150 ms ceiling (`aGivenUpWaitDoesNotCancelTheOthers`), and it
+/// returned 0.24 to 3.62 s after it began; 3.62 s is 72 % of 5 s, the ceiling's value when
+/// measured. It is not a park, and the longest park was 1.40 s. The logs do not say why it
+/// returned late, and whether the delay that held it also reaches a park's signal path was not
+/// established. That is why the value was raised from 5 s to 10 s. Nothing here covers a hold
+/// longer than 3.62 s.
+///
+/// `parkCeiling` is wall-clock time on the real `ContinuousClock`, as `outwaitCeiling` is,
+/// because the virtual clock a test moves by hand would have it expire at once. Three expiries in
+/// a row take 30 s of the parking suites' one-minute `.timeLimit`, so a test that hits it that
+/// often still ends before the limit does.
+let parkCeiling = Duration.seconds(10)
 
 extension AsyncSignal {
 
