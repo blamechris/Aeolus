@@ -108,16 +108,21 @@ import Foundation
 /// existing holder changes. What it adds is a generic constraint the compiler holds to a contract.
 /// A parameter declared `borrowing` of a generic `Restorer: FanRestoring & ~Copyable` may be
 /// called, and — in safe Swift, through that parameter — may not be kept for later. The type
-/// checker refuses storing it, boxing it into an existential and casting it; the move checker's
-/// final pass refuses copying or consuming it, and capturing it in an escaping closure, a `Task`,
-/// an `async let` or a deferred `Task`; a key path to it is refused only by a compiler crash, and
-/// could not keep it anyway. What this does not cover is stated rather than left to be found:
-/// `withoutActuallyEscaping` and the `Unsafe*` family can move the bits out, which is why
-/// `Lease/` may name neither (`ThermalCycleHandbackTripwireTests`); and a protocol requirement
+/// checker refuses copying it, storing it, boxing it into an existential and casting it; the move
+/// checker refuses consuming it and capturing it in an escaping closure, a `Task`, an `async let`
+/// or a deferred `Task`. Two of the move checker's refusals — the deferred `Task`'s, and in review
+/// a task group's — come as its own "this is a compiler bug" diagnostic, which a later toolchain
+/// may stop emitting. A key path to it is refused only by a compiler crash, and could not keep it
+/// anyway.
+///
+/// What this does not cover is stated rather than left to be found. `withoutActuallyEscaping`
+/// and the `Unsafe*` family can move the bits out, which is why only the helper's two IOKit
+/// bridges may name them (`ThermalCycleHandbackShapeTripwireTests`); and a protocol requirement
 /// that handed back something derived from `self` would give the borrower a copy, which is why
-/// this protocol's body is pinned to its one requirement and nothing extends it. Each refused shape
-/// is compiled again on CI's own toolchain (`scripts/lending-probes/`), because the refusals were
-/// first observed on Swift 6.4 only.
+/// this protocol's body is pinned to its one requirement and nothing extends it (the same suite).
+/// Every refused shape but the key path is compiled again on CI's own toolchain
+/// (`scripts/lending-probes/`), each required to fail with its own diagnostic: the refusals were
+/// first observed on Swift 6.4, and the compiler-bug ones are the likeliest to change.
 ///
 /// That is how `docs/SAFETY.md` § 3's lane is reached. § 3 holds `ThermalCycleHandback`, the one
 /// restorer whose writer is admitted in § 3's lane, and the lease core borrows it for one call,

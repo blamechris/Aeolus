@@ -9,9 +9,12 @@
 /// admitted there, never by a value a restore carries. This is that restorer. Its initialiser
 /// takes a writer at whatever admission it was built at and admits it in the lane itself, so a
 /// handback cannot be built at `.supervisor` — and building one is minting a lane writer. So the
-/// lane is named only here and in the composition (`ThermalCycleLaneTripwireTests`), this file
-/// holds this one declaration with its one mint inside `init`, and only the composition builds a
-/// handback, once (`ThermalCycleHandbackTripwireTests`).
+/// lane is named only here and in the composition (`ThermalCycleLaneTripwireTests`), and this
+/// file holds this one declaration with its one mint inside its own `init`, with no nested type
+/// and no static member; the type is named only by the composition, which builds it, and by § 3,
+/// which holds it, and nothing aliases it (`ThermalCycleHandbackShapeTripwireTests`). Those scans
+/// catch accidents. What a deliberate second holder would do — write in the lane from another
+/// mechanism — is held by behaviour, in `SupervisorWriterAdmissionTests` and K6.
 ///
 /// ## Who holds it, and how it is lent
 ///
@@ -52,9 +55,10 @@ struct ThermalCycleHandback<Plane: FanControlPlane>: FanRestoring {
     ///   - notices: the composition's one `HelperFanRestorer`, bound to both registries.
     ///   - writer: a writer at § 3's level, at the admission it was built at; admitted in the lane
     ///     here, and only here.
-    ///   - log: the lease log the restorer writes to, so a lane restore's abandonment is a line in
-    ///     the same log as every other. Required: a defaulted log would write somewhere no test
-    ///     and no reader looks.
+    ///   - log: the lease log the composition was given, so a lane restore's abandonment is written
+    ///     where every other lease line is. Required rather than defaulted: in the daemon a default
+    ///     `LeaseLog()` would be the same log, but in a composed test it would not be the one the
+    ///     test passed, and nothing would say the two had parted.
     init(
         notifying notices: HelperFanRestorer<Plane>, writer: SafetyActorWriter<Plane>,
         log: LeaseLog
