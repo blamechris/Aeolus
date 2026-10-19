@@ -7,7 +7,8 @@ import Foundation
 /// Not a Swift parser, and it does not try to be one. It fails closed: a `path:` it cannot read as
 /// a single string literal, a `name:` it cannot read, a `dependencies:` it cannot read as one array
 /// of names, and a path that resolves outside the directories every other scan here reads are all
-/// findings, never exemptions (#441, #445).
+/// findings, never exemptions (#441, #445). So is a plugin, a target inside the helper's directory,
+/// and a change to a target after the package is constructed.
 enum ManifestScan {
 
     // MARK: - Flags
@@ -78,6 +79,9 @@ enum ManifestScan {
         let name: String?
         let path: SourcePath
         var dependencies: Dependencies = .absent
+        /// The labels of the constructor's own arguments, in order: `exclude`, `sources`,
+        /// `plugins`. Their values are not read (#445).
+        var labels: [String] = []
     }
 
     /// Every target `manifest` declares, in order. A constructor nested inside another target's
@@ -116,7 +120,8 @@ enum ManifestScan {
             found.append(
                 Target(
                     kind: String(code[kind]), name: argument("name").flatMap(literal), path: path,
-                    dependencies: argument("dependencies").map(dependencies(from:)) ?? .absent))
+                    dependencies: argument("dependencies").map(dependencies(from:)) ?? .absent,
+                    labels: arguments.compactMap { $0.label }))
         }
         return found
     }

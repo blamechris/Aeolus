@@ -132,7 +132,8 @@ struct ManifestScanTests {
             targets == [
                 .init(
                     kind: "target", name: "Real", path: .literal("Sources/Real"),
-                    dependencies: .named(["Dep", "Other"]))
+                    dependencies: .named(["Dep", "Other"]),
+                    labels: ["name", "dependencies", "plugins", "resources", "path"])
             ])
     }
 

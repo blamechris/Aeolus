@@ -31,6 +31,12 @@ import Testing
 ///    with comments, strings and backticks removed by the scanner every rule-zero tripwire
 ///    shares, and as raw text, with no lexer at all, against a pinned list of the files that name
 ///    the module even in prose.
+/// 3. **What neither layer can see.** The source layer skips `Sources/AeolusHelper/`, and the
+///    manifest layer reads the constructor's `dependencies:`, so three constructs this package
+///    does not use are refused outright (`ManifestScan.reachProblem`, `mutationProblem`): a target
+///    inside the helper's directory, or a helper that `exclude:`s or takes `sources:`; a plugin,
+///    whose generated source no scan reads; and a change to a target after the package is
+///    constructed.
 ///
 /// This catches the accident, and every spelling met so far. It does not see an Xcode target
 /// (`project.yml` is not read for dependencies), and against a determined author the compiler's
@@ -72,6 +78,35 @@ struct HelperDependentsTests {
             outside rule zero's sight (#445); put what it needs in a test target under Tests/.
             """)
         #expect(declared >= 15, "the manifests declare \(declared) targets, not this package's")
+    }
+
+    /// The constructs the dependency rule cannot see past, each refused where it would otherwise
+    /// have to be read (#445's review). None is used today, so the real manifests must be clean:
+    /// no plugin, no target inside `Sources/AeolusHelper/`, no `exclude:` or `sources:` on the
+    /// helper, and no change to a target after the package is constructed. The unit fixtures are
+    /// `ManifestScanReachTests`.
+    ///
+    /// **Mutations**, each in `Package.swift` and restored: (P3b) a `.target` at
+    /// `Sources/AeolusHelper/ZZSub` with no declared dependency, the helper `exclude:`-ing
+    /// `ZZSub`, and a file there that does `@testable import AeolusHelper`, with and without a
+    /// dependency appended after construction; (P3c) a dependency appended to a target after
+    /// construction, with a file that imports nothing; (P4) a `.plugin` at `Sources/ZZGen` applied
+    /// to `AeolusHelperTests`, generating a file that references `production()`. Run: red here,
+    /// each; P3c's with nothing else red.
+    @Test("No manifest nests a target in the helper, uses a plugin, or changes a target afterwards")
+    func noManifestHidesSourceFromTheScans() throws {
+        var read = 0
+        for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
+            let text = try SeamBuildSettingTests.text(name)
+            read += 1
+            let mutation = ManifestScan.mutationProblem(in: text)
+            #expect(mutation == nil, "\(name): \(mutation ?? "")")
+            for target in try ManifestScan.targets(in: text) {
+                let problem = ManifestScan.reachProblem(with: target)
+                #expect(problem == nil, "\(name): \(problem ?? "")")
+            }
+        }
+        #expect(read >= 1, "no manifest was read")
     }
 
     // MARK: - The source
