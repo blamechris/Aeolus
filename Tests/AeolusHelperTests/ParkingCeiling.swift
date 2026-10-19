@@ -17,13 +17,30 @@ import Testing
 ///
 /// **Failure-only, by margin, not by construction.** Passing tests do hold parks on purpose: across
 /// one or more of § 4's 50 ms wall-clock acknowledgement budgets (the sleep suites,
-/// `SystemPowerTests.theAcknowledgementIsBoundedByItsBudget`). Measured over a whole clean run, the
-/// longest legitimate park was 0.18 s, and 1.4 s with the CPU twice oversubscribed; so 5 s leaves
-/// about 3.7 times the worst seen. Lowering it below those figures makes those parks expire,
-/// record an issue and release mid-test. It is wall-clock time on the real `ContinuousClock`, as
-/// `outwaitCeiling` is, because the virtual clock a test moves by hand would have it expire at
-/// once. And it is well under the parking suites' one-minute `.timeLimit`, so a test that hits it
-/// more than once still ends before the limit does.
+/// `SystemPowerTests.theAcknowledgementIsBoundedByItsBudget`). #459 measured the longest
+/// legitimate park at 0.18 s over a whole clean run, and at 1.4 s with the CPU twice
+/// oversubscribed.
+///
+/// #464 measured it again: `wait(atMost:)` wrote a line per return, over twelve runs of the whole
+/// non-hardware suite on the 16-core development machine, which was never idle (its load average
+/// read 197 to 570 as a run began). Each run made 35 parks under this ceiling, every one was let
+/// through, and none expired. The longest hold was 0.19 to 0.31 s in three runs with nothing
+/// added, and in three each with `yes` added at 2, 6 and 10 times the core count it was 0.42 to
+/// 0.47 s, 0.74 to 1.00 s and 1.03 to 1.40 s. So 5 s leaves about 3.5 times the worst seen,
+/// 1.40 s. Lowering it below that makes legitimate parks expire, record an issue and release
+/// mid-test.
+///
+/// **What that does not show.** In every run all 45 returns, the 35 parks and the ten waits
+/// `ParkingCeilingTests` makes, directly or through its doubles, fell within 0.2 to 1.1 s of one
+/// another. One of the ten has a 150 ms ceiling (`aGivenUpWaitDoesNotCancelTheOthers`), and it
+/// returned 0.24 to 3.62 s after it began; 3.62 s is 72 % of this ceiling. It is not a park under
+/// this ceiling, the longest of which was 1.40 s. The logs do not say why it returned late, and
+/// nothing here covers a hold longer than 3.62 s.
+///
+/// It is wall-clock time on the real `ContinuousClock`, as `outwaitCeiling` is, because the
+/// virtual clock a test moves by hand would have it expire at once. And it is well under the
+/// parking suites' one-minute `.timeLimit`, so a test that hits it more than once still ends
+/// before the limit does.
 let parkCeiling = Duration.seconds(5)
 
 extension AsyncSignal {
