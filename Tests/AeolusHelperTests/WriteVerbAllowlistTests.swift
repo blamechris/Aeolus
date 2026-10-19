@@ -487,12 +487,12 @@ struct WriteVerbAllowlistTests {
         "SMCFanControlPlane.swift: close()",
         "SMCFanControlPlane.swift: open()",
         "SMCReadScheduler.swift: withExclusiveAccess(_: @Sendable () async throws -> T)",
-        // B1's write turn, on `withExclusiveAccess`'s rule: one `.supervisor` turn around a
-        // synchronous job the caller supplies, on the channel it is handed, so what the job may
-        // do is the caller's classification. It has no caller yet; the plane's write turns, when
-        // they exist, are classified where they are declared. Its own body is the turn and the
-        // call.
-        "SMCReadScheduler.swift: withWriteTurn(on: any SMCWriteChannel, "
+        // B1's write turn, on `withExclusiveAccess`'s rule: one turn at the caller's admission
+        // around a synchronous job the caller supplies, on the channel it is handed, so what the
+        // job may do is the caller's classification. Its callers are the plane's write verbs,
+        // on the lists above, and the jobs they hand it call `channelBoundFunctions`. Its own
+        // body is the turn and the call.
+        "SMCReadScheduler.swift: withWriteTurn(at: PlaneAdmission, on: any SMCWriteChannel, "
             + "_: @Sendable (isolated any SMCWriteChannel) throws -> T)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
@@ -502,7 +502,10 @@ struct WriteVerbAllowlistTests {
         "FanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",
         "FanAuthority.swift: snapshot()",
         "FanControlPlane.swift: readControlState(ofFan: Int)",
-        "FanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
+        // b2 moved this requirement into `CriticalTemperatureReading`, the telemetry's read-only
+        // role, declared beside the telemetry and refined by `FanControlPlane`: same declaration,
+        // new file, re-pinned rather than relaxed.
+        "CriticalTemperatureSensing.swift: readCriticalTemperatures(_: [SMCKey])",
         // #270 moved this requirement into a role of its own, refined by `FanStateSensing`
         // unchanged, so the lease core can hold the one read verb. Re-pinned, not relaxed: it
         // returns the declared bounds and writes nothing.
@@ -687,13 +690,23 @@ struct WriteVerbAllowlistTests {
         "FanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "SMCFanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "HelperComposition.swift: prepareWritePath()",
+        // Requirements of § 5's two `Actor` roles, in the population since C30 counts every such
+        // requirement (`channelBoundFunctions`' note). Level 6 records the target it commanded,
+        // and the snapshot reads the targets recorded under a lease: bookkeeping in § 5's ledger,
+        // with no writer and no plane behind either.
+        "ReclamationRegistrationRole.swift: commandedTarget(_: CommandedTarget, under: UUID)",
+        "ReclamationReporting.swift: recordedTargets(under: UUID)",
     ]
 
-    /// Every function in the helper that could reach a firmware write: the `async` ones,
-    /// plus the actor-isolated ones that carry a permit without the keyword.
+    /// Every function in the helper that could reach a firmware write: the `async` ones, the
+    /// actor-isolated ones that carry a permit without the keyword, and the ones that hold the
+    /// channel — an `isolated` parameter, or a requirement of an `Actor` protocol (C30).
     private func population() throws -> [SeamScanner.Function] {
-        try SeamScanner.functions(in: "AeolusHelper")
-            .filter { $0.isAsync || $0.mentions(anyOf: Self.permits) }
+        let actorRequirements = try Self.actorProtocolRequirements(in: "AeolusHelper")
+        return try SeamScanner.functions(in: "AeolusHelper").filter {
+            $0.isAsync || $0.mentions(anyOf: Self.permits) || Self.hasIsolatedParameter($0)
+                || actorRequirements.contains($0.key)
+        }
     }
 
     // MARK: - The allowlist
@@ -708,9 +721,11 @@ struct WriteVerbAllowlistTests {
         let acknowledged = Self.permitBearingVerbs
             .union(Self.restoreVerbs)
             .union(Self.permitFreeFunctions)
+            .union(Self.channelBoundFunctions)
         #expect(
             Self.permitBearingVerbs.count + Self.restoreVerbs.count
-                + Self.permitFreeFunctions.count == acknowledged.count,
+                + Self.permitFreeFunctions.count + Self.channelBoundFunctions.count
+                == acknowledged.count,
             "a verb is on two lists at once — its classification is the thing being asserted")
 
         let scanned = Set(try population().map(\.key))
@@ -721,8 +736,9 @@ struct WriteVerbAllowlistTests {
             """
             \(unlisted.count) function(s) in Sources/AeolusHelper are not acknowledged: \
             \(unlisted). Classify each one: `permitBearingVerbs` if it names a permit, \
-            `restoreVerbs` if it is ADR 0007's keystone, `permitFreeFunctions` otherwise — \
-            and if it writes to a fan without a permit, that is the defect, not the list.
+            `restoreVerbs` if it is ADR 0007's keystone, `channelBoundFunctions` if it holds the \
+            write channel, `permitFreeFunctions` otherwise — and if it writes to a fan without a \
+            permit outside the plane's write turns, that is the defect, not the list.
             """
         )
 
