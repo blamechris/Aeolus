@@ -32,15 +32,21 @@ import Testing
 ///    no string, comment, backtick or lexer gap hides an ordinary opt-in from rule 1. It catches
 ///    accidents and every spelling met so far; against a test written to evade it, the compiler's
 ///    seam (ADR 0014's B1 seam amendment) is the control, a residual the B1 plan accepted.
+/// 5. Everything an allowed file declares at its top level is `private`, its suites included, so
+///    the compiler refuses any other file that names a helper there (#433, in
+///    `WriteSeamTestPrivacyTests.swift`).
 ///
 /// Every rule normalises before it matches: comments are removed, trailing ones included, and
 /// every pattern allows whitespace and newlines wherever Swift does, so `open ()`,
 /// `open\n(`, `.open` and `@_spi( FanWrite )\n@testable import` are the spellings they are.
 ///
-/// This is a tripwire, not a proof. A test written to evade it is not caught: a free function
-/// in an allowed file that writes to a connection another file opened and handed in, for
-/// one. What it catches is the accident — a hardware suite gaining the opt-in, or a write
-/// test gaining an `open()` — which is the realistic way a test would come to write.
+/// This is a tripwire, not a proof. Until #433 a free function in an allowed file could write to a
+/// connection another file opened and handed in; rule 5 makes that function private, and the
+/// compiler refuses the call. What is still not caught is a test written to move a value rather
+/// than a name: an allowed file that reads a connection out of state another file declares, or
+/// stores a closure that writes into it. Access levels bound names, not values. What this catches
+/// is the accident — a hardware suite gaining the opt-in, a write test gaining an `open()`, or a
+/// helper here gaining a caller there — which is the realistic way a test would come to write.
 @Suite("Test files that can name the SMC write never open a connection")
 struct WriteSeamTestIsolationTests {
 

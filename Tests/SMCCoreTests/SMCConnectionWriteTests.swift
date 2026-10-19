@@ -3,7 +3,9 @@ import Testing
 
 // `write(_:to:)` is `@_spi(FanWrite) public`, and `@testable` widens internal access only, so
 // naming it needs the opt-in by name. This file and `SMCConnectionTests.swift` are the only
-// test files allowed that opt-in, and neither may obtain an opened connection.
+// test files allowed that opt-in, and neither may obtain an opened connection. Everything either
+// declares is `private`, so no other file can call a helper here that writes
+// (`WriteSeamTestIsolationTests`, rule 5).
 @_spi(FanWrite) @testable import SMCCore
 
 // swiftlint:disable force_unwrapping
@@ -23,7 +25,7 @@ import Testing
 /// These suites run on CI's virtual machines, which have no SMC, exactly as they run on
 /// `Mac16,5`. Whether `AppleSMC` accepts the request is first seen at run 1, not here.
 @Suite("SMC write body, with no SMC", .timeLimit(.minutes(1)))
-struct SMCConnectionWriteTests {
+private struct SMCConnectionWriteTests {
 
     private static let modeKey = SMCKey("F0Md")!
 
@@ -120,7 +122,7 @@ struct SMCConnectionWriteTests {
 /// laid out this way is first seen at run 1. Integers are in host byte order, which is
 /// little-endian on every Mac this builds for, so the expected bytes are written that way.
 @Suite("SMC request layout, byte by byte")
-struct SMCRequestLayoutTests {
+private struct SMCRequestLayoutTests {
 
     /// `F0Tg` is `0x46305467` (`F`, `0`, `T`, `g`); stored little-endian at offset 0.
     private static let targetKey = SMCKey("F0Tg")!
@@ -199,7 +201,7 @@ struct SMCRequestLayoutTests {
 /// 1350 and 1458 as raw `00c0a844` and `0040b644` on `Mac16,5` (`docs/SMC-RESEARCH.md`, the
 /// sleep/wake section). Those are the key and the order the write plane targets.
 @Suite("SMC key type encode, ui8 and flt")
-struct SMCKeyTypeEncodeTests {
+private struct SMCKeyTypeEncodeTests {
 
     private static let modeKey = SMCKey("F0Md")!
     private static let targetKey = SMCKey("F0Tg")!
