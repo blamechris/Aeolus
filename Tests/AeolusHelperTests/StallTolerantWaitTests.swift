@@ -187,10 +187,10 @@ struct StallTolerantWaitTests {
     /// limit is restated here and not read, as above: a suite's trait cannot be read at run time.
     ///
     /// **The margin is 30 s.** That is the stall #439's CI runner showed before a suite's first
-    /// request went out (the first ~30 s of the run, every test taking ~34 s), and it is three
-    /// times the ~7 s the dropped-request runs spent outside the deadline (17.0 s at 10 s; 65.4 s
-    /// at 60 s, which is 5.4 s). At 10 s that leaves 20 s unspent; at 55 s and 60 s it leaves
-    /// none, which is what #439 gave these suites.
+    /// request went out (the first ~30 s of the run, every test taking ~34 s), and it is over four
+    /// times the most the dropped-request runs spent outside the deadline (17.1 s at 10 s, so
+    /// 7.1 s; 65.4 s at 60 s, so 5.4 s). At 10 s that leaves 20 s unspent; at 55 s and 60 s it
+    /// leaves none, which is what #439 gave these suites.
     ///
     /// **Mutation:** set `FanctlResetTests.unhurried` back to 55 s gated and 60 s panic. Run: red.
     @Test("The deadlines the one-minute suites run under leave their client room to fail first")
