@@ -125,8 +125,8 @@ struct AutoMessageTests {
     /// A blind fan's state is unknown, not manual: 8, never 9. The message names the reason,
     /// carries the reason's own advice, and ends in the restart that advice leads to.
     ///
-    /// **Mutation:** move `.supervisorBlind` into `durable` in `SafeState.clearance(of:)`, or
-    /// drop the fan from `unclearedFanLines`. Run: red.
+    /// **Mutation:** move `.supervisorBlind` into `durable` in
+    /// `ManualControlAvailability.clearance`, or drop the fan from `unclearedFanLines`. Run: red.
     @Test("Exit 8 for a blind fan names the reason, its advice and the restart")
     func eightForABlindFan() throws {
         let observation = Self.observation(Self.pinned(.supervisorBlind, reading: .automatic))

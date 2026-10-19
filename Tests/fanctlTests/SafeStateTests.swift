@@ -86,8 +86,9 @@ struct SafeStateTests {
 
     /// **Every reason, in the class it was ruled into.** Written out as three literals rather
     /// than derived from the code under test, so that moving a reason between classes in
-    /// `SafeState.clearance(of:)` is a disagreement with this table and not a self-consistent
-    /// edit. `everyReasonIsClassifiedOnce` holds the table to the vocabulary.
+    /// `ManualControlAvailability.clearance`, which `SafeState.clearance(of:)` delegates to, is a
+    /// disagreement with this table and not a self-consistent edit.
+    /// `everyReasonIsClassifiedOnce` holds the table to the vocabulary.
     ///
     /// - `durable`: waiting will not change it → 9, whatever the mode reads.
     /// - `pending`: the helper has not established the fan's mode, or a restore is outstanding
@@ -117,8 +118,9 @@ struct SafeStateTests {
         #expect(all.count == 14)
         #expect(Set(all).count == 14)
         // `Reason.init(wireValue:)` is total, so a reason the vocabulary grows is not in this
-        // table until someone puts it here; the exhaustive switch in `clearance(of:)` is what
-        // stops the code compiling until it has been decided.
+        // table until someone puts it here; the exhaustive switch in
+        // `ManualControlAvailability.clearance` is what stops the code compiling until it has
+        // been decided.
         let known: Set<String> = [
             "writePathNotBuilt", "boundsImplausible", "reclaimedBySystem",
             "leaseHeldByAnotherClient", "selfRenewalNotBuilt", "releaseInProgress",
@@ -129,8 +131,9 @@ struct SafeStateTests {
         #expect(Set(all.map(\.wireValue)) == known)
     }
 
-    /// **Mutation:** move any reason out of `durable` in `SafeState.clearance(of:)` — for each of
-    /// the two, into `pending` and into `silent`. Run: red, naming the reason and the mode.
+    /// **Mutation:** move any reason out of `durable` in `ManualControlAvailability.clearance` —
+    /// for each of the two, into `pending` and into `silent`. Run: red, naming the reason and the
+    /// mode.
     @Test("A durable reason is 9 whatever mode the fan reads")
     func durableReasonsAreNineWhateverTheModeReads() {
         for reason in Self.durable {
@@ -210,7 +213,8 @@ struct SafeStateTests {
     /// One cleared fan does not clear another.
     ///
     /// **Mutation:** in `SafeState.verdict(for:)`, replace `allSatisfy(isCleared)` with
-    /// `contains(where: isCleared)`, or drop the `clearance` test from `isCleared`. Run: red.
+    /// `contains(where: isCleared)`, or drop the `clearance` test from
+    /// `FanState.isClearedToAutomatic`, which `isCleared` delegates to. Run: red.
     @Test("A fan the helper has not cleared keeps the rest from being the safe state")
     func oneUnclearedFanIsEnough() {
         let blind = Self.snapshot([

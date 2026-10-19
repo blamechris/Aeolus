@@ -59,8 +59,8 @@ struct FanctlAutoClearanceTests {
 
     // MARK: - 8, whatever the mode reads
 
-    /// **Mutation:** classify `.handbackUnconfirmed` as `silent` in `SafeState.clearance(of:)`.
-    /// Run: red — exit 0, and no restore is sent.
+    /// **Mutation:** classify `.handbackUnconfirmed` as `silent` in
+    /// `ManualControlAvailability.clearance`. Run: red — exit 0, and no restore is sent.
     @Test("A pending reason beside a mode of automatic exits 8, and the one restore is sent")
     func aPendingReasonBesideAutomaticExitsEight() async throws {
         for reason: ManualControlAvailability.Reason in [
@@ -111,8 +111,8 @@ struct FanctlAutoClearanceTests {
     /// must still be the safe state, with zero writes, or `auto` would exit non-zero on every
     /// machine that can be tested today.
     ///
-    /// **Mutation:** classify `.writePathNotBuilt` as `pending` in `SafeState.clearance(of:)`.
-    /// Run: red — a restore is sent and the run ends in 8.
+    /// **Mutation:** classify `.writePathNotBuilt` as `pending` in
+    /// `ManualControlAvailability.clearance`. Run: red — a restore is sent and the run ends in 8.
     @Test("writePathNotBuilt on every fan, all automatic, exits 0 and sends nothing")
     func theShippingHelperExitsZeroWithNoWrites() async throws {
         let authority = SimulatedFanAuthority(fans: [
