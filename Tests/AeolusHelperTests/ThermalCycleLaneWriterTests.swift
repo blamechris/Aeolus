@@ -53,18 +53,30 @@ struct ThermalCycleLaneWriterTests {
     /// one name with each admission it is stored at. Each object is entered once, so a cycle in
     /// the graph ends.
     static func planes(reachableFrom root: Any) -> [String: Set<PlaneAdmission>] {
+        stored(ScriptedControlPlane.self, reachableFrom: root).mapValues {
+            Set($0.map(\.admission))
+        }
+    }
+
+    /// Every `Plane` reachable from `root` through stored properties, each as it is stored, under
+    /// the name `planes(reachableFrom:)` gives it. One walk serves both conformers, so
+    /// `PlaneViewTests`' channel scan of the production plane finds § 3's lane sites by the names
+    /// `laneSites` lists.
+    static func stored<Plane: FanControlPlane>(
+        _: Plane.Type, reachableFrom root: Any
+    ) -> [String: [Plane]] {
         var seen: Set<ObjectIdentifier> = []
-        var found: [String: Set<PlaneAdmission>] = [:]
+        var found: [String: [Plane]] = [:]
         walk(root, path: "", seen: &seen, found: &found)
         return found
     }
 
-    private static func walk(
+    private static func walk<Plane: FanControlPlane>(
         _ value: Any, path: String, seen: inout Set<ObjectIdentifier>,
-        found: inout [String: Set<PlaneAdmission>]
+        found: inout [String: [Plane]]
     ) {
-        if let plane = value as? ScriptedControlPlane {
-            found[path, default: []].insert(plane.admission)
+        if let plane = value as? Plane {
+            found[path, default: []].append(plane)
             return
         }
         let mirror = Mirror(reflecting: value)

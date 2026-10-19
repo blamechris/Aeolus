@@ -1024,6 +1024,9 @@ under load; W6, the two-plane contract suite over the bridge verb, every command
 restoring; W7 [HW], D8's per-round-trip latency of a bridge job, a `.fan` restore and a refused one.
 The sync that carries this amendment onto `e4/bring-up` must also scan a plane built with a write
 channel at all four lane sites, the handback's included: `PlaneViewTests` scans a plane with none.
+*(Done by that sync: `PlaneViewTests.everyLaneSiteHoldsThePlanesChannel` composes the graph over a
+plane holding `FirmwareSMC` and holds each lane site to that channel, and to the plane, by
+identity.)*
 
 **Revisit if:** a toolchain accepts any of the refused shapes (fall back to the closure) — they were
 observed on Swift 6.4, and CI's lending probes compile them on every run's toolchain, so a toolchain

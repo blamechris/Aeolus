@@ -45,8 +45,12 @@ struct PlaneViewTests {
     /// Every stored property of `plane` but its admission, and whether its view at the lane holds
     /// the same one. A property that is not shared is named.
     static func unshared<Plane: FanControlPlane>(by plane: Plane) -> [String] {
-        let view = plane.admitted(at: .thermalCycle)
-        return zip(Mirror(reflecting: plane).children, Mirror(reflecting: view).children)
+        unshared(plane.admitted(at: .thermalCycle), with: plane)
+    }
+
+    /// Every stored property of `plane` but its admission that `view` does not hold too, by name.
+    static func unshared<Plane: FanControlPlane>(_ view: Plane, with plane: Plane) -> [String] {
+        zip(Mirror(reflecting: plane).children, Mirror(reflecting: view).children)
             .filter { $0.0.label != "admission" && !shares($0.0.value, $0.1.value) }
             .map { $0.0.label ?? "?" }
     }
@@ -69,9 +73,10 @@ struct PlaneViewTests {
 
     /// The production plane's view holds its one scheduler and its one connection, and nothing
     /// of its own but the admission. A stored property added to `SMCFanControlPlane` later is in
-    /// this scan — but the plane scanned here is built with no write channel, so a channel B1
-    /// adds is not checked by it. The sync that carries B1's channel onto `main`'s lane views scans
-    /// a plane built with one, at every lane site, the handback's included (#440's sync notes).
+    /// this scan — but the plane scanned here is built with no write channel, so the channel is
+    /// not checked by it: `nil` shares with `nil`. `everyLaneSiteHoldsThePlanesChannel`
+    /// (`PlaneViewTests+WriteChannel.swift`) scans a graph composed over a plane built with one,
+    /// at every lane site, the handback's included.
     ///
     /// **Mutation:** add `private var turnsTaken = 0` to `SMCFanControlPlane`. Run: red — the view
     /// holds a counter of its own.
