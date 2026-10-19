@@ -1,32 +1,44 @@
 import Foundation
 import Testing
 
-/// `SMCConnection.Request` is built by its four factories and by nothing else (#433).
+@testable import SMCCore
+
+/// `SMCConnection.Request` is built by its four factories and by nothing else (#433, #452).
 ///
-/// Its initialiser is `private` and written in the struct's body, so Swift synthesises no
-/// memberwise one. **That is the control.** Code anywhere else in SMCCore, `SMCConnection.swift`
-/// included, that writes `Request(key:selector:data32:dataSize:payload:)` or `.init(…)` does not
-/// compile, so no request can carry a selector no factory sends, or a payload that
-/// `write(_:to:)`'s size guard never saw. `WritePathAbsenceTests`' selector pin reads declared
-/// constants only, and a literal `selector: 6` in such a call would pass it.
+/// **Outside `SMCConnectionRequest.swift`, the compiler holds this.** The initialiser is
+/// `private` and written in the struct's body, so Swift synthesises no memberwise one, and every
+/// field is `private(set)`. Code anywhere else in SMCCore, `SMCConnection.swift` included, that
+/// writes `Request(key:selector:data32:dataSize:payload:)` or `.init(…)` does not compile. Nor
+/// does an initialiser in an extension that assigns a field, however the extension names the type:
+/// `extension (SMCConnection.Request)` and an extension of an alias fail with "setter is
+/// inaccessible", as `extension SMCConnection.Request` does. So no request built there can carry
+/// a selector no factory sends, or a payload that `write(_:to:)`'s size guard never saw.
+/// `WritePathAbsenceTests`' selector pin reads declared constants only, and a literal
+/// `selector: 6` in such a call would pass it.
 ///
-/// What this suite holds is that the control stays. It catches the init being widened, deleted
-/// (which brings the internal memberwise one back), joined by a second, or the factories joined
-/// by a fifth. It catches a conformance beyond `Sendable` and `Equatable`, because a protocol can
-/// have Swift synthesise an initialiser no member list shows: `Decodable`'s `init(from:)` builds a
-/// request with any selector from a JSON object (#447's review, S2). It also catches an extension
-/// of `Request`, the one other place an initialiser or a conformance can be written, and an alias,
-/// the one way to extend it without its name. It reads source, so a widening a macro expanded is
-/// not seen; SMCCore uses none.
+/// **Inside that file, this suite is the second layer.** `private` reaches an extension in the
+/// same file, so there the compiler refuses nothing. The source pin holds the file to its one
+/// declaration and `Request` to its members. It catches the init being widened, deleted (which
+/// brings the internal memberwise one back) or joined by a second, a field losing `private(set)`,
+/// the factories joined by a fifth, and an extension written beside the type, however its name is
+/// spelled. It reads source, so a widening a macro expanded is not seen; SMCCore uses none.
+///
+/// Conformances are checked twice, because a protocol can have Swift synthesise an initialiser no
+/// member list shows: `Decodable`'s `init(from:)` builds a request with any selector from a JSON
+/// object (#447's review, S2). The source pin reads the names `Request` lists. The run-time check
+/// reads what the type conforms to, so it also sees a `Decodable` that a shadowing typealias
+/// hides behind one of those names, or that an extension adds.
 @Suite("SMCConnection.Request is built by its factories alone")
 struct SMCRequestConstructionTests {
 
     static let requestFile = "SMCConnectionRequest.swift"
 
     /// `Request`'s members, in order: the five fields, the one initialiser, the four factories
-    /// and the wire bytes.
+    /// and the wire bytes. A field written `let` again could be assigned by an initialiser in an
+    /// extension in any SMCCore file, which is #452's P1.
     static let members = [
-        "let key", "let selector", "let data32", "let dataSize", "let payload", "private init",
+        "private(set) var key", "private(set) var selector", "private(set) var data32",
+        "private(set) var dataSize", "private(set) var payload", "private init",
         "static func readKeyInfo", "static func readIndex", "static func readBytes",
         "static func writeBytes", "var bytes",
     ]
@@ -37,13 +49,17 @@ struct SMCRequestConstructionTests {
             .filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    /// What `Request` conforms to. Neither synthesises an initialiser.
+    /// What `Request` conforms to, by the names it lists. Neither synthesises an initialiser. A
+    /// name is not what it resolves to, so `theRequestIsNotCodable` checks the type itself.
     static let conformances = ["Sendable", "Equatable"]
 
     /// **Mutations:** widen the init to internal and build a `Request` directly in
     /// `SMCConnection.swift`. Run: red here. Kept `private`, the same build does not compile. Add
-    /// `Decodable` to the conformances and decode a request with selector 6 in
-    /// `SMCConnection.swift` (R3). Run: red here, at the conformance check.
+    /// `Decodable` to the conformances (R3). Run: red here, at the conformance check, and at
+    /// `theRequestIsNotCodable`. Write the fields `let` again. Run: red here, at the member list.
+    /// Append #452's P1, `extension (SMCConnection.Request) { init(rawSelector:) … }`, to
+    /// `SMCConnectionRequest.swift` itself, where it compiles. Run: red here, at the file's one
+    /// declaration.
     @Test("Request has one initialiser, private, and its factories are the four")
     func theInitialiserIsPrivateAndTheFactoriesAreFour() throws {
         let url = try #require(
@@ -83,7 +99,42 @@ struct SMCRequestConstructionTests {
         #expect(initialisers.allSatisfy { $0.isPrivate }, "\(initialisers.map(Self.spelled))")
     }
 
-    /// `extension SMCConnection.Request`, however it is spaced or prefixed.
+    /// A struct whose `Decodable` conformance is synthesised, so the check below is seen to answer
+    /// yes for one.
+    private struct SynthesisedDecodable: Decodable {
+        let selector: UInt8
+    }
+
+    /// What `Request` conforms to, asked of the type at run time rather than read off its source.
+    ///
+    /// `Decodable` is the protocol here that synthesises an initialiser, so it has a check of its
+    /// own: `Codable` is `Decodable & Encodable`, and a type that is only `Decodable` is not
+    /// `Codable`. `Encodable` builds nothing, and is refused because a request is bytes this file
+    /// builds and `call(_:)` sends; nothing has a reason to serialise one.
+    ///
+    /// **Mutations:** in `SMCConnection.swift`, `extension SMCConnection { typealias Equatable =
+    /// Swift.Equatable & Swift.Decodable }`, which leaves `Request`'s list reading `Sendable,
+    /// Equatable` (#452's P2). Run: red here, at `Decodable`, and nowhere else. Add `Decodable` to
+    /// the list (R3). Run: red here, at `Decodable`, and at the conformance check above.
+    @Test("Request is not Decodable, Encodable or Codable, whatever its list's names resolve to")
+    func theRequestIsNotCodable() {
+        let request = SMCConnection.Request.self as Any.Type
+        #expect(
+            !(request is any Decodable.Type),
+            "SMCConnection.Request is Decodable, so init(from:) builds one with any selector.")
+        #expect(!(request is any Encodable.Type), "SMCConnection.Request is Encodable.")
+        #expect(!(request is any Codable.Type), "SMCConnection.Request is Codable.")
+
+        // The premise: the check answers yes for a type whose conformance is synthesised.
+        #expect((SynthesisedDecodable.self as Any.Type) is any Decodable.Type)
+    }
+
+    /// `extension SMCConnection.Request`, spaced or prefixed with module and type names. A
+    /// parenthesised name, `extension (SMCConnection.Request)`, is not matched, and neither is
+    /// every other spelling a lexer would have to know. This scan claims only the plain spellings
+    /// an extension is written with by accident. In another file the compiler refuses an
+    /// initialiser that assigns a field, whatever the spelling, and in `SMCConnectionRequest.swift`
+    /// the file's one-declaration pin above sees any extension.
     static let extendingRequest =
         #"(?<![A-Za-z0-9_])extension\s+(?:[A-Za-z_]\w*\s*\.\s*)*Request(?![A-Za-z0-9_])"#
 
@@ -92,8 +143,11 @@ struct SMCRequestConstructionTests {
         #"(?<![A-Za-z0-9_])typealias\s+\w+\s*(?:<[^=]*>)?\s*=\s*(?:[A-Za-z_]\w*\s*\.\s*)*"#
         + #"Request(?![A-Za-z0-9_])"#
 
-    /// An initialiser in an extension of a struct in the same module may assign its fields
-    /// directly, so an extension would be a second way in that the `private` init does not bound.
+    /// `Request`'s members are pinned where it is declared, and an extension in another file adds
+    /// members that pin cannot see. Such an extension's initialiser can no longer assign a field,
+    /// because the fields are `private(set)` (#452), so the compiler, not this scan, is what keeps
+    /// it from building a request no factory built. The scan stays as a cheap check on the plain
+    /// spellings.
     ///
     /// **Mutation:** `extension SMCConnection.Request {}` in `SMCConnection.swift`. Run: red here.
     @Test("No file in SMCCore extends Request, or aliases it")
@@ -106,14 +160,15 @@ struct SMCRequestConstructionTests {
                 #expect(
                     try RuleZeroScan.count(pattern, in: code) == 0,
                     """
-                    \(file.lastPathComponent) extends or aliases SMCConnection.Request. An \
-                    initialiser there could build a request past the factories.
+                    \(file.lastPathComponent) extends or aliases SMCConnection.Request. Its \
+                    members are pinned in SMCConnectionRequest.swift, and an extension adds \
+                    members that pin cannot see.
                     """)
             }
         }
     }
 
-    @Test("The extension and alias patterns find every spelling, and nothing else")
+    @Test("The extension and alias patterns find their plain spellings, and nothing else")
     func thePatternsFindTheirSpellings() throws {
         for source in [
             "extension SMCConnection.Request {}", "extension SMCCore . SMCConnection.Request {",
