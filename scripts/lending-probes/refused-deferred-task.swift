@@ -1,5 +1,5 @@
 // expect-line: 8
-// expect: copy of noncopyable typed value\. This is a compiler bug
+// expect: copy of noncopyable typed value. This is a compiler bug
 // Kept by a Task a defer starts, after the body has returned. Refused by the move checker, with
 // its own 'this is a compiler bug' diagnostic: toolchain-fragile, which is why CI compiles it.
 @testable import AeolusHelper
