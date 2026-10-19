@@ -13,8 +13,9 @@ import Testing
 /// asked — so a ticket taken before a machine-wide path ended its lease could be made current after
 /// it. So its uses are held to the driver's two sites — the engagement's first statement and the
 /// first-step retry — the writer's one-line forward, and the write plane's forward to its ledger,
-/// by census. Conformers declare it, and a declaration is not a use. The other edge, a ticket a refused entitlement left behind, is held by
-/// the step verb's route: only the driver steps (`EngagementRouteTripwireTests`).
+/// by census. Conformers declare it, and a declaration is not a use. The other edge, a ticket a
+/// refused entitlement left behind, is held by the step verb's route: only the driver steps
+/// (`EngagementRouteTripwireTests`).
 ///
 /// `SMCFanControlPlane`'s forward to its `PlaneWriteLedger` is the fourth use, through `ledger`
 /// (b2; ADR 0014's #410 ticket-and-seal amendment): the plane's own ticket, synchronous and
@@ -57,8 +58,9 @@ struct EngagementTicketTripwireTests {
             ],
             """
             an engagement's ticket is taken somewhere other than the driver's two sites, the \
-            writer's forward and the plane's forward to its ledger: \(uses.sorted()). A ticket taken anywhere but just before the \
-            entitlement can admit a first step after a machine-wide path ended its lease.
+            writer's forward and the plane's forward to its ledger: \(uses.sorted()). A ticket \
+            taken anywhere but just before the entitlement can admit a first step after a \
+            machine-wide path ended its lease.
             """)
         #expect(
             escaped.isEmpty,
