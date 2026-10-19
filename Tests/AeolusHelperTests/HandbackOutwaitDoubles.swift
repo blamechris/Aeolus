@@ -9,25 +9,23 @@ import Testing
 
 /// How long a test waits for something the fix might park before it calls it a hang.
 ///
-/// **Failure-only, by margin, not by construction.** Nothing but this ceiling bounds these
-/// waits: the 30 settling sites (revocations, sweeps, § 5 cycles) held up to 0.46 s, and six
-/// `ParkingCeilingTests` waits, which test the doubles' own ceilings, were held 3.2 to 3.4 s
-/// together in one run. Every return of `revocationProgress` and `finishedBeforeCeiling` was timed
-/// over twelve runs of `AeolusHelperTests` on `Mac16,5`, the three hardware suites skipped (58
-/// holds each, from 41 calling lines; #461). The longest hold, and about how many times it fits
-/// under this ceiling, by load added with `yes`:
+/// **Failure-only, by margin, not by construction.** Nothing but this ceiling bounds the 30
+/// settling waits (revocations, sweeps, § 5 cycles). Every return of `revocationProgress` and
+/// `finishedBeforeCeiling` was timed in twelve `swift test` runs on `Mac16,5`, the three hardware
+/// suites skipped (58 holds each in `AeolusHelperTests`, from 41 calling lines; #461). The longest
+/// hold, and about how many times it fits under this ceiling, by load added with `yes`:
 ///
 /// - none, three runs: 0.27 s over the 30 settling sites (about 37 times); 0.57 s over the 11 in
 ///   `ParkingCeilingTests` (about 17 times).
 /// - two `yes`, four runs: 0.35 s (about 28 times); 3.4 s (2.9 times).
-/// - 32 `yes`, three runs: 0.46 s (about 21 times); 2.5 s (4.1 times).
-/// - 64 `yes`, two runs: 0.42 s (about 23 times); 2.2 s (4.5 times).
+/// - 32 `yes`, three runs: 0.46 s (about 21 times); 2.5 s (4.0 times).
+/// - 64 `yes`, two runs: 0.42 s (about 23 times); 2.2 s (4.4 times).
 ///
-/// The machine was shared and never idle: its load average read 45 to 60 at the start of the
-/// runs with none added. The longest hold came from a run with two `yes`, not 64, so the load
-/// added did not order the results. In that run six `ParkingCeilingTests` waits, including the one
-/// signalled at once, were held 3.2 to 3.4 s together, and the same six cluster together at the
-/// start of every run, with no load added too. No park ceiling explains it; the cause was not
+/// The machine was shared and never idle. The maxima rose from the runs with none added to the
+/// loaded runs, but not steadily with the load added: the longest hold came from a run with two
+/// `yes`, not 64. In that run six `ParkingCeilingTests` waits, including one signalled at once,
+/// were held 3.2 to 3.4 s, ending within about 0.26 s of one another; the same six end close
+/// together in every run, with no load added too. No park ceiling explains it; the cause was not
 /// found.
 ///
 /// So this leaves 2.9 times the worst hold seen, and lowering it below about 3.4 s would have
