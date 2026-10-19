@@ -12,6 +12,10 @@
 # Any other error — a missing ownership keyword, an undefined type, an error in another file —
 # fails the probe, so a probe cannot pass because it broke some other way.
 #
+# Before any probe it runs the matcher against canned diagnostics (the "controls"), which need no
+# compiler: they fail the script if the comparison is ever loosened, even while every probe is
+# intact. And the script has to reach its last line to pass; see `finished` below.
+#
 # **`// expect:` is the whole message, as text, never a pattern or a fragment.** The message is
 # what follows `error: ` on the compiler's line, and it must equal the expectation: nothing
 # before it, nothing after it, no escapes. So an alternation such as `copy|noncopyable` is just
