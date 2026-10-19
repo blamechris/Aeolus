@@ -173,7 +173,10 @@ struct WriteAuthorisationTests {
         "An authorisation type's stored properties are private and its initialisers fileprivate",
         arguments: [
             ("FanWriteAuthorisation.swift", "CommandableFan", 2),
-            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget", 2),
+            // The third is the envelope's floor the target was clamped above, carried from the
+            // same read so the command turn can refuse below it (b2; #9's checklist). It changes
+            // what a permit records, not who can mint one: the initialiser is still fileprivate.
+            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget", 3),
             ("FanControlEnvelope.swift", "FanTargetRPM", 1),
         ])
     func anAuthorisationTypeCannotBeMintedElsewhere(
