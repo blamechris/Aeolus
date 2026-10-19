@@ -18,7 +18,7 @@
 # the literal text and matches no diagnostic (round 1 of #440's review found exactly that
 # alternation accepted), and a fragment such as `c` or `'` matches none either, which the
 # substring test this replaced let through (#451): a probe broken another way then still passed,
-# because any message carries a `c`. Write the message as the compiler prints it, in full — the two
+# because these messages all carry a `c`. Write the message as the compiler prints it, in full — the two
 # compiler-bug probes included, with their "Please file a bug…" tail. When a toolchain rewords a
 # refusal, replace the expectation with the new ownership-specific diagnostic, and never broaden
 # it: no alternation, and no shorter fragment that an unrelated error would also carry.
@@ -46,7 +46,11 @@ if [ -z "${module}" ]; then
 fi
 modules="$(dirname "${module}")"
 out="$(mktemp -d)"
-trap 'rm -rf "${out}"' EXIT
+# The run has to say it finished. macOS's bash 3.2 exits 0, not 1, when `set -u` aborts a script
+# that has an EXIT trap, so a crash in this script would read as a pass; the trap turns every
+# exit that did not reach the end into a failure.
+finished=0
+trap 'rm -rf "${out}"; [ "${finished}" -eq 1 ] || exit 1' EXIT
 
 swiftc --version
 echo "modules: ${modules}"
@@ -99,6 +103,62 @@ failures=0
 allowed=0
 refused=0
 
+# The matcher's own controls, which need no compiler: the expectation is the whole message, so a
+# fragment of it, the message and something more, the same message in another file, or the same
+# text as a note, is refused, and an error or the "consumed here" note at the wrong line is too.
+# Without these, loosening the comparison back to a substring test would leave every probe green.
+controls=0
+control() {
+    local want="$1" what="$2" got=0
+    shift 2
+    controls=$((controls + 1))
+    "$@" || got=1
+    if [ "${got}" -ne "${want}" ]; then
+        echo "error: the matcher's control failed: ${what}"
+        failures=$((failures + 1))
+    fi
+}
+
+message="'copy' cannot be applied to noncopyable types"
+site="${probes}/refused-copy.swift"
+at_seven="${site}:7:5: error: ${message}"
+control 0 "the whole message is accepted" \
+    all_expected refused-copy.swift "${message}" <<< "${at_seven}"
+control 1 "a one-character fragment is refused" \
+    all_expected refused-copy.swift "c" <<< "${at_seven}"
+control 1 "a lone quote is refused" \
+    all_expected refused-copy.swift "'" <<< "${at_seven}"
+control 1 "the message without its last character is refused" \
+    all_expected refused-copy.swift "${message%?}" <<< "${at_seven}"
+control 1 "the message without its first character is refused" \
+    all_expected refused-copy.swift "${message#?}" <<< "${at_seven}"
+control 1 "the message and something more is refused" \
+    all_expected refused-copy.swift "${message}!" <<< "${at_seven}"
+control 1 "the message in another probe's file is refused" \
+    all_expected refused-cast.swift "${message}" <<< "${at_seven}"
+control 1 "the message as a note is refused" \
+    all_expected refused-copy.swift "${message}" <<< "${site}:7:5: note: ${message}"
+control 1 "a file that merely ends in the probe's name is refused" \
+    all_expected refused-copy.swift "${message}" <<< "${probes}/not-${at_seven##*/}"
+control 1 "the probe's location quoted inside another file's error is refused" \
+    all_expected refused-copy.swift "${message}" <<< "x.swift:1:1: error: see ${at_seven}"
+control 1 "a second error that is not the expectation is refused" \
+    all_expected refused-copy.swift "${message}" <<< "${at_seven}"$'\n'"${site}:8:5: error: x"
+printf '%s\n%s\n' "${at_seven}" "${site}:9:5: note: consumed here" > "${out}/controls"
+control 0 "the error at the shape's line is accepted" \
+    at_the_shape refused-copy.swift 7 "${message}" "${out}/controls"
+control 0 "the move checker's note at the shape's line is accepted" \
+    at_the_shape refused-copy.swift 9 "${message}" "${out}/controls"
+control 1 "a line that carries neither is refused" \
+    at_the_shape refused-copy.swift 8 "${message}" "${out}/controls"
+control 1 "the error at its line, under a fragment of its message, is refused" \
+    at_the_shape refused-copy.swift 7 "c" "${out}/controls"
+control 1 "the error at its line, under its message less a character, is refused" \
+    at_the_shape refused-copy.swift 7 "${message%?}" "${out}/controls"
+printf '%s\n' "${site}:9:5: note: consumed here too" > "${out}/controls"
+control 1 "a note that says more than 'consumed here' is refused" \
+    at_the_shape refused-copy.swift 9 "${message}" "${out}/controls"
+
 for probe in "${probes}"/allowed-*.swift; do
     allowed=$((allowed + 1))
     if compile "${probe}"; then
@@ -133,7 +193,8 @@ for probe in "${probes}"/refused-*.swift; do
         && at_the_shape "${name}" "${line}" "${expect}" "${out}/log"; then
         echo "ok: ${name} refused at line ${line}: ${expect}"
     else
-        echo "error: ${name} must fail only with exactly '${expect}', marked at line ${line}; it said:"
+        echo "error: ${name} must fail only with exactly '${expect}', marked at line ${line};"
+        echo "       it said:"
         cat "${out}/log"
         failures=$((failures + 1))
     fi
@@ -144,9 +205,15 @@ if [ "${allowed}" -ne 1 ] || [ "${refused}" -ne 10 ]; then
     echo "error: found ${allowed} allowed and ${refused} refused probes; expected 1 and 10"
     failures=$((failures + 1))
 fi
+if [ "${controls}" -ne 17 ]; then
+    echo "error: ran ${controls} matcher controls; expected 17"
+    failures=$((failures + 1))
+fi
 
 if [ "${failures}" -ne 0 ]; then
     echo "LENDING PROBES FAILED: ${failures} problem(s)"
     exit 1
 fi
-echo "LENDING PROBES PASSED: ${refused} shapes refused, ${allowed} lend compiled"
+echo "LENDING PROBES PASSED: ${refused} shapes refused, ${allowed} lend compiled," \
+    "${controls} matcher controls held"
+finished=1
