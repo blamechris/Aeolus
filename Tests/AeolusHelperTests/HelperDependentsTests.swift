@@ -21,14 +21,16 @@ import Testing
 ///    spelling `ManifestScan` can read, and the set that does is pinned. A dependency list it
 ///    cannot read is a finding for every target.
 /// 2. **The source.** No file under `Sources/` outside `Sources/AeolusHelper/`, and none under
-///    `Tools/`, imports the module. The manifest cannot be the only layer, because the toolchain
-///    does not insist on the declaration: on Swift 6.4, a target that declares no dependency on
-///    `AeolusHelper` still compiles `@testable import AeolusHelper` whenever the helper's module
-///    is already built, as it is in any incremental tree. Only a clean build refuses, for want of
-///    the module and not of the declaration (`unable to resolve module dependency`). The source is
-///    read twice: as code, with comments, strings and backticks removed by the scanner every
-///    rule-zero tripwire shares, and as raw text, with no lexer at all, against a pinned list of
-///    the files that name the module even in prose.
+///    `Tools/`, imports the module. The manifest cannot be the only layer, because on Swift 6.4 a
+///    declaration is not what lets the import through: a target that declares no dependency on
+///    `AeolusHelper` still compiles `@testable import AeolusHelper` in a tree where the helper's
+///    module is already built, with a warning ("'X' is missing a dependency on 'AeolusHelper'"),
+///    and so does one that declares it, since the helper is an executable target. A clean build
+///    refuses the undeclared one only for want of the module (`unable to resolve module
+///    dependency: 'AeolusHelper'`), and builds the declared one. The source is read twice: as code,
+///    with comments, strings and backticks removed by the scanner every rule-zero tripwire
+///    shares, and as raw text, with no lexer at all, against a pinned list of the files that name
+///    the module even in prose.
 ///
 /// This catches the accident, and every spelling met so far. It does not see an Xcode target
 /// (`project.yml` is not read for dependencies), and against a determined author the compiler's
@@ -123,6 +125,8 @@ struct HelperDependentsTests {
 
     /// The pattern on the code it exists for. Without this the tree scan above would be green on a
     /// pattern that had stopped matching the way the helper's own tests import it.
+    ///
+    /// **Mutation:** rename the module in `importOfTheHelper`. Run: red here.
     @Test("The import pattern finds the imports the helper's own tests write")
     func theImportPatternFindsTheTestsImports() throws {
         var importing = 0
@@ -136,12 +140,15 @@ struct HelperDependentsTests {
     /// Every spelling of an import of the helper, and the lookalikes that are not one. Each source
     /// holds exactly one import, so a spelling that stopped matching is red at its own line.
     ///
-    /// **Mutations**, in `importOfTheHelper`, `RuleZeroScan.code`, `strippingBlockComments` and
-    /// `strippingAllComments`, each restored: cut the kind list to `struct`; make `\s+` one
-    /// literal space; stop removing backticks; stop replacing a block comment with a space; stop
-    /// removing a trailing `//` comment; drop the trailing `(?![A-Za-z0-9_])`; drop the leading
-    /// `(?<![A-Za-z0-9_])`; read strings as code. Run: red here, at the spellings that depend on
-    /// it.
+    /// **Mutations**, each restored, and each red here at the spellings that depend on it:
+    /// - in `importOfTheHelper`: cut the kind list to `struct`, and to `class`; make `\s+` one
+    ///   literal space; drop the trailing `(?![A-Za-z0-9_])`, and the leading one; widen `import`
+    ///   to `canImport(`; match any module name, a prefix before it, or a path before it; let
+    ///   anything stand between `import` and the module; rename the module, which reddens every
+    ///   spelling;
+    /// - in the scanners: read the source raw, or with strings as code; stop removing backticks;
+    ///   stop replacing a block comment with a space; stop nesting block comments; stop removing a
+    ///   trailing `//` comment.
     @Test("An import of the helper is found in every spelling, and a lookalike is not one")
     func importsAreFoundInEverySpelling() throws {
         let attributes = [
@@ -177,13 +184,12 @@ struct HelperDependentsTests {
 
         let lookalikes = [
             "import AeolusHelperKit", "import AeolusHelperTests", "import MyAeolusHelper",
-            "import struct Other.AeolusHelper", "import SMCCore // AeolusHelper",
+            "import struct Other.AeolusHelper", "import SMCCore // import AeolusHelper",
             "import Foundation\nlet AeolusHelper = 1", "@testable import SMCCore",
             "reimport AeolusHelper", "// import AeolusHelper", "/// @testable import AeolusHelper",
             "/* import AeolusHelper */", "/* a /* nested */ import AeolusHelper */",
             "let s = \"import AeolusHelper\"", "let s = #\"@testable import AeolusHelper\"#",
             "let s = \"\"\"\nimport AeolusHelper\n\"\"\"", "#if canImport(AeolusHelper)\n#endif",
-            "let imported = AeolusHelper.self",
         ]
         for source in lookalikes {
             #expect(try !Self.importsTheHelper(source), "\(source)")
