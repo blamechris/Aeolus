@@ -208,9 +208,10 @@ struct HelperClientDeadlineTests {
             """)
 
         // The other default a test can inherit without naming it, and `>=` rather than equality
-        // because being *looser* is deliberate here: `unhurried` sits at 10 s on both verbs this
-        // suite's tests exercise. Those two terms are also the only distinct comparisons in this
-        // test — the handshake term is `HelperClientDeadlines.handshakeVerb` itself.
+        // because being *looser* is deliberate here: `unhurried` is each product term plus the
+        // stall ceiling on both verbs that suite's tests exercise (#341). Those two terms are also
+        // the only distinct comparisons in this test — the handshake term is
+        // `HelperClientDeadlines.handshakeVerb` itself.
         let fanctlDefaults = FanctlResetTests.unhurried
         for (verb, harnessBound, productBound, consequence) in [
             (

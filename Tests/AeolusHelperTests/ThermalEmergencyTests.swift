@@ -22,17 +22,23 @@ struct ThermalEmergencyTests {
     /// would take the number asserted below — twenty seconds with a CPU package above its
     /// ceiling, one safety mechanism throttling another.
     ///
-    /// The emergency instead issues **one** `commandTarget`, at the fan's maximum.
+    /// The emergency instead issues **one** bridge job, whose command half is the fan's maximum,
+    /// and the firmware sees one target write at that value — through the bridge verb, which
+    /// since ADR 0012's 2026-10-18 amendment is § 3's one write call per fan.
     ///
     /// "Removing the ramp-governor bypass" has two spellings and only one of them is a
     /// behavioural mutation. Pointing `ThermalEmergency.writer` at a `GovernedFanWriter`
-    /// **does not compile** — that type has neither `commandMaximum` nor
+    /// **does not compile** — that type has neither `bridgeToMaximumThenRestore` nor
     /// `restoreToAutomatic` — which is the by-construction half. The mutation that turns
-    /// *this* test red is injecting a `RampGovernor` into `SafetyActorWriter.commandMaximum`:
-    /// the bridge then writes 1550 instead of 5777 and the assertion fails **on the RPM
-    /// value**. An earlier version of this comment promised the type swap failed here "on
-    /// the count"; it was checked, and with the two verbs added by hand the swap leaves all
-    /// 866 tests green.
+    /// *this* test red is injecting a `RampGovernor` into
+    /// `SafetyActorWriter.bridgeToMaximumThenRestore(of:)`: the bridge then writes 1550 instead of
+    /// 5777 and the assertion fails **on the RPM value**. An earlier version of this comment
+    /// promised the type swap failed here "on the count"; it was checked, and with the two verbs
+    /// added by hand the swap leaves all 866 tests green.
+    ///
+    /// **Mutation:** in `ThermalEmergency.bridgeToMaximumThenRelease(_:)`, command the maximum and
+    /// restore through the writer's `command(_:of:)` and `restoreToAutomatic(_:)` instead of the
+    /// bridge verb. Run: red — no bridge job reaches the firmware.
     @Test("The emergency reaches maximum in one write, not a 20-second ramp")
     func theEmergencyReachesMaximumInOneWrite() async throws {
         let machine = ThermalMachine(stages: [.at(44), .at(96)])
@@ -43,10 +49,17 @@ struct ThermalEmergencyTests {
 
         let writes: [ScriptedControlPlane.Attempt] = await machine.writes
         let commands = writes.filter { attempt in
-            if case .commandTarget = attempt { return true }
+            switch attempt {
+            case .commandTarget, .bridgeThenRestore: return true
+            default: return false
+            }
+        }
+        #expect(commands == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
+        let targets = await machine.plane.keyWrites.filter {
+            if case .target = $0 { return true }
             return false
         }
-        #expect(commands == [.commandTarget(fan: 0, rpm: 5_777)])
+        #expect(targets == [.target(fan: 0, rpm: 5_777)], "the firmware was written \(targets)")
 
         // Both endpoints come from the fixture's own fan, not from literals, so changing
         // the scripted machine changes this number instead of making the comment wrong.
@@ -62,7 +75,8 @@ struct ThermalEmergencyTests {
 
     /// Max first, then automatic — and the order is the mechanism, not a preference. The
     /// maximum write is a fail-safe bridge across however long the OS takes to re-assume
-    /// control; automatic is the destination.
+    /// control; automatic is the destination. One bridge job, and the firmware sees its two
+    /// writes in that order.
     @Test("Both writes are observed, in order: maximum then restore")
     func bothWritesAreObservedInOrder() async throws {
         let machine = ThermalMachine(stages: [.at(44), .at(96)])
@@ -71,15 +85,25 @@ struct ThermalEmergencyTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes == [.commandTarget(fan: 0, rpm: 5_777), .restoreToAutomatic(.fan(0))])
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
+        #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
+        #expect(
+            Array(await machine.plane.keyWrites.prefix(2)) == [
+                .target(fan: 0, rpm: 5_777), .mode(fan: 0, value: 0),
+            ])
+        // Then the revocation's idempotent second restore, through § 3's handback (#440).
+        #expect(await machine.handbackRestores == [.restoreToAutomatic(.fan(0))])
     }
 
     /// The failure asymmetry at the branch where it decides something. A firmware that
-    /// refuses the bridge is exactly the machine that most needs the restore attempted.
+    /// refuses the bridge is exactly the machine that most needs the restore attempted: the
+    /// bridge job writes the restore after the refused target, and § 3 reports both refusals.
     ///
-    /// Delete the second `do`/`catch` in `bridgeToMaximumThenRelease(_:)` — or make it
-    /// conditional on the first one succeeding — and this goes red.
+    /// **Mutation:** in `BridgeOutcome.attempting(maximum:thenRestore:)`, return without
+    /// attempting the restore when the command failed. Run: red — the firmware sees no mode
+    /// write, and the restore's line is missing.
+    /// **Mutation:** in `ThermalEmergency.bridgeToMaximumThenRelease(_:)`, drop the restore's
+    /// `.failure` report. Run: red on the restore's line.
     @Test("A refused maximum write does not skip the restore")
     func aRefusedMaximumStillRestores() async throws {
         let machine = ThermalMachine(
@@ -89,9 +113,25 @@ struct ThermalEmergencyTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes == [.commandTarget(fan: 0, rpm: 5_777), .restoreToAutomatic(.fan(0))])
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
+        #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
+        #expect(
+            Array(await machine.plane.keyWrites.prefix(2)) == [
+                .target(fan: 0, rpm: 5_777), .mode(fan: 0, value: 0),
+            ],
+            "the restore was not attempted after the refused maximum")
+        // Then the revocation's restore through § 3's handback, refused the whole budget (#440).
+        #expect(
+            await machine.handbackRestores
+                == Array(
+                    repeating: .restoreToAutomatic(.fan(0)), count: RestoreLimits.attemptBudget))
         #expect(await machine.latch.isActive)
+        #expect(
+            machine.safetyLog.faults.filter { $0.contains("could not command maximum on fan 0") }
+                .count == 1)
+        #expect(
+            machine.safetyLog.faults.filter { $0.contains("could not restore fan 0") }.count == 1,
+            "the refused restore was not reported")
     }
 
     // MARK: - The ceiling, at the boundary
@@ -175,8 +215,13 @@ struct ThermalEmergencyTests {
         await machine.emergency.cycle()
 
         #expect(await machine.leases.leaseCount == 0)
-        #expect(await machine.restorer.causes == [.thermalEmergency])
-        #expect(await machine.restorer.restoredFans == [Set([0, 1])])
+        // Every fan the lease covered is handed back, through § 3's handback rather than the lease
+        // core's own restorer (#440).
+        #expect(
+            await machine.handbackRestores == [
+                .restoreToAutomatic(.fan(0)), .restoreToAutomatic(.fan(1)),
+            ])
+        #expect(await machine.restorer.restores.isEmpty)
     }
 
     /// Resuming is a fresh `acquireLease`, and it is refused while the latch holds — with a
@@ -255,7 +300,7 @@ struct ThermalEmergencyTests {
 
         #expect(await machine.latch.isActive)
         let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
+        #expect(writes.contains(.bridgeThenRestore(fan: 0, rpm: 5_777)))
     }
 
     /// The dangerous half of the same defect. A wrong selector would release the latch —
@@ -327,9 +372,7 @@ struct ThermalEmergencyTests {
 
         let afterTakeBack: [ScriptedControlPlane.Attempt] = await machine.writes
         #expect(
-            afterTakeBack == [
-                .commandTarget(fan: 0, rpm: 5_777), .restoreToAutomatic(.fan(0)),
-            ])
+            afterTakeBack == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
         #expect(await machine.emergency.fansUnderManualControl.isEmpty)
     }
 

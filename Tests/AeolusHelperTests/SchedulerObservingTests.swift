@@ -91,11 +91,16 @@ struct SchedulerObservingTests {
             await scheduler.queuedTurns(at: .supervisor) == 3
         }
 
+        // Two in § 3's lane at once: the overlap § 3 never produces.
+        let lane = (0..<2).map { index in
+            observing { try await scheduler.read(keys: ["L\(index)"], at: .thermalCycle) }
+        }
+        await yieldUntil("two lane reads") { await scheduler.queuedTurns(at: .thermalCycle) == 2 }
+
         await provider.releaseEveryTurn()
-        _ = try await finished("the three-turn snapshot", firstSnapshot)
-        _ = try await finished("the second snapshot", secondSnapshot)
-        for (index, read) in supervisorReads.enumerated() {
-            _ = try await finished("supervisor read \(index)", read)
+        let reads = [firstSnapshot, secondSnapshot] + supervisorReads + lane
+        for (index, read) in reads.enumerated() {
+            _ = try await finished("read \(index) of the run", read)
         }
 
         // The failure half, from a read that really fails rather than a synthesised event.

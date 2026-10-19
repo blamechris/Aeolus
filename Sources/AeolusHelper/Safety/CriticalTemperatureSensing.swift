@@ -56,18 +56,32 @@ protocol CriticalTemperatureSensing: Sendable {
 /// ceiling.
 struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureSensing {
 
-    private let plane: Plane
+    /// The plane, or its view at § 3's admission: the one stored property a view changes.
+    private var plane: Plane
     private let set: CriticalSensorSet
     private let log: SafetyLog
 
     /// Holds the previous cycle's silent set, so an unchanged degradation is logged once
-    /// rather than once per cycle. See `DegradationMemo`.
+    /// rather than once per cycle. See `DegradationMemo`. Shared by every view of this
+    /// conformer (`admitted(at:)`), which is what keeps the collapse global.
     private let memo = DegradationMemo()
 
     init(plane: Plane, set: CriticalSensorSet, log: SafetyLog = SafetyLog()) {
         self.plane = plane
         self.set = set
         self.log = log
+    }
+
+    /// The same set, log and **memo**, read through the plane's view at `admission`: § 3's
+    /// telemetry, beside the cache's source over the plane itself (ADR 0012's 2026-10-18
+    /// amendment). A copy with the plane swapped for its view and nothing else, so the memo is
+    /// the one instance: #124's collapse stays global, and a degraded set is logged once whether
+    /// § 3's cycle or a grant's cache flight saw it first. A second `CuratedCriticalTemperatures`
+    /// would be a second memo, which `HelperCompositionTests` counts.
+    func admitted(at admission: PlaneAdmission) -> CuratedCriticalTemperatures<Plane> {
+        var view = self
+        view.plane = plane.admitted(at: admission)
+        return view
     }
 
     /// - Note: there is no `guard !set.isEmpty` here, and that is not an oversight. The
@@ -118,10 +132,11 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
 /// needs.
 ///
 /// - Note: state is per instance, so the collapse is only global if the lease core and the
-///   supervisor are handed the **same** `CuratedCriticalTemperatures`. **They are, since
-///   #163:** `HelperComposition` builds exactly one and hands it to both `LeaseAuthority`
-///   and `ThermalEmergency`, and its own field documentation names this sentence as the
-///   obligation it was discharging. Until then this note read in the future tense, because
+///   supervisor are handed the **same** memo. **They are, since #163:** `HelperComposition`
+///   builds exactly one `CuratedCriticalTemperatures` and hands it to the cache the lease core
+///   reads, and § 3 the lane view of it (`admitted(at:)`, since #332), which carries the same
+///   memo; its own field documentation names this sentence as the obligation it was
+///   discharging. Until then this note read in the future tense, because
 ///   the composition root served `ReadOnlyFanAuthority` and nothing in `Sources/`
 ///   constructed one at all — an earlier draft than *that* said the composition root
 ///   "shares one", which was true of no code, and is the same defect as the

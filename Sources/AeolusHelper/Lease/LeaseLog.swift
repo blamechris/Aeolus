@@ -118,7 +118,7 @@ struct LeaseLog: Sendable {
 
     private static func describe(_ cause: FanRestoreCause) -> String {
         switch cause {
-        case .thermalEmergency:
+        case .thermalEmergencyRevocation:
             return "the thermal emergency override fired — docs/SAFETY.md § 3"
         case .systemReclaimed:
             return "the system took the fans back — docs/SAFETY.md § 5"

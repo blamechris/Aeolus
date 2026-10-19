@@ -192,7 +192,7 @@ struct HelperCompositionTests {
         let source = Self.strippingWhitespace(try Self.compositionSource())
 
         let schedulerReportsToIt = source.contains(
-            "observer:SchedulerObservers([connectionHealth,gateMonitor])")
+            "observer:SchedulerObservers([connectionHealth,gateMonitor,")
         #expect(
             schedulerReportsToIt,
             """

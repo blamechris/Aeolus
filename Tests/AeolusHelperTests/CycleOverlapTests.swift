@@ -84,6 +84,7 @@ struct CycleOverlapTests {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: plane),
             leases: LeaseFixture.authority(thermalEmergency: latch),
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane))

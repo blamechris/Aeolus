@@ -109,6 +109,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry, clock: leaseClock),
             writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: writes),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane),
@@ -567,7 +568,7 @@ actor GatedFanStateSensing: FanStateSensing {
 /// write moment fires **after** the firmware has taken the write and while § 5 is still awaiting
 /// it, so the scenario is the worst one: the write landed, then the lease went. It fires only when
 /// the writer is on this double — `ReclamationMachine(plane:fans:interfering:)`.
-actor InterferingFanStateSensing: FanControlPlane {
+actor InterferingFanStateSensing: AdmissionBlindPlane {
 
     /// Which read or write the effect happens inside.
     enum Moment: Sendable {

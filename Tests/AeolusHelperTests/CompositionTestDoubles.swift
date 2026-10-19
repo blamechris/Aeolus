@@ -19,7 +19,7 @@ import SMCCore
 ///
 /// It wraps rather than replaces `ScriptedControlPlane`, so the firmware under the observer
 /// is the shipped mock: stages, `WriteBehaviour`, the unscripted-input refusal, all of it.
-actor RegistryObservingPlane: FanControlPlane {
+actor RegistryObservingPlane: AdmissionBlindPlane {
 
     /// What the two registries held when one restore was issued.
     struct Observation: Sendable, Hashable {

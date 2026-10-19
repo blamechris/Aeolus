@@ -40,7 +40,7 @@ final class ArmProbe: Sendable {
 }
 
 /// `ScriptedControlPlane` that tells an `ArmProbe` about every read.
-actor ArmProbingPlane: FanControlPlane {
+actor ArmProbingPlane: AdmissionBlindPlane {
 
     private let probe: ArmProbe
     private let wrapped: ScriptedControlPlane

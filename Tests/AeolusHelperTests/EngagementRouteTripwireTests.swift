@@ -273,17 +273,23 @@ struct EngagementRouteTripwireTests {
         #expect(try SeamScanner.receivers(of: Self.verb, inSource: escaped) == ["after"])
     }
 
-    /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`.
+    /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`, and no line
+    /// interpolates and then holds a `"` and a `//`.
     ///
-    /// This was the blind spot `strippingAllComments(_:)` stated until #436: it counted quotes
-    /// and did not lex, so a raw string `#"say "hi" // x"#` put the count out of step, the `//`
-    /// read as a comment, and the rest of its line was dropped. The shared walker now lexes raw
-    /// strings (`SeamScannerLiteralTests`), so this is depth, not the only control: were the
-    /// lexer to regress, the helper would still hold no literal that exploits it. Kept for that,
-    /// and because it costs one file read. In the style of `noBlockCommentIsWrittenInSources`.
+    /// These were the two blind spots `strippingAllComments(_:)` had until #436: it counted quotes
+    /// and did not lex, so a raw string `#"say "hi" // x"#`, or a literal nested in an
+    /// interpolation, `"\(String("//"))"`, put the count out of step, the `//` read as a comment,
+    /// and the rest of its line was dropped. The shared walker now lexes both, raw strings and
+    /// interpolations (`SeamScannerLiteralTests`), so this is depth, not the only control: were
+    /// the lexer to regress, the helper would still hold no literal that exploits either. Kept for
+    /// that, and because it costs one file read. In the style of
+    /// `noBlockCommentIsWrittenInSources`.
     ///
     /// **Mutation:** add `private let probe = #"say "hi" // x"#` at file scope in
     /// `SafetyWriters.swift`. Run: red here, naming the file.
+    /// **Mutation:** add `private let laneLabel = "\(String("//"))"; private let
+    /// laneHiddenFromTheScan = PlaneAdmission.thermalCycle` in `ConnectionHealth.swift`. Run: red
+    /// here, naming the file — and green in every lane census, which the stripper blinds.
     @Test("No raw string in the helper holds a quote and a comment marker")
     func noRawStringHoldsAQuoteAndACommentMarker() throws {
         var offenders: [String] = []
@@ -292,15 +298,19 @@ struct EngagementRouteTripwireTests {
             for literal in try Self.rawStringsHoldingAQuoteAndACommentMarker(in: source) {
                 offenders.append("\(file.lastPathComponent): \(literal)")
             }
+            for line in try Self.interpolationsHoldingAQuoteAndACommentMarker(in: source) {
+                offenders.append("\(file.lastPathComponent): \(line)")
+            }
         }
 
         #expect(
             offenders.isEmpty,
             """
-            a raw string literal holds a `"` and a `//`: \(offenders). A scanner that misreads \
-            a raw string reads the `//` as a comment and drops the rest of the line, which can \
-            hide a use of the step verb from every scan in this suite; #436's lexer reads it \
-            correctly, and this keeps the helper out of the shape in case it stops.
+            a raw string literal, or an interpolation, holds a `"` and a `//`: \(offenders). \
+            A scanner that misreads either reads the `//` as a comment and drops the rest of \
+            the line, which can hide a use of the step verb from every scan in this suite; \
+            #436's lexer reads both correctly, and this keeps the helper out of the shape in \
+            case it stops.
             """)
     }
 

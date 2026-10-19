@@ -169,10 +169,9 @@ struct TargetNotConfirmedTests {
     /// what `ThermalEmergencyTests.aRefusedMaximumStillRestores` pins for a refused write, for
     /// both, and never logged as a maximum commanded.
     ///
-    /// **Mutation:** in `ThermalEmergency.bridgeToMaximumThenRelease(_:)`, add `catch
-    /// FanControlPlaneError.targetNotConfirmed(let index, let rpm, _) {
-    /// log.emergencyCommandedMaximum(fan: index, rpm: rpm) }` before its first `catch`. Run: red on
-    /// the not-held argument.
+    /// **Mutation:** in `ThermalEmergency.bridgeToMaximumThenRelease(_:)`, log a `.failure(let
+    /// error)` whose error is `FanControlPlaneError.targetNotConfirmed(let index, let rpm, _)` as
+    /// `log.emergencyCommandedMaximum(fan: index, rpm: rpm)`. Run: red on the not-held argument.
     @Test(
         "§ 3's fire routes a maximum not held at its read-back as a refused write",
         arguments: unconfirmedCommands)
@@ -185,8 +184,9 @@ struct TargetNotConfirmedTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes == [.commandTarget(fan: 0, rpm: 5_777), .restoreToAutomatic(.fan(0))])
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
+        #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
+        #expect(await machine.plane.keyWrites.prefix(2).contains(.mode(fan: 0, value: 0)))
         #expect(await machine.latch.isActive)
         #expect(
             machine.safetyLog.faults.filter { $0.contains("could not command maximum on fan 0") }
