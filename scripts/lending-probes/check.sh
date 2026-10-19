@@ -22,10 +22,10 @@
 # the literal text and matches no diagnostic (round 1 of #440's review found exactly that
 # alternation accepted), and a fragment such as `c` or `'` matches none either, which the
 # substring test this replaced let through (#451): a probe broken another way then still passed,
-# because these messages all carry a `c`. Write the message as the compiler prints it, in full — the two
-# compiler-bug probes included, with their "Please file a bug…" tail. When a toolchain rewords a
-# refusal, replace the expectation with the new ownership-specific diagnostic, and never broaden
-# it: no alternation, and no shorter fragment that an unrelated error would also carry.
+# because these messages all carry a `c`. Write the message as the compiler prints it, in full:
+# the two compiler-bug probes included, with their "Please file a bug…" tail. When a toolchain
+# rewords a refusal, replace the expectation with the new ownership-specific diagnostic, and never
+# broaden it: no alternation, and no shorter fragment that an unrelated error would also carry.
 #
 # Why it exists: ADR 0012's #440 amendment rests "§ 3's handback is lent, never kept" on the
 # compiler refusing to let a `borrowing` parameter of a generic constrained
