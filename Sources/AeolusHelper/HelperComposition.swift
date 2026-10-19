@@ -104,7 +104,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// § 5's ledger, read by the snapshot and written by the watchdog.
     let ledger: ReclamationLedger
 
-    /// The lease core's terminal action, and the only `FanRestoring` in `Sources/`.
+    /// The lease core's terminal action, at `.supervisor`, and the one restorer whose notices
+    /// every handback goes through — § 3's lane handback included (`ThermalCycleHandback`, #440).
     let restorer: HelperFanRestorer<Plane>
 
     /// `docs/SAFETY.md` § 6's one-shot pass, and the post-reconciliation baseline it leaves
@@ -336,7 +337,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // auditable fact — which mechanism handed the fans back — travels separately, as the
         // `FanRestoreCause` every teardown path supplies and `LeaseLog` records. Whoever
         // makes the arbiter govern restores must revisit this: a `.allLeasesDropped` restore
-        // is § 7's level 1, not level 5.
+        // is § 7's level 1, not level 5. Since #440 the lease core restores at two levels: this
+        // standing restorer's `.leaseExpiry`, and the `.thermalEmergency` of the handback § 3 lends
+        // it for its revocation (below) — provenance on both, and the level § 3 itself writes at.
         let restorer = HelperFanRestorer(
             writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: leaseLog)
         self.restorer = restorer
@@ -364,19 +367,30 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
         // § 3 at its own admission (ADR 0012's 2026-10-18 amendment): every read and write its
         // cycle takes is admitted ahead of every waiting turn, behind only the turn in flight, so
-        // each waits for one turn whatever else is outstanding. Three views of the one plane and
-        // nothing built beside it: the curated telemetry's view shares the cache source's memo, so
-        // a degraded set is logged once whichever of the two read it (#124); the read-back is
-        // reconciliation's own loop over the lane view, so § 3 and the lease core's confirmation
-        // cannot disagree about what a fan read (#295); and the writer is the plane's lane view at
-        // § 3's level. The cache's source above, § 7's read-back through `reconciliation`, and
-        // every other mechanism stay at `.supervisor`. The restores § 3's revocation causes reach
-        // the lane through `HelperFanRestorer`'s routing by cause, not through anything here.
+        // each waits for one turn whatever else is outstanding. Three views of the one plane here,
+        // a fourth inside the handback below, and nothing built beside them: the curated
+        // telemetry's view shares the cache source's memo, so a degraded set is logged once
+        // whichever of the two read it (#124); the read-back is reconciliation's own loop over the
+        // lane view, so § 3 and the lease core's confirmation cannot disagree about what a fan read
+        // (#295); and the writer is the plane's lane view at § 3's level. The cache's source above,
+        // § 7's read-back through `reconciliation`, and every other mechanism stay at
+        // `.supervisor`.
+        //
+        // The restores § 3's revocation causes reach the lane through the handback, built here
+        // once and held by § 3 alone (#440): a writer at § 3's level on the plane, which
+        // `ThermalCycleHandback` admits in the lane itself, notifying through the one restorer and
+        // logging to the lease log. § 3 lends it to
+        // `revokeEveryLease(handingBackThrough:)` and the lease core cannot keep it, so no other
+        // teardown restores in the lane. The lease core's own `restorer:` above stays the
+        // `.supervisor` one; handing it this would put every teardown in § 3's lane.
         let thermalEmergency = ThermalEmergency(
             telemetry: telemetry.admitted(at: .thermalCycle),
             sightings: sightings,
             writer: SafetyActorWriter(
                 plane: plane.admitted(at: .thermalCycle), level: .thermalEmergency),
+            handback: ThermalCycleHandback(
+                notifying: restorer,
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency), log: leaseLog),
             leases: leases,
             latch: latch,
             // The read-back that clears a fan whose handback the firmware accepted (#295), or

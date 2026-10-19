@@ -13,12 +13,12 @@ import Testing
 /// hot and then the firmware started refusing writes" is two stages rather than two
 /// unrelated doubles that have to be kept in step by hand.
 ///
-/// The lease side keeps its own `RecordingFanRestorer` because `FanRestoring` has no
-/// conformer that reaches a `FanControlPlane` yet — #102 owns that adapter, and
-/// `FanRestoring.swift` says why bridging them is a decision about who owns a failed
-/// restore rather than a signature adjustment. Until it exists, the split is also useful:
-/// the plane records what § 3 wrote, and the restorer records what the lease core did about
-/// it, so a test can tell the two apart.
+/// The lease side keeps its own `RecordingFanRestorer` for every teardown the lease core runs
+/// through its own restorer, so a test can tell what § 3 wrote from what the lease core did.
+/// § 3's revocation is the exception since #440: it hands back through § 3's handback, over this
+/// plane and in § 3's lane, as the composition wires it. This fixture's writer is not admitted in
+/// the lane, so the lane's restores are the handback's alone — `handbackRestores` — and every
+/// other write is § 3's own, `sectionThreesOwnWrites`.
 struct ThermalMachine {
 
     let plane: ScriptedControlPlane
@@ -42,10 +42,10 @@ struct ThermalMachine {
     /// The same seam on the lease core's blindness check — the cache's `source`, since #134.
     ///
     /// Separate from `emergencyTelemetry` because the two reads are the two halves of the
-    /// grant-time window `LeaseAuthority.revokeEveryLease(because:)` documents: the latch is
-    /// read, and then a sightedness proof is awaited, and § 3 can engage across it. One shared
-    /// interferer could not fire inside the lease core's read without also firing inside the
-    /// emergency's, which is the cycle the scenario is trying to script.
+    /// grant-time window `LeaseAuthority.revokeEveryLease(handingBackThrough:)` documents: the
+    /// latch is read, and then a sightedness proof is awaited, and § 3 can engage across it. One
+    /// shared interferer could not fire inside the lease core's read without also firing inside
+    /// the emergency's, which is the cycle the scenario is trying to script.
     ///
     /// It fires only when the grant actually reads — a cold or aged-out cache. That is the
     /// production shape rather than a fixture quirk: after #134 the window exists at its full
@@ -114,6 +114,7 @@ struct ThermalMachine {
             telemetry: emergencyTelemetry,
             sightings: sightings,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: plane),
             leases: leases,
             latch: latch,
             handbackReadBack: handbackReadBack,
@@ -166,20 +167,41 @@ struct ThermalMachine {
 
     /// Just the write attempts, which is what an ordering assertion is usually about.
     var writes: [ScriptedControlPlane.Attempt] {
+        get async { await plane.attempts.filter(Self.isWrite) }
+    }
+
+    /// The writes § 3 made through its own writer: `writes` without its handback's restores.
+    var sectionThreesOwnWrites: [ScriptedControlPlane.Attempt] {
         get async {
-            await plane.attempts.filter {
-                switch $0 {
-                case .commandTarget, .restoreToAutomatic, .engageManualControl,
-                    .bridgeThenRestore:
-                    return true
-                // A reconnect is recovery of the read path, not a write. It belongs with
-                // the reads for the same reason `readControlState` does: an ordering
-                // assertion about what a mechanism *wrote* must not shift because it also
-                // tried to see again.
-                case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
+            await plane.admittedAttempts.filter {
+                $0.admission != .thermalCycle && Self.isWrite($0.attempt)
+            }.map(\.attempt)
+        }
+    }
+
+    /// The restores § 3's handback made for a revocation, in § 3's lane (#440): once for each fan
+    /// the firmware takes, the whole budget for each it refuses.
+    var handbackRestores: [ScriptedControlPlane.Attempt] {
+        get async {
+            await plane.admittedAttempts.filter {
+                guard $0.admission == .thermalCycle, case .restoreToAutomatic = $0.attempt else {
                     return false
                 }
-            }
+                return true
+            }.map(\.attempt)
+        }
+    }
+
+    /// Whether `attempt` is a write.
+    private static func isWrite(_ attempt: ScriptedControlPlane.Attempt) -> Bool {
+        switch attempt {
+        case .commandTarget, .restoreToAutomatic, .engageManualControl, .bridgeThenRestore:
+            return true
+        // A reconnect is recovery of the read path, not a write. It belongs with the reads for
+        // the same reason `readControlState` does: an ordering assertion about what a mechanism
+        // *wrote* must not shift because it also tried to see again.
+        case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
+            return false
         }
     }
 }

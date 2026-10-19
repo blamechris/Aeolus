@@ -365,8 +365,10 @@ the same trade: `handbackWaiters`' keys and none of its continuations.
 
 ## Where each register ends
 
-All three exits are in `restore(_:because:)`, which is the one place a restore is issued and
-therefore the one place the handback window can be held open. `releasing` is incremented
+All three exits are in `restore(_:because:through:)`, the body `restore(_:because:)` forwards
+to with the lease core's own restorer and `revokeEveryLease(handingBackThrough:)` calls with the
+handback § 3 lends (#440). It is the one place a restore is issued and therefore the one place the
+handback window can be held open. `releasing` is incremented
 before the suspension and decremented after it, so `acquireLease` can see the window from
 inside the actor.
 
@@ -958,7 +960,10 @@ with every decision made over them, moved into the two value types
 [above](#where-the-registers-live-two-value-types-the-actor-holds-128), which the actor holds
 `private`. That took the body to 287, leaving 63, and the file to 851.
 [#269](https://github.com/blamechris/Aeolus/issues/269)'s one line, the sleep seal carried in
-`activeLeaseView()`, took it to 288, leaving 62, and the file to 853.
+`activeLeaseView()`, took it to 288, leaving 62, and the file to 853. By #439 the body was 290.
+[#440](https://github.com/blamechris/Aeolus/issues/440)'s lent handback — the verb's generic
+signature and `restore(_:because:through:)` beside the forward — took it to 299, leaving 51, and
+the file to 879.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside
@@ -1145,12 +1150,13 @@ fan for — the one the fan was registered under — and this revokes that lease
   the system took control — is emitted only for a lease actually taken.
 - **Removed synchronously, restored in one call**, as every teardown here is, so the fans enter
   `releasing` before anything suspends and no grant can race in over them.
-- **Strictly narrower than `revokeEveryLease(because:)`**, which is already `internal`, and that
+- **Strictly narrower than `revokeEveryLease(handingBackThrough:)`**, which is already
+  `internal`, and that
   is the whole of `LeaseAuthorityAccessTests`' argument for acknowledging it: the worst a caller
   elsewhere in the module can do with a lease's ID is what it can already do to every lease.
 
-§ 3 keeps `revokeEveryLease(because:)`: it takes back every claim on the machine in order to
-cool it, which is not § 5's question.
+§ 3 keeps `revokeEveryLease(handingBackThrough:)` (`revokeEveryLease(because:)` until #440): it
+takes back every claim on the machine in order to cool it, which is not § 5's question.
 
 ### Outwaiting another path's handback
 
@@ -1247,7 +1253,8 @@ in a graph built from the real lease core, restorer and § 5; each names the mut
 
 ### Why § 3 revokes every lease, and why it is not `releaseEveryLease()`
 
-*From the doc comment of `revokeEveryLease(because:)`.*
+*From the doc comment of `revokeEveryLease(handingBackThrough:)`, `revokeEveryLease(because:)`
+before #440.*
 
 `docs/SAFETY.md` § 3 selects on this rather than on the emergency's own registry of
 engaged fans, and the difference is a defect an adversarial review found rather than
@@ -1290,6 +1297,26 @@ cool the machine, not a recovery verb, and a fan whose handback was abandoned is
 it may need to command hardest. handback-ledger.md § *"Why `revokeEveryLease` is not
 given the same sweep"*; `PanicPathScopeTripwireTests` holds the two verbs apart.
 
+### § 3's revocation hands back through a restorer it lends (#440)
+
+*Added by [#440](https://github.com/blamechris/Aeolus/issues/440); not relocated from a doc
+comment. ADR 0012's #440 amendment is the decision.*
+
+Every other teardown restores through the lease core's own `restorer`, at `.supervisor`. § 3's
+revocation does not: its restores belong to § 3's lane, so § 3 passes its handback, the one
+restorer admitted there, and the lease core hands back through it for that call alone. The verb
+takes it as a `borrowing` parameter of a generic that suppresses `Copyable`, so the lease core
+cannot keep it for a later path.
+
+**The ledger is the same on the lent route, because the body is the same.** The verb calls
+`restore(_:because:through:)`, the body every path reaches: the fans enter `releasing` before the
+restore is awaited, a grant arriving meanwhile is refused `.releaseInProgress`, the refused fans
+land in `restoreAbandoned`, the waiters of #368 are resumed in the `defer`, and § 5's notice and
+§ 3's mark come from `HelperFanRestorer.handBack(_:because:through:)`, which the handback lends its
+bound to. A lent restorer called outside that body would still reach the firmware, and would keep
+none of the ledger. `HandbackLendingBracketTests` and the § 3 route
+of `HelperRestorerTests` hold it.
+
 ### `releaseEveryLease()`: what the sweep is, and what it is not
 
 *From the doc comment of `releaseEveryLease()`, after the paragraphs that state its scope, which stay in the source. Its heading, "The sweep is the table and `restoreAbandoned`", stays in the source too and is the first thing this section answers.*
@@ -1300,7 +1327,7 @@ this actor issues**, because every other teardown path derives its fans from tab
 entries and `acquireLease` refuses every fan in `restoreAbandoned`. It is this verb
 rather than another because this verb is the recovery one — § 7 is what a user reaches
 for when the fans are stuck, and `docs/RECOVERY.md` is the step after it.
-`revokeEveryLease(because:)` is deliberately not given the same sweep — see there.
+`revokeEveryLease(handingBackThrough:)` is deliberately not given the same sweep — see there.
 
 **It touches nothing foreign, so ADR 0011 is intact**, and **one `restore` call for the
 whole sweep is load-bearing here rather than uniform** — the sweep has two sources, so

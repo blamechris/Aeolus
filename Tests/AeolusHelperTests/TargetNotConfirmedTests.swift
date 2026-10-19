@@ -184,9 +184,9 @@ struct TargetNotConfirmedTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
         #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
-        #expect(await machine.plane.keyWrites.contains(.mode(fan: 0, value: 0)))
+        #expect(await machine.plane.keyWrites.prefix(2).contains(.mode(fan: 0, value: 0)))
         #expect(await machine.latch.isActive)
         #expect(
             machine.safetyLog.faults.filter { $0.contains("could not command maximum on fan 0") }

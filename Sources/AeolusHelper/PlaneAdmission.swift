@@ -24,11 +24,15 @@
 ///
 /// ## Who names the lane
 ///
-/// Only § 3 uses it: the composition's § 3 wiring builds § 3's telemetry, read-back reader and
-/// writer over `admitted(at: .thermalCycle)`, and `HelperFanRestorer` routes the restores caused
-/// by `FanRestoreCause.thermalEmergencyRevocation` through its lane view.
-/// `ThermalCycleLaneTripwireTests` counts both words file by file, and `SMCReadScheduler` reports
-/// at run time a lane request that arrives while another is outstanding.
+/// Only § 3 uses it, and it is reached by holding a view of it — never by a value a request
+/// carries (ADR 0012's #440 amendment). The composition's § 3 wiring builds § 3's telemetry,
+/// read-back reader and writer over `admitted(at: .thermalCycle)`, and `ThermalCycleHandback`
+/// admits its writer there: the restorer § 3 holds, and lends to the lease core for its revocation
+/// alone. Nothing else mints a view, and the lease core and the restorer name no admission at all
+/// (`ThermalCycleHandbackTripwireTests`). `ThermalCycleLaneTripwireTests` counts the lane's word
+/// file by file, `ThermalCycleLaneWriterTests` holds every stored plane's admission at rest and
+/// after a firing, and `SMCReadScheduler` reports at run time a lane request that arrives while
+/// another is outstanding.
 ///
 /// **The two cases are pinned.** A third case mapped to the lane's priority would reach the lane
 /// without naming it, from any file and at any call site, so `ThermalCycleLaneValueSetTests`

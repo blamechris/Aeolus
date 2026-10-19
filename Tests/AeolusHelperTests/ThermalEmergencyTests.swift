@@ -85,10 +85,14 @@ struct ThermalEmergencyTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
         #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
         #expect(
-            await machine.plane.keyWrites == [.target(fan: 0, rpm: 5_777), .mode(fan: 0, value: 0)])
+            Array(await machine.plane.keyWrites.prefix(2)) == [
+                .target(fan: 0, rpm: 5_777), .mode(fan: 0, value: 0),
+            ])
+        // Then the revocation's idempotent second restore, through § 3's handback (#440).
+        #expect(await machine.handbackRestores == [.restoreToAutomatic(.fan(0))])
     }
 
     /// The failure asymmetry at the branch where it decides something. A firmware that
@@ -109,13 +113,18 @@ struct ThermalEmergencyTests {
 
         await machine.emergency.cycle()
 
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
+        let writes: [ScriptedControlPlane.Attempt] = await machine.sectionThreesOwnWrites
         #expect(writes == [.bridgeThenRestore(fan: 0, rpm: 5_777)])
         #expect(
-            await machine.plane.keyWrites == [
+            Array(await machine.plane.keyWrites.prefix(2)) == [
                 .target(fan: 0, rpm: 5_777), .mode(fan: 0, value: 0),
             ],
             "the restore was not attempted after the refused maximum")
+        // Then the revocation's restore through § 3's handback, refused the whole budget (#440).
+        #expect(
+            await machine.handbackRestores
+                == Array(
+                    repeating: .restoreToAutomatic(.fan(0)), count: RestoreLimits.attemptBudget))
         #expect(await machine.latch.isActive)
         #expect(
             machine.safetyLog.faults.filter { $0.contains("could not command maximum on fan 0") }
@@ -206,8 +215,13 @@ struct ThermalEmergencyTests {
         await machine.emergency.cycle()
 
         #expect(await machine.leases.leaseCount == 0)
-        #expect(await machine.restorer.causes == [.thermalEmergencyRevocation])
-        #expect(await machine.restorer.restoredFans == [Set([0, 1])])
+        // Every fan the lease covered is handed back, through § 3's handback rather than the lease
+        // core's own restorer (#440).
+        #expect(
+            await machine.handbackRestores == [
+                .restoreToAutomatic(.fan(0)), .restoreToAutomatic(.fan(1)),
+            ])
+        #expect(await machine.restorer.restores.isEmpty)
     }
 
     /// Resuming is a fresh `acquireLease`, and it is refused while the latch holds — with a

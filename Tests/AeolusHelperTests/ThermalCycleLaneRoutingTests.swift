@@ -8,9 +8,11 @@ import Testing
 /// Only § 3's turns take § 3's lane, in the composed graph (ADR 0012's 2026-10-18 amendment).
 ///
 /// On the lane: § 3's critical read, its owed read-backs and the restores its own revocation
-/// causes. At `.supervisor`: the cache's source, § 6, § 7's read-back, the grant's foreign-control
-/// and bounds reads, § 5's and § 6's reads, and level 6. `ThermalCycleLaneWriterTests` holds the
-/// other mechanisms' writes. Every call the scripted firmware receives is recorded with
+/// causes, which reach the lane through the handback § 3 holds and lends (#440). At `.supervisor`:
+/// the cache's source, § 6, § 7's read-back, the grant's foreign-control and bounds reads, § 5's
+/// and § 6's reads, level 6, and every restore the restorer issues itself, whatever its cause.
+/// `ThermalCycleLaneWriterTests` holds the other mechanisms' writes. Every call the scripted
+/// firmware receives is recorded with
 /// the admission of the view it came through (`ScriptedControlPlane.admittedAttempts`), so each
 /// mechanism is driven in turn and its calls are read off by phase.
 @Suite("Only § 3 takes § 3's lane, in the composed graph", .timeLimit(.minutes(1)))
@@ -21,6 +23,8 @@ struct ThermalCycleLaneRoutingTests {
         let firmware: ScriptedControlPlane
         let helper: HelperComposition<ScriptedControlPlane>
         let holder = ConnectionID()
+        /// The lease core's clock, which a TTL scenario advances.
+        let clock = TestClock()
 
         init(stages: [ScriptedControlPlane.Stage], fans: Int = 2) async {
             let conditions = Dictionary(
@@ -33,11 +37,14 @@ struct ThermalCycleLaneRoutingTests {
                 snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fans),
                 criticalSensors: .mac16x5,
                 roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
-                clock: TestClock(),
+                clock: clock,
                 log: HelperRestorerTests.helperLog,
                 leaseLog: LeaseFixture.log,
                 safetyLog: HelperRestorerTests.safetyLog,
-                teardown: TeardownSeams(sources: RecordingSignalSources()))
+                // A teardown that ends nothing: the shipping termination would end this test
+                // process, successfully, with the run unfinished.
+                teardown: TeardownSeams(
+                    sources: RecordingSignalSources(), terminate: TeardownJournal().terminate))
             await helper.bindSafetyRegistries()
         }
 
@@ -62,6 +69,21 @@ struct ThermalCycleLaneRoutingTests {
     private static let refusing = ScriptedControlPlane.Stage(
         temperatures: LeaseFixture.nominalDieTemperatures,
         writes: .refused(reason: "the scripted firmware refuses every write"))
+
+    /// Above § 3's ceiling, with every write refused: a firing cycle whose revocation's restores
+    /// are each tried the whole budget.
+    private static let hotAndRefusing = ScriptedControlPlane.Stage.at(
+        96, writes: .refused(reason: "the scripted firmware refuses every write"))
+
+    /// The restore attempts among `calls`, whatever their scope.
+    private static func restores(
+        _ calls: [ScriptedControlPlane.AdmittedAttempt]
+    ) -> [ScriptedControlPlane.AdmittedAttempt] {
+        calls.filter {
+            if case .restoreToAutomatic = $0.attempt { return true }
+            return false
+        }
+    }
 
     /// The admissions `calls` came through.
     private static func admissions(
@@ -225,50 +247,22 @@ struct ThermalCycleLaneRoutingTests {
             "the revocation restored nothing")
         #expect(Self.admissions(firing) == [.thermalCycle], "the firing cycle: \(firing)")
     }
+}
 
-    // MARK: - L5
+// MARK: - L5, since #440: § 3 reaches the lane by holding it, and a cause selects nothing
 
-    /// § 3's revocation, with every handback refused: each of the three attempts on each fan is
-    /// a `.fan(n)` restore in the lane.
+extension ThermalCycleLaneRoutingTests {
+
+    /// K1. Every cause, `FanRestoreCause.allCases` and `.thermalEmergencyRevocation` among them,
+    /// through the composed graph's restorer: each restores once, at `.supervisor`. The restorer
+    /// is cause-blind, so a cause — stored, replayed or added to the enum — reaches no lane. All
+    /// of them, so a cause given a lane of its own fails here the day it is given one.
     ///
-    /// **Mutation:** in `HelperFanRestorer.bound(for:)`, return `bounded` for every cause.
-    /// Run: red.
-    /// **Mutation:** swap the `.thermalEmergencyRevocation` and `.systemReclaimed` arms. Run: red
-    /// here and in `everyCauseRoutesByWhoCausedIt`.
-    @Test("§ 3's revocation puts every restore attempt in the lane")
-    func sectionThreesRevocationRestoresInTheLane() async throws {
-        let machine = await Machine(stages: [Self.nominal, Self.refusing])
-        _ = try await machine.lease([0, 1])
-        await machine.firmware.advance()
-
-        let revocation = await machine.calls {
-            await machine.helper.leases.revokeEveryLease(because: .thermalEmergencyRevocation)
-        }
-        let attempts = revocation.filter {
-            if case .restoreToAutomatic = $0.attempt { return true }
-            return false
-        }
-        let budget = RestoreLimits.attemptBudget
-        let expected: [ScriptedControlPlane.Attempt] =
-            Array(repeating: .restoreToAutomatic(.fan(0)), count: budget)
-            + Array(repeating: .restoreToAutomatic(.fan(1)), count: budget)
-        #expect(
-            attempts.map(\.attempt) == expected,
-            "\(attempts)")
-        #expect(Self.admissions(attempts) == [.thermalCycle], "§ 3's revocation: \(attempts)")
-    }
-
-    /// Every cause, `FanRestoreCause.allCases`, through the composed graph's restorer: § 3's
-    /// revocation restores in the lane and every other cause at `.supervisor`. All of them, so a
-    /// cause moved into the lane's arm, or added to the enum and routed there, is a second producer
-    /// in the lane and fails here.
-    ///
-    /// **Mutation:** in `HelperFanRestorer.bound(for:)`, move `.leaseExpired` into the lane's arm.
-    /// Run: red, naming it.
-    /// **Mutation:** move `.supervisorBlind`, `.connectionInvalidated` and
-    /// `.startupReconciliation` there instead. Run: red, naming each.
-    @Test("Every cause routes by who caused it: § 3's to the lane, every other to supervisor")
-    func everyCauseRoutesByWhoCausedIt() async throws {
+    /// **Mutation (K1):** in `HelperFanRestorer`, add a bound over
+    /// `writer.admitted(at: .thermalCycle)` and restore through it when the cause is
+    /// `.thermalEmergencyRevocation`. Run: red, naming it.
+    @Test("The restorer is cause-blind: every cause restores at supervisor")
+    func theRestorerIsCauseBlind() async throws {
         let machine = await Machine(stages: [Self.nominal], fans: 1)
         #expect(FanRestoreCause.allCases.count == 8, "a cause was added; it is driven below")
 
@@ -277,42 +271,130 @@ struct ThermalCycleLaneRoutingTests {
                 _ = await machine.helper.restorer.restoreToAutomatic(fans: [0], because: cause)
             }
             let restores = calls.filter { $0.attempt == .restoreToAutomatic(.fan(0)) }
-            let expected: Set<PlaneAdmission> =
-                cause == .thermalEmergencyRevocation ? [.thermalCycle] : [.supervisor]
             #expect(restores.count == 1, "\(cause): \(calls)")
-            #expect(Self.admissions(restores) == expected, "\(cause) restored at \(restores)")
+            #expect(Self.admissions(restores) == [.supervisor], "\(cause) restored at \(restores)")
         }
     }
 
-    /// Every other cause, through its own path, restores at `.supervisor`: a release, the panic
-    /// verb's lease drop, and § 5's revocation for a reclaimed fan.
+    /// K2. § 3's revocation, driven by a firing cycle, hands back through § 3's handback in the
+    /// lane: a lease over two fans, every restore refused, is the whole budget of `.fan(n)`
+    /// attempts on each fan — three and three, in fan order — all at `.thermalCycle`, inside the
+    /// one `cycle()` call.
     ///
-    /// **Mutation:** in `HelperFanRestorer.bound(for:)`, return `thermalCycleBounded` for every
-    /// cause. Run: red at each of the three.
-    @Test("Every other cause restores at supervisor")
-    func everyOtherCauseRestoresAtSupervisor() async throws {
-        let machine = await Machine(stages: [Self.nominal], fans: 1)
-        let leases = machine.helper.leases
+    /// **Mutation (K2a):** drop `.admitted(at: .thermalCycle)` from `ThermalCycleHandback.init`.
+    /// Run: red — the attempts are at `.supervisor`.
+    /// **Mutation (K2b):** in `LeaseAuthority.revokeEveryLease(handingBackThrough:)`, lend
+    /// `restorer` instead of `handback`. Run: red — at `.supervisor`.
+    /// **Mutation (K2c):** add a second `await restore(fans, because: cause, through: handback)`
+    /// to that verb. Run: red — six attempts on each fan.
+    @Test("§ 3's revocation hands back through § 3's handback, in the lane, in one call")
+    func sectionThreesRevocationHandsBackThroughItsHandback() async throws {
+        let machine = await Machine(stages: [Self.nominal, Self.hotAndRefusing])
+        _ = try await machine.lease([0, 1])
+        await machine.firmware.advance()
 
-        let released = try await machine.calls {
-            let id = try await machine.lease([0])
-            try await machine.helper.authority.releaseLease(id: id, from: machine.holder)
+        let firing = await machine.calls { await machine.helper.thermalEmergency.cycle() }
+
+        #expect(await machine.helper.latch.isActive, "the cycle did not fire")
+        #expect(await machine.helper.leases.leaseCount == 0, "the lease survived the firing")
+        let restores = Self.restores(firing)
+        let budget = RestoreLimits.attemptBudget
+        let expected: [ScriptedControlPlane.Attempt] =
+            Array(repeating: .restoreToAutomatic(.fan(0)), count: budget)
+            + Array(repeating: .restoreToAutomatic(.fan(1)), count: budget)
+        #expect(restores.map(\.attempt) == expected, "\(restores)")
+        #expect(Self.admissions(restores) == [.thermalCycle], "§ 3's revocation: \(restores)")
+    }
+
+    /// K6. After a firing whose revocation handed back in the lane, every other teardown restores
+    /// at `.supervisor`: the TTL, a connection's death, a release, § 5's revocation, the panic
+    /// verb's lease drop, § 4's sleep, § 6's pass and the teardown's `run` (its installed closure:
+    /// `SupervisorWriterAdmissionTests`). The lease core keeps no lane from the borrowing call.
+    ///
+    /// **Mutation (K6):** in `HelperComposition.init`, build the handback before the lease core
+    /// and give it to `LeaseAuthority` as `restorer:`. Run: red at the seven lease-core paths.
+    /// § 6's pass restores through the restorer itself, not the lease core, and stays green.
+    /// **Mutation (N5c, from #439's review):** store the revocation's cause and restore lapsed
+    /// leases under it, bound to a local first. Run: the whole suite green, correctly — the cause
+    /// routes nothing. (Passed straight into the call it is a member read in a restore's arguments,
+    /// which `TeardownCountTripwireTests` refuses; this test stays green either way.)
+    @Test("After a firing, every other path restores at supervisor")
+    func afterAFiringEveryOtherPathRestoresAtSupervisor() async throws {
+        let machine = await Machine(stages: [Self.nominal, .at(96), Self.nominal], fans: 1)
+        let helper = machine.helper
+        _ = try await machine.lease([0])
+        await machine.firmware.advance()
+        let firing = await machine.calls { await helper.thermalEmergency.cycle() }
+        #expect(
+            Self.admissions(Self.restores(firing)) == [.thermalCycle],
+            "the firing's revocation did not hand back in the lane: \(firing)")
+        await machine.firmware.advance()
+        await helper.thermalEmergency.cycle()
+        #expect(await !helper.latch.isActive, "the latch never released")
+
+        for (path, calls) in try await Self.everyOtherPath(on: machine) {
+            let restores = Self.restores(calls)
+            #expect(!restores.isEmpty, "\(path) restored nothing: \(calls)")
+            #expect(Self.admissions(restores) == [.supervisor], "\(path): \(restores)")
         }
-        let dropped = try await machine.calls {
+    }
+
+    /// Every teardown but § 3's, each driven over a fresh lease on fan 0, with what it made the
+    /// firmware do: the TTL, a connection's death, a release, § 5's revocation, the panic verb's
+    /// drop, § 4's sleep, § 6's pass over a fan left manual, and the signal teardown, last.
+    private static func everyOtherPath(
+        on machine: Machine
+    ) async throws -> [(String, [ScriptedControlPlane.AdmittedAttempt])] {
+        let helper = machine.helper
+        let leases = helper.leases
+        let ttl = try await machine.calls {
+            _ = try await machine.lease([0])
+            machine.clock.advance(by: .seconds(Lease.defaultTimeToLive + 1))
+            await leases.expireLapsedLeases()
+        }
+        let dying = ConnectionID()
+        let invalidation = try await machine.calls {
+            _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: dying)
+            await leases.connectionDidInvalidate(dying)
+        }
+        let release = try await machine.calls {
+            let id = try await machine.lease([0])
+            try await helper.authority.releaseLease(id: id, from: machine.holder)
+        }
+        let reclamation = try await machine.calls {
+            let id = try await machine.lease([0])
+            _ = await leases.revokeLease(id: id, forFan: 0, because: .systemReclaimed)
+        }
+        let panic = try await machine.calls {
             _ = try await machine.lease([0])
             await leases.releaseEveryLease()
         }
-        let reclaimed = try await machine.calls {
+        let sleep = try await Self.sleepAndWake(machine)
+        await machine.firmware.setMode(.manual, ofFan: 0)
+        let reconciliation = await machine.calls { await helper.reconcileFans() }
+        let teardown = try await machine.calls {
             _ = try await machine.lease([0])
-            await leases.revokeLeases(coveringFan: 0, because: .systemReclaimed)
+            await helper.signalTeardown.run(stoppingSupervisorsWith: { await helper.shutDown() })
         }
-        for (cause, calls) in [
-            ("leaseReleased", released), ("allLeasesDropped", dropped),
-            ("systemReclaimed", reclaimed),
-        ] {
-            let restores = calls.filter { $0.attempt == .restoreToAutomatic(.fan(0)) }
-            #expect(restores.count == 1, "\(cause): \(calls)")
-            #expect(Self.admissions(restores) == [.supervisor], "\(cause): \(restores)")
+        return [
+            ("the TTL", ttl), ("a connection's death", invalidation), ("a release", release),
+            ("§ 5's revocation", reclamation), ("the panic verb's drop", panic),
+            ("§ 4's sleep", sleep), ("§ 6's pass", reconciliation),
+            ("the signal teardown", teardown),
+        ]
+    }
+
+    /// § 4's half of `everyOtherPath(on:)`: a lease, its sleep, and the wake that reopens grants.
+    private static func sleepAndWake(
+        _ machine: Machine
+    ) async throws -> [ScriptedControlPlane.AdmittedAttempt] {
+        let sleep = try await machine.calls {
+            _ = try await machine.lease([0])
+            await machine.helper.powerResponder.respond(
+                to: SystemPowerNotification(event: .willSleep, generation: 1) {})
         }
+        await machine.helper.powerResponder.respond(
+            to: SystemPowerNotification(event: .didWake, generation: 2) {})
+        return sleep
     }
 }

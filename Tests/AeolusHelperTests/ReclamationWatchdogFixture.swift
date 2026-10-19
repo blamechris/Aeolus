@@ -109,6 +109,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry, clock: leaseClock),
             writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: writes),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane),

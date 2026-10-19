@@ -94,6 +94,7 @@ struct GrantStormTests {
             telemetry: telemetry,
             sightings: sightings,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: plane),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane))

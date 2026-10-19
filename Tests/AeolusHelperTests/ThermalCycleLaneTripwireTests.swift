@@ -15,11 +15,13 @@ import Testing
 /// default argument or a helper in the same file all add one. Two words are counted:
 ///
 /// - **`thermalCycle`**, the lane's case in `SMCReadPriority` and in `PlaneAdmission`: declared,
-///   mapped and queued in the scheduler, and named by the composition's § 3 wiring and
-///   `HelperFanRestorer`'s lane view. The one way to reach a case without naming it, `allCases`,
-///   is counted too, and is held to the gate mirror.
-/// - **`thermalEmergencyRevocation`**, the restore cause `HelperFanRestorer` routes into the lane
-///   by. Named for the revocation so that the word is the cause's alone — `SafetyActorLevel` has a
+///   mapped and queued in the scheduler, and named by the composition's § 3 wiring and by
+///   `ThermalCycleHandback`, the restorer § 3 holds in the lane (#440). The one way to reach a case
+///   without naming it, `allCases`, is counted too, and is held to the gate mirror.
+/// - **`thermalEmergencyRevocation`**, § 3's restore cause. Since #440 it routes nothing — the lane
+///   is reached by holding the handback, which `ThermalCycleHandbackTripwireTests` holds at the
+///   source — so its count is provenance: who may label a restore as § 3's. Named for the
+///   revocation so that the word is the cause's alone — `SafetyActorLevel` has a
 ///   `thermalEmergency` — and counted as a word for the same reason as the lane.
 ///
 /// And #124's and #295's one-of-each, which the lane's views must not split: one read loop behind
@@ -162,8 +164,9 @@ struct ThermalCycleLaneTripwireTests {
     /// `SMCReadPriority` and `PlaneAdmission` (whose mapping names it twice more), mapped to its
     /// queue once in the scheduler (`queue(for:)`, which queuing, counting and reporting all go
     /// through), given to § 3's telemetry, writer and read-back in the composition, and taken by
-    /// `HelperFanRestorer`'s lane view. A case that reaches the lane under another name is the
-    /// value-set pin's (`ThermalCycleLaneValueSetTests`), not this count's.
+    /// `ThermalCycleHandback`'s bound, which § 3 holds and lends (#440). The restorer names it no
+    /// longer. A case that reaches the lane under another name is the value-set pin's
+    /// (`ThermalCycleLaneValueSetTests`), not this count's.
     ///
     /// **Mutation:** in `ReclamationWatchdog.swift`, add
     /// `private var laneWriter: SafetyActorWriter<Plane> { writer.admitted(at: .lane) }`, with
@@ -184,7 +187,7 @@ struct ThermalCycleLaneTripwireTests {
         #expect(
             named == [
                 "SMCReadPriority.swift": 1, "PlaneAdmission.swift": 3, "SMCReadScheduler.swift": 1,
-                "HelperComposition.swift": 3, "HelperFanRestorer.swift": 1,
+                "HelperComposition.swift": 3, "ThermalCycleHandback.swift": 1,
             ],
             """
             § 3's lane is named \(named). It is § 3's alone (ADR 0012's 2026-10-18 amendment): a \
@@ -194,9 +197,9 @@ struct ThermalCycleLaneTripwireTests {
 
     /// No helper code enumerates an enum's cases but the gate mirror, which reads every priority.
     /// An enumeration reaches a case without naming it: `SMCReadPriority.allCases` reaches the
-    /// lane, and `FanRestoreCause.allCases` — the enum is `CaseIterable` for a test — reaches the
-    /// lane's cause. Counted as a word, so a type alias or a metatype in front of it changes
-    /// nothing.
+    /// lane, and `FanRestoreCause.allCases` — the enum is `CaseIterable` for a test — reaches § 3's
+    /// cause label, which since #440 routes nothing but still says who restored. Counted as a word,
+    /// so a type alias or a metatype in front of it changes nothing.
     ///
     /// **Mutation:** in `ConnectionHealth.swift`, add `private typealias Priority =
     /// SMCReadPriority` and `private let everyPriority = Priority.allCases`. Run: red.
@@ -209,32 +212,33 @@ struct ThermalCycleLaneTripwireTests {
             enumerations == ["GateWaitMonitor.swift": 1],
             """
             cases are enumerated \(enumerations). An enumeration of SMCReadPriority reaches § 3's \
-            lane, and one of FanRestoreCause its cause, without naming either.
+            lane, and one of FanRestoreCause § 3's cause label, without naming either.
             """)
     }
 
-    /// § 3's restore cause is named where it is declared, routed and logged, and passed by § 3
-    /// three times: `fire`'s revocation, take-back's, and the empty-registry take-back's. It is the
-    /// key `HelperFanRestorer` routes into the lane by, so a mechanism that passes it is a second
-    /// producer in the lane. `LeaseLog.swift` is the one logging file that names it: its
-    /// exhaustive switch describes every cause for the lease log's line. `SafetyLog` describes no
-    /// cause.
+    /// § 3's restore cause is named where it is declared, logged, and labelled: once in the lease
+    /// core, by `revokeEveryLease(handingBackThrough:)`, which fixes it for § 3's revocation
+    /// (#440).
+    /// § 3 passes no cause and the restorer switches on none. It is a label, so this count is
+    /// provenance — a mechanism that labelled its own restore as § 3's would be one an operator
+    /// reading `log show` mistook for § 3 — and not a route: a stored and replayed cause reaches
+    /// no lane (`ThermalCycleLaneRoutingTests`). `LeaseLog.swift` is the one logging file that
+    /// names it: its exhaustive switch describes every cause for the lease log's line. `SafetyLog`
+    /// describes no cause.
     ///
     /// **Mutation:** in `ReclamationWatchdog.swift`, give § 5's blind-fan release
     /// `because: restoreCause` with `private var restoreCause: FanRestoreCause {
     /// .thermalEmergencyRevocation }`. Run: red.
-    /// **Mutation:** in `ThermalEmergency.swift`, add a fourth pass. Run: red — four in the file.
-    @Test("§ 3's restore cause is named only where it is wired, as often as it is wired")
+    /// **Mutation:** in `LeaseAuthority.swift`, label `revokeLeases(coveringFan:because:)`'s line
+    /// with it too. Run: red — two in the file.
+    @Test("§ 3's restore cause is named only where it is labelled, as often as it is labelled")
     func theEmergencyCauseIsNamedOnlyWhereItIsWired() throws {
         let named = try Self.census(of: "thermalEmergencyRevocation")
         #expect(
-            named == [
-                "FanRestoring.swift": 1, "HelperFanRestorer.swift": 1, "LeaseLog.swift": 1,
-                "ThermalEmergency.swift": 3,
-            ],
+            named == ["FanRestoring.swift": 1, "LeaseAuthority.swift": 1, "LeaseLog.swift": 1],
             """
-            FanRestoreCause.thermalEmergencyRevocation is named \(named). It routes a restore into \
-            § 3's lane, so only § 3 may pass it.
+            FanRestoreCause.thermalEmergencyRevocation is named \(named). It labels § 3's \
+            revocation, which the lease core fixes; nothing else may claim to be § 3.
             """)
     }
 

@@ -94,9 +94,9 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
     }
 
     /// This writer over its plane's view at `admission`, at the same level: the one
-    /// `HelperFanRestorer` routes § 3's revocation through (ADR 0012's 2026-10-18 amendment). The
-    /// view is the same plane (`FanControlPlane.admitted(at:)`), so only what each turn waits for
-    /// changes.
+    /// `ThermalCycleHandback` restores § 3's revocation through (ADR 0012's 2026-10-18 amendment
+    /// and its #440 amendment). The view is the same plane (`FanControlPlane.admitted(at:)`), so
+    /// only what each turn waits for changes.
     func admitted(at admission: PlaneAdmission) -> SafetyActorWriter<Plane> {
         SafetyActorWriter(plane: plane.admitted(at: admission), level: level)
     }

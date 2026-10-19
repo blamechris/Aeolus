@@ -361,8 +361,8 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// view supersedes a step through the plane and the reverse, and every in-turn rule is decided
     /// from the one state (`PlaneAdmission`). A view with state of its own would be a second plane,
     /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
-    /// composition's § 3 wiring and `HelperFanRestorer` ask for the lane
-    /// (`ThermalCycleLaneTripwireTests`).
+    /// composition's § 3 wiring and `ThermalCycleHandback`, the restorer § 3 holds, ask for the
+    /// lane (`ThermalCycleLaneTripwireTests`, `ThermalCycleHandbackTripwireTests`).
     ///
     /// **One verb is not admitted at the view's class: `reconnect()`.** A recycle is
     /// `SMCReadScheduler.withExclusiveAccess(_:)`, which waits out every discovery walk before it

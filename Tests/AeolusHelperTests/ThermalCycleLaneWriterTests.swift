@@ -22,13 +22,22 @@ import Testing
 /// case that maps to the lane under another name therefore fails here as well as at the value-set
 /// pin (`ThermalCycleLaneValueSetTests`), which is what stops it compiling at all.
 ///
+/// **It is taken at rest and after a § 3 episode** (#440), because the one lane site that moves is
+/// lent: § 3 holds its handback and the lease core borrows it for a call. A holder that kept what
+/// it was lent would show only after the lending, so the census is taken after one too.
+///
 /// **What it cannot see.** A plane captured by a closure or a `Task` rather than stored is not a
 /// child any reflection walk reaches, and neither is a view built at a call site and dropped.
 /// Today `ConnectionHealth`'s recovery plane is the only plane held that way: it is captured by the
 /// pump's task, and a recycle is a supervisor turn whatever view asks for it
 /// (`FanControlPlane.admitted(at:)`), so no call could tell. A view built at a call site needs an
 /// admission that maps to the lane, and the value-set pin leaves only `.thermalCycle`, whose
-/// namings `ThermalCycleLaneTripwireTests` counts per file.
+/// namings `ThermalCycleLaneTripwireTests` counts per file. Those counts say where the lane is
+/// named, not who uses it: a lane view returned by a property in a file that may name the lane, and
+/// used elsewhere, keeps every count. `ThermalCycleHandbackShapeTripwireTests` closes the
+/// accidental forms of that for the two files that may name it, and counts the names of the
+/// handback's type, per file, since building one is a mint; `SupervisorWriterAdmissionTests` holds
+/// the consequence, by behaviour. This census covers reachable stored planes, and nothing else.
 @Suite("Every stored plane is at supervisor but § 3's", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneWriterTests {
 
@@ -101,11 +110,45 @@ struct ThermalCycleLaneWriterTests {
             ], "\(found)")
     }
 
+    /// § 3's four lane sites, by the path the census names each by: its telemetry's view, its
+    /// writer's, its read-back's, and the handback it holds and lends for its revocation (#440).
+    ///
+    /// Adding a site here is an ADR 0012 amendment and a safety review (#332): a fifth lane site
+    /// lands with a few visible edits and nothing else red, so this list is the review signal. The
+    /// handback's site is under `ThermalEmergency`, and nowhere else: a lane bound kept by the
+    /// lease core, or by the restorer, is a stored plane this census names under that holder.
+    static let laneSites: Set<String> = [
+        "ThermalEmergency.telemetry.plane",
+        "ThermalEmergency.writer.plane",
+        "ThermalEmergency.handbackReadBack.sensing",
+        "ThermalEmergency.handback.bounded.attempting.writer.plane",
+    ]
+
+    /// The census's verdict on `found`: every lane site is stored, at the lane, and every other
+    /// stored plane is at `.supervisor`. Judged by the priority each admission maps to, for every
+    /// site, with the lane sites listed rather than filtered for.
+    private static func expectOnlySectionThreesSitesInTheLane(
+        _ found: [String: Set<PlaneAdmission>], _ when: String
+    ) {
+        #expect(found.count > 10, "\(when): the census found \(found.count) planes: \(found)")
+        #expect(
+            laneSites.isSubset(of: Set(found.keys)),
+            """
+            \(when): § 3's lane sites \(laneSites.subtracting(found.keys).sorted()) are not \
+            stored
+            """)
+        for (site, admissions) in found.sorted(by: { $0.key < $1.key }) {
+            let priorities = Set(admissions.map(\.priority))
+            let expected: Set<SMCReadPriority> =
+                laneSites.contains(site) ? [.thermalCycle] : [.supervisor]
+            #expect(
+                priorities == expected,
+                "\(when): \(site) is admitted at \(priorities), not \(expected)")
+        }
+    }
+
     /// The composed graph, bound as bring-up binds it: every plane it stores is admitted at
-    /// `.supervisor` but § 3's three views — its telemetry's, its writer's and its read-back's —
-    /// and the restorer's lane view for § 3's revocation, which are admitted in the lane. Judged
-    /// by the priority each admission maps to, for every site, with the lane sites listed rather
-    /// than filtered for.
+    /// `.supervisor` but § 3's four lane sites, which are admitted in the lane.
     ///
     /// **Mutation:** in `HelperComposition.init`, build § 5's `reclamationWriter` over
     /// `plane.admitted(at: .thermalCycle)`. Run: red, naming § 5's writer and its driver's.
@@ -122,25 +165,51 @@ struct ThermalCycleLaneWriterTests {
         let helper = Self.helper(over: firmware)
         await helper.bindSafetyRegistries()
 
-        let found = Self.planes(reachableFrom: helper)
-        // Adding a site here is an ADR 0012 amendment and a safety review (#332): a fifth lane site
-        // lands with three visible edits and nothing else red, so this list is the review signal.
-        let laneSites: Set<String> = [
-            "HelperFanRestorer.thermalCycleBounded.attempting.writer.plane",
-            "ThermalEmergency.telemetry.plane",
-            "ThermalEmergency.writer.plane",
-            "ThermalEmergency.handbackReadBack.sensing",
-        ]
-        #expect(found.count > 10, "the census found \(found.count) planes: \(found)")
+        Self.expectOnlySectionThreesSitesInTheLane(Self.planes(reachableFrom: helper), "at rest")
+    }
+
+    /// K5. The same census after a whole § 3 episode: a lease engaged through level 6, a firing
+    /// that bridges the fan and revokes the lease through § 3's handback, a latched cycle, the
+    /// machine cooling and the latch releasing, and the read-back of § 3's own restore. The four
+    /// lane sites are still the only ones: lending the handback left it where it was, and nothing
+    /// the episode ran kept a lane plane anywhere else.
+    ///
+    /// **Mutation (K5):** make `revokeEveryLease`'s and `restore(_:because:through:)`'s generic
+    /// parameters copyable and their parameters plain, add `private var lent: (any FanRestoring)?`
+    /// to `LeaseAuthority`, set it in `revokeEveryLease`, and restore lapsed leases through it
+    /// when it is set. Run: green at rest, red here — naming `LeaseAuthority.lent.some.bounded…`.
+    /// With the borrowing signatures it does not compile: the parameter cannot be stored.
+    @Test("After a § 3 episode, every stored plane is still at supervisor but § 3's")
+    func afterAnEpisodeEveryStoredPlaneIsStillAtSupervisorButSectionThrees() async throws {
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800)],
+            stages: [
+                .nominal(temperatures: LeaseFixture.nominalDieTemperatures), .at(96),
+                .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
+            ])
+        let helper = Self.helper(over: firmware)
+        await helper.bindSafetyRegistries()
+        let holder = ConnectionID()
+        let lease = try await helper.authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: holder)
+        try await helper.authority.apply(
+            [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))], leaseID: lease.id, from: holder)
+
+        await firmware.advance()
+        await helper.thermalEmergency.cycle()
+        #expect(await helper.latch.isActive, "the cycle did not fire")
+        #expect(await helper.leases.leaseCount == 0, "the firing did not revoke the lease")
+        await helper.thermalEmergency.cycle()
+        await firmware.advance()
+        await helper.thermalEmergency.cycle()
+        #expect(await !helper.latch.isActive, "the latch never released")
+        await helper.thermalEmergency.cycle()
         #expect(
-            laneSites.isSubset(of: Set(found.keys)),
-            "§ 3's lane sites \(laneSites.subtracting(found.keys).sorted()) are not stored there")
-        for (site, admissions) in found.sorted(by: { $0.key < $1.key }) {
-            let priorities = Set(admissions.map(\.priority))
-            let expected: Set<SMCReadPriority> =
-                laneSites.contains(site) ? [.thermalCycle] : [.supervisor]
-            #expect(priorities == expected, "\(site) is admitted at \(priorities), not \(expected)")
-        }
+            await helper.thermalEmergency.fansRestoredUnconfirmed.isEmpty,
+            "§ 3 never read back its own restore")
+
+        Self.expectOnlySectionThreesSitesInTheLane(
+            Self.planes(reachableFrom: helper), "after an episode")
     }
 
     // MARK: - The mechanisms that write only in their own scenario

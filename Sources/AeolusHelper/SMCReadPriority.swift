@@ -42,7 +42,8 @@
 ///   turns in a row while another waiter is parked; see `SMCReadScheduler`).
 /// - *A level somebody will use.* Tripwires hold the case to the files that name it today
 ///   (`ThermalCycleLaneTripwireTests`): this enum, the scheduler, the plane view, the
-///   composition's § 3 wiring and `HelperFanRestorer`'s routing by cause. And the value set is
+///   composition's § 3 wiring and `ThermalCycleHandback`, the restorer § 3 holds in the lane and
+///   lends for its revocation (#440). And the value set is
 ///   pinned: `ThermalCycleLaneValueSetTests` switches over these three cases with no `default`, so
 ///   a fourth, which the scheduler could queue in the lane under another name, does not compile
 ///   until the pin decides where it goes.

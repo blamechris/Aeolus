@@ -16,8 +16,8 @@ enum SystemPowerLimits {
     /// ([#68](https://github.com/blamechris/Aeolus/issues/68)) where the write never returns
     /// at all — and `FanRestoreAttempting` states plainly that nothing below it can bound
     /// that: *"a single synchronous IOKit call that never comes back on a wedged connection
-    /// parks `revokeEveryLease(because:)`"*, and `BoundedFanRestorer` bounds attempts rather
-    /// than the wall clock.
+    /// parks `revokeLease(id:forFan:because:)`"*, and `BoundedFanRestorer` bounds attempts
+    /// rather than the wall clock.
     ///
     /// The kernel gives a process on the order of thirty seconds to acknowledge
     /// `kIOMessageSystemWillSleep` before sleeping regardless. Spending all of it would buy
@@ -290,7 +290,7 @@ actor SleepAcknowledgement {
 /// (*"System will sleep: dropping every lease…"*) immediately above them. A dedicated
 /// `FanRestoreCause` case would make the `LeaseLog` line self-describing and is deliberately
 /// not added here: it would be a second name for one mechanism, which is the thing
-/// `revokeEveryLease(because:)`'s own doc argues against.
+/// `revokeEveryLease(handingBackThrough:)`'s own doc argues against.
 ///
 /// ## Wake: nothing, and the absence is the feature
 ///

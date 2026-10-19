@@ -106,16 +106,53 @@ struct HelperRestorerTests {
         await helper.thermalEmergency.manualControlEngaged(permit)
     }
 
-    /// Acquires a lease over fan 0, engages it under that lease, and releases it — the
-    /// ordinary teardown path, in E3's order.
-    private static func engageUnderALeaseAndRelease<Plane: FanControlPlane>(
+    /// The two routes a lease-core handback takes since #440, and the registries are told on
+    /// both: the lease core's own restorer, here a release, and the handback § 3 holds and lends
+    /// to `revokeEveryLease(handingBackThrough:)`, in § 3's lane. Each test about the registries
+    /// runs over both, so the notices cannot be kept on one route and dropped on the other.
+    enum Route: String, CaseIterable, Sendable, CustomTestStringConvertible {
+        case release
+        case sectionThreesRevocation
+
+        var testDescription: String { rawValue }
+    }
+
+    /// Ends `lease`, held on `connection`, by `route`.
+    static func end<Plane: FanControlPlane>(
+        _ lease: Lease, heldOn connection: ConnectionID, by route: Route,
         in helper: HelperComposition<Plane>
+    ) async throws {
+        switch route {
+        case .release:
+            try await helper.leases.releaseLease(id: lease.id, from: connection)
+        case .sectionThreesRevocation:
+            await helper.leases.revokeEveryLease(
+                handingBackThrough: try sectionThreesHandback(in: helper))
+        }
+    }
+
+    /// The handback the composition gave § 3, read off § 3's stored property by reflection — as
+    /// `ThermalCycleLaneWriterTests`' census reads it — rather than built a second time here, so a
+    /// test lends exactly what § 3 lends.
+    static func sectionThreesHandback<Plane: FanControlPlane>(
+        in helper: HelperComposition<Plane>
+    ) throws -> ThermalCycleHandback<Plane> {
+        try #require(
+            Mirror(reflecting: helper.thermalEmergency).descendant("handback")
+                as? ThermalCycleHandback<Plane>,
+            "§ 3 holds no handback")
+    }
+
+    /// Acquires a lease over fan 0, engages it under that lease, and ends it by `route` — the
+    /// ordinary teardown path, in E3's order, or § 3's revocation.
+    private static func engageUnderALeaseAndEnd<Plane: FanControlPlane>(
+        by route: Route, in helper: HelperComposition<Plane>
     ) async throws {
         let connection = ConnectionID()
         let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
         try await Self.engage(fan: 0, in: helper, under: lease.id)
-        try await helper.leases.releaseLease(id: lease.id, from: connection)
+        try await Self.end(lease, heldOn: connection, by: route, in: helper)
     }
 
     /// Acquires a lease over fan 0 and releases it, engaging nothing.
@@ -184,9 +221,12 @@ struct HelperRestorerTests {
     /// revocation.
     ///
     /// **Mutation:** delete the `reclamationWatchdog?.manualControlReleased(fanAt:)` loop in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red.
-    @Test("Releasing a lease stops the reclamation watchdog watching its fan")
-    func theWatchdogIsToldWhenALeaseEnds() async throws {
+    /// `HelperFanRestorer.handBack(_:because:through:)`. Run: red on both routes.
+    /// **Mutation (K3):** in `ThermalCycleHandback.restoreToAutomatic(fans:because:)`, restore
+    /// through `bounded` directly rather than through `notices.handBack`. Run: red on § 3's route.
+    @Test(
+        "Ending a lease stops the reclamation watchdog watching its fan", arguments: Route.allCases)
+    func theWatchdogIsToldWhenALeaseEnds(route: Route) async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
         let connection = ConnectionID()
@@ -195,7 +235,7 @@ struct HelperRestorerTests {
         try await Self.engage(fan: 0, in: helper, under: lease.id)
         #expect(await helper.reclamationWatchdog.fansUnderManualControl == [0])
 
-        try await helper.leases.releaseLease(id: lease.id, from: connection)
+        try await Self.end(lease, heldOn: connection, by: route, in: helper)
 
         #expect(
             await helper.reclamationWatchdog.fansUnderManualControl.isEmpty,
@@ -239,14 +279,18 @@ struct HelperRestorerTests {
     /// automatic — the scripted firmware honoured the restore — and forgets it. The cycle is
     /// driven by hand because the supervisors are not started here (see the suite's note).
     ///
-    /// **Mutation:** in `HelperFanRestorer.restoreToAutomatic(fans:because:)`, replace
+    /// **Mutation:** in `HelperFanRestorer.handBack(_:because:through:)`, replace
     /// `thermalEmergency?.handbackAccepted(fanAt: fan)` with a call that drops the entry —
     /// the pre-#295 `manualControlReleased` — and the first expectation goes red.
     /// **Mutation:** delete `forget(fanAt: fan)` from the `.automatic` case of
     /// `ThermalEmergency.readBackAcceptedHandbacks()`, and the post-cycle expectation goes
     /// red: the fan never clears.
-    @Test("Releasing a lease leaves its fan owed a read-back, and § 3's cycle clears it")
-    func theThermalRegistryIsToldWhenALeaseEnds() async throws {
+    /// **Mutation (K3):** the handback restoring through `bounded` directly. Run: red on § 3's
+    /// route — the fan is not owed a read-back.
+    @Test(
+        "Ending a lease leaves its fan owed a read-back, and § 3's cycle clears it",
+        arguments: Route.allCases)
+    func theThermalRegistryIsToldWhenALeaseEnds(route: Route) async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
         let connection = ConnectionID()
@@ -255,7 +299,7 @@ struct HelperRestorerTests {
         try await Self.engage(fan: 0, in: helper, under: lease.id)
         #expect(await helper.thermalEmergency.fansUnderManualControl == [0])
 
-        try await helper.leases.releaseLease(id: lease.id, from: connection)
+        try await Self.end(lease, heldOn: connection, by: route, in: helper)
 
         #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
         #expect(
@@ -291,13 +335,15 @@ struct HelperRestorerTests {
     /// newer fact about it.
     ///
     /// **Mutation:** replace `fans.subtracting(abandoned)` with `fans` in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red on the owed set.
-    @Test("A fan whose handback the firmware refused stays in the thermal registry")
-    func anAbandonedFanStaysWhereItCanStillBeBridged() async throws {
+    /// `HelperFanRestorer.handBack(_:because:through:)`. Run: red on the owed set, on both routes.
+    @Test(
+        "A fan whose handback the firmware refused stays in the thermal registry",
+        arguments: Route.allCases)
+    func anAbandonedFanStaysWhereItCanStillBeBridged(route: Route) async throws {
         let helper = Self.composed(writes: .refused(reason: "the firmware refused the mode write"))
         await helper.bindSafetyRegistries()
 
-        try await Self.engageUnderALeaseAndRelease(in: helper)
+        try await Self.engageUnderALeaseAndEnd(by: route, in: helper)
 
         #expect(
             await helper.thermalEmergency.fansUnderManualControl == [0],
@@ -320,7 +366,7 @@ struct HelperRestorerTests {
     /// closed. Asserted here rather than in the lease suite because this is the first composition
     /// in `Sources/` that can actually produce an abandoned fan.
     ///
-    /// **Mutation:** return `[]` from `HelperFanRestorer.restoreToAutomatic(fans:because:)`.
+    /// **Mutation:** return `[]` from `HelperFanRestorer.handBack(_:because:through:)`.
     /// Run: red.
     @Test("A fan the firmware would not hand back is refused a further lease")
     func anAbandonedFanIsRefusedDurably() async throws {
@@ -353,13 +399,17 @@ struct HelperRestorerTests {
     /// owed at it. Marked before, it is owed at the write — and every fan asked for is marked,
     /// refused or not, because the refusal is not yet known.
     ///
-    /// **Mutation:** move the `reclamationWatchdog` loop below the `bounded` call in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red — the fan is still in
-    /// § 5's registry at the write.
+    /// **Mutation:** move the `reclamationWatchdog` loop below the `bound` call in
+    /// `HelperFanRestorer.handBack(_:because:through:)`. Run: red on both routes — the fan is
+    /// still in § 5's registry at the write.
     /// **Mutation:** move the `thermalEmergency?.handbackAccepted(fanAt:)` loop, over `fans`,
-    /// above the `bounded` call. Run: red on `observed.thermalOwed.isEmpty`.
-    @Test("The watchdog is told before the write and the thermal registry after it")
-    func theRegistriesAreToldOnOppositeSidesOfTheWrite() async throws {
+    /// above the `bound` call. Run: red on `observed.thermalOwed.isEmpty`, on both routes.
+    /// **Mutation (K3):** the handback restoring through `bounded` directly. Run: red on § 3's
+    /// route — § 5 is still watching the fan at the write.
+    @Test(
+        "The watchdog is told before the write and the thermal registry after it",
+        arguments: Route.allCases)
+    func theRegistriesAreToldOnOppositeSidesOfTheWrite(route: Route) async throws {
         let plane = RegistryObservingPlane(
             ScriptedControlPlane(
                 fans: [0: .automatic(at: 2_400)],
@@ -377,7 +427,7 @@ struct HelperRestorerTests {
             thermalEmergency: helper.thermalEmergency)
         await helper.bindSafetyRegistries()
 
-        try await Self.engageUnderALeaseAndRelease(in: helper)
+        try await Self.engageUnderALeaseAndEnd(by: route, in: helper)
 
         let observed = try #require(
             await plane.observations.first, "the keystone write never reached the firmware")

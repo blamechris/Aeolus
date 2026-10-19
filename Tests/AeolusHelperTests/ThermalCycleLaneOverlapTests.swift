@@ -187,12 +187,75 @@ struct ThermalCycleLaneOverlapTests {
             "§ 3's take-back had two requests in its lane: \(Self.overlaps(in: observer.events))")
     }
 
+    /// TBR (#440). § 3's take-back with a **live** lease to revoke — the lease `revokeEveryLease`
+    /// exists for, granted in the window where it raced the latch. The grant reads the latch
+    /// clear, parks in its cold sightedness read, and § 3 fires across it, so the firing's own
+    /// revocation finds an empty table and the grant completes after. Both fans are then
+    /// registered with § 3 as engagements under that lease would register them. The latched cycle
+    /// bridges both, then revokes the raced lease through § 3's handback: every request in the
+    /// lane, the bridges first and the revocation's refused restores after them, the whole
+    /// budget on each fan, and no two outstanding together.
+    ///
+    /// The take-back above engages fans under no lease, so its revocation removes nothing and
+    /// restores nothing, and an overlap between the revocation and the bridges cannot show there.
+    ///
+    /// **Mutation (TBR):** in `takeBackAnythingEngagedSinceFiring()`, start the revocation as an
+    /// `async let` before the bridge loop and await it after. Run: red — the revocation's restores
+    /// are outstanding in the lane beside a bridge.
+    @Test("§ 3's take-back revokes a lease that raced the latch in its lane, one request at a time")
+    func sectionThreesTakeBackRevokesARacedLeaseOneRequestAtATime() async throws {
+        let observer = RecordingSchedulerObserver()
+        let turns = TurnHolder(observer: observer)
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)],
+            stages: [.at(96, writes: .refused(reason: "the scripted firmware refuses"))])
+        let raceWindow = OneShotEffect()
+        let helper = await Self.helper(
+            over: firmware, turns: turns, beforeSupervisorRead: raceWindow)
+
+        await raceWindow.arm { [emergency = helper.thermalEmergency] in await emergency.cycle() }
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
+        #expect(await raceWindow.didFire, "the scenario never arranged the window")
+        #expect(await helper.latch.isActive, "§ 3 did not fire across the grant")
+        #expect(
+            await helper.leases.leaseCount == 1, "the grant did not complete after § 3 fired")
+        for fan in [0, 1] {
+            await helper.thermalEmergency.manualControlEngaged(
+                try commandableFan(fan, declaring: .held(at: 2_400)))
+        }
+
+        let before = await firmware.admittedAttempts.count
+        await helper.thermalEmergency.cycle()
+        let takeBack = Array(await firmware.admittedAttempts.dropFirst(before))
+
+        #expect(await helper.leases.leaseCount == 0, "the take-back left the raced lease alive")
+        let writes = takeBack.compactMap { call -> String? in
+            switch call.attempt {
+            case .bridgeThenRestore(let fan, _): return "bridge \(fan)"
+            case .restoreToAutomatic(.fan(let fan)): return "restore \(fan)"
+            default: return nil
+            }
+        }
+        let budget = RestoreLimits.attemptBudget
+        let expected =
+            ["bridge 0", "bridge 1"] + Array(repeating: "restore 0", count: budget)
+            + Array(repeating: "restore 1", count: budget)
+        #expect(writes == expected, "the take-back wrote \(writes)")
+        #expect(Set(takeBack.map(\.admission)) == [.thermalCycle], "\(takeBack)")
+        #expect(
+            Self.overlaps(in: observer.events).isEmpty,
+            "§ 3's take-back had two requests in its lane: \(Self.overlaps(in: observer.events))")
+    }
+
     /// The composed graph over `firmware`, every call through it holding a turn of `turns`.
     private static func helper(
-        over firmware: ScriptedControlPlane, turns: TurnHolder
+        over firmware: ScriptedControlPlane, turns: TurnHolder,
+        beforeSupervisorRead: OneShotEffect = OneShotEffect()
     ) async -> HelperComposition<TurnTakingPlane> {
         let helper = HelperComposition(
-            plane: TurnTakingPlane(scripted: firmware, turns: turns),
+            plane: TurnTakingPlane(
+                scripted: firmware, turns: turns, beforeSupervisorRead: beforeSupervisorRead),
             snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 2),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
