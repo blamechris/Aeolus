@@ -450,9 +450,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
     /// Whether a refused write is this build's expected state or a real firmware refusal.
     ///
-    /// `SMCFanControlPlane` answers `.notBuilt` and every write verb on it throws
-    /// `.controlPathNotBuilt`, so on today's helper *every* restore below is refused. That
-    /// is not news and must not be logged as though it were.
+    /// A plane that cannot write — `SMCFanControlPlane` holding no channel — answers `.notBuilt`
+    /// and every write verb on it throws `.controlPathNotBuilt`, so on such a helper *every*
+    /// restore below is refused. That is not news and must not be logged as though it were.
     private var capabilityNote: FanWriteCapability { plane.writeCapability }
 
     // MARK: - The post-reconciliation baseline

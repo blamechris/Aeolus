@@ -35,7 +35,8 @@ enum WatchdogLimits {
     /// **D_bringUp**: from arming to `ThermalSupervisor.start()`. The reconciliation budget
     /// plus 2·D, and independent of how many reads are outstanding: no client can reach the
     /// helper before `listener.resume()`. It also covers the write path's preparation step,
-    /// which runs before reconciliation (ADR 0014 D5): at most 24 round trips for ten fans,
+    /// which runs before reconciliation (ADR 0014 D5): at most 34 round trips for ten fans — each
+    /// fan's mode and target key info, the force key's info and value, `FNum`, and the restore —
     /// checked in `WatchdogLimitsTests` against the margin with a whole D to spare.
     static let bringUpBound: Duration = ReconciliationLimits.budget + roundTrip * 2
 
@@ -110,11 +111,14 @@ enum WatchdogLimits {
     static let modeReadKeys = 3
 
     /// The longest write turn [ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D7
-    /// allows: an engagement's first step on the force-key path — the raw `F<n>Md` pre-state,
-    /// a fresh key info, the mode write, the force key's key info and its write. A Y-write or a
-    /// `commandTarget` is three (key info, write, read-back); a restore issues no read and is
-    /// one write per key, three on `Mac16,5` for the machine-wide one and five for four fans.
-    /// § 3's bridge job is a command and a `.fan` restore, three and at most two, so five too.
+    /// allows, and the two that reach it (`SMCWriteTurns`): an engagement's first step on the
+    /// force-key path — a fresh key info, the raw `F<n>Md` pre-state, the mode write, the force
+    /// key's key info and its write — and a step that reads back engaged — key info, pre-state,
+    /// write, read-back, and the raw `F<n>Tg` logged (one round trip: the preparation step took
+    /// that key's info). A waiting step is three, and a `commandTarget` three (key info, write,
+    /// read-back); a restore issues no read and is one write per key, three on `Mac16,5` for the
+    /// machine-wide one and five for four fans. § 3's bridge job is a command and a `.fan`
+    /// restore, three and at most two, so five too.
     ///
     /// **One engagement in progress is one outstanding supervisor reader while it waits for a
     /// turn, and none while it sleeps between steps**, so D7's writes enter N as readers whose

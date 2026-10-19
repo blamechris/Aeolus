@@ -762,8 +762,8 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// (`NotBuiltRequireTripwireTests`).
     ///
     /// The closure is applied once, here, to `connection` — the local the provider reads through
-    /// and the plane recycles — for the reason that paragraph gives above. On this build it changes
-    /// nothing a fan sees: the plane holds the channel and answers `.notBuilt`.
+    /// and the plane recycles — for the reason that paragraph gives above. A plane given one
+    /// answers `.built` and writes through it (`SMCWriteTurns`); given none, `.notBuilt`.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams(),

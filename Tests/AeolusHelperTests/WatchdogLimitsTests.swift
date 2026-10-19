@@ -128,11 +128,13 @@ struct WatchdogLimitsTests {
 
         #expect(WatchdogLimits.bringUpBound == ReconciliationLimits.budget + roundTrip * 2)
         // D_bringUp re-checked against the write path's preparation step (ADR 0014 D7), which
-        // runs before reconciliation: `FNum`, every mode key's key info, the force key's key info
+        // runs before reconciliation: `FNum`, every fan's mode and target key info (b2 takes the
+        // target's so the engaged step's logged read is one round trip), the force key's key info
         // and value, and its machine-wide restore — one write per mode key and one for the key —
-        // for the most fans a key can address. It fits with a whole round trip to spare.
+        // for the most fans a key can address: 34. It fits with a whole round trip to spare.
         let fans = 10
-        let preparation = 1 + fans + 2 + (fans + 1)
+        let preparation = 1 + 2 * fans + 2 + (fans + 1)
+        #expect(preparation == 34)
         #expect(
             WatchdogLimits.bringUpBound
                 >= ReconciliationLimits.budget + roundTrip

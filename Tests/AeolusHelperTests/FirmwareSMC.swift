@@ -128,6 +128,7 @@ actor FirmwareSMC: SMCWriteChannel {
     var table: [SMCKey: Key]
     var registers: [SMCKey: [UInt8]]
     var readAnswers: [SMCKey: ReadAnswer] = [:]
+    var queuedReads: [SMCKey: [ReadAnswer]] = [:]
     var queuedWrites: [SMCKey: [WriteAnswer]] = [:]
     var defaultWrite: WriteAnswer = .applies
     let unlock: Unlock
@@ -211,7 +212,7 @@ actor FirmwareSMC: SMCWriteChannel {
         }
         guard isOpen else { throw refuse(site, Self.notOpen) }
 
-        switch readAnswers[key] ?? .answers {
+        switch nextReadAnswer(for: key) {
         case .answers:
             log.record(site.entry(.answered))
             let held = registers[key] ?? []
@@ -280,6 +281,16 @@ actor FirmwareSMC: SMCWriteChannel {
             unscripted(key)
             throw .keyNotFound(key)
         }
+    }
+
+    /// The next queued read answer for `key`, then its standing one, then `.answers`.
+    private func nextReadAnswer(for key: SMCKey) -> ReadAnswer {
+        if var queue = queuedReads[key], !queue.isEmpty {
+            let next = queue.removeFirst()
+            queuedReads[key] = queue
+            return next
+        }
+        return readAnswers[key] ?? .answers
     }
 
     private func answer(toWriting bytes: [UInt8], to key: SMCKey) -> WriteAnswer {

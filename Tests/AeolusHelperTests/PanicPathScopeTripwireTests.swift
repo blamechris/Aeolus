@@ -294,8 +294,11 @@ struct PanicPathScopeTripwireTests {
     /// 0014's #410 ticket-and-seal amendment), so it is counted through either token. The
     /// fifth file is `PlaneWriteLedger.swift`, which names both to decide their plan and the seal:
     /// it holds no plane and cannot issue a restore. On the E4 branch `SMCFanControlPlane.swift`
-    /// joins them (ADR 0014 D5): its preparation step names `.everyFan`, and this scan cannot
-    /// tell it from a call site. Comments are stripped first, for the reason
+    /// joins them (ADR 0014 D5; b2's C29): its preparation step issues `.everyFan` when the force
+    /// key is set, unknown or unreadable, and this scan cannot tell it from a call site — nor
+    /// needs to, since that restore is the preparation step's own act. `.forExit` is named in no
+    /// plane file: the plane plans every scope through `PlaneWriteLedger.plan(for:)`, and
+    /// `SMCWriteTurns.swift` names no scope at all. Comments are stripped first, for the reason
     /// `WritePathAbsenceTests` records — the prose explaining these sites names the tokens
     /// repeatedly, and a tripwire that fires on the sentence stating the rule is a tripwire nobody
     /// keeps.
@@ -314,6 +317,7 @@ struct PanicPathScopeTripwireTests {
             ".everyFan": [
                 "SignalTeardown.swift", "SystemPowerResponder.swift", "StartupReconciliation.swift",
                 "SupervisedFanAuthority.swift", "PlaneWriteLedger.swift",
+                "SMCFanControlPlane.swift",
             ],
             ".forExit": ["SignalTeardown.swift", "PlaneWriteLedger.swift"],
         ]

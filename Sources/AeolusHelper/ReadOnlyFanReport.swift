@@ -91,9 +91,9 @@ enum ReadOnlyFanReport {
     ///
     /// It was a **literal** here until #194 — `.unavailable(.writePathNotBuilt)` written out,
     /// while `LeaseAuthority.acquireLease` sourced the identical refusal from
-    /// `FanControlPlane.writeCapability`. The literal was true of every build that has ever
-    /// shipped, because `SMCFanControlPlane` answers `.notBuilt`, and it would have stayed
-    /// written here on the day E3/E4 made that answer `.built`: every client would then be
+    /// `FanControlPlane.writeCapability`. The literal was true of every build that had then
+    /// shipped, because `SMCFanControlPlane` answered `.notBuilt`, and it would have stayed
+    /// written here once the write path made that answer `.built`: every client would then be
     /// told manual control does not exist by the same helper that was granting leases. That is
     /// `CLAUDE.md` rule 6 arriving through the read path, and it is the same defect this file's
     /// three other fields were each corrected for — the latch, the ledger and the fan mode were

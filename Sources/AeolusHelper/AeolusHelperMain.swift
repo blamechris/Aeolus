@@ -34,22 +34,18 @@ import Foundation
 ///
 /// ## What this build can and cannot do
 ///
-/// It serves `snapshot` from real hardware and refuses everything that would need a write.
-/// `SMCConnection.write(_:to:)` is SPI-gated, and its one caller in the helper is
-/// `DaemonWriteChannel.write`, below, which nothing calls: no write turn has a body yet, and the
-/// plane answers `.notBuilt`. **The helper's strongest safety property is structural: it cannot
-/// fail open into a write, because nothing in it reaches one.** Calling one "ready for E5",
-/// ahead of the plane's write turns, would spend that property for nothing.
-///
-/// The safe default is in place ahead of them. This is the one caller that gives the production
-/// graph a write channel — `DaemonWriteChannel`, below, over the graph's own connection — so
-/// the daemon's plane holds one and no test composition's does. The plane holds it and uses it
-/// for nothing.
+/// On the E4 branch it serves `snapshot` from real hardware and, on macOS 14 or later, writes:
+/// this is the one caller that gives the production graph a write channel —
+/// `DaemonWriteChannel`, below, over the graph's own connection — so the daemon's plane holds
+/// one and answers `.built`, and no test composition's does. `SMCConnection.write(_:to:)` is
+/// SPI-gated, and its one caller in the helper is `DaemonWriteChannel.write`, which the plane's
+/// write turns reach through one call of the channel's requirement (`SMCWriteTurns.issue`),
+/// each in a scheduler write turn behind the safety subsystem.
 ///
 /// What changed in #163 is that the refusal is no longer a literal in the type serving
-/// clients. `SMCFanControlPlane` answers `FanWriteCapability.notBuilt`, `LeaseAuthority`
-/// reads that at the top of every grant, and the mechanisms behind it — the lease table,
-/// both teardown paths, § 3 and § 5 — are running rather than merely constructed.
+/// clients. `SMCFanControlPlane` answers its `FanWriteCapability` from the channel it holds,
+/// `LeaseAuthority` reads that at the top of every grant, and the mechanisms behind it — the
+/// lease table, both teardown paths, § 3 and § 5 — are running rather than merely constructed.
 ///
 /// ## Refusing every client is a running state, not a crash
 ///
@@ -79,9 +75,9 @@ private enum AeolusHelperMain {
         let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
         // The one composition given a write channel: the forwarder over the graph's own
-        // connection. On this build that changes nothing a fan sees — the plane answers
-        // `.notBuilt` and nothing writes through the channel — and every other composition,
-        // every test's included, is given none (`HelperComposition.production`'s default).
+        // connection, through which the plane's write turns write and on which it answers
+        // `.built`. Every other composition, every test's included, is given none
+        // (`HelperComposition.production`'s default).
         //
         // Only on macOS 14 or later. A channel is a job run on the connection's executor, and
         // executor sharing (SE-0392's custom `unownedExecutor`) is runtime behaviour that begins

@@ -1697,6 +1697,41 @@ extension SafetyLog {
     }
 }
 
+// MARK: - The write plane's turns (ADR 0014 D1, D3; ADR 0012 H6)
+
+extension SafetyLog {
+
+    /// One write call the plane made, and how the firmware answered it: the key, the bytes, the
+    /// result byte or what came back instead of one, and the round trip's duration. One line per
+    /// call, restores included, so run 1's record has every write (D1, D8) and write latency (U8,
+    /// ADR 0012 H6) is measured from these lines and from nothing a test runs. `.notice`: a
+    /// refusal is reported as a fault by the verb's caller, which knows what it meant.
+    func planeWrote(key: SMCKey, bytes: String, answer: String, roundTrip: Duration) {
+        emit(.notice, "Wrote \(key.rawValue) = \(bytes): answered \(answer), in \(roundTrip).")
+    }
+
+    /// One engagement step's turn: whether it was the engagement's first, the raw `F<n>Md` it
+    /// read before its write, what the write answered, the raw value it read back, how it ended,
+    /// and the turn's duration (D3's per-step record). The attempt index is the driver's line,
+    /// logged before the step (`engagementStepAttempted(fan:attempt:)`).
+    func planeStepped(_ trace: StepTrace, took turn: Duration) {
+        emit(
+            .notice,
+            """
+            Fan \(trace.fan)'s \(trace.firstStep ? "first" : "later") engagement step: raw \
+            F\(trace.fan)Md \(trace.before) before, the mode write answered \(trace.modeWrite), \
+            \(trace.after) after; \(trace.outcome), in \(turn).
+            """
+        )
+    }
+
+    /// The raw target of a fan whose step just read back engaged, in the same turn (ADR 0014's A6
+    /// amendment, D3). A record for run 1 and nothing more.
+    func planeReadEngagedTarget(fan: Int, key: SMCKey, raw: String) {
+        emit(.notice, "Fan \(fan) engaged with raw \(key.rawValue) \(raw).")
+    }
+}
+
 extension SafetyLog {
 
     // MARK: - docs/SAFETY.md § 5 — the lease a fan was registered under (#353, #357)
