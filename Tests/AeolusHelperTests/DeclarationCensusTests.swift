@@ -52,6 +52,35 @@ struct DeclarationCensusTests {
         #expect(Self.census("private struct `A` {}").declarations.map(\.name) == ["`A`"])
     }
 
+    /// Swift lets a keyword follow a `.` bare, so `Visibility.private` ending the line above is an
+    /// expression, and its last word is not the next declaration's modifier (#447's review, S1).
+    ///
+    /// **Mutation:** in `DeclarationCensus.prefix(endingBefore:in:)`, drop the `.` check. Run:
+    /// red here.
+    @Test("A keyword after a dot is a member's name, never a modifier")
+    func aWordAfterADotIsNotAModifier() {
+        for source in [
+            "private let a = A.private\nfunc leak() {}", "private let a = .private\nfunc leak() {}",
+            "private let a = A . static\nfunc leak() {}",
+        ] {
+            #expect(Self.privacy(source) == ["let true", "func false"], "\(source)")
+        }
+    }
+
+    @Test("A type's inheritance clause is read, past generics and up to where or the body")
+    func conformancesAreRead() {
+        let read = { (source: String) in Self.census(source).declarations.first?.conformances }
+        #expect(read("struct R: Sendable, Equatable {}") == ["Sendable", "Equatable"])
+        #expect(
+            read("struct R<T: P>: Swift.Sendable, Q<Int> where T: R {}") == [
+                "Swift.Sendable", "Q<Int>",
+            ])
+        #expect(read("private struct R: @unchecked Sendable {}") == ["@unchecked Sendable"])
+        #expect(read("extension R: Decodable {}") == ["Decodable"])
+        #expect(read("struct R {}") == [])
+        #expect(read("let r: Sendable = 1") == [])
+    }
+
     @Test("Attributes are read with and without arguments, and dotted")
     func attributesAreRead() {
         let declarations = Self.census(

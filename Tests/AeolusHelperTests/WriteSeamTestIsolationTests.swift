@@ -32,8 +32,9 @@ import Testing
 ///    no string, comment, backtick or lexer gap hides an ordinary opt-in from rule 1. It catches
 ///    accidents and every spelling met so far; against a test written to evade it, the compiler's
 ///    seam (ADR 0014's B1 seam amendment) is the control, a residual the B1 plan accepted.
-/// 5. Everything an allowed file declares at its top level is `private`, its suites included, so
-///    the compiler refuses any other file that names a helper there (#433, in
+/// 5. Everything an allowed file declares at its top level is `private`, its suites included, and
+///    none of it is an extension, whose members a `private` does not bound. So the compiler
+///    refuses any other file that names a helper there (#433 and #447's review, in
 ///    `WriteSeamTestPrivacyTests.swift`).
 ///
 /// Every rule normalises before it matches: comments are removed, trailing ones included, and

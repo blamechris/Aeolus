@@ -19,7 +19,9 @@ import Foundation
 /// declares with. A declaration is not found by a pattern for one spelling of it. Its attributes
 /// and modifiers are the run of them written immediately before the introducer, read backwards,
 /// so `private` on the line above counts and a `private` that belongs to an earlier declaration
-/// does not.
+/// does not. A word after a `.` is a member's name and ends the run, because Swift lets a keyword
+/// follow a `.` bare: `Visibility.private` is an expression. A type's or an extension's
+/// inheritance clause is read too, so a guard can pin what a type conforms to.
 ///
 /// ## What fails closed, and what it cannot see
 ///
@@ -46,6 +48,10 @@ enum DeclarationCensus {
         /// Each modifier as written, a parenthesised argument included: `private(set)` is not
         /// `private`.
         let modifiers: [String]
+        /// A type's or an extension's inheritance clause, one entry per comma, as written:
+        /// `Sendable`, `Swift.Equatable`, `@unchecked Sendable`. Empty for every other introducer,
+        /// and for a type that declares none.
+        let conformances: [String]
         /// The text inside the `{…}` the declaration opens, if it opens one. Already read as code,
         /// so `DeclarationCensus.outermost(inCode:)` takes it as it is.
         let body: String?
@@ -90,6 +96,11 @@ enum DeclarationCensus {
         "private", "fileprivate", "prefix", "infix", "postfix",
     ])
 
+    /// The introducers whose `:` begins an inheritance clause rather than a type annotation.
+    static let inheritingIntroducers: Set<String> = [
+        "actor", "class", "enum", "extension", "protocol", "struct",
+    ]
+
     /// The only `#` directives that declare nothing.
     static let conditionalCompilation: Set<String> = ["if", "elseif", "else", "endif"]
 
@@ -133,9 +144,12 @@ enum DeclarationCensus {
         // when a name follows.
         if contextualIntroducers.contains(introducer), next == nil { return nil }
         let prefix = self.prefix(endingBefore: index, in: tokens)
+        let name = dottedName(from: index + 1, in: tokens)
         return Declaration(
-            introducer: introducer, name: dottedName(from: index + 1, in: tokens),
-            attributes: prefix.attributes, modifiers: prefix.modifiers,
+            introducer: introducer, name: name.name, attributes: prefix.attributes,
+            modifiers: prefix.modifiers,
+            conformances: inheritingIntroducers.contains(introducer)
+                ? conformances(from: name.end, in: tokens) : [],
             body: body(after: index, in: tokens))
     }
 
@@ -155,10 +169,14 @@ enum DeclarationCensus {
                 nameIndex = cursor - 1
             }
             guard nameIndex >= 0, case .word(let word) = tokens[nameIndex] else { break }
+            // A word after `.` is a member's name, never a modifier: `Visibility.private` on the
+            // line above is an expression ending, and Swift lets a keyword follow a `.` bare
+            // (#447's review, S1). An attribute's dotted name, `@Testing.Suite`, is read first.
+            let followsADot = nameIndex >= 1 && tokens[nameIndex - 1] == .symbol(".")
             if let attribute = attribute(endingAt: nameIndex, in: tokens) {
                 attributes.insert(attribute.name, at: 0)
                 cursor = attribute.start - 1
-            } else if Self.modifiers.contains(word) {
+            } else if !followsADot, Self.modifiers.contains(word) {
                 let collapsed = argument.map { SeamScanner.collapsingWhitespace($0) }
                 modifiers.insert(collapsed.map { "\(word)(\($0))" } ?? word, at: 0)
                 cursor = nameIndex - 1
@@ -186,18 +204,56 @@ enum DeclarationCensus {
         return nil
     }
 
-    /// The dotted name starting at `start`: a word, then `.` and a word, as often as written.
-    private static func dottedName(from start: Int, in tokens: [Token]) -> String {
+    /// The dotted name starting at `start` (a word, then `.` and a word, as often as written), and
+    /// the index of the token after it.
+    private static func dottedName(
+        from start: Int, in tokens: [Token]
+    ) -> (name: String, end: Int) {
         var parts: [String] = []
         var index = start
         while index < tokens.count, case .word(let part) = tokens[index] {
             parts.append(part)
             guard index + 2 < tokens.count, tokens[index + 1] == .symbol("."),
                 case .word = tokens[index + 2]
-            else { break }
+            else {
+                index += 1
+                break
+            }
             index += 2
         }
-        return parts.joined(separator: ".")
+        return (parts.joined(separator: "."), index)
+    }
+
+    /// The inheritance clause starting at `start`, the token after a type's name: past a generic
+    /// parameter clause, a `:`, then entries split at depth-0 commas until the body or `where`.
+    private static func conformances(from start: Int, in tokens: [Token]) -> [String] {
+        var index = start
+        var depth = 0
+        while index < tokens.count, tokens[index] == .symbol("<") || depth > 0 {
+            if tokens[index] == .symbol("<") { depth += 1 }
+            if tokens[index] == .symbol(">") { depth -= 1 }
+            index += 1
+        }
+        guard index < tokens.count, tokens[index] == .symbol(":") else { return [] }
+        var entries: [String] = []
+        var entry = ""
+        for token in tokens[(index + 1)...] {
+            if token == .word("where") { break }
+            if case .group("{", _) = token { break }
+            switch token {
+            case .symbol(","):
+                entries.append(entry)
+                entry = ""
+            case .symbol(let character):
+                entry.append(character)
+            case .word(let word):
+                if let last = entry.last, isWordCharacter(last) { entry.append(" ") }
+                entry += word
+            case .group(let open, let inner):
+                entry += "\(open)\(inner)\(partners[open] ?? open)"
+            }
+        }
+        return entry.isEmpty ? entries : entries + [entry]
     }
 
     /// The first `{…}` after the introducer at `index` and before the next introducer.
