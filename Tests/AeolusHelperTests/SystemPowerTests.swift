@@ -193,7 +193,9 @@ struct SystemPowerTests {
     ///
     /// **Mutation:** delete the `let budget = Task { … }` block from
     /// `SystemPowerResponder.allowSleepAfterHandback(_:)` (and the `budget.cancel()` that
-    /// follows). Run: red, on the suite's time limit — nothing acknowledges, ever.
+    /// follows). Run: red within the suite's time limit (#451): the parking ceiling records its
+    /// issue, and the fault-line expectation fails, because the acknowledgement arrives only once
+    /// the ceiling has released the park.
     @Test("A handback that never returns still lets the machine sleep, and says so")
     func theAcknowledgementIsBoundedByItsBudget() async throws {
         let plane = WedgedRestorePlane(Self.machine())

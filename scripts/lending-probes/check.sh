@@ -220,4 +220,6 @@ if [ "${failures}" -ne 0 ]; then
 fi
 echo "LENDING PROBES PASSED: ${refused} shapes refused, ${allowed} lend compiled," \
     "${controls} matcher controls held"
+# This must stay the script's last statement: anything after it that crashes would read as a pass
+# on bash 3.2 again (see the trap above).
 finished=1

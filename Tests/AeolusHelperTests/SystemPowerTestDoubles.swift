@@ -159,7 +159,8 @@ actor AcknowledgementWitness {
     }
 }
 
-/// The firmware that takes the keystone restore and never comes back.
+/// The firmware that takes the keystone restore and does not come back until a test releases it,
+/// or the parking ceiling (`parkCeiling`, #451) gives up on it.
 ///
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t`, which
 /// `FanRestoreAttempting` names as the case no attempt budget can bound: *"a single
@@ -173,7 +174,7 @@ actor AcknowledgementWitness {
 /// differently.
 ///
 /// **It models a restore that never returns *cooperatively*, which is not quite #68's shape.**
-/// `try await held.wait()` suspends and yields its thread; a synchronous IOKit call that never
+/// `held.wait(atMost:)` suspends and yields its thread; a synchronous IOKit call that never
 /// comes back occupies a cooperative-pool thread for as long as it is stuck. A review was
 /// right that the budget test therefore proved the budget beats an *awaiting* restore rather
 /// than a blocking one. `ThreadBlockingRestorePlane` below is the other half, and

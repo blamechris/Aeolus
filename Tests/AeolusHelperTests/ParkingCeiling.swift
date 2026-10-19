@@ -15,11 +15,15 @@ import Testing
 
 /// How long a double holds a restore before it concludes nobody is coming for it.
 ///
-/// **Failure-only.** A test lets through what it parks within a few actor hops of parking it, so
-/// nothing that passes comes near this. It is wall-clock time on the real `ContinuousClock`, as
-/// `outwaitCeiling` is, because the virtual clock a test moves by hand would have it expire at
-/// once. And it is well under the parking suites' one-minute `.timeLimit`, so a test that hits it
-/// more than once still ends before the limit does.
+/// **Failure-only, by margin, not by construction.** Passing tests do hold parks on purpose: across
+/// one or more of § 4's 50 ms wall-clock acknowledgement budgets (the sleep suites,
+/// `SystemPowerTests.theAcknowledgementIsBoundedByItsBudget`). Measured over a whole clean run, the
+/// longest legitimate park was 0.18 s, and 1.4 s with the CPU twice oversubscribed; so 5 s leaves
+/// about 3.7 times the worst seen. Lowering it to speed up a mutation sweep makes those parks
+/// expire, record an issue and release mid-test. It is wall-clock time on the real
+/// `ContinuousClock`, as `outwaitCeiling` is, because the virtual clock a test moves by hand would
+/// have it expire at once. And it is well under the parking suites' one-minute `.timeLimit`, so a
+/// test that hits it more than once still ends before the limit does.
 let parkCeiling = Duration.seconds(5)
 
 extension AsyncSignal {
