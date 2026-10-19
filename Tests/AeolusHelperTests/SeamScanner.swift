@@ -365,8 +365,8 @@ enum SeamScanner {
     /// a rule is usually a whole line; `strippingAllComments` says what leaving it costs a
     /// receiver scan, and removes it.
     ///
-    /// **A source with a carriage return is refused** (`refuseCarriageReturns(in:)`), so the walker
-    /// never has to say where a `\r` ends a comment.
+    /// **A source with a carriage return is refused** (`refuseCarriageReturns(in:file:)`), so the
+    /// walker never has to say where a `\r` ends a comment.
     ///
     /// `internal` rather than `private` so `SeamScannerParsingTests` can put a fixture
     /// through it. Nothing in `Sources` contains a block comment today, so the tree cannot

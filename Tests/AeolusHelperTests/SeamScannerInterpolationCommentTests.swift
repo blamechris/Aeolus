@@ -286,7 +286,7 @@ struct SeamScannerInterpolationCommentTests {
     /// manifest at the root, `Package.swift` and `Package@swift-*.swift`, read as bytes.
     ///
     /// **Mutation:** add a file under `Tests/` that holds a `\r`. Run: red here, naming it, and at
-    /// every scan that reads through `RuleZeroScan.files(under:)`, naming it again.
+    /// every scan that reads `Tests` through `RuleZeroScan.files(under:)`, naming it again.
     @Test("No Swift source or package manifest in the tree holds a carriage return")
     func noFileInTheTreeHoldsACarriageReturn() throws {
         let root = RuleZeroScan.repositoryRoot

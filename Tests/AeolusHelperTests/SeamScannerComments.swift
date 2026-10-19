@@ -117,11 +117,13 @@ extension SeamScanner {
     /// (`Package.swift`, `Package@swift-*.swift`) that holds one. So does
     /// `grep -rl $'\r' Sources Tests Tools Package*.swift`.
     ///
-    /// **The scans with a stripper of their own do not refuse it.** `ToolsSeamScanner` in
-    /// `PowerObserverTests`, `SMCSamplerTests` and `AppIconTests`, `XPCDeclarationNormaliser` and
-    /// `PayloadRefusalTests` in `IntegrationTests`, and `StampSiteScanner` in `SMCCoreTests` read
-    /// files under the same three directories. A carriage return in one is a red in the tree test
-    /// above, in this target, and not in theirs.
+    /// **Only what reads through this lexer refuses it.** Any scan, in any target, that reads raw
+    /// text or strips comments itself does not: a `//` line it skips can hide what follows a `\r`.
+    /// Examples, not a complete list: `ToolsSeamScanner` (`PowerObserverTests`, `SMCSamplerTests`,
+    /// `AppIconTests`), `XPCDeclarationNormaliser` and `PayloadRefusalTests` (`IntegrationTests`),
+    /// `StampSiteScanner` (`SMCCoreTests`), `MeasuredFiniteConstructionSiteTests` (`FanKitTests`),
+    /// and the raw line filters in `LeaseStateTests` and `WriteAuthorisationTests`. The control
+    /// for all of them is the tree test above, which reads every file those scans read; keep it.
     ///
     /// - Returns: whether it refused, for a caller that has the file and would rather not read it.
     @discardableResult
