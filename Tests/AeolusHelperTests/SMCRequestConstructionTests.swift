@@ -12,9 +12,12 @@ import Testing
 ///
 /// What this suite holds is that the control stays. It catches the init being widened, deleted
 /// (which brings the internal memberwise one back), joined by a second, or the factories joined
-/// by a fifth. It also catches an extension of `Request`, the one other place an initialiser can
-/// be written, and an alias, the one way to extend it without its name. It reads source, so a
-/// widening a macro expanded is not seen; SMCCore uses none.
+/// by a fifth. It catches a conformance beyond `Sendable` and `Equatable`, because a protocol can
+/// have Swift synthesise an initialiser no member list shows: `Decodable`'s `init(from:)` builds a
+/// request with any selector from a JSON object (#447's review, S2). It also catches an extension
+/// of `Request`, the one other place an initialiser or a conformance can be written, and an alias,
+/// the one way to extend it without its name. It reads source, so a widening a macro expanded is
+/// not seen; SMCCore uses none.
 @Suite("SMCConnection.Request is built by its factories alone")
 struct SMCRequestConstructionTests {
 
@@ -34,8 +37,13 @@ struct SMCRequestConstructionTests {
             .filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    /// **Mutation:** widen the init to internal and build a `Request` directly in
-    /// `SMCConnection.swift`. Run: red here. Kept `private`, the same build does not compile.
+    /// What `Request` conforms to. Neither synthesises an initialiser.
+    static let conformances = ["Sendable", "Equatable"]
+
+    /// **Mutations:** widen the init to internal and build a `Request` directly in
+    /// `SMCConnection.swift`. Run: red here. Kept `private`, the same build does not compile. Add
+    /// `Decodable` to the conformances and decode a request with selector 6 in
+    /// `SMCConnection.swift` (R3). Run: red here, at the conformance check.
     @Test("Request has one initialiser, private, and its factories are the four")
     func theInitialiserIsPrivateAndTheFactoriesAreFour() throws {
         let url = try #require(
@@ -51,6 +59,13 @@ struct SMCRequestConstructionTests {
         let holder = DeclarationCensus.outermost(
             inCode: try #require(file.declarations.first?.body))
         #expect(holder.declarations.map(Self.spelled) == ["struct Request"])
+        #expect(
+            holder.declarations.first?.conformances == Self.conformances,
+            """
+            SMCConnection.Request conforms to \(holder.declarations.first?.conformances ?? []), \
+            not \(Self.conformances). A conformance can have Swift synthesise an initialiser the \
+            member list does not show, as Decodable's init(from:) does.
+            """)
         let request = DeclarationCensus.outermost(
             inCode: try #require(holder.declarations.first?.body))
         #expect(request.unreadable.isEmpty, "\(request.unreadable)")
