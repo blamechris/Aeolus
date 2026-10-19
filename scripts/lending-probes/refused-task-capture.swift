@@ -1,5 +1,6 @@
-// expect: borrowed and cannot be consumed|consum|noncopyable
-// Kept by a Task that outlives the call.
+// expect-line: 7
+// expect: 'handback' is borrowed and cannot be consumed
+// Kept by a Task that outlives the call. Refused by the move checker.
 @testable import AeolusHelper
 
 func handBackLater<Handback: FanRestoring & ~Copyable>(_ handback: borrowing Handback) {

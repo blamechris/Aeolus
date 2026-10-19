@@ -1,4 +1,5 @@
-// expect: cannot assign value of type
+// expect-line: 10
+// expect: cannot assign value of type 'Handback' to type '\(any FanRestoring\)\?'
 // Kept by storing it in an actor's existential: refused by the type checker.
 @testable import AeolusHelper
 

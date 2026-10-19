@@ -1,5 +1,6 @@
-// expect: borrowed and cannot be consumed|consum|noncopyable|escaping
-// Kept by an escaping closure an actor stores for later.
+// expect-line: 10
+// expect: 'handback' is borrowed and cannot be consumed
+// Kept by an escaping closure an actor stores for later. Refused by the move checker.
 @testable import AeolusHelper
 
 actor Keeper {

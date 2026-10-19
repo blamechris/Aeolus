@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Compiles each lending probe against the helper module `swift build` produced, with the toolchain
-# that runs this script, and requires the compiler to refuse every `refused-*.swift` probe — with
-# the diagnostic its `// expect:` line names, in that probe's own file — and to accept every
-# `allowed-*.swift` probe.
+# that runs this script, and requires the compiler to accept every `allowed-*.swift` probe and to
+# refuse every `refused-*.swift` probe for exactly the reason it states:
+#
+# - every error the compile reports, in any file, must be in that probe and match the
+#   ownership-specific diagnostic its `// expect:` names; and
+# - the shape's own line, its `// expect-line:`, must carry that error, or the move checker's
+#   "consumed here" note that points at it (the move checker reports the error at the borrowed
+#   parameter and the note at the use that would keep it).
+#
+# Any other error — a missing ownership keyword, an undefined type, an error in another file —
+# fails the probe, so a probe cannot pass because it broke some other way.
 #
 # Why it exists: ADR 0012's #440 amendment rests "§ 3's handback is lent, never kept" on the
 # compiler refusing to let a `borrowing` parameter of a generic constrained
@@ -33,7 +41,7 @@ swiftc --version
 echo "modules: ${modules}"
 
 compile() {
-    swiftc -c -parse-as-library -swift-version 6 -I "${modules}" "$1" \
+    swiftc -c -parse-as-library -swift-version 6 -diagnostic-style llvm -I "${modules}" "$1" \
         -o "${out}/$(basename "$1" .swift).o" > "${out}/log" 2>&1
 }
 
@@ -56,8 +64,9 @@ for probe in "${probes}"/refused-*.swift; do
     refused=$((refused + 1))
     name="$(basename "${probe}")"
     expect="$(sed -n 's|^// expect: ||p' "${probe}" | head -1)"
-    if [ -z "${expect}" ]; then
-        echo "error: ${name} has no // expect: line"
+    line="$(sed -n 's|^// expect-line: ||p' "${probe}" | head -1)"
+    if [ -z "${expect}" ] || ! [[ "${line}" =~ ^[0-9]+$ ]]; then
+        echo "error: ${name} needs a // expect: diagnostic and a numeric // expect-line:"
         failures=$((failures + 1))
         continue
     fi
@@ -67,18 +76,24 @@ for probe in "${probes}"/refused-*.swift; do
         failures=$((failures + 1))
         continue
     fi
-    if grep -E -q -- "${name}:[0-9]+:[0-9]+: error: .*(${expect})" "${out}/log"; then
-        echo "ok: ${name} refused: $(grep -E -m 1 -- "${name}:[0-9]+:[0-9]+: error:" "${out}/log")"
+    # Every error the compile reported: located in any file, or unlocated.
+    errors="$(grep -E -- '(:[0-9]+:[0-9]+: error: |^<unknown>:0: error: |^error: )' "${out}/log" \
+        || true)"
+    expected="(^|/)${name}:[0-9]+:[0-9]+: error: (${expect})"
+    at_shape="(^|/)${name}:${line}:[0-9]+: (error: (${expect})|note: consumed here)"
+    if [ -n "${errors}" ] && ! printf '%s\n' "${errors}" | grep -E -v -q -- "${expected}" \
+        && grep -E -q -- "${at_shape}" "${out}/log"; then
+        echo "ok: ${name} refused at line ${line}: $(printf '%s\n' "${errors}" | head -1 | sed 's|.*: error: ||')"
     else
-        echo "error: ${name} failed to compile, but not with '${expect}' in its own file:"
+        echo "error: ${name} must fail only with '${expect}', marked at line ${line}; it said:"
         cat "${out}/log"
         failures=$((failures + 1))
     fi
 done
 
 # Coverage, not decoration: a glob that matched nothing would pass over no probe at all.
-if [ "${allowed}" -ne 1 ] || [ "${refused}" -ne 8 ]; then
-    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 1 and 8"
+if [ "${allowed}" -ne 1 ] || [ "${refused}" -ne 9 ]; then
+    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 1 and 9"
     failures=$((failures + 1))
 fi
 

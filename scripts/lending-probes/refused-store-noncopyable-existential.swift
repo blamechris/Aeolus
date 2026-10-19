@@ -1,4 +1,5 @@
-// expect: consum
+// expect-line: 10
+// expect: implicit conversion to 'any FanRestoring & ~Copyable' is consuming
 // Kept by storing it in a noncopyable existential: the conversion consumes a borrowed value.
 @testable import AeolusHelper
 

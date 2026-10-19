@@ -1,5 +1,7 @@
-// expect: borrowed and cannot be consumed|consum|noncopyable
-// Kept by a Task a defer starts, after the body has returned.
+// expect-line: 8
+// expect: copy of noncopyable typed value\. This is a compiler bug
+// Kept by a Task a defer starts, after the body has returned. Refused by the move checker, with
+// its own 'this is a compiler bug' diagnostic: toolchain-fragile, which is why CI compiles it.
 @testable import AeolusHelper
 
 func handBackAfter<Handback: FanRestoring & ~Copyable>(_ handback: borrowing Handback) {

@@ -1,5 +1,6 @@
-// expect: borrowed and cannot be consumed|consum|noncopyable
-// Kept by an async let, a child task started beside the borrow.
+// expect-line: 9
+// expect: 'handback' is borrowed and cannot be consumed
+// Kept by an async let, a child task started beside the borrow. Refused by the move checker.
 @testable import AeolusHelper
 
 func handBackBeside<Handback: FanRestoring & ~Copyable>(
