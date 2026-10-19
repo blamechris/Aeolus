@@ -576,13 +576,20 @@ actor SMCReadScheduler {
     /// One `.supervisor` turn, admitted first-come first-served with every other supervisor turn
     /// and spending the overtake quota exactly as a read does, because it is `takeTurn(at:)` and
     /// `endTurn(at:)` and nothing more. The longest a job may hold it is
-    /// `WatchdogLimits.writeTurnRoundTrips`, its caller's obligation. **The re-queue cost of a
-    /// firing cycle's write turns against D_cycle** is not counted by ADR 0012's derivation as it
-    /// stands; it is ruled on [#332](https://github.com/blamechris/Aeolus/issues/332), and that
-    /// ruling lands on `main` as its own change, before any write turn has a body.
+    /// `WatchdogLimits.writeTurnRoundTrips`, its caller's obligation.
     ///
-    /// Nothing in the helper calls this yet: the plane's write turns, its only intended callers,
-    /// are not built, and the plane answers `.notBuilt`.
+    /// ## `.supervisor` is the admission from before #332's ruling
+    ///
+    /// The ruling has landed:
+    /// [ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment ([#332](https://github.com/blamechris/Aeolus/issues/332)) gives § 3's
+    /// cycle its own lane and counts its write turns in D_cycle's allowance, and its #440
+    /// amendment's B1 has each of the plane's write verbs take its turn at the plane's own
+    /// `admission`: § 3's bridge jobs and its handback's restores in the lane, every other write at
+    /// `.supervisor`. This verb still takes `.supervisor` whoever calls it. b2, which gives the
+    /// write verbs bodies, gives it the calling plane's admission (W1 and B1, with their
+    /// mutations). Until then nothing in the helper calls it: the plane's write turns, its only
+    /// intended callers, are not built, and the plane answers `.notBuilt`.
     func withWriteTurn<T: Sendable>(
         on channel: any SMCWriteChannel,
         _ job: @Sendable (isolated any SMCWriteChannel) throws -> T
