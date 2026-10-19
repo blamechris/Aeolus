@@ -4,8 +4,9 @@ import Testing
 /// Who inside `Sources/AeolusHelper` may write the word `production` (#453).
 ///
 /// **Rule zero: no test may write to this Mac's SMC.** `NotBuiltRequireTripwireTests` judges every
-/// `.production` a test file writes, and it reads `Tests/`. A function in the helper module that
-/// wraps `HelperComposition.production`,
+/// `.production` a test file writes except `fanctl`'s two, `SettleClock.production` and
+/// `HelperConnection.production`, which it excepts by receiver name, and it reads `Tests/`. A
+/// function in the helper module that wraps `HelperComposition.production`,
 ///
 /// ```swift
 /// func zzGraph() -> HelperComposition<SMCFanControlPlane> { .production(log: HelperLog()) }
@@ -22,13 +23,15 @@ import Testing
 /// `pinned`. So a new file that names it is red, and so is a second mention in either listed file,
 /// or one fewer.
 ///
-/// **Why the bare identifier, and not `RuleZeroScan.productionMember`.** That pattern needs a `.`
-/// before the word, and excepts `SettleClock.production` and `HelperConnection.production` by
-/// name, which are `fanctl`'s. Both are wrong here: inside an extension of the composition,
-/// `production(` is called bare (#436's delta review, B4); an exception by name would also except
-/// a `typealias SettleClock = HelperComposition<…>`; and an unapplied
-/// `let f = HelperComposition.production` has no `(`. The identifier counts every mention that
-/// pattern counts, and it also counts the declaration, which is the second pinned file.
+/// **Why the bare identifier, and neither `RuleZeroScan.productionMember` nor a pin on
+/// `production(`.** `productionMember` needs a `.` before the word, and excepts
+/// `SettleClock.production` and `HelperConnection.production` by name, which are `fanctl`'s. Both
+/// are wrong here: inside an extension of the composition, `production(` is called bare (#436's
+/// delta review, B4), and an exception by name would also except a
+/// `typealias SettleClock = HelperComposition<…>`. A pin on `production(`, which #453 suggested,
+/// is wrong too: an unapplied `let f = HelperComposition.production` has no `(`, and is the
+/// factory taken as a value. The identifier counts every mention `productionMember` counts, and
+/// it also counts the declaration, which is the second pinned file.
 ///
 /// **A file it cannot read is a finding.** An unreadable file or directory, a file that is not
 /// UTF-8, and a symbolic link (SwiftPM compiles what is behind one, and this does not follow it)
@@ -44,9 +47,6 @@ import Testing
 /// control.
 @Suite("Code under Sources/AeolusHelper names production only in the two files that may")
 struct HelperProductionCallersTests {
-
-    /// The helper's directory from the repository root, and the prefix of every path below.
-    static let helperDirectory = "Sources/AeolusHelper"
 
     /// Each file under the helper whose code names `production`, and how many times. Two, once
     /// each: the daemon's one call, in `AeolusHelperMain`, and the composition's declaration of
@@ -66,9 +66,10 @@ struct HelperProductionCallersTests {
     /// Run: red here, each.
     @Test("Only AeolusHelperMain.swift and HelperComposition.swift name production, once each")
     func onlyTwoFilesNameProduction() throws {
-        let directory = RuleZeroScan.repositoryRoot.appendingPathComponent(Self.helperDirectory)
+        let directory = RuleZeroScan.repositoryRoot.appendingPathComponent(
+            ManifestScan.helperDirectory)
         let census = try HelperProductionMentions.census(
-            of: directory, as: Self.helperDirectory)
+            of: directory, as: ManifestScan.helperDirectory)
         #expect(census.refused.isEmpty, "the census could not read: \(census.refused)")
         let found = HelperProductionMentions.listing(census.counts)
         #expect(
