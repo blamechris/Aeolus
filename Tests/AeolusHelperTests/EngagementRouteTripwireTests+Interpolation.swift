@@ -3,12 +3,14 @@ import Testing
 
 @testable import AeolusHelper
 
-/// The second blind spot of `SeamScanner.strippingAllComments(_:)`'s quote counter, beside the raw
-/// string's: a string literal **nested in an interpolation**. In `"\(String("//"))"` the counter
-/// closes the outer literal at the inner one's opening quote, so the inner `//` reads as a comment
-/// and the rest of the line — code included — is dropped from every scan that reads stripped
-/// source. Kept here rather than in `EngagementRouteTripwireTests.swift` for that suite's
-/// `type_body_length`; `noRawStringHoldsAQuoteAndACommentMarker` runs this scan over the tree.
+/// The second blind spot of `SeamScanner.strippingAllComments(_:)`'s old quote counter, beside the
+/// raw string's: a string literal **nested in an interpolation**. In `"\(String("//"))"` the
+/// counter closed the outer literal at the inner one's opening quote, so the inner `//` read as a
+/// comment and the rest of the line — code included — was dropped from every scan that reads
+/// stripped source. #436's lexer walks an interpolation's code and the literals inside it
+/// (`SeamScannerLiteralTests`), so this is depth, as the raw string's scan is. Kept here rather
+/// than in `EngagementRouteTripwireTests.swift` for that suite's `type_body_length`;
+/// `noRawStringHoldsAQuoteAndACommentMarker` runs this scan over the tree.
 extension EngagementRouteTripwireTests {
 
     /// Every line of `source`, block and whole-line comments stripped first, that opens an

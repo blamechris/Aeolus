@@ -289,7 +289,8 @@ struct EngagementRouteTripwireTests {
     /// `SafetyWriters.swift`. Run: red here, naming the file.
     /// **Mutation:** add `private let laneLabel = "\(String("//"))"; private let
     /// laneHiddenFromTheScan = PlaneAdmission.thermalCycle` in `ConnectionHealth.swift`. Run: red
-    /// here, naming the file — and green in every lane census, which the stripper blinds.
+    /// here, naming the file — and red in `ThermalCycleLaneTripwireTests`' census too, because
+    /// #436's lexer walks the interpolation and the stripper no longer blinds it.
     @Test("No raw string in the helper holds a quote and a comment marker")
     func noRawStringHoldsAQuoteAndACommentMarker() throws {
         var offenders: [String] = []
