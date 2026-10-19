@@ -44,7 +44,8 @@ extension SeamScanner {
     /// in `of fan: CommandableFan,  // the fan (see ADR 0008` is counted by the balance walk and
     /// would lose the list's real close. String literals are walked by both that stripper and
     /// `closingParenthesis`, so a `)` or a `//` inside a default value opens and closes nothing.
-    /// Both are quote counters and not lexers, with the limit stated at `strippingBlockComments`.
+    /// Both are quote counters and not lexers, with the limit stated at
+    /// `strippingBlockAndLineComments`.
     static func writeVerbs(
         named namePattern: String, inSource source: String, file: String
     ) throws -> [Declaration] {

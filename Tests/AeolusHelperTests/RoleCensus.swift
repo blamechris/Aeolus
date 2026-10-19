@@ -16,7 +16,7 @@ import Foundation
 /// - **Code, not comments.** Every comment is stripped, a trailing one included
 ///   (`SeamScanner.strippingAllComments`), and so are backticks, since `` `ThermalLatchRole` `` is
 ///   the same name. The stripper is a quote counter and not a lexer, with the limit stated at
-///   `strippingBlockComments`.
+///   `strippingBlockAndLineComments`.
 /// - **Lines are kept.** The stripper drops a whole-line `//` comment, which would shift every
 ///   line number after it. Every line is given a leading NUL first, so that none of them reads as
 ///   one, and the NULs are removed after. A failure names the line the source has.

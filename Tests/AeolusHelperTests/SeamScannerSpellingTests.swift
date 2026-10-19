@@ -42,7 +42,7 @@ struct SeamScannerSpellingTests {
     /// **S3.** Swift reads `public/* */import` as two words, and so must every pattern built on
     /// this stripper: joined, `publicimport` is a word no pattern for an import finds.
     ///
-    /// **Mutation:** in `strippingBlockComments`, drop the space. Run: red here.
+    /// **Mutation:** in `strippingBlockAndLineComments`, drop the space. Run: red here.
     @Test("A stripped block comment leaves one space, however many lines it spans")
     func aBlockCommentLeavesASpace() throws {
         #expect(
