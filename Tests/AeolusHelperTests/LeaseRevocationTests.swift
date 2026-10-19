@@ -24,11 +24,11 @@ struct LeaseRevocationTests {
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
 
-        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergency)
+        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergencyRevocation)
 
         #expect(await authority.leaseCount == 0)
         #expect(await restorer.restoredFans == [Set([0, 1])])
-        #expect(await restorer.causes == [.thermalEmergency])
+        #expect(await restorer.causes == [.thermalEmergencyRevocation])
     }
 
     /// The selector is a selector. A lease that does not cover the fan is untouched —
@@ -40,7 +40,7 @@ struct LeaseRevocationTests {
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [1]), from: ConnectionID())
 
-        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergency)
+        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergencyRevocation)
 
         #expect(await authority.leaseCount == 1)
         #expect(await restorer.restores.isEmpty)
@@ -51,7 +51,7 @@ struct LeaseRevocationTests {
         let restorer = RecordingFanRestorer()
         let authority = LeaseFixture.authority(restorer: restorer)
 
-        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergency)
+        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergencyRevocation)
 
         #expect(await restorer.restores.isEmpty)
     }
@@ -65,9 +65,9 @@ struct LeaseRevocationTests {
         let authority = LeaseFixture.authority(restorer: restorer)
         _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
 
-        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergency)
+        await authority.revokeLeases(coveringFan: 0, because: .thermalEmergencyRevocation)
 
-        #expect(await restorer.causes == [.thermalEmergency])
+        #expect(await restorer.causes == [.thermalEmergencyRevocation])
         #expect(await restorer.causes != [.leaseExpired])
     }
 

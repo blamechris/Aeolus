@@ -92,7 +92,7 @@ struct TeardownSweepTripwireTests {
             """
             the loop scan found \(loops) for-in loops in \(Self.leaseCoreFile). It is supposed \
             to find the two log loops in the revocation paths and the two in \
-            `restore(_:because:)` itself, so the assertion below is green over nothing.
+            `restore(_:because:through:)` itself, so the assertion below is green over nothing.
             """)
         #expect(
             code.components(separatedBy: Self.restoreCall).count - 1 >= 7,

@@ -382,7 +382,9 @@ the first build that has one. In full means:
 
 **The keystone gains no input:** incrementing a counter is not reading trusted data. **No restore
 waits for an engagement to finish.** A restore waits at most for the turn in flight and the turns
-queued ahead of it at `.supervisor` (D7).
+queued ahead of it at `.supervisor` (D7). *(Since ADR 0012's 2026-10-18 amendment a restore § 3
+causes — its bridge job's and its revocation's — is admitted in § 3's lane and waits for the turn
+in flight alone; every other restore waits as this says.)*
 
 ### D5 — The force key is the plane's, reference-counted by what the plane engaged, cleared last, and checked at every start
 
@@ -568,6 +570,11 @@ the question. E5's own Done-when text — "the unlock is re-run as part of the g
 has no source in ADR 0007, and is restated to match.
 
 ### D7 — Each write takes one supervisor turn; forward writes read, restores do not; the unlock holds no turn between steps
+
+*Amended by ADR 0012's 2026-10-18 amendment: each write takes one turn **at its plane's admission**
+— `.supervisor`, or § 3's lane through the view § 3 is given (`FanControlPlane.admitted(at:)`) —
+and § 3's bridge is one job, a command and then a `.fan(n)` restore, in one turn
+(`FanControlPlane.bridgeThenRestore(_:)`). Read "supervisor turn" below with that.*
 
 - **Forward verbs** — an engagement step, and `commandTarget` — take one `.supervisor` turn. The
   turn covers a fresh `READ_KEYINFO` (ADR 0004), the write and its read-back.
@@ -2501,12 +2508,17 @@ first draft, which added a margin to 14.5 s.
   (`writeTurnRoundTrips`). The wait for a turn comes before it, and ADR 0012 ends the helper for no
   wait: G logs and ends nothing.
 - **It ran out inside a lawful hold.** At ADR 0012's design point, 12 supervisor readers at the
-  measured worst round trip, a supervisor-priority waiter may wait 6.43 s for each turn. An
-  engagement whose last step queued at 3.4 s, followed by its command, held the gate about 16.4 s,
-  and § 5's 15.5 s ran out inside that lawful hold.
-- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the longest legal
-  wait plus the longest write turn at the design point, for every curated set, and
-  `WatchdogLimitsTests` holds that.
+  measured worst round trip, a supervisor-priority waiter may wait 6.43 s for each turn (9.40 s
+  since ADR 0012's 2026-10-18 amendment, which puts § 3's lane turns in that wait; the hold below
+  takes each slot at G, which did not move). An engagement whose last step queued at 3.4 s,
+  followed by its command, held the gate about 16.4 s, and § 5's 15.5 s ran out inside that lawful
+  hold.
+- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the wait plus the
+  longest write turn at the design point, for every curated set, in ADR 0012's two **modelled
+  cases** (2026-10-18 amendment), and `WatchdogLimitsTests` holds that. The histories review
+  counted beyond them stay under G, but one is open: a take-back with writes recurring every § 3
+  cycle would make a slot 10.58 s, `lawfulHold` 31.75 s, and leave `examinationWait` short by
+  about 1.75 s, at an expiry's cost below.
 - **A hold is at most three slots, or the yield budget and two:**
   - an engagement's first step, its one retry, then its undo or its command;
   - or its last poll, which starts inside `yieldBudget`, then its undo or its command.
@@ -2518,9 +2530,9 @@ first draft, which added a margin to 14.5 s.
   ramp reset and report, and the driver's own entitlement around each step, its registration with
   § 3 and its after-check. Neither is measured; run 1 measures both (D8).
 - **What a wait that runs out means.** The contract was broken; or the helper is outside ADR 0012's
-  design point (more than 20 readers, or round trips slower than measured), where G's own alarm can
-  fire for a queue that is moving; or the wait spanned a system sleep, which the composition clock
-  counts. Each costs what an expiry costs:
+  design point (more than 12 readers since ADR 0012's 2026-10-18 amendment, 20 before it, or
+  round trips slower than measured), where G's own alarm can fire for a queue that is moving; or
+  the wait spanned a system sleep, which the composition clock counts. Each costs what an expiry costs:
   - a `.fault`;
   - an examination without the gate, whose re-assert stands down;
   - possibly a false divergence: the fan is marked for a cycle and an attempt is spent, which the
@@ -2686,7 +2698,13 @@ next re-apply runs the driver, which reads where the fan is instead of assuming 
 
 **Revisit if:**
 
-- #332 or D8 moves G or the design point;
+- #332 or D8 moves G or the design point. *(Fired 2026-10-18: #332's lane, ADR 0012's amendment
+  of that date, moved G's reach from 20 readers to 12 and left G at 10 s. The hold is taken at G,
+  so `lawfulHold` and `examinationWait` stand in ADR 0012's modelled cases: a supervisor wait of
+  9.40 s plus the longest write turn is still under G for every curated set, which
+  `WatchdogLimitsTests` holds.)*
+- ADR 0012's open take-back bound is settled the wrong way: if take-backs with writes can recur
+  every § 3 cycle, a slot passes G and `examinationWait` must be re-derived from the longer slot;
 - run 1 measures holds, hops or timer wakes longer than assumed;
 - an outwaited `.fault` is ever logged, which would argue for deferral;
 - E8a needs concurrent applies, or `apply` leaves the sequencer.
@@ -3277,9 +3295,10 @@ for the branch, and none of that exists on `main`.
 **Decided for B1, built on `e4/bring-up`.**
 - **A step, a command or a restore will be one synchronous job on the connection's actor, inside one
   scheduler write turn.**
-  - `SMCReadScheduler.withWriteTurn(_:)` will take a `.supervisor` turn and never wait for a
-    discovery walk. A write closes no handle, and D4 bounds a restore's wait to the turns ahead of
-    it.
+  - `SMCReadScheduler.withWriteTurn(_:)` will take a turn at its plane's admission and never
+    wait for a discovery walk: `.supervisor`, or § 3's lane since ADR 0012's 2026-10-18 amendment
+    (#332), whose `PlaneAdmission` has no `.snapshot` case. A write closes no handle, and D4 bounds
+    a restore's wait to the turns ahead of it, which in § 3's lane is the turn in flight alone.
   - The turn function will take an `isolated` channel. Its first statement will be the ledger's
     admission, and nothing inside it will suspend.
   - So U15 will hold by construction, a `CancellationError` will not be able to arise after

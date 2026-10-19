@@ -28,7 +28,8 @@ import SMCCore
 ///
 /// The scheduling this seam made *possible* is `SMCReadScheduler`'s, per
 /// [#127](https://github.com/blamechris/Aeolus/issues/127): the production conformer issues
-/// every read above at `.supervisor`, which is admitted ahead of a waiting snapshot turn.
+/// every read above at its admission — `.supervisor`, which is admitted ahead of a waiting
+/// snapshot turn, or § 3's lane through the view § 3 is given (`admitted(at:)`).
 /// Naming the keys was necessary and was never sufficient — a small read still waits for a
 /// big one on a connection that grants no turns.
 ///
@@ -307,6 +308,29 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
 
+    /// `docs/SAFETY.md` § 3's bridge for one fan, as **one job**: `target` — the fan's maximum,
+    /// from § 3's writer — and then `restoreToAutomatic(.fan(target.fanIndex))`, both attempted
+    /// and both reported
+    /// ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment).
+    ///
+    /// **Its order.** The `.fan(n)` restore is **requested first**, synchronously and before the
+    /// job waits for its turn (`ledger.restoreRequested(_:)`, D4), so an engagement step that took
+    /// its ticket before the bridge was called and has **not yet been admitted to its turn** is
+    /// superseded and writes nothing. One already inside its turn is not interrupted — nothing
+    /// is, inside a turn — and the bridge's turn, restore half included, follows it. Then, inside
+    /// one turn, the command's body — `ledger.admitCommand()` first, so the exit's seal still
+    /// refuses it — and the restore's body, `ledger.plan(for:)`, each attempted whatever the
+    /// other answered (`BridgeOutcome.attempting(maximum:thenRestore:)`). Nothing inside the turn
+    /// suspends. It never throws: a half that failed is a `.failure` in the outcome.
+    ///
+    /// Only § 3 calls it, through `SafetyActorWriter.bridgeToMaximumThenRestore(of:)`, and
+    /// `GovernedFanWriter` declares no such verb, so § 8's ramp governor cannot reach it. A
+    /// contract B1's plane implements with the command turn's and the restore turn's bodies and
+    /// no second copy of either; on this build nothing writes, and a plane that cannot write
+    /// refuses both halves without reading.
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome
+
     // MARK: - Bring-up
 
     /// The write path's preparation step, run once by `HelperComposition.bringUp()` between
@@ -325,6 +349,28 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// read, no write — and returns `nil`. It reaches a write only through
     /// `restoreToAutomatic(_:)`, so it is no new verb.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation?
+
+    // MARK: - Admission
+
+    /// This plane at `admission`: the same plane, every turn it takes admitted as `admission`
+    /// says ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment). A plane is built at `.supervisor`.
+    ///
+    /// **The view is the plane.** It holds the scheduler and the connection this plane holds and,
+    /// on a plane that can write, its channel and its `PlaneWriteLedger`: a restore through the
+    /// view supersedes a step through the plane and the reverse, and every in-turn rule is decided
+    /// from the one state (`PlaneAdmission`). A view with state of its own would be a second plane,
+    /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
+    /// composition's § 3 wiring and `ThermalCycleHandback`, the restorer § 3 holds, ask for the
+    /// lane (`ThermalCycleLaneTripwireTests`, `ThermalCycleHandbackTripwireTests`).
+    ///
+    /// **One verb is not admitted at the view's class: `reconnect()`.** A recycle is
+    /// `SMCReadScheduler.withExclusiveAccess(_:)`, which waits out every discovery walk before it
+    /// takes its turn and then takes it at `.supervisor` (ruling D22), so a recycle through the
+    /// lane view would be a lane request with an unbounded wait in front of it, and the lane would
+    /// buy it nothing. § 3 must not reconnect, and does not: `ConnectionHealth` owns the recycle,
+    /// over the plane. The scripted double records a recycle at `.supervisor` through any view.
+    func admitted(at admission: PlaneAdmission) -> Self
 }
 
 // MARK: - Scope

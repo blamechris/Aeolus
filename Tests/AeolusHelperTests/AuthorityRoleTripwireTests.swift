@@ -53,7 +53,8 @@ struct AuthorityRoleTripwireTests {
             ],
             in: code)
         let verbs = try [
-            "commandTarget", "engageManualControl", "commandMaximum", #"\bcommand\s*\("#,
+            "commandTarget", "engageManualControl", "commandMaximum", "bridgeThenRestore",
+            "bridgeToMaximumThenRestore", #"\bcommand\s*\("#,
         ].filter { try !Self.matches(of: $0, in: code).isEmpty }
         #expect(
             types.isEmpty && verbs.isEmpty,

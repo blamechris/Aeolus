@@ -149,9 +149,27 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// a composed helper is bound once brought up. A restore that somehow arrived first would
 /// still restore — the keystone is never gated on bookkeeping — and would say so at
 /// `.fault`.
+///
+/// ## Cause-blind, and no lane (#440)
+///
+/// Every restore this type issues itself goes through `bounded`, at `.supervisor`, whatever its
+/// cause says. The cause is a label (`FanRestoreCause`), and `ThermalCycleLaneRoutingTests` drives
+/// every case through `restoreToAutomatic(fans:because:)` and holds each one there.
+///
+/// `docs/SAFETY.md` § 3's revocation restores in § 3's lane, ADR 0012's 2026-10-18 amendment
+/// counting up to `RestoreLimits.attemptBudget` of its restores per fan in D_cycle's allowance —
+/// and it reaches the lane without this type knowing of one. § 3 holds `ThermalCycleHandback`, a
+/// bound over the writer's lane view, and the lease core borrows it for that one call; the
+/// handback hands back through `handBack(_:because:through:)`, lending its bound on. So the
+/// notices above are written once, for both routes, and this type names no admission, no
+/// priority and no view. A second `HelperFanRestorer` built for the lane would need a second
+/// `bind`, and a restore through one that missed it would still skip § 5's notice and § 3's mark —
+/// said at `.fault` (`LeaseLog.restoredWithoutSafetyRegistries`), but lost all the same — which is
+/// why the handback notifies through this one.
 actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
 
     private let bounded: BoundedFanRestorer<KeystoneRestoreAttempt<Plane>>
+
     private let log: LeaseLog
 
     /// `docs/SAFETY.md` § 3's registry of fans off automatic control. `nil` until `bind`.
@@ -184,10 +202,23 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
     /// Whether both registries have been bound, for the composition tests and diagnostics.
     var isBound: Bool { thermalEmergency != nil && reclamationWatchdog != nil }
 
-    /// Returns `fans` to Apple's thermal management, telling § 5 before the write and marking
-    /// § 3's entries owed a read-back after it. See this type's documentation for why those
-    /// are different sides, and why § 3 is marked rather than told to forget.
+    /// Returns `fans` to Apple's thermal management through this restorer's own bound, at
+    /// `.supervisor`, whatever `cause` says. See `handBack(_:because:through:)`.
     func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int> {
+        await handBack(fans, because: cause, through: bounded)
+    }
+
+    /// Returns `fans` to Apple's thermal management through `bound`, telling § 5 before the write
+    /// and marking § 3's entries owed a read-back after it. See this type's documentation for why
+    /// those are different sides, and why § 3 is marked rather than told to forget.
+    ///
+    /// **`bound` is borrowed, on `LeaseAuthority.revokeEveryLease(handingBackThrough:)`'s terms**:
+    /// this actor can call it and cannot keep it, so lending it § 3's lane bound gives this actor
+    /// no route into the lane once the call returns.
+    func handBack<Bound: FanRestoring & ~Copyable>(
+        _ fans: Set<Int>, because cause: FanRestoreCause,
+        through bound: borrowing Bound
+    ) async -> Set<Int> {
         if reclamationWatchdog == nil || thermalEmergency == nil {
             log.restoredWithoutSafetyRegistries(fans: fans, because: cause)
         }
@@ -202,7 +233,7 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
             await reclamationWatchdog?.manualControlReleased(fanAt: fan)
         }
 
-        let abandoned = await bounded.restoreToAutomatic(fans: fans, because: cause)
+        let abandoned = await bound.restoreToAutomatic(fans: fans, because: cause)
 
         // Only the fans the firmware took, and only *marked*: accepted is not automatic
         // (#291), so § 3 keeps each one registered until its own cycle reads it automatic

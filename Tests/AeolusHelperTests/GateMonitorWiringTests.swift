@@ -36,7 +36,7 @@ extension HelperCompositionTests {
         let source = Self.strippingWhitespace(try Self.compositionSource())
 
         let schedulerReportsToIt = source.contains(
-            "observer:SchedulerObservers([connectionHealth,gateMonitor])")
+            "observer:SchedulerObservers([connectionHealth,gateMonitor,")
         #expect(
             schedulerReportsToIt,
             """
@@ -67,6 +67,24 @@ extension HelperCompositionTests {
             the helper builds gate monitors at \(constructions). The composition's default and \
             `production` are the two: a third is a monitor nothing is told anything.
             """)
+    }
+
+    /// The scheduler reports to § 3's lane watch, the one observer that writes a lane overlap to
+    /// the safety log (`SchedulerEvent.thermalCycleLaneOverlapped`, ADR 0012's 2026-10-18
+    /// amendment). Without it the scheduler reports the overlap to nobody, and the run-time check
+    /// of the lane's premise is a line no one reads. A source tripwire for this one's reason: the
+    /// scheduler holds its observer privately.
+    ///
+    /// **Mutation:** drop `ThermalCycleLaneWatch(log: SafetyLog())` from the scheduler's observers
+    /// in `production`. Run: red.
+    @Test("The scheduler reports to § 3's lane watch")
+    func theLaneWatchIsWiredToTheScheduler() throws {
+        let source = Self.strippingWhitespace(try Self.compositionSource())
+        #expect(
+            source.contains(
+                "observer:SchedulerObservers([connectionHealth,gateMonitor,"
+                    + "ThermalCycleLaneWatch(log:SafetyLog()),])"),
+            "the scheduler no longer reports to § 3's lane watch: a lane overlap is logged nowhere")
     }
 
     /// How many times `code` builds a `GateWaitMonitor`, **however it is spelled**: on the text

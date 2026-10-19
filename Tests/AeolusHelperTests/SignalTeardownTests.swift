@@ -242,7 +242,8 @@ struct SignalTeardownTests {
     ///
     /// **Mutation:** in `SignalTeardown.run(stoppingSupervisorsWith:)`, replace
     /// `leases.releaseEveryLease()` with `leases.revokeEveryLease(because: .allLeasesDropped)`.
-    /// Run: red on the attempt count — that sweep restores the table's fans, and it is empty.
+    /// Run: red on the attempt count — that sweep restores the table's fans, and it is empty. (Run
+    /// before #440, when that verb took a cause; its table-only sweep is unchanged.)
     @Test("The teardown asks again for a fan whose lease-end handback the firmware refused")
     func theTeardownRetriesAFanWhoseLeaseEndHandbackWasRefused() async throws {
         let journal = TeardownJournal()

@@ -17,7 +17,7 @@ import SMCCore
 /// not unpark it: the parked restore runs in `observing`'s unstructured task, or in the task
 /// `BoundedFanRestorer` starts for a per-fan restore, and the test's cancellation reaches
 /// neither. So every test lets through what it parks before it returns.
-actor ScopeParkingPlane: FanControlPlane {
+actor ScopeParkingPlane: AdmissionBlindPlane {
 
     /// The firmware below, with its mode-read gate.
     let reads: ControlStateGatePlane

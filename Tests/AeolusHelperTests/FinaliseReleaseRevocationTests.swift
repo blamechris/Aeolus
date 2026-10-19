@@ -23,7 +23,8 @@ extension FinaliseReleaseLedgerTests {
     /// **Mutation:** replace the `revokeLease(id:forFan:because:)` guard in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on the new lease, the count,
-    /// the restores and the notice.
+    /// the restores and the notice. (Run before #440, when that verb took a cause; it now borrows
+    /// § 3's handback instead.)
     @Test("The terminal action revokes only the lease it held the fan for")
     func theTerminalActionRevokesOnlyTheLeaseItHeldTheFanFor() async throws {
         let held = try await Self.holdingThroughInterference()
