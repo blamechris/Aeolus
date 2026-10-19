@@ -315,8 +315,13 @@ private struct SMCKeyTypeEncodeTests {
     /// A non-zero request is never written as zero, for the reason a value past the bound is
     /// refused: the bytes would not say what was asked for. Zero itself is exact, and so is the
     /// smallest non-zero `Float`; a value that rounds to that one stays non-zero and encodes
-    /// (#433). This is not rule 3's control, which is the clamp: see `encode`'s documentation.
-    @Test("flt refuses a non-zero Double that underflows to zero, and encodes zero itself")
+    /// (#433). `-0.0` is exact too, and `encode`'s documentation says it is accepted: it is
+    /// written as the sign bit alone, `00 00 00 80` little-endian (#452). This is not rule 3's
+    /// control, which is the clamp: see `encode`'s documentation.
+    ///
+    /// **Mutation:** in `encode`, `let single = Float(scalar) + 0`, which turns `-0.0` into
+    /// `+0.0` and leaves every other value as it was. Run: red here, at `-0.0`.
+    @Test("flt refuses a non-zero Double that underflows to zero, and encodes zero of either sign")
     func fltRefusesAnUnderflowToZero() throws {
         let smallest = Double(Float.leastNonzeroMagnitude)
         for value in [1e-50, -1e-50, Double.leastNonzeroMagnitude, smallest / 2, -smallest / 2] {
@@ -328,9 +333,11 @@ private struct SMCKeyTypeEncodeTests {
                 }
             }
         }
+        // The premise: the literal below is negative zero, not zero.
+        #expect((-0.0 as Double).sign == .minus)
         try Self.expectEncodedInBothOrders([
-            (0, [0, 0, 0, 0]), (smallest, [1, 0, 0, 0]), (-smallest, [1, 0, 0, 0x80]),
-            (smallest * 0.75, [1, 0, 0, 0]),
+            (0, [0, 0, 0, 0]), (-0.0, [0, 0, 0, 0x80]), (smallest, [1, 0, 0, 0]),
+            (-smallest, [1, 0, 0, 0x80]), (smallest * 0.75, [1, 0, 0, 0]),
         ])
     }
 
