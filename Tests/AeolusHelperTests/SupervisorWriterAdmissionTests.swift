@@ -32,7 +32,9 @@ import Testing
 /// the two closures `bringUp()` installs, fired through the sources they were given: the signal
 /// teardown, and the power observer's sleep and wake. Those are the paths this suite holds; a path
 /// it does not drive is held by the lexical scans and incidental tests alone.
-@Suite("Every writer but § 3's is at supervisor, through its own path", .timeLimit(.minutes(1)))
+@Suite(
+    "Every writer but § 3's is at supervisor, through its own path, on the paths it drives",
+    .timeLimit(.minutes(1)))
 struct SupervisorWriterAdmissionTests {
 
     /// The composed helper over one scripted firmware, bound as bring-up binds it.
