@@ -134,6 +134,8 @@ struct InterferingWritePlane: FanControlPlane {
         private var commands = 0
         private var beforeStep: (ordinal: Int, effect: @Sendable () async -> Void)?
         private var beforeCommand: (ordinal: Int, effect: @Sendable () async -> Void)?
+        private var bridges = 0
+        private var afterBridge: (ordinal: Int, effect: @Sendable () async -> Void)?
         private(set) var didFire = false
 
         func set(beforeStep ordinal: Int, _ effect: @escaping @Sendable () async -> Void) {
@@ -142,6 +144,18 @@ struct InterferingWritePlane: FanControlPlane {
 
         func set(beforeCommand ordinal: Int, _ effect: @escaping @Sendable () async -> Void) {
             beforeCommand = (ordinal, effect)
+        }
+
+        func set(afterBridge ordinal: Int, _ effect: @escaping @Sendable () async -> Void) {
+            afterBridge = (ordinal, effect)
+        }
+
+        func bridgeReturned() async {
+            bridges += 1
+            guard let due = afterBridge, due.ordinal == bridges else { return }
+            afterBridge = nil
+            didFire = true
+            await due.effect()
         }
 
         func stepArrives() async {
@@ -185,6 +199,14 @@ struct InterferingWritePlane: FanControlPlane {
         await interference.set(beforeCommand: ordinal, effect)
     }
 
+    /// Runs `effect` after the `ordinal`th bridge job has returned and before § 3 goes on: § 3 is
+    /// mid-firing, between its bridges and its revocation, and holds no lane request.
+    func interfere(
+        afterBridge ordinal: Int, with effect: @escaping @Sendable () async -> Void
+    ) async {
+        await interference.set(afterBridge: ordinal, effect)
+    }
+
     var didFire: Bool { get async { await interference.didFire } }
 
     func admitted(at admission: PlaneAdmission) -> InterferingWritePlane {
@@ -225,7 +247,9 @@ struct InterferingWritePlane: FanControlPlane {
     }
 
     func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
-        await plane.bridgeThenRestore(target)
+        let outcome = await plane.bridgeThenRestore(target)
+        await interference.bridgeReturned()
+        return outcome
     }
 
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {

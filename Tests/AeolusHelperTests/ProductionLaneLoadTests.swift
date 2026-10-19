@@ -26,12 +26,11 @@ struct ProductionLaneLoadTests {
         func set() { flag.withLock { $0 = true } }
     }
 
-    /// Tasks started from inside a firmware hook, kept so the test can await them.
+    /// The log range a mid-firing effect covered, recorded from inside it.
     final class Spawned: Sendable {
-        private let tasks = OSAllocatedUnfairLock(initialState: [Task<Void, Never>]())
-        func add(_ task: Task<Void, Never>) { tasks.withLock { $0.append(task) } }
-        func wait() async { for task in tasks.withLock({ $0 }) { await task.value } }
-        var count: Int { tasks.withLock { $0.count } }
+        private let recorded = OSAllocatedUnfairLock<Range<Int>?>(initialState: nil)
+        func record(_ range: Range<Int>) { recorded.withLock { $0 = range } }
+        var range: Range<Int>? { recorded.withLock { $0 } }
     }
 
     /// `readers` supervisor readers and one snapshot reader, each looping until `stop`.
@@ -94,70 +93,86 @@ struct ProductionLaneLoadTests {
     // MARK: - W4 / B4
 
     /// A firing cycle with every write refused, under `outstanding` reads — N − 1 sustained
-    /// supervisor readers and § 3 — with continuous snapshots, while the firing's own lease's TTL
-    /// sweep and a § 5 revocation of it land mid-firing (started from inside § 3's bridge job, so
-    /// they race § 3's revocation for the one lease): every lane turn is granted behind at most
-    /// the turn in flight, there are no more of them than the allowance counts, the overlap report
-    /// stays silent, and every write is in a turn of the two admissions the safety path has.
+    /// supervisor readers and § 3 — with continuous snapshots, and with the firing's own lease's
+    /// TTL sweep and a § 5 revocation of it landing mid-firing, after § 3's first bridge job and
+    /// before its second (#440's B4):
+    /// - the TTL sweep wins the lapsed lease and hands both fans back at `.supervisor`, and § 5's
+    ///   revocation finds the lease gone;
+    /// - every lane turn is granted behind at most the turn in flight, there are no more of them
+    ///   than the allowance counts, and the overlap report stays silent.
     ///
-    /// The race is real, so which teardown hands the lease back varies run to run; what holds
-    /// either way is asserted. One lease is held at a time (`.leaseHeldByAnotherClient`), so the
-    /// TTL and § 5 can only race § 3 for the same one.
+    /// **What is deterministic, and what is not.** The teardowns run awaited inside § 3's firing
+    /// (`InterferingWritePlane.interfere(afterBridge:with:)`), so which one restores, and so the
+    /// admission of its writes, is fixed. One lease is held at a time (`.leaseHeldByAnotherClient`),
+    /// so a teardown concurrent with § 3's own lane requests would race § 3 for the same lease and
+    /// fix nothing; the overlap and the allowance are therefore asserted as properties of this run,
+    /// and they are not what a misrouted teardown turns red.
     ///
-    /// **Mutation (B4):** in `HelperComposition.init`, build § 3's handback before the lease core
-    /// and give it to `LeaseAuthority` as `restorer:` — the TTL sweep and § 5's revocation then
-    /// restore in the lane beside § 3. Run: red here — the overlap is reported.
+    /// **Mutation (B4):** in `HelperComposition.init`, give `LeaseAuthority` § 3's handback as its
+    /// standing `restorer:`. Run: red here — the TTL's hand-back is in the lane.
     /// **Mutation (W4):** in `SMCReadScheduler.withWriteTurn`, take every write turn at
-    /// `.supervisor`. Run: red here — § 3's bridge waits behind the readers.
+    /// `.supervisor`. Run: red here — § 3's bridges leave the lane.
     @Test(
-        "A firing under load is granted behind the turn in flight, within the allowance",
+        "A firing under load stays in its lane, and teardowns landing mid-firing at supervisor",
         arguments: [12, 40])
     func aFiringUnderLoadStaysInItsLane(_ outstanding: Int) async throws {
         let machine = await ProductionWriteMachine()
         let leases = machine.helper.leases
         let held = try await machine.lease(fans: [0, 1])
-        try await machine.apply(rpm: 2_400, fans: [0], under: held)
+        try await machine.apply(rpm: 2_400, fans: [0, 1], under: held)
         machine.clock.advance(by: .seconds(Lease.defaultTimeToLive + 1))
 
         await machine.firmware.setDefaultWrite(.refuses(code: 0x85))
         await machine.firmware.setCriticalTemperatures(96)
-        let midFiring = Spawned()
-        await machine.firmware.onNext(.write(smcKey("F0Tg"))) {
-            midFiring.add(Task { await leases.expireLapsedLeases() })
-            midFiring.add(
-                Task {
-                    _ = await leases.revokeLease(id: held, forFan: 0, because: .systemReclaimed)
-                })
+        let window = Spawned()
+        let firmware = machine.firmware
+        await machine.writes.interfere(afterBridge: 1) {
+            let begun = firmware.log.entries.count
+            await leases.expireLapsedLeases()
+            _ = await leases.revokeLease(id: held, forFan: 0, because: .systemReclaimed)
+            window.record(begun..<firmware.log.entries.count)
         }
         let stop = Stop()
         let eventMark = machine.observer.events.count
-        let logMark = machine.firmware.log.entries.count
         let load = Self.load(outstanding - 1, on: machine, until: stop)
         await yieldUntil("the readers to queue") {
             await machine.scheduler.queuedTurns(at: .supervisor) >= min(outstanding - 2, 8)
         }
 
         await machine.helper.thermalEmergency.cycle()
-        await midFiring.wait()
         stop.set()
         for task in load { await task.value }
 
         let events = Array(machine.observer.events.dropFirst(eventMark))
         #expect(await machine.helper.latch.isActive, "the cycle did not fire")
-        #expect(midFiring.count == 2, "the mid-firing teardowns were never started")
-        #expect(await leases.leaseCount == 0, "the lease outlived the firing and its races")
+        #expect(await machine.writes.didFire, "the teardowns never landed mid-firing")
+        #expect(await leases.leaseCount == 0)
         #expect(
             Self.laneWaitsPastTheTurnInFlight(in: events).isEmpty,
             "a lane turn waited past the turn in flight")
         #expect(Self.overlaps(in: events) == 0, "the lane overlapped")
         let lane = Self.laneGrants(in: events)
-        #expect(lane >= 2, "\(lane) lane turns: the read and the bridge at least")
+        #expect(lane >= 3, "\(lane) lane turns: the read and two bridges at least")
         #expect(lane <= WatchdogLimits.thermalCycleTurns(fans: 2), "\(lane) lane turns")
-        let written = machine.admittedWrites(since: logMark)
-        #expect(written.contains { $0.key == "F1Md" }, "nothing handed fan 1 back: \(written)")
+
+        let range = try #require(window.range, "the teardowns' window was not recorded")
+        let teardownWrites = Array(
+            machine.admittedWrites(since: range.lowerBound).prefix(
+                Self.writes(in: firmware.log.entries[range])))
         #expect(
-            Set(written.map(\.priority)).isSubset(of: [.thermalCycle, .supervisor]),
-            "a write fell outside a safety turn: \(written)")
+            Set(teardownWrites.map(\.key)) == ["F0Md", "F1Md"],
+            "the TTL handed back \(teardownWrites), not fans 0 and 1")
+        #expect(
+            Set(teardownWrites.map(\.priority)) == [.supervisor],
+            "a teardown landing mid-firing wrote in the lane: \(teardownWrites)")
+    }
+
+    /// How many writes `entries` holds.
+    static func writes(in entries: ArraySlice<FirmwareLog.Entry>) -> Int {
+        entries.filter {
+            if case .write = $0 { return true }
+            return false
+        }.count
     }
 
     // MARK: - C28 / W5
