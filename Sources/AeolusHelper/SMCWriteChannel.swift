@@ -40,11 +40,12 @@ import SMCCore
 /// amendment rules a write turn takes. The signatures are `SMCConnection`'s own, so the forwarder
 /// is four one-line calls.
 ///
-/// ## Nothing calls the write
+/// ## One call of the write
 ///
-/// This requirement and the forwarder's are the helper's only declarations of the name, the
-/// forwarder's body is its only use, and no write turn exists yet —
-/// `WritePathAbsenceTests.helperNeverCallsWrite` counts all three.
+/// This requirement and the forwarder's are the helper's only declarations of the name. Its
+/// uses are two: the forwarder's body, which calls `SMCConnection.write(_:to:)`, and
+/// `SMCWriteTurns.issue`, the write turns' one call of this requirement —
+/// `WritePathAbsenceTests.helperNeverCallsWrite` counts all four.
 protocol SMCWriteChannel: Actor {
 
     /// `SMCConnection.interfaceGeneration`: `nil` until the connection has opened, or when the

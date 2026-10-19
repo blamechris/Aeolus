@@ -47,9 +47,10 @@
 ///
 /// ## Why nothing here is ever called
 ///
-/// The helper has no write path. `write` and `encode` have bodies — one `WRITE_BYTES` round
-/// trip, and the `ui8`/`flt` encoder — but the plane answers `.notBuilt`, and until E3 and
-/// E4 put its write turns behind the safety subsystem nothing here may invoke either.
+/// `write` and `encode` have bodies — one `WRITE_BYTES` round trip, and the `ui8`/`flt`
+/// encoder — and the write path reaches each elsewhere: the daemon's forwarder calls `write`,
+/// and `SMCWriteEncoding` calls `encode`, for the plane's write turns. This file is a proof of
+/// access and nothing more, so nothing here may invoke either.
 /// `WritePathAbsenceTests`
 /// enforces precisely that: this is the one file under `Sources/AeolusHelper/` permitted
 /// to contain the text `write(`, and it is permitted zero *call sites* of it — a

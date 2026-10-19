@@ -704,9 +704,9 @@ public actor SMCConnection {
     ///   build that ships the helper.
     ///
     ///   The helper calls this in one place, its daemon's `private` forwarder
-    ///   (`DaemonWriteChannel`), and nothing invokes the forwarder: the plane's write capability
-    ///   is still `.notBuilt`, and `WritePathAbsenceTests.helperNeverCallsWrite` holds the helper
-    ///   to that one call. Widening this —
+    ///   (`DaemonWriteChannel`), which the plane's write turns reach through one call of the
+    ///   channel's requirement, and `WritePathAbsenceTests.helperNeverCallsWrite` holds the helper
+    ///   to those two. Widening this —
     ///   to plain `public`, or by adding a third member to the group — is a safety review
     ///   under `docs/SAFETY.md`, not a refactor.
     @_spi(FanWrite) public func write(_ bytes: [UInt8], to key: SMCKey) throws {
