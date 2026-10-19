@@ -230,10 +230,10 @@ struct SystemPowerTests {
 
     /// The budget also beats a restore that *blocks* rather than suspends.
     ///
-    /// `WedgedRestorePlane` parks on `try await held.wait()`, which yields its thread — and a
-    /// review was right that this is not #68's shape. A stale `io_connect_t` is stuck inside
-    /// `IOConnectCallStructMethod`, a synchronous kernel call, so the task holding it occupies
-    /// a cooperative-pool thread and gives nothing back. A budget that beat only the
+    /// `WedgedRestorePlane` parks on `try await held.wait(atMost: ceiling)`, which yields its
+    /// thread — and a review was right that this is not #68's shape. A stale `io_connect_t` is
+    /// stuck inside `IOConnectCallStructMethod`, a synchronous kernel call, so the task holding
+    /// it occupies a cooperative-pool thread and gives nothing back. A budget that beat only the
     /// cooperative version would be proving something weaker than the doc comment claimed.
     ///
     /// This is the same episode against `ThreadBlockingRestorePlane`. What it demonstrates is
