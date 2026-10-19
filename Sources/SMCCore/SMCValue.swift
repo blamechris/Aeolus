@@ -245,9 +245,19 @@ extension SMCKeyType {
     ///   fraction, a value out of range, `NaN` or an infinity is refused rather than rounded
     ///   or wrapped, because a rounded mode byte is a different mode. The order is ignored.
     /// - **`flt`**, for `F<n>Tg`: IEEE-754 single precision, in the order given, which must be
-    ///   given. A value that is not finite as a `Float` — `NaN`, an infinity, or a `Double`
-    ///   past `Float`'s range, which converts to one — is refused (ADR 0004; ADR 0008's clamp
-    ///   only ever produces finite targets, and this does not trust that it did).
+    ///   given. The `Double` is judged before it converts, so what rounding makes of it can
+    ///   neither admit nor refuse it:
+    ///   - a magnitude above `Float.greatestFiniteMagnitude` is refused. That is `NaN`, an
+    ///     infinity, and a value just past the bound, which would round down to it and be
+    ///     written as less than was asked for;
+    ///   - **a non-zero value that underflows to zero**, such as `1e-50`, is refused. Written to
+    ///     `F<n>Tg`, a zero asks the fan to stop, which `CLAUDE.md` rule 3 forbids, so a request
+    ///     that is not zero must never be written as one. Zero itself is exact and encodes, and
+    ///     a value that underflows to a subnormal stays non-zero and rounds, as any value between
+    ///     two floats does.
+    ///
+    ///   ADR 0008's clamp only ever produces finite targets inside the fan's envelope, and this
+    ///   does not trust that it did (ADR 0004).
     ///
     /// A refusal throws `SMCError.notPermitted`. `encodingFailed(key:type:)` is the case for
     /// "the value does not fit the type", but it carries a key, and this function — whose
@@ -277,9 +287,15 @@ extension SMCKeyType {
                 Self.logRefusal(scalar, of: self, reason: "no resolved byte order")
                 throw SMCError.notPermitted
             }
+            // On the `Double`, before it converts: just past the bound, `Float(scalar)` rounds
+            // down to `greatestFiniteMagnitude` and is finite. `NaN` fails the comparison too.
+            guard scalar.magnitude <= Double(Float.greatestFiniteMagnitude) else {
+                Self.logRefusal(scalar, of: self, reason: "outside Float's finite range")
+                throw SMCError.notPermitted
+            }
             let single = Float(scalar)
-            guard single.isFinite else {
-                Self.logRefusal(scalar, of: self, reason: "not finite as a Float")
+            guard single != 0 || scalar == 0 else {
+                Self.logRefusal(scalar, of: self, reason: "non-zero, and underflows to zero")
                 throw SMCError.notPermitted
             }
             let bits = single.bitPattern

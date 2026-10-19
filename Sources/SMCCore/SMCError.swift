@@ -39,8 +39,9 @@ public enum SMCError: Error, Sendable, Equatable {
     /// - `SMCConnection.write(_:to:)` with a payload that is empty or longer than the 32-byte
     ///   `SMCKeyData_t` field;
     /// - `SMCKeyType.encode(scalar:byteOrder:)` with a value the type cannot represent
-    ///   exactly — a `ui8` that is not an integer in `0...255`, a `flt` that is not finite as
-    ///   a `Float` — or a `flt` with no resolved byte order.
+    ///   exactly — a `ui8` that is not an integer in `0...255`, a `flt` outside `Float`'s
+    ///   finite range or non-zero and underflowing to zero — or a `flt` with no resolved byte
+    ///   order.
     ///
     /// Nothing reached the firmware or the kernel. A refusal *by* either arrives as
     /// `firmware(code:)` or `connectionFailed(kernReturn:)` instead. This case used to mean
