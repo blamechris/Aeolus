@@ -20,6 +20,13 @@ import Testing
 ///
 /// So each is held by the shape of the source, failing closed. Every scan reads the same
 /// comment-stripped `Sources/AeolusHelper` as `ThermalCycleHandbackTripwireTests`.
+///
+/// **What these scans are, and are not.** They catch the shapes an edit makes by accident, and
+/// claim nothing more: a lexical scan never converges on a deliberate evasion — every round of
+/// #436's and #439's review found a new spelling past one. The consequence those spellings would
+/// buy, a mechanism other than § 3 writing in § 3's lane, is held by behaviour instead:
+/// `SupervisorWriterAdmissionTests`, K6 in `ThermalCycleLaneRoutingTests`, and the reachable
+/// stored-plane census in `ThermalCycleLaneWriterTests`.
 @Suite("Nothing builds, launders, extends or copies § 3's handback, at the source")
 struct ThermalCycleHandbackShapeTripwireTests {
 
@@ -38,6 +45,30 @@ struct ThermalCycleHandbackShapeTripwireTests {
         try NSRegularExpression(pattern: pattern)
             .matches(in: code, range: NSRange(code.startIndex..., in: code))
             .compactMap { Range($0.range, in: code) }
+    }
+
+    /// Every range of `pattern` in `code` that starts inside `within`.
+    private static func ranges(
+        of pattern: String, in code: String, within: Range<String.Index>
+    ) throws -> [Range<String.Index>] {
+        try ranges(of: pattern, in: code).filter { within.contains($0.lowerBound) }
+    }
+
+    /// How deeply `index` is nested in braces below `start`.
+    private static func depth(
+        at index: String.Index, below start: String.Index, in code: String
+    ) -> Int {
+        code[start..<index].reduce(0) { $0 + ($1 == "{" ? 1 : $1 == "}" ? -1 : 0) }
+    }
+
+    /// The bodies of the initialisers declared directly in the braced `body` of `code`, by brace
+    /// depth: not one in a nested type, a closure or a method, and not a `.init(…)` call.
+    static func memberInitBodies(
+        in body: Range<String.Index>, of code: String
+    ) throws -> [Range<String.Index>] {
+        try ranges(of: #"(?<![A-Za-z0-9_.])init\s*\("#, in: code, within: body)
+            .filter { depth(at: $0.lowerBound, below: body.lowerBound, in: code) == 0 }
+            .compactMap { TeardownSweepTripwireTests.bracedBody(in: code, after: $0.upperBound) }
     }
 
     /// `code` with every braced body removed, braces included: what is declared at the top level.
@@ -69,6 +100,8 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// The scans over fixtures, before any is trusted.
     ///
     /// **Mutation:** in `topLevel(of:)`, keep characters inside braces. Run: red.
+    /// **Mutation:** in `memberInitBodies(in:of:)`, drop the depth filter. Run: red — the nested
+    /// type's initialiser is found first.
     @Test("The shape scans read their fixtures")
     func theShapeScansReadTheirFixtures() throws {
         #expect(
@@ -77,6 +110,11 @@ struct ThermalCycleHandbackShapeTripwireTests {
         let code = "struct S { init(x: Int) { y(at: .lane) } func f() { z } }"
         let initBody = try #require(try Self.body(of: #"\binit\s*\("#, in: code))
         #expect(code[initBody].contains("y(at: .lane)") && !code[initBody].contains("z"))
+        let nested = "struct S { struct N { init(_ w: W) { a(at: .lane) } } init(x: Int) { y } }"
+        let structBody = try #require(try Self.body(of: #"\bstruct\s+S\b"#, in: nested))
+        let inits = try Self.memberInitBodies(in: structBody, of: nested)
+        #expect(inits.count == 1, "\(inits.count) member initialisers found in the fixture")
+        #expect(inits.allSatisfy { nested[$0].contains("y") && !nested[$0].contains("a(at:") })
         for spelling in [
             "withoutActuallyEscaping(body) { $0 }", "UnsafeMutablePointer<H>.allocate(capacity: 1)",
             "withUnsafePointer(to: h) { $0 }", "UnsafeRawPointer(p)",
@@ -91,9 +129,12 @@ struct ThermalCycleHandbackShapeTripwireTests {
 
     // MARK: - Who builds a handback
 
-    /// `ThermalCycleHandback` is named where it is declared, where § 3 holds and takes it, and
-    /// where the composition builds it — once. Building one anywhere else, in any expression and
-    /// by `.init(…)` too, names the type one more time in some file.
+    /// The names of the type `ThermalCycleHandback`, per file: where it is declared, where § 3
+    /// holds and takes it, and where the composition builds it — once. A construction written
+    /// anywhere else by the type's name, in any expression and by `.init(…)` too, names it one
+    /// more time in some file. A construction under another name — a `typealias`, or an inferred
+    /// `Self(…)` — is not a name of it: `noTypealiasNamesTheHandback` and the handback's own shape
+    /// close the two spellings an edit reaches for, and the behavioural suites hold the rest.
     ///
     /// **Mutation (CX1):** in `HelperComposition.bringUp()`, build a second handback inside the
     /// signal teardown's closure and restore through it. Run: red — two in the file.
@@ -120,13 +161,19 @@ struct ThermalCycleHandbackShapeTripwireTests {
     // MARK: - Where the lane is minted
 
     /// The handback's file declares the handback and nothing else, and its one lane mint is inside
-    /// `init`: no extension of any type, no second declaration, no property that returns a view.
+    /// the handback's own `init`: no extension of any type, no second top-level declaration, no
+    /// nested type, no `static` member and no `typealias` in its body, and exactly one initialiser
+    /// declared directly in that body, found by brace depth.
     ///
     /// **Mutation (L2b):** add `extension SafetyActorWriter { var inTheLane: Self {
     /// admitted(at: .thermalCycle) } }` to the file, build the handback's bound over
-    /// `writer.inTheLane`, and write § 5's re-assert through `writer.inTheLane`. Run: red — the
-    /// lane's counts are unchanged, and § 5 writes in the lane.
-    @Test("The handback's file holds the handback alone, with its mint inside init")
+    /// `writer.inTheLane`, and write § 5's re-assert through `writer.inTheLane`. Run: red here and
+    /// in `SupervisorWriterAdmissionTests`.
+    /// **Mutation (C1):** a nested `struct LaneWriter` before the handback's `init`, whose own
+    /// `init` admits a writer in the lane. Run: red here — a nested type, and a mint outside the
+    /// handback's own `init`.
+    /// **Mutation:** a `static func lane(…) -> Self` factory in the handback. Run: red here.
+    @Test("The handback's file holds the handback alone, with its mint inside its own init")
     func theHandbacksFileHoldsTheHandbackAlone() throws {
         let code = try #require(try Self.helperCode["Lease/ThermalCycleHandback.swift"])
         #expect(try Self.uses(of: "extension", inCode: code) == 0, "the handback's file extends")
@@ -134,12 +181,41 @@ struct ThermalCycleHandbackShapeTripwireTests {
             ThermalCycleHandbackTripwireTests.compacted(Self.topLevel(of: code))
                 == "structThermalCycleHandback<Plane:FanControlPlane>:FanRestoring",
             "the handback's file declares more than the handback: \(Self.topLevel(of: code))")
+        let structBody = try #require(
+            try Self.body(of: #"\bstruct\s+ThermalCycleHandback\b"#, in: code))
+        let keywords = "struct|class|enum|actor|protocol|static|typealias"
+        let declared = try Self.ranges(
+            of: #"(?<![A-Za-z0-9_])("# + keywords + #")(?![A-Za-z0-9_])"#, in: code,
+            within: structBody)
+        #expect(
+            declared.isEmpty,
+            "the handback declares \(declared.map { String(code[$0]) }) inside itself")
+        let inits = try Self.memberInitBodies(in: structBody, of: code)
+        #expect(inits.count == 1, "the handback declares \(inits.count) initialisers")
+        let initBody = try #require(inits.first)
         let lane = try Self.ranges(of: #"(?<![A-Za-z0-9_])thermalCycle(?![A-Za-z0-9_])"#, in: code)
-        let initBody = try #require(try Self.body(of: #"\binit\s*\("#, in: code))
         #expect(lane.count == 1, "the handback names the lane \(lane.count) times")
         #expect(
             lane.allSatisfy { initBody.contains($0.lowerBound) },
-            "the handback's lane mint is not inside its init")
+            "the handback's lane mint is not inside its own init")
+    }
+
+    /// No `typealias` anywhere in `Sources/AeolusHelper` names `ThermalCycleHandback`. An alias
+    /// is a way to build one without naming the type, which `onlyTheCompositionBuildsTheHandback`
+    /// counts by name.
+    ///
+    /// **Mutation (C1):** `typealias LaneHandback = ThermalCycleHandback` in the composition's
+    /// file. Run: red here.
+    @Test("No typealias names § 3's handback")
+    func noTypealiasNamesTheHandback() throws {
+        var aliased: [String] = []
+        for (file, code) in try Self.helperCode
+        where try !Self.ranges(
+            of: #"\btypealias\s+[A-Za-z_]\w*[^=\n]*=[^\n]*\bThermalCycleHandback\b"#, in: code
+        ).isEmpty {
+            aliased.append(file)
+        }
+        #expect(aliased.isEmpty, "ThermalCycleHandback is aliased in \(aliased.sorted())")
     }
 
     /// Every lane naming in the composition's file is inside the composition's `init` — § 3's
@@ -200,21 +276,30 @@ struct ThermalCycleHandbackShapeTripwireTests {
         #expect(extended.isEmpty, "FanRestoring is extended in \(extended.sorted())")
     }
 
-    /// No file under `Lease/` names an unsafe spelling. In safe Swift a borrowed parameter cannot
-    /// be kept; `withoutActuallyEscaping` and the `Unsafe*` family are where that stops being true.
+    /// The helper's unsafe spellings, per file, pinned: the two IOKit callback bridges that need
+    /// them today — `AeolusHelperMain.swift` and `Lifecycle/SystemPowerObserver.swift` — and
+    /// nowhere else. In safe Swift a borrowed parameter cannot be kept; `withoutActuallyEscaping`
+    /// and the `Unsafe*` family are where that stops being true, and a borrowed handback can be
+    /// forwarded to any generic function in the module, so the ban is helper-wide rather than
+    /// `Lease/`'s.
     ///
-    /// **Mutation (M14):** in `revokeEveryLease`, copy the handback's bytes into an
-    /// `UnsafeMutablePointer<Handback>` through `withUnsafePointer(to:)` and keep a closure over
-    /// its `pointee`. Run: red here — it compiles, and nothing else sees it.
-    @Test("The lease core uses no unsafe spelling")
-    func theLeaseCoreUsesNoUnsafeSpelling() throws {
-        let lease = try Self.helperCode.filter { $0.key.hasPrefix("Lease/") }
-        #expect(lease.count > 10, "the scan found \(lease.count) lease-core files")
+    /// **Mutation (M14, relocated):** a generic function in `Safety/` that copies a borrowed
+    /// `FanRestoring & ~Copyable` value's bytes into an `UnsafeMutablePointer` through
+    /// `withUnsafePointer(to:)`, called from `revokeEveryLease` with a closure kept over the copy's
+    /// `pointee`. Run: red here — it compiles, and nothing else sees it.
+    @Test("Only the IOKit bridges use an unsafe spelling, as often as they do today")
+    func onlyTheIOKitBridgesUseUnsafeSpellings() throws {
         var found: [String: Int] = [:]
-        for (file, code) in lease {
+        for (file, code) in try Self.helperCode {
             let count = try Self.ranges(of: Self.unsafeSpelling, in: code).count
             if count > 0 { found[file] = count }
         }
-        #expect(found.isEmpty, "unsafe spellings in the lease core: \(found)")
+        #expect(
+            found == ["AeolusHelperMain.swift": 2, "Lifecycle/SystemPowerObserver.swift": 4],
+            """
+            unsafe spellings in the helper: \(found). A new one is a way to keep a borrowed \
+            value past its call; acknowledge it here only with a reason no borrowed restorer \
+            reaches it.
+            """)
     }
 }
