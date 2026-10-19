@@ -150,8 +150,9 @@ struct ManifestScanDependencyTests {
     /// the reason is the true one: rule zero reads `Tests/`, so a non-test kind is not refused
     /// from there for being unread, and no message puts "a" before `executableTarget`.
     ///
-    /// **Mutation:** put the old message back — "the only place the scans here read a \(kind)".
-    /// Run: red here, at the first fixture.
+    /// **Mutations:** put the old message back — "the only place the scans here read a \(kind)";
+    /// make `problem(with:)` answer `nil` for a path outside the roots. Run: red here, the first
+    /// at the first fixture and the second at the `#require` that a misplaced target is refused.
     @Test(
         "A misplaced target is told why, and the reason names no unread Tests/ and no bad article")
     func aMisplacedTargetIsToldTheTrueReason() throws {
@@ -159,7 +160,13 @@ struct ManifestScanDependencyTests {
             for path in ["Probe/P", "Tests/P", "Sources/P"] {
                 let target = try ManifestScanTests.target(
                     #".\#(kind)(name: "P", path: "\#(path)")"#)
-                guard let message = ManifestScanTests.lookingFor(target).problem else { continue }
+                let belongs = kind == "testTarget" ? path == "Tests/P" : path == "Sources/P"
+                let problem = ManifestScanTests.lookingFor(target).problem
+                if belongs {
+                    #expect(problem == nil, "\(kind) at \(path) was refused: \(problem ?? "")")
+                    continue
+                }
+                let message = try #require(problem, "\(kind) at \(path) was not refused")
                 #expect(!message.contains("the only place"), "\(kind) \(path): \(message)")
                 #expect(
                     message.range(of: #"\ba [aeiouAEIOU]"#, options: .regularExpression) == nil,
