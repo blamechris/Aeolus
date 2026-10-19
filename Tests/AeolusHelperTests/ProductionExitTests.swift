@@ -19,8 +19,8 @@ struct ProductionExitTests {
     /// refused at its admission; its retry's entitlement refuses on the ended lease. Nothing is
     /// written forward, and the exit is `.restored`.
     ///
-    /// **Mutation:** in `SMCWriteTurns.step`, admit with `.first` without asking the ledger (drop
-    /// `admitStep(fanAt:)`). Run: red here, at the forward writes, on both rows.
+    /// **Mutation:** in `SMCWriteTurns.step`, take a refused admission as `.first`
+    /// (`(try? ledger.admitStep(fanAt: index)) ?? .first`). Run: red here, at the forward writes.
     @Test(
         "An apply in flight at the exit writes nothing forward over the production plane",
         arguments: [FirmwareSMC.Unlock.naive, .heldUntilForced(stepsToYield: 2)])
@@ -49,7 +49,8 @@ struct ProductionExitTests {
     /// plane after the exit and writes no target: `.forExit` sealed it, and `admitCommand()` is its
     /// turn's first statement.
     ///
-    /// **Mutation:** delete `try ledger.admitCommand()` from `SMCWriteTurns.command`. Run: red here,
+    /// **Mutation:** delete `try ledger.admitCommand()` from `SMCWriteTurns.command`. Run: red
+    /// here,
     /// at the target write.
     @Test("A command in flight at the exit writes no target over the production plane")
     func aCommandInFlightAtTheExitWritesNoTarget() async throws {

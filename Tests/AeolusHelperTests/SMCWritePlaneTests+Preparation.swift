@@ -34,14 +34,15 @@ extension SMCWritePlaneTests {
     }
 
     /// The step's three reasons to issue its one machine-wide restore: the key reads non-zero,
-    /// its info will not read (unknown), or its value will not (unreadable). Each issues `.everyFan`
+    /// its info will not read (unknown), or its value will not (unreadable). Each issues
+    /// `.everyFan`
     /// once, after the reads' turn.
     ///
     /// **Mutations:** in `WritePathPreparation.needsMachineWideRestore`, answer `false` for
     /// `.unreadable`. Run: red here, on that row. Answer `true` for `.reads(0)`. Run: red at
     /// `aQuiescentPreparationRestoresNothing`.
     @Test(
-        "The preparation step issues the machine-wide restore when the key is set, unknown or unread",
+        "The preparation step restores machine-wide when the key is set, unknown or unread",
         arguments: ["set", "unknown", "unreadable"])
     func aPreparationRestoresWhenTheKeyIsNotClear(_ state: String) async throws {
         let fixture = WritePlaneFixture()
@@ -129,9 +130,8 @@ extension SMCWritePlaneTests {
     /// the plane's admission: four round trips while another engaged fan holds the key, five on the
     /// last engaged fan, whose restore clears it.
     ///
-    /// **Mutations:** in `SMCFanControlPlane.bridgeThenRestore(_:)`, run the restore half in a
-    /// second write turn. Run: red here, at the turn count. Skip the key in its restore half (plan
-    /// `.fan(n)` as if another fan were engaged). Run: red here, at five.
+    /// **Mutation:** in `SMCFanControlPlane.bridgeThenRestore(_:)`, run the restore half in a
+    /// second write turn. Run: red here, at the turns.
     @Test("A bridge job is the command's operations then the restore's, in one turn")
     func aBridgeJobIsOneTurn() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 0))

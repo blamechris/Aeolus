@@ -108,9 +108,8 @@ struct PlaneWriteChannelTests {
     /// does a write turn taken at any admission but the plane's own, or a write turn whose channel
     /// is anything else.
     ///
-    /// **Mutations:** in `SMCFanControlPlane.restoreToAutomatic(_:)`, take the turn at
-    /// `.supervisor`; and, separately, read `writeChannel` into a local before the turn. Run: red
-    /// here, each.
+    /// **Mutation:** in `SMCFanControlPlane.restoreToAutomatic(_:)`, take the turn at
+    /// `.supervisor`. Run: red here.
     @Test("Every use of the stored channel is one write turn's argument at the plane's admission")
     func everyUseOfTheChannelIsOneTurnsArgument() throws {
         var code = Self.collapsed(try Self.code(of: "SMCFanControlPlane.swift"))
@@ -138,7 +137,8 @@ struct PlaneWriteChannelTests {
     /// site, which `PlaneViewTests+WriteChannel.swift` catches behaviourally; this holds the shape.
     ///
     /// **Mutation:** start `admitted(at:)`'s view from `SMCFanControlPlane(scheduler: scheduler,
-    /// connection: connection)`. Run: red here (and at the lane-site scan).
+    /// connection: connection, channel: writeChannel)`. Run: red here, and in
+    /// `ProductionLaneTests.everyStoredPlaneSharesTheChannelAndTheLedger`.
     @Test("A view of the plane is a copy of it with the admission changed")
     func aViewIsACopyOfThePlane() throws {
         let code = Self.collapsed(try Self.code(of: "SMCFanControlPlane.swift"))

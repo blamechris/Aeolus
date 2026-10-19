@@ -39,7 +39,8 @@ extension SMCWritePlaneTests {
     /// A firmware recorded without the key cannot take this route: the held first step throws, and
     /// nothing but the mode write was issued.
     ///
-    /// **Mutation:** in `EngagementRules.afterModeWrite`, drop the `.absent` guard. Run: red here.
+    /// **Mutation:** in `EngagementRules.afterModeWrite`, delete the `forceKey != .absent` guard.
+    /// Run: red here — the key is written.
     @Test("A held first step on a firmware with no force key throws, writing no key")
     func anAbsentForceKeyIsNeverWritten() async throws {
         let fixture = WritePlaneFixture(unlock: .neverYields)
@@ -89,7 +90,7 @@ extension SMCWritePlaneTests {
     /// no answer — throws, with no read-back, no key and no retry.
     ///
     /// **Mutation:** in `SMCWriteTurns.answer(to:)`, read `0x89` as `.heldBySystem`. Run: red here,
-    /// on that row: the key is written.
+    /// on that row.
     @Test(
         "A first answer other than 0x00 or 0x82 throws, with no read-back and no key",
         arguments: [
@@ -117,8 +118,8 @@ extension SMCWritePlaneTests {
     /// Read back raw `1`, the step is engaged; `0` (accepted, not applied) or any other value is
     /// `.engagementNotConfirmed` with the raw byte.
     ///
-    /// **Mutation:** in `EngagementRules.isEngagedMode`, accept any non-zero value. Run: red here,
-    /// on the 2 and 3 rows.
+    /// **Mutation:** in `EngagementRules.isEngagedMode`, answer `rawMode != 0`. Run: red here, on
+    /// the 2 and 3 rows.
     @Test(
         "A read-back of 1 is engaged, and any other raw value is not confirmed",
         arguments: [UInt8(0), 1, 2, 3])
@@ -146,8 +147,7 @@ extension SMCWritePlaneTests {
     /// Every write call is logged once, restores and refusals included, with its key, its bytes and
     /// its answer — and nothing else is logged as a write.
     ///
-    /// **Mutation:** in `SMCWriteTurns.issue`, log only an `.accepted` answer. Run: red here, at the
-    /// count and at the refused restore's line.
+    /// **Mutation:** in `SMCWriteTurns.issue`, log only an `.accepted` answer. Run: red here.
     @Test("Every write is logged once, whatever it answered")
     func everyWriteIsLoggedOnce() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 0))
@@ -169,6 +169,9 @@ extension SMCWritePlaneTests {
 
     /// A step's line carries the raw values before and after and how it ended; the engaged turn
     /// logs the raw target it read.
+    ///
+    /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, delete `trace.before = hex(rawMode)`.
+    /// Run: red here.
     @Test("A step logs the raw mode before and after, and the engaged turn the raw target")
     func aStepLogsItsRawValues() async throws {
         let fixture = WritePlaneFixture()
@@ -187,8 +190,8 @@ extension SMCWritePlaneTests {
     /// The engaged turn's read of the target is a record: if it fails, the step is still engaged,
     /// and the line says the target did not read.
     ///
-    /// **Mutation:** in `SMCWriteTurns.readEngagedTarget`, rethrow the read's failure (make the
-    /// function throwing). Run: red here.
+    /// **Mutation:** make `SMCWriteTurns.readEngagedTarget` throwing, rethrow the read's failure,
+    /// and `try` it at its call. Run: red here.
     @Test("A target that will not read in the engaged turn changes nothing")
     func anUnreadTargetChangesNothing() async throws {
         let fixture = WritePlaneFixture()
@@ -208,7 +211,8 @@ extension SMCWritePlaneTests {
     /// three, a command is three, a `.fan(n)` restore is one or two, a machine-wide one three.
     ///
     /// **Mutation:** in `SMCWriteTurns.readEngagedTarget`, read the target twice. Run: red here, at
-    /// the engaged step's six.
+    /// the engaged step's six. **Mutation (C27's premise):** in `SMCWriteTurns.survey`, take no
+    /// target key info. Run: red here — the engaged step's target read costs a key info too.
     @Test("Every step, command and restore turn stays within writeTurnRoundTrips")
     func everyTurnStaysWithinItsRoundTrips() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 1))

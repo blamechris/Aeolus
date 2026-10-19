@@ -24,8 +24,7 @@ struct TelemetryReadOnlyRoleTests {
     }
 
     /// **Mutation:** declare `struct CuratedCriticalTemperatures<Plane: FanControlPlane>`. Run:
-    /// red here. **Mutation:** add `func commandTarget(_ target: AuthorisedFanTarget) async throws
-    /// -> CommandedTarget` to `CriticalTemperatureReading`. Run: red here.
+    /// red here.
     @Test("The telemetry is generic over the read role, which declares only the read and the view")
     func theTelemetryHoldsTheReadRole() throws {
         let code = try Self.code(of: "CriticalTemperatureSensing.swift")

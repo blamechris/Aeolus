@@ -103,7 +103,8 @@ struct ProductionLaneLoadTests {
     ///
     /// **What is deterministic, and what is not.** The teardowns run awaited inside § 3's firing
     /// (`InterferingWritePlane.interfere(afterBridge:with:)`), so which one restores, and so the
-    /// admission of its writes, is fixed. One lease is held at a time (`.leaseHeldByAnotherClient`),
+    /// admission of its writes, is fixed. One lease is held at a time
+    /// (`.leaseHeldByAnotherClient`),
     /// so a teardown concurrent with § 3's own lane requests would race § 3 for the same lease and
     /// fix nothing; the overlap and the allowance are therefore asserted as properties of this run,
     /// and they are not what a misrouted teardown turns red.

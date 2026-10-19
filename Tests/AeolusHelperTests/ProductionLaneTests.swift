@@ -31,7 +31,7 @@ struct ProductionLaneTests {
     /// **Mutation:** in `HelperComposition.init`, give § 3 `SafetyActorWriter(plane: plane,
     /// level: .thermalEmergency)`. Run: red here — the bridge is at `.supervisor`.
     /// **Mutation:** in `ThermalCycleHandback.init`, drop `.admitted(at: .thermalCycle)`. Run: red
-    /// here — the revocation's restores are at `.supervisor`.
+    /// here — the firing's restores are at `.supervisor`.
     @Test("§ 3's writes are in the lane and level 6's, § 4's and § 7's at supervisor")
     func onlySectionThreesWritesAreInTheLane() async throws {
         let machine = await ProductionWriteMachine()
@@ -74,8 +74,8 @@ struct ProductionLaneTests {
     /// K6 on real write turns: after a firing whose revocation handed back in the lane, the TTL, a
     /// release, § 5's revocation, § 6's pass and the signal teardown each write at `.supervisor`.
     ///
-    /// **Mutation (K6):** in `HelperComposition.init`, build the handback before the lease core and
-    /// give it to `LeaseAuthority` as `restorer:`. Run: red here, at the lease-core paths.
+    /// **Mutation (K6):** in `HelperComposition.init`, give `LeaseAuthority` a
+    /// `ThermalCycleHandback` as its `restorer:`. Run: red here, at the lease-core paths.
     @Test("After a firing, every other path writes at supervisor")
     func afterAFiringEveryOtherPathIsAtSupervisor() async throws {
         let machine = await ProductionWriteMachine()

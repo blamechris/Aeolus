@@ -5,7 +5,8 @@ import os
 @testable import AeolusHelper
 @testable import SMCCore
 
-/// `SMCReadScheduler.withWriteTurn(at:on:_:)`: one turn at the given admission, excluded against every other
+/// `SMCReadScheduler.withWriteTurn(at:on:_:)`: one turn at the given admission, excluded against
+/// every other
 /// turn, and taking neither of D22's waits (ADR 0014's B1 amendment; #103's D22 is why a recycle
 /// waits for a walk and a write need not).
 ///

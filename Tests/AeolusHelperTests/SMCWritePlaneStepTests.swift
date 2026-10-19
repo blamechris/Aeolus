@@ -63,9 +63,9 @@ struct SMCWritePlaneTests {
     /// A first step on a fan that yields at once: the mode key's fresh info, its raw pre-state,
     /// `F0Md = 1`, the read-back, and the logged target — in that order, in one supervisor turn.
     ///
-    /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, take the raw pre-state after the key
-    /// info's type check is replaced by a read after the write (move the pre-state read into
-    /// `unlockStep` after `issue`). Run: red here, at the order (and the pre-state reads `1`).
+    /// **Mutation:** move the raw pre-state read after the write — `beforeTheModeWrite` returns
+    /// before reading, and `unlockStep` reads and decides it after `issue`. Run: red here, at the
+    /// operation order.
     @Test("A first step is key info, the raw pre-state, the write, the read-back, in one turn")
     func aFirstStepReadsThenWritesThenReadsBack() async throws {
         let fixture = WritePlaneFixture()
@@ -87,9 +87,8 @@ struct SMCWritePlaneTests {
     /// A fan whose raw mode reads `2` is not Aeolus's to take: `.notAutomatic` carries the byte as
     /// read, decided by `EngagementRules.requireAutomatic`, and nothing is written.
     ///
-    /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, decide on
-    /// `FirmwareFanMode(declaredByFirmware: Double(rawMode)) == .automatic ? 0 : 1` instead of the
-    /// raw byte. Run: red here — `rawMode: 1`.
+    /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, decide on the fold's answer,
+    /// `rawMode == 0 ? 0 : 1`, instead of the raw byte. Run: red here — `rawMode: 1`.
     @Test("A raw mode of 2 is refused notAutomatic with the raw byte, and nothing is written")
     func aRawModeOfTwoIsNotAutomatic() async throws {
         let fixture = WritePlaneFixture()
@@ -204,9 +203,10 @@ extension SMCWritePlaneTests {
     /// Once a write call is made the engagement has written, so a failure after it is thrown as it
     /// is: a first step's lost read-back, and a later step's key-info failure, are `.readFailed`.
     ///
-    /// **Mutations:** in `SMCWriteTurns`, wrap the read-back's failure as `.failedBeforeFirstWrite`;
-    /// and, separately, wrap `beforeTheModeWrite`'s failure whether or not the step is the first.
-    /// Run: red here, at the read-back row and at the later-step row respectively.
+    /// **Mutations:** in `SMCWriteTurns.unlockStep`, throw the read-back's failure as
+    /// `.failedBeforeFirstWrite`. Run: red here, at the read-back row. Separately, delete the
+    /// `guard first else` line in `beforeTheModeWrite`, so a later step's failure is wrapped too.
+    /// Run: red here, at the later-step row.
     @Test("A failure after the first write is thrown as it is, never failedBeforeFirstWrite")
     func aFailureAfterTheFirstWriteIsThrownAsItIs() async throws {
         let lostReadBack = WritePlaneFixture()
@@ -236,7 +236,8 @@ extension SMCWritePlaneTests {
     /// not cancellable and the job is synchronous, so nothing can throw a `CancellationError`
     /// between its admission and its last write.
     ///
-    /// **Mutation:** add `try Task.checkCancellation()` after the admission in `SMCWriteTurns.step`.
+    /// **Mutation:** add `try Task.checkCancellation()` after the admission in
+    /// `SMCWriteTurns.step`.
     /// Run: red here.
     @Test("A step in a cancelled task is admitted and answers; it never throws CancellationError")
     func anAdmittedStepIsNotCancelled() async throws {
@@ -259,8 +260,8 @@ extension SMCWritePlaneTests {
     /// call is made: with the bring-up enumeration failed, `.everyFan` still writes it — and the
     /// key — and then says the fan set was unknown.
     ///
-    /// **Mutation:** move `recordModeWriteIssued(fanAt:)` after the write, and only on `.accepted`.
-    /// Run: red here — the restore writes the key alone.
+    /// **Mutation:** in `SMCWriteTurns.unlockStep`, record the mode write issued after the call,
+    /// and only when it answered `.accepted`. Run: red here — the restore writes the key alone.
     @Test("An unanswered mode write is touched, so a machine-wide restore writes that fan")
     func anUnansweredModeWriteIsRestored() async throws {
         let fixture = WritePlaneFixture()

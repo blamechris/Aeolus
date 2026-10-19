@@ -13,7 +13,8 @@ extension SMCWritePlaneTests {
     /// A restore moves the epoch when it is called, before it waits for its turn: with the turn
     /// held by a parked read, the restore is queued and an engagement in progress is already stale.
     ///
-    /// **Mutation:** move `ledger.restoreRequested(scope)` inside the restore's write turn. Run: red
+    /// **Mutation:** move `ledger.restoreRequested(scope)` inside the restore's write turn. Run:
+    /// red
     /// here — the engagement is current while the restore waits.
     @Test("A restore is requested before it waits: the epoch moves while it is queued")
     func aRestoreIsRequestedBeforeItsTurn() async throws {
@@ -68,7 +69,7 @@ extension SMCWritePlaneTests {
     /// b2 checklist: "never from a scope switch of its own").
     ///
     /// **Mutation:** add `if case .forExit = scope { return }` to `SMCWriteTurns.keystone`. Run:
-    /// red here (and in `PanicPathScopeTripwireTests`' exit-scope census).
+    /// red here.
     @Test("The write turns name no restore scope")
     func theWriteTurnsNameNoScope() throws {
         for file in ["SMCWriteTurns.swift", "SMCWriteTurns+Reads.swift"] {
@@ -87,9 +88,9 @@ extension SMCWritePlaneTests {
     /// Every mode first, then the key; a refused mode write is followed by the rest, and the
     /// restore throws only after all of them. No key info, no read.
     ///
-    /// **Mutations:** in `RestorePlan.attemptEvery`, rethrow inside the loop. Run: red here — the
-    /// key's write is missing. In `SMCWriteTurns.keystone`, read the key before writing it. Run:
-    /// red here, at the read.
+    /// **Mutations:** in `RestorePlan.attemptEvery`, rethrow inside the loop. In
+    /// `SMCWriteTurns.keystone`, read the key before writing it. In `RestorePlan.init`, put the key
+    /// ahead of the modes. Run: red here at the operations, each.
     @Test("A restore writes every mode then the key, attempts every write, and reads nothing")
     func aRestoreAttemptsEveryWriteAndReadsNothing() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 0))
@@ -114,7 +115,7 @@ extension SMCWritePlaneTests {
     /// engaged fan depends on it.
     ///
     /// **Mutation:** in `PlaneWriteLedger.issueRestore(fanAt:)`, clear the key whenever the flag is
-    /// set. Run: red here, at the first restore.
+    /// set, ignoring the engaged set. Run: red here, at the first restore.
     @Test("A per-fan restore clears the key only when no engaged fan is left")
     func aPerFanRestoreClearsTheKeyLast() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 0))
@@ -132,6 +133,9 @@ extension SMCWritePlaneTests {
 
     /// A restore writes zeros of the size the preparation step recorded, one zero byte for a key
     /// with none, and never a key recorded absent.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.issueMachineWideRestore()`, clear the key whatever its
+    /// presence. Run: red here, at the absent row.
     @Test("A restore writes the recorded size, one byte when unknown, and no absent key")
     func aRestoreWritesTheRecordedSizes() async throws {
         let sized = WritePlaneFixture()

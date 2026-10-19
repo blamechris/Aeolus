@@ -4,7 +4,8 @@ import Testing
 @testable import AeolusHelper
 @testable import SMCCore
 
-/// One write contract, run over **both** planes (C7; #439's W6): `ScriptedControlPlane`, which every
+/// One write contract, run over **both** planes (C7; #439's W6): `ScriptedControlPlane`, which
+/// every
 /// ticket, seal and bridge test on `main` runs against, and the production `SMCFanControlPlane`
 /// over `FirmwareSMC`. #417's tests ran against the double alone, so a production plane that
 /// skipped `admitCommand()`, or called it after the write, turned nothing red. Here each scenario
@@ -211,9 +212,8 @@ struct WritePlaneContractTests {
     /// § 3's bridge on each plane: a refused maximum still restores; a sealed one writes no target
     /// and still restores; an accepted one is the target, then the fan's restore.
     ///
-    /// **Mutation (production only):** in `SMCFanControlPlane.bridgeThenRestore(_:)`, return the
-    /// command half's failure for both halves without running the restore. Run: red on the
-    /// production arm.
+    /// **Mutation (production only):** in `SMCFanControlPlane.bridgeThenRestore(_:)`, run the
+    /// restore half only when the command half succeeded. Run: red on the smcPlane arm.
     @Test("The bridge restores whatever its command half answered", arguments: Arm.allCases)
     func theBridgeRestoresWhateverTheCommandAnswered(_ arm: Arm) async throws {
         let refusing = try await Self.harness(arm, refusingTargets: true)
