@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 
-/// Nothing but a test target reaches the helper (#445).
+/// Only a test target lists the helper in the manifest's constructor, and no `Sources/` or
+/// `Tools/` file outside the helper imports it (#445).
 ///
 /// **Rule zero: no test may write to this Mac's SMC.** `NotBuiltRequireTripwireTests` holds every
 /// real composition a test builds to a `let` whose first use is
@@ -56,14 +57,13 @@ import Testing
 ///
 ///    A `.macro` target needs `import CompilerPluginSupport`, where `Target.macro` is declared,
 ///    and the shape rule refuses that import. Observed on Swift 6.4: without the import `.macro`
-///    is not a member of `Target`; with it, and with no swift-syntax dependency, a macro target
-///    built and the suite stayed green (MACRO). So the shape rule closes the `.macro` route, and
-///    the pin does not.
+///    is not a member of `Target`. So the shape rule closes the `.macro` route (MACRO, red at
+///    `ManifestScanShapeTests`); whether the package pin would close it too is not relied on.
 ///
 /// These scans catch accidents, and every spelling met so far; a deliberate author can evade a
 /// lexical reading. ADR 0014's compiler seam (the B1 seam amendment) is the control, as everywhere
 /// in this directory. They do not see an Xcode target (`project.yml` is not read for dependencies).
-@Suite("Only a test target depends on, or imports, the helper")
+@Suite("Only a test target lists the helper as constructed; no Sources or Tools file imports it")
 struct HelperDependentsTests {
 
     // MARK: - The manifest
@@ -120,7 +120,7 @@ struct HelperDependentsTests {
     /// to the root `dependencies:`, `.product(name: "ZZ", package: "ZZLocal")` to
     /// `AeolusHelperTests`, and `ZZLocal/Sources/ZZ/ZZ.swift` doing `@testable import
     /// AeolusHelper`. Run: red here.
-    @Test("The root package depends on swift-argument-parser and on no other package")
+    @Test("The root Package(...) lists swift-argument-parser and no other package")
     func theRootPackageDependsOnNoOtherPackage() throws {
         var found: [String] = []
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {
@@ -155,7 +155,7 @@ struct HelperDependentsTests {
     /// (SYMDOT2) a path `ZZA/../Sources/aeolushelper/ZZSym` with `ZZA` a link into a decoy; (P4) a
     /// `.plugin` at `Sources/ZZGen` applied to `AeolusHelperTests`, generating a file that
     /// references `production()`. Run: red here, each.
-    @Test("No manifest nests a target in the helper or applies a plugin")
+    @Test("No target's constructor nests it in the helper or applies a plugin")
     func noManifestHidesSourceFromTheScans() throws {
         var read = 0
         for name in ManifestScan.manifestNames(among: try SeamBuildSettingTests.rootEntries()) {

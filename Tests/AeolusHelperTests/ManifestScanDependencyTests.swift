@@ -3,7 +3,8 @@ import Testing
 
 /// The part of the manifest scan that reads what a target depends on (#445), on synthetic text:
 /// a scan that has silently stopped reading reports a clean tree, so each spelling it must see and
-/// each it must refuse is a fixture. Nothing here touches a file; a manifest is a string.
+/// each it must refuse is a fixture. Nothing here touches a file; a manifest is a string. These
+/// scans catch accidents; ADR 0014's compiler seam (the B1 seam amendment) is the control.
 @Suite("The manifest scan's reading of dependencies")
 struct ManifestScanDependencyTests {
 
