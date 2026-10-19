@@ -10,13 +10,13 @@
 /// takes a writer at whatever admission it was built at and admits it in the lane itself, so a
 /// handback cannot be built at `.supervisor` — and building one is minting a lane writer. So the
 /// lane is named only here and in the composition (`ThermalCycleLaneTripwireTests`), and this
-/// file holds this one declaration with its one mint inside its own `init`, with no nested type,
-/// no static member and no `Self(…)` or `.init(…)` call outside that `init`; the type is named only
-/// by the composition, which builds it, and by § 3, which holds it, and nothing aliases it
+/// file holds this one declaration with its one mint inside its own `init`, with no nested type, no
+/// static member and no `Self(…)` call or `.init` reference outside that `init`; the type is named
+/// only by the composition, which builds it, and by § 3, which holds it, and nothing aliases it
 /// (`ThermalCycleHandbackShapeTripwireTests`). Those scans catch accidents. What a deliberate
 /// second holder would do — write in the lane from another mechanism — is held by behaviour on the
-/// paths `SupervisorWriterAdmissionTests` and K6 drive: level 6, § 5's re-assert, give-up and
-/// lapse hand-back, § 7, § 6's machine-wide restore, the signal teardown and the power observer
+/// paths `SupervisorWriterAdmissionTests` and K6 drive: level 6, § 5's re-assert, give-up and lapse
+/// hand-back, § 7, § 6's machine-wide restore, the signal teardown and the power observer
 /// `bringUp()` installs, and K6's other teardowns after a firing. A path neither drives is held by
 /// the scans alone.
 ///

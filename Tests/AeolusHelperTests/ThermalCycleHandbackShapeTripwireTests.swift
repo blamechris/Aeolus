@@ -115,10 +115,13 @@ struct ThermalCycleHandbackShapeTripwireTests {
     static let aliasOfTheHandback =
         #"\btypealias\s+[A-Za-z_]\w*[^=\n]*=[^\n]*\bThermalCycleHandback\b"#
 
-    /// An initialiser call that names no type: `Self(…)`, `Self.init(…)`, `.init(…)`. In an
-    /// instance method it builds a handback, and so mints a lane writer, under no name the
-    /// per-file count of the type's name sees.
-    static let anonymousConstruction = #"(?<![A-Za-z0-9_])Self\s*\(|\.\s*init\s*\("#
+    /// A construction that does not spell the type's name: `Self(…)`, or any `.init` after a dot,
+    /// called (`Self.init(…)`, `.init(…)`) or not (`let make = Self.init`), since an unapplied
+    /// initialiser reference builds one as soon as it is applied. In an instance method it builds
+    /// a handback, and so mints a lane writer, under no name the per-file count of the type's name
+    /// sees. `.initialize` and a longer name are not matches.
+    static let anonymousConstruction =
+        #"(?<![A-Za-z0-9_])Self\s*\(|\.\s*init(?![A-Za-z0-9_])"#
 
     /// The spellings that move a borrowed value's bits out of the move checker's sight.
     static let unsafeSpelling =
@@ -172,7 +175,10 @@ struct ThermalCycleHandbackShapeTripwireTests {
             of: "typealias A = Int\nlet h: ThermalCycleHandback<P>\nvar b = 1")
         #expect(unrelated == "typealias A = Int\nlet h: ThermalCycleHandback<P>\nvar b = 1")
         #expect(try Self.ranges(of: Self.aliasOfTheHandback, in: unrelated).isEmpty)
-        for building in ["Self(notifying: n)", "Self.init(n)", "return .init(n)", "Self (n)"] {
+        for building in [
+            "Self(notifying: n)", "Self.init(n)", "return .init(n)", "Self (n)",
+            "let make = Self.init", "let make = Self\n    .init",
+        ] {
             #expect(
                 try Self.ranges(of: Self.anonymousConstruction, in: building).count == 1,
                 "\(building)")
@@ -190,10 +196,10 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// holds and takes it, and where the composition builds it — once. A construction written
     /// anywhere else by the type's name, in any expression and by `.init(…)` too, names it one
     /// more time in some file. A construction under another name — a `typealias`, or an inferred
-    /// `Self(…)` or `.init(…)` — is not a name of it: `noTypealiasNamesTheHandback`, which reads a
-    /// wrapped `typealias` whole, and the handback's own shape, which refuses any such call outside
-    /// its `init`, close the two spellings an edit reaches for, and the behavioural suites hold the
-    /// rest.
+    /// `Self(…)` or `.init` — is not a name of it: `noTypealiasNamesTheHandback`, which reads a
+    /// wrapped `typealias` whole, and the handback's own shape, which refuses any `Self(…)` call
+    /// and any `.init` reference, applied or not, outside its `init`, close the two spellings an
+    /// edit reaches for, and the behavioural suites hold the rest.
     ///
     /// **Mutation (CX1):** in `HelperComposition.bringUp()`, build a second handback inside the
     /// signal teardown's closure and restore through it. Run: red — two in the file.
@@ -222,9 +228,9 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// The handback's file declares the handback and nothing else, and its one lane mint is inside
     /// the handback's own `init`: no extension of any type, no second top-level declaration, no
     /// nested type, no `static` member and no `typealias` in its body, exactly one initialiser
-    /// declared directly in that body, found by brace depth, and no `Self(…)`, `Self.init(…)` or
-    /// `.init(…)` outside that initialiser — an instance method that builds another handback is a
-    /// factory the type's name never appears in.
+    /// declared directly in that body, found by brace depth, and no `Self(…)` call and no `.init`
+    /// — `Self.init(…)`, `.init(…)`, or the unapplied `Self.init` — outside that initialiser: an
+    /// instance method that builds another handback is a factory the type's name never appears in.
     ///
     /// **Mutation (L2b):** add `extension SafetyActorWriter { var inTheLane: Self {
     /// admitted(at: .thermalCycle) } }` to the file, build the handback's bound over
@@ -237,6 +243,9 @@ struct ThermalCycleHandbackShapeTripwireTests {
     /// **Mutation (G2):** an instance factory in the handback, `func rebuilt(over writer:
     /// SafetyActorWriter<Plane>, log: LeaseLog) -> Self { Self(notifying: notices, writer: writer,
     /// log: log) }`. Run: red here.
+    /// **Mutation (G2b):** the same factory through an unapplied initialiser, `let make = Self.init;
+    /// return make(notices, writer, log)`. Run: red here. The pattern before the `.init` fix,
+    /// `\.\s*init\s*\(`, left it green.
     @Test("The handback's file holds the handback alone, with its mint inside its own init")
     func theHandbacksFileHoldsTheHandbackAlone() throws {
         let code = try #require(try Self.helperCode["Lease/ThermalCycleHandback.swift"])

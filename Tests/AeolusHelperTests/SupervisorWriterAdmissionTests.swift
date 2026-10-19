@@ -19,8 +19,9 @@ import Testing
 /// `.thermalCycle` call in the path is a mechanism other than § 3 in § 3's lane. The two drives
 /// that call `bringUp()` — the signal teardown and the power observer — start the supervisors on
 /// the real clock, so § 3 does cycle during them, reading in its lane once a second. They
-/// therefore look at restores alone: § 3's cycle restores nothing at nominal temperatures, so a
-/// `.thermalCycle` *restore* in either is still a mechanism other than § 3.
+/// therefore look at writes alone — every attempt that is not a read (`writes(in:)`): § 3's cycle
+/// at nominal temperatures issues no write at all, so a `.thermalCycle` restore, command,
+/// engagement or bridge in either is a mechanism other than § 3.
 ///
 /// The paths are the ones `ThermalCycleLaneRoutingTests`' K6 does not already drive: level 6's
 /// engagement and command, § 5's re-assert and its give-up, § 5's hand-back of a fan whose lease
@@ -124,6 +125,26 @@ struct SupervisorWriterAdmissionTests {
         #expect(calls.contains { expected($0.attempt) }, "\(path) did not happen: \(calls)")
         let lane = calls.filter { $0.admission != .supervisor }
         #expect(lane.isEmpty, "\(path) took § 3's lane: \(lane)")
+    }
+
+    /// What `calls` did to the firmware rather than looked at: every attempt that is not a read.
+    ///
+    /// For the two drives that call `bringUp()`, where the supervisors run and § 3 legitimately
+    /// reads in its lane. Reads are dropped by name and everything else is kept, so a new kind of
+    /// write is checked by default, and the switch is exhaustive so a new kind of attempt must be
+    /// classed here before the suite compiles. `.reconnect` is a read of the connection's health
+    /// and is recorded at `.supervisor` whatever the view.
+    private static func writes(
+        in calls: [ScriptedControlPlane.AdmittedAttempt]
+    ) -> [ScriptedControlPlane.AdmittedAttempt] {
+        calls.filter {
+            switch $0.attempt {
+            case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
+                false
+            case .restoreToAutomatic, .engageManualControl, .commandTarget, .bridgeThenRestore:
+                true
+            }
+        }
     }
 
     // MARK: - § 5, level 6 and § 7
@@ -248,13 +269,18 @@ struct SupervisorWriterAdmissionTests {
     // MARK: - The installed teardown
 
     /// The signal teardown `bringUp()` installs, fired through the signal source the composition
-    /// was given: every restore it issues is at `.supervisor`. K6 drives
+    /// was given: every write it issues is at `.supervisor`. K6 drives
     /// `run(stoppingSupervisorsWith:)` with a closure of its own; this drives the closure bring-up
     /// actually supplies.
     ///
     /// **Mutation (A1):** keep the handback in a `let` in `HelperComposition.init`, store a
     /// `teardownHandback` closure that restores fan 0 through it, and have `bringUp()`'s
     /// `stoppingSupervisorsWith:` call it after `shutDown()`. Run: red here.
+    /// **Mutation (U3b, on the teardown):** keep § 3's lane writer in a `let` in
+    /// `HelperComposition.init` — it is still named once — store a closure that reads fan 0's
+    /// envelope at `.supervisor` and calls `bridgeToMaximumThenRestore` through that writer, and
+    /// have `bringUp()`'s `stoppingSupervisorsWith:` call it after `shutDown()`. Run: red here: a
+    /// bridge is no restore, and a restores-only filter would not see it.
     @Test("The teardown bring-up installs restores at supervisor")
     func theInstalledTeardownRestoresAtSupervisor() async throws {
         let machine = await Machine(stages: [Self.nominal], clock: SystemMonotonicClock())
@@ -265,31 +291,29 @@ struct SupervisorWriterAdmissionTests {
             await machine.signals.fire()
             #expect(await machine.journal.waitForExit(), "the teardown never reached its exit")
         }
-        let restores = teardown.filter {
-            if case .restoreToAutomatic = $0.attempt { return true }
-            return false
+        Self.expectAtSupervisor(Self.writes(in: teardown), "the installed teardown's hand-back") {
+            $0 == .restoreToAutomatic(.fan(0))
         }
-        #expect(
-            restores.contains { $0.attempt == .restoreToAutomatic(.fan(0)) },
-            "the teardown did not hand the lease's fan back: \(teardown)")
-        #expect(
-            restores.allSatisfy { $0.admission == .supervisor },
-            "the installed teardown restored in § 3's lane: \(restores)")
     }
 
     // MARK: - The installed power observer
 
     /// The sleep and wake restore `bringUp()` installs, fired through the power observer the
-    /// composition was given: every restore it issues is at `.supervisor`, at rest and after a
+    /// composition was given: every write it issues is at `.supervisor`, at rest and after a
     /// firing. `SystemPowerTests` drives § 4 through `observeSystemPower()` by hand with no loop
     /// running; this drives the closure the daemon's own bring-up installs, with the supervisors
     /// running behind it. A willSleep hands back the lease's fan and then every fan; a didWake
-    /// writes nothing, so a restore in either window that is not at `.supervisor` is a mechanism
+    /// writes nothing, so a write in either window that is not at `.supervisor` is a mechanism
     /// other than § 3 in § 3's lane.
     ///
     /// **Mutation (U3):** keep the handback in a `let` in `HelperComposition.init`, store a
     /// `sleepHandback` closure that restores fan 0 through it, and have `observeSystemPower()`'s
     /// closure call it after `respond(to:)`. Run: red here, at the lane assertion.
+    /// **Mutation (U3b):** keep § 3's lane writer in a `let` in `HelperComposition.init` — it is
+    /// still named once — store a closure that reads fan 0's envelope at `.supervisor` and calls
+    /// `bridgeToMaximumThenRestore` through that writer, and have `observeSystemPower()`'s closure
+    /// call it after `respond(to:)`. Run: red here, at the lane assertion: the scripted plane
+    /// records a `.bridgeThenRestore` at `.thermalCycle`, which a restores-only filter dropped.
     @Test(
         "The sleep and wake restore bring-up installs is at supervisor", arguments: [false, true])
     func theInstalledPowerObserverRestoresAtSupervisor(afterAFiring: Bool) async throws {
@@ -307,14 +331,11 @@ struct SupervisorWriterAdmissionTests {
         }
         await machine.helper.shutDown()
 
-        let restores = sleepAndWake.filter {
-            if case .restoreToAutomatic = $0.attempt { return true }
-            return false
-        }
+        let writes = Self.writes(in: sleepAndWake)
         #expect(
-            restores.contains { $0.attempt == .restoreToAutomatic(.everyFan) },
+            writes.contains { $0.attempt == .restoreToAutomatic(.everyFan) },
             "the installed sleep did not hand every fan back: \(sleepAndWake)")
-        Self.expectAtSupervisor(restores, "the installed sleep's hand-back") {
+        Self.expectAtSupervisor(writes, "the installed sleep's hand-back") {
             $0 == .restoreToAutomatic(.fan(0))
         }
     }
