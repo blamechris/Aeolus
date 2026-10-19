@@ -353,12 +353,15 @@ enum SeamScanner {
     /// signature quoted inside `/* … */` was scanned as a declaration and would have
     /// reddened the tripwire it was explaining.
     ///
-    /// A line is dropped when its first non-blank text is `//` and the walker reaches that `//` as
-    /// code. A line of a multi-line string literal that begins `//` is the literal's text, and an
-    /// interpolation on it is code: filtering lines by their text, before the literal walker
-    /// had looked, removed such a line and the call in it, so no rule-zero scan saw a `production`
-    /// in `"""` / `//\(X.production(log: L()))` / `"""` (#457). A **trailing** `//` comment is left
-    /// in place, for the reason `strippingAllComments` gives.
+    /// A line is dropped when only blanks precede its `//` — a block comment before it, which the
+    /// walker has turned into a space, is blank — and the walker reaches that `//` as code
+    /// (`SeamScannerCommentLineTests` pins `/* x */ // c`). A line of a multi-line string literal
+    /// that begins `//` is the literal's text, and an interpolation on it is code: filtering lines
+    /// by their text, before the literal walker had looked, removed such a line and the call in
+    /// it, so no rule-zero scan saw a `production` in `"""` / `//\(X.production(log: L()))` /
+    /// `"""` (#457). A **trailing** `//` comment is left in place, because the prose that explains
+    /// a rule is usually a whole line; `strippingAllComments` says what leaving it costs a
+    /// receiver scan, and removes it.
     ///
     /// `internal` rather than `private` so `SeamScannerParsingTests` can put a fixture
     /// through it. Nothing in `Sources` contains a block comment today, so the tree cannot

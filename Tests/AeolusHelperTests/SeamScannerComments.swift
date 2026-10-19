@@ -7,9 +7,9 @@ extension SeamScanner {
 
     /// Source with every comment removed, a `//` comment **trailing code** included.
     ///
-    /// `strippingComments` leaves a trailing comment in place, and says why: the prose
-    /// explaining a rule is usually a whole line. A scan that reads a *receiver* cannot leave
-    /// it. `writer  // driver` on one line and `.engageManualControl(of:)` on the next normalise
+    /// `strippingComments` leaves a trailing comment in place, because the prose explaining a
+    /// rule is usually a whole line. A scan that reads a *receiver* cannot leave it.
+    /// `writer  // driver` on one line and `.engageManualControl(of:)` on the next normalise
     /// to `writer  // driver.engageManualControl(of:)`, and the receiver that scan reads is the
     /// last word of the comment, which can be the one name the scan allows.
     ///

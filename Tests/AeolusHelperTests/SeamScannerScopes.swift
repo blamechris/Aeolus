@@ -462,9 +462,9 @@ extension SeamScanner {
 
     /// Where the string literal opening at `start` ends, `"""` spans and `\` escapes honoured.
     ///
-    /// Shares `copyDelimited`'s quote-counting limit and its consequence: a `"` inside an
-    /// interpolation ends the literal early. Reaching the end of the source rather than the end
-    /// of a literal returns `endIndex`, so a caller terminates either way.
+    /// Walked by `copyDelimited`, which reads an interpolation as code, so a `"` inside one does
+    /// not end the literal. Reaching the end of the source rather than the end of a literal returns
+    /// `endIndex`, so a caller terminates either way.
     private static func endOfStringLiteral(
         in code: String, from start: String.Index
     )
