@@ -13,9 +13,11 @@ import os
 /// behind at most the turn in flight.
 ///
 /// The readers really contend: each is its own task looping `SMCReadScheduler.read` through the
-/// fake, so up to N − 1 supervisor waiters are parked at once. Whether a lane turn waited for more
-/// than the turn in flight is read off the scheduler's own events: after a lane waiter parks, the
-/// next turn granted must be its own.
+/// fake, and every read holds its turn for `roundTrip` (`TurnHoldingProvider`), so while one
+/// reader holds the turn the others are parked behind it — up to N − 2 supervisor waiters at
+/// once, which each test asserts was the queue its lane waiters parked against. Whether a lane
+/// turn waited for more than the turn in flight is read off the scheduler's own events: after a
+/// lane waiter parks, the next turn granted must be its own.
 @Suite("§ 3's lane under load, on the production plane", .timeLimit(.minutes(1)))
 struct ProductionLaneLoadTests {
 
@@ -33,29 +35,60 @@ struct ProductionLaneLoadTests {
         var range: Range<Int>? { recorded.withLock { $0 } }
     }
 
-    /// `readers` supervisor readers and one snapshot reader, each looping until `stop`.
+    /// How long every read holds its turn: a round trip's order of magnitude, and long enough that
+    /// a parked reader is a continuation, not a task spinning on the pool.
+    static let roundTrip: Duration = .milliseconds(1)
+
+    /// A machine whose reads hold their turns for `roundTrip`.
+    static func machine(unlock: FirmwareSMC.Unlock = .naive) async -> ProductionWriteMachine {
+        await ProductionWriteMachine(unlock: unlock, readsHold: roundTrip)
+    }
+
+    /// `readers` supervisor readers and one snapshot reader, each looping until `stop` — or, if a
+    /// test never sets it, for no longer than `abandonedAfter`.
     static func load(
         _ readers: Int, on machine: ProductionWriteMachine, until stop: Stop
     ) -> [Task<Void, Never>] {
         let scheduler = machine.scheduler
+        let deadline = ContinuousClock.now + abandonedAfter
         let snapshotKeys =
             CriticalSensorSet.mac16x5.keys.map(\.rawValue) + [
                 "F0Ac", "F1Ac", "F0Tg", "F1Tg", "F0Mn", "F1Mn", "F0Mx", "F1Mx", "FNum",
             ]
         var tasks = (0..<readers).map { _ in
             Task {
-                while !stop.isSet {
+                while !stop.isSet, ContinuousClock.now < deadline {
                     _ = try? await scheduler.read(keys: ["F1Ac"], at: .supervisor)
                 }
             }
         }
         tasks.append(
             Task {
-                while !stop.isSet {
+                while !stop.isSet, ContinuousClock.now < deadline {
                     _ = try? await scheduler.snapshotReader.read(keys: snapshotKeys)
                 }
             })
         return tasks
+    }
+
+    /// The load's backstop: past this, a reader stops whether or not its test set `stop`.
+    static let abandonedAfter: Duration = .seconds(30)
+
+    /// How many supervisor waiters were parked each time a lane waiter parked — the queue § 3's
+    /// turns were granted past. A grant of a supervisor turn while none is parked is a turn
+    /// granted at once, with nobody waiting, so it takes nothing off the count.
+    static func supervisorWaitersAtLaneParks(in events: [SchedulerEvent]) -> [Int] {
+        var parked = 0
+        var atLaneParks: [Int] = []
+        for event in events {
+            switch event {
+            case .waiterParked(.supervisor, _): parked += 1
+            case .turnGranted(.supervisor, _): parked = max(0, parked - 1)
+            case .waiterParked(.thermalCycle, _): atLaneParks.append(parked)
+            default: break
+            }
+        }
+        return atLaneParks
     }
 
     /// Every lane waiter in `events` whose next granted turn was not its own: a lane turn that
@@ -117,7 +150,7 @@ struct ProductionLaneLoadTests {
         "A firing under load stays in its lane, and teardowns landing mid-firing at supervisor",
         arguments: [12, 40])
     func aFiringUnderLoadStaysInItsLane(_ outstanding: Int) async throws {
-        let machine = await ProductionWriteMachine()
+        let machine = await Self.machine()
         let leases = machine.helper.leases
         let held = try await machine.lease(fans: [0, 1])
         try await machine.apply(rpm: 2_400, fans: [0, 1], under: held)
@@ -136,8 +169,9 @@ struct ProductionLaneLoadTests {
         let stop = Stop()
         let eventMark = machine.observer.events.count
         let load = Self.load(outstanding - 1, on: machine, until: stop)
-        await yieldUntil("the readers to queue") {
-            await machine.scheduler.queuedTurns(at: .supervisor) >= min(outstanding - 2, 8)
+        defer { stop.set() }
+        await yieldUntil("every reader but the one holding the turn to queue") {
+            await machine.scheduler.queuedTurns(at: .supervisor) >= outstanding - 2
         }
 
         await machine.helper.thermalEmergency.cycle()
@@ -145,6 +179,10 @@ struct ProductionLaneLoadTests {
         for task in load { await task.value }
 
         let events = Array(machine.observer.events.dropFirst(eventMark))
+        let queued = Self.supervisorWaitersAtLaneParks(in: events)
+        #expect(
+            (queued.max() ?? 0) >= (outstanding - 2) / 2,
+            "§ 3's lane waiters parked against \(queued) supervisor waiters: not the load")
         #expect(await machine.helper.latch.isActive, "the cycle did not fire")
         #expect(await machine.writes.didFire, "the teardowns never landed mid-firing")
         #expect(await leases.leaseCount == 0)
@@ -187,16 +225,20 @@ struct ProductionLaneLoadTests {
     /// the engagement's first and last mode write.
     @Test("§ 3 keeps completing cycles in its lane while an engagement polls under load")
     func sectionThreeCyclesDuringAPoll() async throws {
-        let machine = await ProductionWriteMachine(unlock: .heldUntilForced(stepsToYield: 6))
+        let machine = await Self.machine(unlock: .heldUntilForced(stepsToYield: 6))
         let lease = try await machine.lease(fans: [0])
         let stop = Stop()
         let eventMark = machine.observer.events.count
         let logMark = machine.firmware.log.entries.count
         let load = Self.load(11, on: machine, until: stop)
+        defer { stop.set() }
+        await yieldUntil("every reader but the one holding the turn to queue") {
+            await machine.scheduler.queuedTurns(at: .supervisor) >= 10
+        }
 
         let applying = observing { try await machine.apply(rpm: 2_400, under: lease) }
         var completed = 0
-        while await !applying.isFinished.isSet {
+        while await !applying.isFinished.isSet, !Task.isCancelled {
             if await machine.helper.thermalEmergency.cycle() { completed += 1 }
             await Task.yield()
         }
@@ -218,6 +260,10 @@ struct ProductionLaneLoadTests {
         #expect(completed >= 2, "§ 3 completed \(completed) cycles during the engagement")
         #expect(!laneDuringPoll.isEmpty, "§ 3 took no lane turn while the engagement polled")
         let events = Array(machine.observer.events.dropFirst(eventMark))
+        let queued = Self.supervisorWaitersAtLaneParks(in: events)
+        #expect(
+            (queued.max() ?? 0) >= 5,
+            "§ 3's lane waiters parked against \(queued) supervisor waiters: not the load")
         #expect(Self.laneWaitsPastTheTurnInFlight(in: events).isEmpty)
         #expect(await machine.firmware.register(smcKey("F0Md")) == [0x01], "the fan did not engage")
     }

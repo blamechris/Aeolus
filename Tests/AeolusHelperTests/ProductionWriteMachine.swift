@@ -28,16 +28,22 @@ struct ProductionWriteMachine: Sendable {
     let holder = ConnectionID()
 
     /// A machine whose curated critical sensors read `celsius`, bound and prepared as bring-up
-    /// binds and prepares it.
-    init(unlock: FirmwareSMC.Unlock = .naive, celsius: Double = 44) async {
+    /// binds and prepares it. With `readsHold`, every subset read holds its scheduler turn for
+    /// that long before the fake answers it (`TurnHoldingProvider`); writes are never held.
+    init(
+        unlock: FirmwareSMC.Unlock = .naive, celsius: Double = 44, readsHold: Duration? = nil
+    ) async {
         let journal = TeardownJournal()
         let lines = RecordedLog()
         let observer = RecordingSchedulerObserver()
         let clock = TestClock()
         let firmware = FirmwareSMC.mac16x5(unlock: unlock)
         await firmware.declareCriticalTemperatures(celsius)
+        let provider: any SensorProvider =
+            readsHold.map { TurnHoldingProvider(base: firmware.provider, holding: $0) }
+            ?? firmware.provider
         let scheduler = SMCReadScheduler(
-            provider: firmware.provider,
+            provider: provider,
             observer: SchedulerObservers([firmware.log, observer]))
         let plane = SMCFanControlPlane(
             scheduler: scheduler, connection: firmware.recycler, channel: firmware,
@@ -119,6 +125,37 @@ struct ProductionWriteMachine: Sendable {
     /// The fault an `apply` ended with, or `nil` when it was applied.
     static func answer(_ work: () async throws -> Void) async -> AeolusXPCFault? {
         await LevelSixMachine.answer(work)
+    }
+}
+
+// MARK: - Reads that take time
+
+/// The fake's reading view, with each subset read holding its scheduler turn for `holding` before
+/// the fake answers it, as a round trip to real firmware holds it.
+///
+/// This is what lets a load of readers be a load and not a busy loop. Over the instant fake, a
+/// reader's turn ends as soon as it is granted, so N readers are N tasks spinning through the
+/// scheduler and the fake's actors. On CI's runner, three such loads at once stalled the parallel
+/// suite: its deadlines ran out, and every failure was recorded in the seconds the loads
+/// stopped. With every turn held, one reader holds the turn, the rest are parked continuations,
+/// and the waiters § 3's lane must pass are really queued.
+struct TurnHoldingProvider: SensorProvider {
+    let base: FirmwareSMC.Provider
+    let holding: Duration
+
+    var identifier: String { base.identifier }
+
+    var isAvailable: Bool {
+        get async { await base.isAvailable }
+    }
+
+    func readAll() async throws -> [SensorReading] {
+        try await base.readAll()
+    }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        try? await Task.sleep(for: holding)
+        return try await base.read(keys: keys)
     }
 }
 

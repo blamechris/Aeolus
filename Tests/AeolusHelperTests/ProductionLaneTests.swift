@@ -127,7 +127,7 @@ struct ProductionLaneTests {
             ),
             (
                 "§ 6's pass",
-                try await writes {
+                await writes {
                     await machine.firmware.setRegister(smcKey("F0Md"), [0x01])
                     await machine.helper.reconcileFans()
                 }
