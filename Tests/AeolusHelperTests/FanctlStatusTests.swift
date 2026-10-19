@@ -29,7 +29,7 @@ struct FanctlStatusTests {
         command.helper = HelperConnection(
             transport: .endpoint(harness.endpoint),
             pinning: UnenforcedClientPinning(),
-            deadlines: FanctlResetTests.unhurried)
+            deadlines: ClientListenerHarness.defaultDeadlines)
         command.terminal = output.terminal
         let code = await exitCode { try await command.run() }
         return (code, output)

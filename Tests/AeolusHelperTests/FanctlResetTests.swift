@@ -39,7 +39,16 @@ struct FanctlResetTests {
         let exitCode: ExitCode
     }
 
-    /// Deadlines long enough that a loaded runner cannot fake a failure.
+    /// Deadlines long enough that a loaded runner cannot fake a failure — **for this suite, and
+    /// no other**.
+    ///
+    /// `private` on purpose. A deadline this long is only safe under a time limit that sits above
+    /// it, and this is the one suite whose limit does. When it was `unhurried` and internal, six
+    /// other suites took it by default ([#443](https://github.com/blamechris/Aeolus/issues/443)):
+    /// two with one-minute limits ended on "Time limit was exceeded" before the client's own
+    /// "did not confirm" could surface, and three with no limit at all ran for two to three
+    /// minutes when a request was dropped. Every other suite takes
+    /// `ClientListenerHarness.defaultDeadlines`, the product's trio, and the compiler now says so.
     ///
     /// **Mutation:** make the harness drop the panic request — `ClientListenerHarness`'s
     /// `restoreAllToAutomatic(reply:)` neither forwards it nor replies. Run: red, at the
@@ -70,8 +79,6 @@ struct FanctlResetTests {
     /// not have turned it red; the misreport #250 is about needs a handshake to be sent. It is
     /// held to the product's value anyway, because an invented bound is what the first test that
     /// *does* send one would silently inherit.
-    /// `noHarnessDefaultImposesATighterDeadlineThanTheProduct` reads this constant, which is why
-    /// it is not `private`.
     ///
     /// ## Stall-tolerant: the product's term plus the stall ceiling
     ///
@@ -83,30 +90,44 @@ struct FanctlResetTests {
     /// the reset request", and a refused connection reported as an unanswered one. A deadline the
     /// client enforces cannot be compensated the way a poll is, because the poll is not the one
     /// waiting, so each term the answering tests run under is the product's own **plus
-    /// `StallTolerantWait.ceiling`**, the most compensation #341 grants any wait: 55 s gated, 60 s
-    /// on the panic path. A request that genuinely never arrives still fails, at that deadline,
-    /// and the suite's `.timeLimit` sits above it so it fails rather than hangs. The one test
-    /// that asserts a deadline passes its own (`observableDeadline`).
+    /// `StallTolerantWait.ceiling`**: 55 s gated, 60 s on the panic path. That ceiling is the most
+    /// wall time any one wait may take, stall compensation included — a total cap, not an amount
+    /// of compensation granted on top of the wait — so adding it to a product term is this
+    /// suite's choice of how long a stall to outlast.
+    ///
+    /// A request that genuinely never arrives still fails at that deadline, with the client's own
+    /// "did not confirm", and this suite's three-minute `.timeLimit` sits above it, so it fails
+    /// rather than hangs. **That is true of this suite only.** One minute is below 60 s, so a
+    /// suite with the usual limit that waited this long would be ended by its limit, with "Time
+    /// limit was exceeded", before the client could say anything. The one test that asserts a
+    /// deadline passes its own (`observableDeadline`).
     ///
     /// Written as literals because `HelperClientDeadlineLiteralTests` reads every deadline passed
     /// in the test target and must resolve each to a duration;
     /// `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling` holds the derivation.
-    static let unhurried = HelperClientDeadlines(
+    private static let stallTolerant = HelperClientDeadlines(
         gatedVerb: .seconds(55),
         panicVerb: .seconds(60),
         handshakeVerb: HelperClientDeadlines.handshakeVerb)
 
-    /// `unhurried`'s two terms are the product's plus `StallTolerantWait.ceiling` (#341), so a
-    /// change to either moves them, rather than leaving a literal that has drifted from its
-    /// reason.
+    /// `stallTolerant`'s gated and panic terms are the product's plus `StallTolerantWait.ceiling`
+    /// (#341), so a change to either moves them, rather than leaving a literal that has drifted
+    /// from its reason. Its handshake term is the product's own: nothing here sends a `hello`, so
+    /// a stall allowance on it would be inert, and an invented one is what the first test that
+    /// did send one would inherit. `noHarnessDefaultImposesATighterDeadlineThanTheProduct` used to
+    /// read this constant; being `private`, it cannot, so this is where all three terms are held.
     ///
-    /// **Mutation:** set `unhurried`'s panic term to `.seconds(10)`. Run: red.
+    /// **Mutation:** set `stallTolerant`'s panic term to `.seconds(10)`. Run: red.
+    /// **Mutation:** set `stallTolerant`'s handshake term to `.seconds(10)`. Run: red.
     @Test("The answering tests' deadlines are the product's plus the stall ceiling")
     func theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling() {
         #expect(
-            Self.unhurried.gatedVerb == HelperClientDeadlines.gatedVerb + StallTolerantWait.ceiling)
+            Self.stallTolerant.gatedVerb
+                == HelperClientDeadlines.gatedVerb + StallTolerantWait.ceiling)
         #expect(
-            Self.unhurried.panicVerb == HelperClientDeadlines.panicVerb + StallTolerantWait.ceiling)
+            Self.stallTolerant.panicVerb
+                == HelperClientDeadlines.panicVerb + StallTolerantWait.ceiling)
+        #expect(Self.stallTolerant.handshakeVerb == HelperClientDeadlines.handshakeVerb)
     }
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
@@ -129,9 +150,13 @@ struct FanctlResetTests {
     ///
     /// Only the connection is substituted — where to look, who may answer, how long to wait.
     /// The verb, the teardown and the report all come from the function under test.
+    ///
+    /// `deadlines` defaults to the product's, through the harness, so a suite that calls this
+    /// without naming one is bounded as the client is shipped. This suite's own answering tests
+    /// pass `stallTolerant`, which only they may.
     static func emitted(
         over harness: ClientListenerHarness,
-        waiting deadlines: HelperClientDeadlines = unhurried
+        waiting deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
     ) async throws -> Emitted {
         var command = try resetAll()
         command.helper = HelperConnection(
@@ -167,7 +192,7 @@ struct FanctlResetTests {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.emitted(over: harness, waiting: Self.stallTolerant)
 
         #expect(emitted.exitCode == .success)
         #expect(emitted.message.contains("accepted the reset request"))
@@ -201,7 +226,7 @@ struct FanctlResetTests {
     func theCommandSendsNoHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.emitted(over: harness, waiting: Self.stallTolerant)
         #expect(emitted.exitCode == .success)
 
         let session = try #require(harness.sessions.first)
@@ -225,7 +250,7 @@ struct FanctlResetTests {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.emitted(over: harness, waiting: Self.stallTolerant)
         #expect(emitted.exitCode == .success)
 
         // Bounded: the helper's invalidation handler hands off to a detached task, so the
@@ -268,7 +293,7 @@ struct FanctlResetTests {
         // The two short terms are the assertion — `observableDeadline` is what the message below
         // must name. The handshake term is not asserted by anything and no test here sends a
         // `hello` in any case, so it is the product's value rather than the tenth explicitly
-        // passed invention in the target: the same reason `unhurried` carries it.
+        // passed invention in the target: the same reason `stallTolerant` carries it.
         let emitted = try await Self.emitted(
             over: harness,
             waiting: HelperClientDeadlines(
@@ -332,7 +357,7 @@ struct FanctlResetTests {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         harness.isAdmitting = false
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.emitted(over: harness, waiting: Self.stallTolerant)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("not installed"))

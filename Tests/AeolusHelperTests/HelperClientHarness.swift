@@ -158,9 +158,9 @@ final class ClientListenerHarness {
     ///
     /// **What holds this value there, and exactly how far that reaches.**
     /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
-    /// requires this constant to **equal** the shipping trio, and `FanctlResetTests.unhurried`
-    /// to be no tighter than it. Those two are every *default* in the test target, so no test
-    /// inherits a bound tighter than the product's without that test going red.
+    /// requires this constant to **equal** the shipping trio. It is the only *default* in the test
+    /// target — `FanctlAutoTests.run`, `FanctlStatusTests` and `FanctlResetTests.emitted` take it
+    /// by reference — so no test inherits a bound tighter than the product's without going red.
     ///
     /// It still says nothing about a deadline a test passes **explicitly** at its call site —
     /// eleven constructions do — but that half is no longer uncovered either.
