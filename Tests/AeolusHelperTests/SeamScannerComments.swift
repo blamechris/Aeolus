@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 
 /// The comment stripper a receiver scan needs, beside `SeamScanner` and not in it: that enum is
 /// at its `type_body_length` ceiling, and `SeamScannerScopes` is the precedent for a sibling
@@ -21,8 +22,17 @@ extension SeamScanner {
     /// out of step;
     /// `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` still keeps that
     /// shape out of `Sources/AeolusHelper`, as depth.
+    ///
+    /// **A trailing comment in an interpolation goes too.** The code of an interpolation is code,
+    /// so `copyDelimited` hands it back to the walk below, and the `// note` in an interpolation
+    /// that reads `\(f(1 // note` and ends on the next line is removed as it would be outside a
+    /// literal (#460).
     static func strippingAllComments(_ source: String) -> String {
-        let code = strippingComments(source)
+        strippingTrailingComments(strippingComments(source))
+    }
+
+    /// `strippingAllComments`' walk, over source whose block and whole-line comments are gone.
+    private static func strippingTrailingComments(_ code: String) -> String {
         var output = ""
         var index = code.startIndex
 
@@ -35,9 +45,13 @@ extension SeamScanner {
                     index = code.index(after: index)
                 }
             } else if code[index...].hasPrefix("\"\"\"") {
-                index = copyDelimited(code, from: index, delimiter: "\"\"\"", into: &output)
+                index = copyDelimited(code, from: index, delimiter: "\"\"\"", into: &output) {
+                    strippingTrailingComments(String(code[$0]))
+                }
             } else if code[index] == "\"" {
-                index = copyDelimited(code, from: index, delimiter: "\"", into: &output)
+                index = copyDelimited(code, from: index, delimiter: "\"", into: &output) {
+                    strippingTrailingComments(String(code[$0]))
+                }
             } else {
                 output.append(code[index])
                 index = code.index(after: index)
@@ -76,5 +90,30 @@ extension SeamScanner {
         if index < source.endIndex { return source.index(after: index) }
         if output.last == "\n" { output.removeLast() }
         return index
+    }
+
+    /// Records an issue when `source` holds a carriage return, and carries on.
+    ///
+    /// Swift ends a line at `\n`, at `\r` and at `\r\n`; this walker ends a `//` comment at `\n`
+    /// only, and `\r\n` is a single `Character` that is not `\n`. So the code after a `\r` was part
+    /// of the comment before it, invisible to every scan. The choice was between teaching the
+    /// walker, and every `\n` test in `copyDelimited`, `regexLiteralEnd` and the scans that read
+    /// what it returns, that `\r` and `\r\n` end a line too, and refusing the source, **failing
+    /// closed** as one that ends inside a literal is. The second: it is one check, at the front of
+    /// the walk, and the tree has no carriage return in a `.swift` file, so it costs nothing today.
+    /// `grep -rl $'\r' Sources Tests Tools` finds the file.
+    static func refuseCarriageReturns(in source: String) {
+        guard holdsCarriageReturn(source) else { return }
+        Issue.record(
+            """
+            the source holds a carriage return, which the comment walker does not read as a line \
+            end: refused rather than read with the code after it taken for a comment
+            """)
+    }
+
+    /// Whether `source` holds a `\r`. The test is on `utf8`: `\r\n` is a single `Character`, so a
+    /// `String` holding it does not `contains("\r")`.
+    static func holdsCarriageReturn(_ source: String) -> Bool {
+        source.utf8.contains(0x0D)
     }
 }

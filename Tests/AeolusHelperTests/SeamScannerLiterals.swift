@@ -19,6 +19,13 @@ extension SeamScanner {
     /// end at the inner quote. Its range is reported through `interpolations`, so a caller that
     /// drops a literal's text can still keep the call inside it.
     ///
+    /// **A comment in an interpolation is a comment.** The walk skips one, so a `)`, a `(` or a `"`
+    /// in it neither closes the interpolation early nor opens a literal. What is copied to
+    /// `output` for an interpolation's code is up to `interpolation`, which the two comment
+    /// strippers set to themselves (#460): until then it was copied as it stood, and a comment
+    /// holding `;try #require(…)` was read as code. The other callers copy to discard, or read
+    /// stripped source, and take the text as it stands.
+    ///
     /// **It fails loudly.** A source that ends inside a literal or an interpolation, or a
     /// single-line literal that reaches a newline outside an interpolation, records an issue
     /// rather than returning code that was silently cut short.
@@ -28,16 +35,28 @@ extension SeamScanner {
     static func copyDelimited(
         _ source: String, from open: String.Index, delimiter: String, into output: inout String
     ) -> String.Index {
-        var interpolations: [Range<String.Index>] = []
-        return copyDelimited(
-            source, from: open, delimiter: delimiter, into: &output,
-            interpolations: &interpolations)
+        copyDelimited(source, from: open, delimiter: delimiter, into: &output) { code in
+            String(source[code])
+        }
     }
 
     /// `copyDelimited(_:from:delimiter:into:)`, reporting each interpolation's code.
     static func copyDelimited(
         _ source: String, from open: String.Index, delimiter: String, into output: inout String,
         interpolations: inout [Range<String.Index>]
+    ) -> String.Index {
+        copyDelimited(source, from: open, delimiter: delimiter, into: &output) { code in
+            interpolations.append(code)
+            return String(source[code])
+        }
+    }
+
+    /// `copyDelimited(_:from:delimiter:into:)`, with the code of each interpolation — a range of
+    /// `source` — handed to `interpolation`, and the text it returns copied to `output` in its
+    /// place: how the comment strippers walk it with themselves.
+    static func copyDelimited(
+        _ source: String, from open: String.Index, delimiter: String, into output: inout String,
+        interpolation copied: (Range<String.Index>) -> String
     ) -> String.Index {
         let hashes = String(repeating: "#", count: rawHashes(before: open, in: source))
         let closing = delimiter + hashes
@@ -54,10 +73,14 @@ extension SeamScanner {
                 let after = source.index(index, offsetBy: escape.count)
                 if after < source.endIndex, source[after] == "(" {
                     let close = interpolationEnd(in: source, openingAt: after)
-                    interpolations.append(source.index(after: after)..<close)
-                    let end = close < source.endIndex ? source.index(after: close) : close
-                    output += source[index..<end]
-                    index = end
+                    output += source[index...after]
+                    output += copied(source.index(after: after)..<close)
+                    guard close < source.endIndex else {
+                        index = close
+                        continue
+                    }
+                    output.append(")")
+                    index = source.index(after: close)
                     continue
                 }
                 let end = after < source.endIndex ? source.index(after: after) : after
@@ -155,7 +178,13 @@ extension SeamScanner {
     ]
 
     /// The `)` that closes the interpolation opened at `open`, with every literal inside walked
-    /// rather than counted, or the end of the source — recorded as an issue — if it has none.
+    /// rather than counted and every comment skipped, or the end of the source — recorded as an
+    /// issue — if it has none.
+    ///
+    /// A regex is tried before a comment, as the comment walkers try it: `#//a/#` is a regex whose
+    /// text begins `//`. A comment is skipped, so the `))` in `f(1, // ))` closes nothing; counted,
+    /// they ended the interpolation at the comment, and the rest of it was read as the literal's
+    /// text by that walk (#460).
     private static func interpolationEnd(
         in source: String, openingAt open: String.Index
     ) -> String.Index {
@@ -173,6 +202,14 @@ extension SeamScanner {
                 index = end
                 continue
             }
+            if source[index...].hasPrefix("//") {
+                index = source[index...].firstIndex(of: "\n") ?? source.endIndex
+                continue
+            }
+            if source[index...].hasPrefix("/*") {
+                index = blockCommentEnd(in: source, from: index)
+                continue
+            }
             if character == "(" { depth += 1 }
             if character == ")" {
                 depth -= 1
@@ -182,5 +219,28 @@ extension SeamScanner {
         }
         Issue.record("the source ends inside a string interpolation")
         return index
+    }
+
+    /// Where the `/* … */` comment opened at `index` ends — just past its closing `*/` — or the end
+    /// of the source if it has none. Swift nests block comments, so the depth is counted rather
+    /// than the first `*/` taken.
+    private static func blockCommentEnd(
+        in source: String, from index: String.Index
+    ) -> String.Index {
+        var depth = 0
+        var position = index
+        while position < source.endIndex {
+            if source[position...].hasPrefix("/*") {
+                depth += 1
+                position = source.index(position, offsetBy: 2)
+            } else if source[position...].hasPrefix("*/") {
+                depth -= 1
+                position = source.index(position, offsetBy: 2)
+                if depth == 0 { return position }
+            } else {
+                position = source.index(after: position)
+            }
+        }
+        return position
     }
 }
