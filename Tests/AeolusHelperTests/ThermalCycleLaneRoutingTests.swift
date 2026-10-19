@@ -308,7 +308,7 @@ extension ThermalCycleLaneRoutingTests {
 
     /// K6. After a firing whose revocation handed back in the lane, every other teardown restores
     /// at `.supervisor`: the TTL, a connection's death, a release, § 5's revocation, the panic
-    /// verb's lease drop, § 4's sleep, § 6's pass and the teardown's `run` (its installed closure:
+    /// verb's lease drop, § 4's sleep, § 6's pass and the teardown's `run` (the installed closures:
     /// `SupervisorWriterAdmissionTests`). The lease core keeps no lane from the borrowing call.
     ///
     /// **Mutation (K6):** in `HelperComposition.init`, build the handback before the lease core
