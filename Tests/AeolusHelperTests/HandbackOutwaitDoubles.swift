@@ -9,11 +9,33 @@ import Testing
 
 /// How long a test waits for something the fix might park before it calls it a hang.
 ///
-/// **Failure-only.** A correct revocation, sweep or § 5 cycle here settles within a few actor
-/// hops of being let go, so nothing that passes comes near this; it exists so a mutant that never
-/// resumes a waiter fails red, naming what never finished, instead of wedging the run behind a
-/// continuation nothing resumes — `CeilingedRefusal`'s purpose, measured in seconds rather than
-/// in attempts because what it bounds is a wait, not a retry loop.
+/// **Failure-only, by margin, not by construction.** Nothing but this ceiling bounds the 30
+/// settling waits (revocations, sweeps, § 5 cycles). Every return of `revocationProgress` and
+/// `finishedBeforeCeiling` was timed in twelve `swift test` runs on `Mac16,5`, the three hardware
+/// suites skipped (58 holds each in `AeolusHelperTests`, from 41 calling lines; #461). The longest
+/// hold, and about how many times it fits under this ceiling, by load added with `yes`:
+///
+/// - none, three runs: 0.27 s over the 30 settling sites (about 37 times); 0.57 s over the 11 in
+///   `ParkingCeilingTests` (about 17 times).
+/// - two `yes`, four runs: 0.35 s (about 28 times); 3.4 s (2.9 times).
+/// - 32 `yes`, three runs: 0.46 s (about 21 times); 2.5 s (4.0 times).
+/// - 64 `yes`, two runs: 0.42 s (about 23 times); 2.2 s (4.4 times).
+///
+/// The machine was shared and never idle. The maxima rose from the runs with none added to the
+/// loaded runs, but not steadily with the load added: the longest hold came from a run with two
+/// `yes`, not 64. In that run six `ParkingCeilingTests` waits, including one signalled at once,
+/// were held 3.2 to 3.4 s, ending within about 0.26 s of one another; the same six end close
+/// together in every run, with no load added too. No park ceiling explains it; the cause was not
+/// found.
+///
+/// So this leaves 2.9 times the worst hold seen, and lowering it below about 3.4 s would have
+/// expired a passing test's wait. It does not cover a stall longer than itself: this is wall-clock
+/// time, and a CI runner was starved for about 30 s in #439.
+///
+/// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
+/// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s
+/// purpose, measured in seconds rather than in attempts because what it bounds is a wait, not a
+/// retry loop.
 let outwaitCeiling = Duration.seconds(10)
 
 /// A `FanRestoring` decorator that can hold one restore **before** it forwards it (#368).

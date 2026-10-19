@@ -1,5 +1,5 @@
 // expect-line: 11
-// expect: copy of noncopyable typed value. This is a compiler bug
+// expect: copy of noncopyable typed value. This is a compiler bug. Please file a bug with a small example of the bug
 // Kept by a child task a task group starts, beside the borrow. Refused by the move checker, with
 // its own 'this is a compiler bug' diagnostic: toolchain-fragile, which is why CI compiles it.
 @testable import AeolusHelper
