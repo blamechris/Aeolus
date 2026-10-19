@@ -254,3 +254,27 @@ func smcKey(_ raw: String) -> SMCKey {
     }
     return key
 }
+
+extension ScriptedFirmware.Attempt {
+
+    /// Whether this attempt writes to a fan: a command, a restore, an engagement or a bridge.
+    ///
+    /// The one classification the suites share (`ThermalEmergencyFixture`'s ordering assertions
+    /// and `SupervisorWriterAdmissionTests`' `bringUp()` drives), as an exhaustive switch, so a new
+    /// kind of attempt must be classed here before the test target compiles and is never left out
+    /// of a check by default.
+    ///
+    /// A reconnect is not a write to a fan: it closes and reopens the connection under a
+    /// `.supervisor` turn whatever view asks for it (`FanControlPlane.admitted(at:)`), so it can
+    /// never be in the lane and is harmless to leave unchecked. It is classed with the reads, for
+    /// the reason `readControlState` is: an assertion about what a mechanism *wrote* must not
+    /// shift because it also tried to see again.
+    var isWrite: Bool {
+        switch self {
+        case .commandTarget, .restoreToAutomatic, .engageManualControl, .bridgeThenRestore:
+            true
+        case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
+            false
+        }
+    }
+}

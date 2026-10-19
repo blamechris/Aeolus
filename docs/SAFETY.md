@@ -527,11 +527,12 @@ class because this cycle holds the one restorer admitted there, its handback, an
 lease core for that call alone: in safe Swift the compiler stops the lease core keeping it, CI
 compiles every refused shape but a key path on its own toolchain, and a restore's cause selects
 nothing. What any other mechanism writes is checked at `.supervisor` by behaviour, on the paths
-the suites drive: the lease core's teardowns after a firing, and level 6, § 5's re-assert,
-give-up and lapse hand-back, § 7's panic verb and § 6's machine-wide restore, each at rest and
-after a firing, with the signal teardown and the power observer that `bringUp()` installs. A path
-none of them drives is held by the source scans alone, which catch accidents and not deliberate
-evasions. And the premise is observed at run time, where the scheduler reports a second request in
+the suites drive: the lease core's teardowns after a firing, every call each makes, and level 6,
+§ 5's re-assert, give-up and lapse hand-back, § 7's panic verb and § 6's machine-wide restore, each
+at rest and after a firing, with the signal teardown and the power observer that `bringUp()`
+installs, where every write and every envelope read is checked and this cycle's own reads in its
+lane are not told from another's. A path none of them drives is held by the source scans alone,
+which catch accidents and not deliberate evasions. And the premise is observed at run time, where the scheduler reports a second request in
 the class while one is outstanding.
 
 *Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in

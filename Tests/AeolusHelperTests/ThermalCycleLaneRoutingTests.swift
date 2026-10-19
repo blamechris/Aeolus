@@ -12,9 +12,9 @@ import Testing
 /// the cache's source, § 6, § 7's read-back, the grant's foreign-control and bounds reads, § 5's
 /// and § 6's reads, level 6, and every restore the restorer issues itself, whatever its cause.
 /// `ThermalCycleLaneWriterTests` holds the other mechanisms' writes. Every call the scripted
-/// firmware receives is recorded with
-/// the admission of the view it came through (`ScriptedControlPlane.admittedAttempts`), so each
-/// mechanism is driven in turn and its calls are read off by phase.
+/// firmware receives is recorded with the admission of the view it came through
+/// (`ScriptedControlPlane.admittedAttempts`), so each mechanism is driven in turn and its calls
+/// are read off by phase.
 @Suite("Only § 3 takes § 3's lane, in the composed graph", .timeLimit(.minutes(1)))
 struct ThermalCycleLaneRoutingTests {
 
@@ -254,9 +254,9 @@ struct ThermalCycleLaneRoutingTests {
 extension ThermalCycleLaneRoutingTests {
 
     /// K1. Every cause, `FanRestoreCause.allCases` and `.thermalEmergencyRevocation` among them,
-    /// through the composed graph's restorer: each restores once, at `.supervisor`. The restorer
-    /// is cause-blind, so a cause — stored, replayed or added to the enum — reaches no lane. All
-    /// of them, so a cause given a lane of its own fails here the day it is given one.
+    /// through the graph's restorer: each restores once, and every call is at `.supervisor`.
+    /// The restorer is cause-blind, so a cause — stored, replayed or added to the enum — reaches no
+    /// lane. All of them, so a cause given a lane of its own fails here the day it is given one.
     ///
     /// **Mutation (K1):** in `HelperFanRestorer`, add a bound over
     /// `writer.admitted(at: .thermalCycle)` and restore through it when the cause is
@@ -272,7 +272,7 @@ extension ThermalCycleLaneRoutingTests {
             }
             let restores = calls.filter { $0.attempt == .restoreToAutomatic(.fan(0)) }
             #expect(restores.count == 1, "\(cause): \(calls)")
-            #expect(Self.admissions(restores) == [.supervisor], "\(cause) restored at \(restores)")
+            #expect(Self.admissions(calls) == [.supervisor], "\(cause) made calls at \(calls)")
         }
     }
 
@@ -306,14 +306,15 @@ extension ThermalCycleLaneRoutingTests {
         #expect(Self.admissions(restores) == [.thermalCycle], "§ 3's revocation: \(restores)")
     }
 
-    /// K6. After a firing whose revocation handed back in the lane, every other teardown restores
-    /// at `.supervisor`: the TTL, a connection's death, a release, § 5's revocation, the panic
-    /// verb's lease drop, § 4's sleep, § 6's pass and the teardown's `run` (the installed closures:
-    /// `SupervisorWriterAdmissionTests`). The lease core keeps no lane from the borrowing call.
+    /// K6. After a firing whose revocation handed back in the lane, every call each other teardown
+    /// makes, read or write, is at `.supervisor`: the TTL, a connection's death, a release, § 5's
+    /// revocation, the panic verb's lease drop, § 4's sleep, § 6's pass and the teardown's `run`
+    /// (the installed closures: `SupervisorWriterAdmissionTests`). The lease core keeps no lane.
     ///
     /// **Mutation (K6):** in `HelperComposition.init`, build the handback before the lease core
     /// and give it to `LeaseAuthority` as `restorer:`. Run: red at the seven lease-core paths.
     /// § 6's pass restores through the restorer itself, not the lease core, and stays green.
+    /// **Mutation (K6b):** a kept lane writer bridges fan 0 on `.leaseExpired`. Run: red, TTL path.
     /// **Mutation (N5c, from #439's review):** store the revocation's cause and restore lapsed
     /// leases under it, bound to a local first. Run: the whole suite green, correctly — the cause
     /// routes nothing. (Passed straight into the call it is a member read in a restore's arguments,
@@ -333,9 +334,8 @@ extension ThermalCycleLaneRoutingTests {
         #expect(await !helper.latch.isActive, "the latch never released")
 
         for (path, calls) in try await Self.everyOtherPath(on: machine) {
-            let restores = Self.restores(calls)
-            #expect(!restores.isEmpty, "\(path) restored nothing: \(calls)")
-            #expect(Self.admissions(restores) == [.supervisor], "\(path): \(restores)")
+            #expect(!Self.restores(calls).isEmpty, "\(path) restored nothing: \(calls)")
+            #expect(Self.admissions(calls) == [.supervisor], "\(path): \(calls)")
         }
     }
 
