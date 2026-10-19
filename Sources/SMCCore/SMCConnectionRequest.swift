@@ -13,12 +13,31 @@ extension SMCConnection {
     /// nothing: building a request sends nothing, and only `call(_:)`, in
     /// `SMCConnection.swift`, sends one. It lives in a file of its own only to keep that one
     /// under the length limit; the offsets and command codes it uses are declared there.
+    ///
+    /// **The four factories below are the only way to build one.** The initialiser is `private`,
+    /// so no code outside this type, `SMCConnection.swift` included, can write
+    /// `Request(key:selector:data32:dataSize:payload:)` with a selector no factory sends, or a
+    /// payload `write(_:to:)`'s size guard never saw. `WritePathAbsenceTests`' selector pin reads
+    /// declared constants only, and a literal in such a call would pass it.
     struct Request: Sendable, Equatable {
         let key: FourCharCode
         let selector: UInt8
         let data32: UInt32
         let dataSize: UInt32
         let payload: [UInt8]
+
+        /// Written out, not synthesised, because Swift's memberwise initialiser would be internal.
+        /// Declaring one in the body suppresses it. `SMCRequestConstructionTests` holds this one
+        /// to `private` and to being the only one.
+        private init(
+            key: FourCharCode, selector: UInt8, data32: UInt32, dataSize: UInt32, payload: [UInt8]
+        ) {
+            self.key = key
+            self.selector = selector
+            self.data32 = data32
+            self.dataSize = dataSize
+            self.payload = payload
+        }
 
         /// `READ_KEYINFO` (9): the key's declared type, size and attributes.
         static func readKeyInfo(_ key: FourCharCode) -> Request {

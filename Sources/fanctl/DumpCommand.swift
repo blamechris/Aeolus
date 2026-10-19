@@ -358,7 +358,9 @@ func describeDumpError(_ error: Error) -> String {
     case .encodingNotImplemented(let type):
         return "no encoder implemented yet for \(type.fourCharString)"
     case .notPermitted:
-        return "not permitted (this connection has no write access)"
+        // SMCCore's own refusal, before any round trip: since the write has a body, the case no
+        // longer means a connection without write access.
+        return "refused by SMCCore before any round trip (nothing was sent to the SMC)"
     case .notReadable(let key):
         return "\(key) declares itself unreadable (attribute bit 0x80 clear)"
     case .valueTooLargeForSingleRead(let key, let dataSize):

@@ -77,10 +77,12 @@ public actor SMCConnection {
     //   cache was not observed to go wrong — but nothing re-fetched the metadata to
     //   compare, so a stale-but-still-correct cache and a genuinely stable one are
     //   indistinguishable in that data. See `docs/SMC-RESEARCH.md`, "Sleep/wake and the
-    //   read connection — observed". ADR 0004 already requires the write path to
-    //   re-resolve byte order from key info read at write time rather than trust an earlier
-    //   enumeration, for exactly this reason; `freshKeyInfo(for:)` is that read, and never
-    //   answers from here. This cache is a read-path performance optimisation only, and
+    //   read connection — observed". ADR 0004 already requires a forward write — an
+    //   engagement step or a target command — to re-resolve byte order from key info read at
+    //   write time rather than trust an earlier enumeration, for exactly this reason;
+    //   `freshKeyInfo(for:)` is that read, and never answers from here. A restore reads
+    //   nothing before it writes (ADR 0014 D7), so no read that can fail stands in front of
+    //   the keystone. This cache is a read-path performance optimisation only, and
     //   nothing in the write path may come to rely on it — `write(_:to:)` reads nothing at
     //   all. `close()` deliberately leaves it populated (see its documentation);
     //   `invalidate()` is the explicit escape hatch for a caller who suspects staleness.
@@ -507,10 +509,17 @@ public actor SMCConnection {
     /// whatever the cache holds: always exactly one `READ_KEYINFO` round trip.
     ///
     /// `keyInfo(for:)` answers from the cache once a key is warm, which is right for the
-    /// read path and wrong for a write. ADR 0004 requires a write to resolve its byte order
-    /// from key info read at write time rather than from an enumeration that may be hours
-    /// old, and ADR 0014 D7 puts that read inside the write's own turn. A caller of this can
-    /// rely on what it returns having come from the firmware in this call.
+    /// read path and wrong for a forward write — an engagement step or a target command.
+    /// ADR 0004 requires a forward write to resolve its byte order from key info read at write
+    /// time rather than from an enumeration that may be hours old, and ADR 0014 D7 puts that
+    /// read inside the write's own turn. A caller of this can rely on what it returns having
+    /// come from the firmware in this call.
+    ///
+    /// **A restore never calls this.** D7 scopes ADR 0004 to forward writes: a restore issues
+    /// no read before it writes, and writes zero bytes of the size the preparation step
+    /// recorded, or one zero byte when it recorded none or a size outside 1–32
+    /// (`PlaneWriteLedger.restorePayload(for:)`; ADR 0014's B1 amendment). A read in front of a
+    /// restore would put a round trip that can fail ahead of the keystone (`docs/SAFETY.md`).
     ///
     /// On success the answer replaces the cache entry, so a later read uses what the
     /// firmware just said. A failure throws and leaves the cache as it was: the read path
@@ -664,9 +673,12 @@ public actor SMCConnection {
     /// - It reads nothing. There is no `READ_KEYINFO` and no read-back, so it neither consults
     ///   nor fills the key-info cache, and a write is exactly one round trip.
     /// - It does not check `bytes` against the key's declared type or size, and does not
-    ///   encode, retry, or decide what an answer means. Those are the caller's, which takes
-    ///   fresh key info for the key first, through `freshKeyInfo(for:)` (ADR 0004; ADR 0014
-    ///   D7).
+    ///   encode, retry, or decide what an answer means. Those are the caller's. A forward
+    ///   write's caller takes fresh key info for the key first, through `freshKeyInfo(for:)`
+    ///   (ADR 0004; ADR 0014 D7). A restore's caller reads nothing: it passes zero bytes of the
+    ///   size the preparation step recorded, or one zero byte when it recorded none or a size
+    ///   outside 1–32 (`PlaneWriteLedger.restorePayload(for:)`), so no read stands in front of
+    ///   the keystone (ADR 0014 D7 and its B1 amendment).
     ///
     /// - Important: Meant to be called as root from inside `AeolusHelper` only, and every
     ///   fan-speed write must already have been clamped and rate-limited. See E5. Whether the

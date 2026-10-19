@@ -29,8 +29,12 @@ Two pieces are not built: § 5's re-assert registering with § 3
 [#342](https://github.com/blamechris/Aeolus/pull/342): § 5 asks it once per examination, not
 around each write, which D4 below still requires.
 
-The production plane answers `writeCapability == .notBuilt`, `SMCConnection.write(_:to:)` throws,
-and no write selector exists under `Sources/`.
+When this ADR was written, the production plane answered `writeCapability == .notBuilt`,
+`SMCConnection.write(_:to:)` threw, and no write selector existed under `Sources/`. *(On
+`e4/bring-up` since [#431](https://github.com/blamechris/Aeolus/pull/431), the last two are not
+true: `write(_:to:)` sends one `WRITE_BYTES` round trip, and `selectorWriteBytes`, 6, is declared
+in `SMCConnection`. The plane still answers `.notBuilt`, and the helper calls the write only in
+the daemon's `private` forwarder, which nothing invokes, by the B1 seam amendment.)*
 
 What is known about the write path here is almost nothing, and the gap between known and reported
 decides most of this ADR:
@@ -3232,8 +3236,14 @@ before. It lands on `main` before run 1.
   same table entry in the same hop, as `LeaseAccountability.leasedFans`.
 - **Not yet a confirmation.** The record is one only once B1's command turn reads the target back
   and throws outside `targetToleranceRPM` ([#9](https://github.com/blamechris/Aeolus/issues/9)).
-  Until then `ScriptedControlPlane.commandTarget` returns the requested value even for a write its
-  firmware discarded, so the tests here pin the rule, not the read-back.
+  Until then the tests here pin the rule against the scripted double's read-back.
+  `ScriptedControlPlane.commandTarget` returns the requested value for a target its in-turn
+  read-back finds: an `.honoured` write's, and, of the writes the firmware discards, only a
+  `.reverted` one's, held at the read-back and discarded after it. A target the firmware never
+  held (`Stage.targetsNotHeldAtReadBack`) throws `.targetNotConfirmed`. *(Corrected on
+  `e4/bring-up`: this said the double returned the requested value even for a write its firmware
+  discarded, which, of the discarded writes, has held only for `.reverted` since
+  [#430](https://github.com/blamechris/Aeolus/pull/430).)*
 
 **What remains.**
 - **A target-only reclamation is stated until § 5 judges it.** The rule reads `F<n>Md`, not

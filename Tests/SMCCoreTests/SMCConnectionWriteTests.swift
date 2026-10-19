@@ -3,7 +3,9 @@ import Testing
 
 // `write(_:to:)` is `@_spi(FanWrite) public`, and `@testable` widens internal access only, so
 // naming it needs the opt-in by name. This file and `SMCConnectionTests.swift` are the only
-// test files allowed that opt-in, and neither may obtain an opened connection.
+// test files allowed that opt-in, and neither may obtain an opened connection. Everything either
+// declares is `private`, so no other file can call a helper here that writes
+// (`WriteSeamTestIsolationTests`, rule 5).
 @_spi(FanWrite) @testable import SMCCore
 
 // swiftlint:disable force_unwrapping
@@ -23,7 +25,7 @@ import Testing
 /// These suites run on CI's virtual machines, which have no SMC, exactly as they run on
 /// `Mac16,5`. Whether `AppleSMC` accepts the request is first seen at run 1, not here.
 @Suite("SMC write body, with no SMC", .timeLimit(.minutes(1)))
-struct SMCConnectionWriteTests {
+private struct SMCConnectionWriteTests {
 
     private static let modeKey = SMCKey("F0Md")!
 
@@ -120,7 +122,7 @@ struct SMCConnectionWriteTests {
 /// laid out this way is first seen at run 1. Integers are in host byte order, which is
 /// little-endian on every Mac this builds for, so the expected bytes are written that way.
 @Suite("SMC request layout, byte by byte")
-struct SMCRequestLayoutTests {
+private struct SMCRequestLayoutTests {
 
     /// `F0Tg` is `0x46305467` (`F`, `0`, `T`, `g`); stored little-endian at offset 0.
     private static let targetKey = SMCKey("F0Tg")!
@@ -199,7 +201,7 @@ struct SMCRequestLayoutTests {
 /// 1350 and 1458 as raw `00c0a844` and `0040b644` on `Mac16,5` (`docs/SMC-RESEARCH.md`, the
 /// sleep/wake section). Those are the key and the order the write plane targets.
 @Suite("SMC key type encode, ui8 and flt")
-struct SMCKeyTypeEncodeTests {
+private struct SMCKeyTypeEncodeTests {
 
     private static let modeKey = SMCKey("F0Md")!
     private static let targetKey = SMCKey("F0Tg")!
@@ -268,6 +270,68 @@ struct SMCKeyTypeEncodeTests {
                 }
             }
         }
+    }
+
+    /// The range is the `Double`'s, judged before it converts. Just past
+    /// `Float.greatestFiniteMagnitude` a value rounds down to it and is finite, so the check
+    /// #431 made after the conversion let it through as less than was asked for (#433).
+    @Test("flt refuses a Double just past Float's largest finite value, and encodes that value")
+    func fltRefusesJustPastTheLargestFloat() throws {
+        let largest = Double(Float.greatestFiniteMagnitude)
+        let quarterULP = Double(Float.greatestFiniteMagnitude.ulp) / 4
+        let pastTheBound = [
+            largest.nextUp, largest + quarterULP, -largest.nextUp, -largest - quarterULP,
+        ]
+        for value in pastTheBound {
+            // The premise: each converts to a finite Float, so only a check before it refuses.
+            #expect(Float(value).isFinite, "\(value)")
+            for order in [SMCByteOrder.littleEndian, .bigEndian] {
+                #expect(throws: SMCError.notPermitted, "\(value), \(order)") {
+                    _ = try SMCKeyType.flt.encode(scalar: value, byteOrder: order)
+                }
+            }
+        }
+        let accepted: [(value: Double, littleEndian: [UInt8])] = [
+            (largest, [0xFF, 0xFF, 0x7F, 0x7F]), (-largest, [0xFF, 0xFF, 0x7F, 0xFF]),
+        ]
+        try Self.expectEncodedInBothOrders(accepted)
+    }
+
+    /// Each value's `flt` bytes: `littleEndian` in that order, and the same four reversed.
+    private static func expectEncodedInBothOrders(
+        _ accepted: [(value: Double, littleEndian: [UInt8])]
+    ) throws {
+        for (value, littleEndian) in accepted {
+            #expect(
+                try SMCKeyType.flt.encode(scalar: value, byteOrder: .littleEndian) == littleEndian,
+                "\(value)")
+            #expect(
+                try SMCKeyType.flt.encode(scalar: value, byteOrder: .bigEndian)
+                    == Array(littleEndian.reversed()),
+                "\(value)")
+        }
+    }
+
+    /// A non-zero request is never written as zero, for the reason a value past the bound is
+    /// refused: the bytes would not say what was asked for. Zero itself is exact, and so is the
+    /// smallest non-zero `Float`; a value that rounds to that one stays non-zero and encodes
+    /// (#433). This is not rule 3's control, which is the clamp: see `encode`'s documentation.
+    @Test("flt refuses a non-zero Double that underflows to zero, and encodes zero itself")
+    func fltRefusesAnUnderflowToZero() throws {
+        let smallest = Double(Float.leastNonzeroMagnitude)
+        for value in [1e-50, -1e-50, Double.leastNonzeroMagnitude, smallest / 2, -smallest / 2] {
+            // The premise: each converts to a zero Float.
+            #expect(Float(value) == 0, "\(value)")
+            for order in [SMCByteOrder.littleEndian, .bigEndian] {
+                #expect(throws: SMCError.notPermitted, "\(value), \(order)") {
+                    _ = try SMCKeyType.flt.encode(scalar: value, byteOrder: order)
+                }
+            }
+        }
+        try Self.expectEncodedInBothOrders([
+            (0, [0, 0, 0, 0]), (smallest, [1, 0, 0, 0]), (-smallest, [1, 0, 0, 0x80]),
+            (smallest * 0.75, [1, 0, 0, 0]),
+        ])
     }
 
     @Test("flt with no resolved byte order is refused rather than guessed")
