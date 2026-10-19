@@ -129,6 +129,17 @@ struct DumpErrorDescriptionTests {
         #expect(description.contains("0x80"))
     }
 
+    /// `notPermitted` is SMCCore refusing by its own rule before any round trip, an empty or
+    /// oversized write or a value its type cannot hold. It said "this connection has no write
+    /// access" while the write had no body, which a reader would take as a reason to retry as
+    /// root (#433).
+    @Test("notPermitted says it was refused before any round trip, not that access was missing")
+    func notPermittedSaysNothingWasSent() {
+        let description = describeDumpError(SMCError.notPermitted)
+        #expect(description.contains("before any round trip"))
+        #expect(!description.contains("access"))
+    }
+
     @Test("firmware includes the SMC result code as hex")
     func firmwareIncludesResultCode() {
         let description = describeDumpError(SMCError.firmware(code: 0x82))
