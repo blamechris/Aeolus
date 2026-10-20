@@ -18,36 +18,113 @@ import Testing
 /// `switch must be exhaustive`. That is what makes a reason added to the vocabulary a decision
 /// rather than a quiet "silent".
 ///
-/// **Adding a `default:` arm is not.** With `default: return .silent` appended after the three
-/// arms, the target built with one warning, `default will never be executed`, and nothing in the
-/// build fails on a warning. With the silent arm itself replaced by `default: return .silent`, it
-/// built with no warning at all. Every test here and in `SafeStateTests` stayed green both
-/// times, because no reason reaches a `default:` today: it only decides a reason that does not
-/// exist yet, so no test can reach it. Keeping it out is review's job.
+/// **Adding a `default:` arm is not, on its own.** With `default: return .silent` appended after
+/// the three arms, `FanKit` built with one warning, `default will never be executed`, and nothing
+/// in the build fails on a warning. With the silent arm itself replaced by `default: return
+/// .silent`, it built with no warning at all. No assertion can see either, because no reason
+/// reaches a `default:` today: it only decides a reason that does not exist yet.
+///
+/// **`Tag` is what catches it.** It is a second exhaustive switch over `Reason`, in this suite,
+/// with the ruling written beside it by hand, so a reason added to the vocabulary is a compile
+/// error *here* even when `clearance` has a `default:` that would class it silently. With the
+/// silent arm replaced by `default:` and a fifteenth `Reason` added (and given arms in
+/// `wireValue`, `userFacingSummary` and `recoveryAdvice`), `FanKit` built with no warning, and
+/// `swift build --target FanKitTests` failed with `switch must be exhaustive` in `Tag.init(_:)`
+/// and nowhere else. Once a tag is added for the new reason, `expected` must rule it, and
+/// `theWitnessAgreesWithTheRuling` compares that ruling with what `clearance` says.
+///
+/// What it does not catch, and need not: a `default:` that returns the right class for every
+/// reason that exists. That is harmless until the vocabulary grows, and growing it is the edit
+/// `Tag` stops.
 @Suite("Whether the helper reports a fan cleared")
 struct ManualControlAvailabilityClearanceTests {
 
     typealias Reason = ManualControlAvailability.Reason
 
-    /// **Every reason, in the class it was ruled into.** Written out as three literals rather
-    /// than derived from the code under test, so that moving a reason between classes in
-    /// `ManualControlAvailability.clearance` is a disagreement with this table and not a
-    /// self-consistent edit. `everyReasonIsClassifiedOnce` holds the table to the vocabulary.
+    /// One tag per `Reason`, with the ruling written out by hand: the witness the header
+    /// describes.
+    ///
+    /// Three exhaustive switches and **no `default:`**, each for its own reason. `init(_:)` is the
+    /// one over `Reason`, so a reason the vocabulary grows does not compile here until a tag is
+    /// added for it. `reason` maps the tag back, so `Tag(tag.reason) == tag` holds the two
+    /// directions to each other. `expected` is the ruling, and a tag cannot be added without one.
     ///
     /// - `durable`: waiting will not change it, whatever the mode reads.
     /// - `pending`: the helper has not established the fan's mode, or a restore is outstanding,
     ///   whatever the mode reads. `supervisorBlind` is here and not above: a blind fan's state is
     ///   unknown, not manual.
     /// - `silent`: about manual control being granted, not about the fan, so the mode decides.
-    static let durable: [Reason] = [.foreignManualControl, .restoreToAutomaticFailed]
-    static let pending: [Reason] = [
-        .releaseInProgress, .handbackUnconfirmed, .restoreToAutomaticUnconfirmed, .supervisorBlind,
-        .systemSleeping, .unknown("fromTheFuture"),
-    ]
-    static let silent: [Reason] = [
-        .writePathNotBuilt, .boundsImplausible, .leaseHeldByAnotherClient, .selfRenewalNotBuilt,
-        .noThermalTelemetry, .reclaimedBySystem,
-    ]
+    ///
+    /// Written by hand rather than derived from the code under test, so that moving a reason
+    /// between classes in `ManualControlAvailability.clearance` is a disagreement with this
+    /// ruling and not a self-consistent edit.
+    enum Tag: CaseIterable {
+        case writePathNotBuilt, boundsImplausible, reclaimedBySystem, leaseHeldByAnotherClient
+        case selfRenewalNotBuilt, releaseInProgress, handbackUnconfirmed
+        case restoreToAutomaticUnconfirmed, restoreToAutomaticFailed, systemSleeping
+        case noThermalTelemetry, supervisorBlind, foreignManualControl, unknown
+
+        init(_ reason: Reason) {
+            switch reason {
+            case .writePathNotBuilt: self = .writePathNotBuilt
+            case .boundsImplausible: self = .boundsImplausible
+            case .reclaimedBySystem: self = .reclaimedBySystem
+            case .leaseHeldByAnotherClient: self = .leaseHeldByAnotherClient
+            case .selfRenewalNotBuilt: self = .selfRenewalNotBuilt
+            case .releaseInProgress: self = .releaseInProgress
+            case .handbackUnconfirmed: self = .handbackUnconfirmed
+            case .restoreToAutomaticUnconfirmed: self = .restoreToAutomaticUnconfirmed
+            case .restoreToAutomaticFailed: self = .restoreToAutomaticFailed
+            case .systemSleeping: self = .systemSleeping
+            case .noThermalTelemetry: self = .noThermalTelemetry
+            case .supervisorBlind: self = .supervisorBlind
+            case .foreignManualControl: self = .foreignManualControl
+            case .unknown: self = .unknown
+            }
+        }
+
+        var reason: Reason {
+            switch self {
+            case .writePathNotBuilt: return .writePathNotBuilt
+            case .boundsImplausible: return .boundsImplausible
+            case .reclaimedBySystem: return .reclaimedBySystem
+            case .leaseHeldByAnotherClient: return .leaseHeldByAnotherClient
+            case .selfRenewalNotBuilt: return .selfRenewalNotBuilt
+            case .releaseInProgress: return .releaseInProgress
+            case .handbackUnconfirmed: return .handbackUnconfirmed
+            case .restoreToAutomaticUnconfirmed: return .restoreToAutomaticUnconfirmed
+            case .restoreToAutomaticFailed: return .restoreToAutomaticFailed
+            case .systemSleeping: return .systemSleeping
+            case .noThermalTelemetry: return .noThermalTelemetry
+            case .supervisorBlind: return .supervisorBlind
+            case .foreignManualControl: return .foreignManualControl
+            case .unknown: return .unknown("fromTheFuture")
+            }
+        }
+
+        var expected: ManualControlAvailability.Clearance {
+            switch self {
+            case .foreignManualControl, .restoreToAutomaticFailed:
+                return .durable
+            case .releaseInProgress, .handbackUnconfirmed, .restoreToAutomaticUnconfirmed,
+                .supervisorBlind, .systemSleeping, .unknown:
+                return .pending
+            case .writePathNotBuilt, .boundsImplausible, .leaseHeldByAnotherClient,
+                .selfRenewalNotBuilt, .noThermalTelemetry, .reclaimedBySystem:
+                return .silent
+            }
+        }
+    }
+
+    /// The reasons in each class, from `Tag`'s ruling. `everyReasonIsClassifiedOnce` holds the
+    /// three to the vocabulary.
+    static let durable = reasons(ruled: .durable)
+    static let pending = reasons(ruled: .pending)
+    static let silent = reasons(ruled: .silent)
+
+    static func reasons(ruled clearance: ManualControlAvailability.Clearance) -> [Reason] {
+        Tag.allCases.filter { $0.expected == clearance }.map(\.reason)
+    }
 
     /// The modes a fan can read.
     static let modes: [FanControlMode] = [.automatic, .manualFixed, .manualCurve]
@@ -72,9 +149,9 @@ struct ManualControlAvailabilityClearanceTests {
         #expect(all.count == 14)
         #expect(Set(all).count == 14)
         // `Reason.init(wireValue:)` is total, so a reason the vocabulary grows is not in this
-        // table until someone puts it here; the exhaustive switch in
-        // `ManualControlAvailability.clearance` is what stops the code compiling until it has
-        // been decided.
+        // table until someone puts it here; the exhaustive switches in
+        // `ManualControlAvailability.clearance` and in `Tag.init(_:)` are what stop the code
+        // compiling until it has been decided.
         let known: Set<String> = [
             "writePathNotBuilt", "boundsImplausible", "reclaimedBySystem",
             "leaseHeldByAnotherClient", "selfRenewalNotBuilt", "releaseInProgress",
@@ -83,6 +160,18 @@ struct ManualControlAvailabilityClearanceTests {
             "fromTheFuture",
         ]
         #expect(Set(all.map(\.wireValue)) == known)
+    }
+
+    /// **Mutation (N6b):** change `Tag.expected` for `.supervisorBlind` to `.silent`. Run: red
+    /// here, naming the tag, and in the class tests that read the same ruling.
+    @Test("The witness agrees with the ruling, and maps every reason both ways")
+    func theWitnessAgreesWithTheRuling() {
+        for tag in Tag.allCases {
+            #expect(
+                ManualControlAvailability.unavailable(tag.reason).clearance == tag.expected,
+                "\(tag)")
+            #expect(Tag(tag.reason) == tag, "\(tag)")
+        }
     }
 
     // MARK: - The classification
