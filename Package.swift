@@ -30,7 +30,7 @@ let package = Package(
         .executable(name: "AeolusHelper", targets: ["AeolusHelper"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0")
     ],
     targets: [
         // Key enumeration, the type codec, and the IOKit connection.
@@ -125,7 +125,7 @@ let package = Package(
         // SwiftUI views and view models for Aeolus.app.
         .target(
             name: "AeolusUI",
-            dependencies: ["SMCCore", "FanKit", "AeolusXPC"],
+            dependencies: ["SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
             path: "Sources/Aeolus",
             // The app's entry point belongs to the Xcode bundle target, not to this
             // library — a library may not contain top-level code.
@@ -216,7 +216,7 @@ let package = Package(
         // AeolusXPCService.machServiceName rather than against a second copy of the string.
         .testTarget(
             name: "AeolusUITests",
-            dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC"],
+            dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
