@@ -215,6 +215,35 @@ struct SnapshotControlLossTests {
         #expect(Self.loss(in: snapshot, covering: [0, 1]) == .reclaimedBySystem(fan: 1))
     }
 
+    /// A snapshot that repeats a covered fan's index treats the fan as held only when every
+    /// entry with that index shows it held (#474). A fan is not held merely because one entry
+    /// has a target, nor reclaimed only when the first entry says so.
+    ///
+    /// **Mutation (X3):** in `controlLoss`, use `fans.first(where:)` or `fans.last(where:)`.
+    /// Run: red here.
+    @Test("A repeated fan index is held only when every entry with that index is held")
+    func repeatedFanIndexMustBeHeldInEveryEntry() {
+        let heldThenReclaimed = Self.snapshot(
+            fans: [Self.held(0), Self.reclaimed(0)], lease: Self.lease())
+        #expect(Self.loss(in: heldThenReclaimed, covering: [0]) == .reclaimedBySystem(fan: 0))
+
+        let reclaimedThenHeld = Self.snapshot(
+            fans: [Self.reclaimed(0), Self.held(0)], lease: Self.lease())
+        #expect(Self.loss(in: reclaimedThenHeld, covering: [0]) == .reclaimedBySystem(fan: 0))
+
+        let heldThenNotHeld = Self.snapshot(
+            fans: [Self.held(0), Self.held(0, target: nil)], lease: Self.lease())
+        #expect(Self.loss(in: heldThenNotHeld, covering: [0]) == .fanNotHeld(fan: 0))
+
+        let notHeldThenHeld = Self.snapshot(
+            fans: [Self.held(0, target: nil), Self.held(0)], lease: Self.lease())
+        #expect(Self.loss(in: notHeldThenHeld, covering: [0]) == .fanNotHeld(fan: 0))
+
+        let allHeld = Self.snapshot(
+            fans: [Self.held(0, target: 4_670), Self.held(0, target: 3_000)], lease: Self.lease())
+        #expect(Self.loss(in: allHeld, covering: [0]) == nil)
+    }
+
     /// The mode is the helper's report of a register it may not have been able to read, so it
     /// is not read here: whatever it says, a fan that carries the helper's held target beside a
     /// lease the helper lists is held.
