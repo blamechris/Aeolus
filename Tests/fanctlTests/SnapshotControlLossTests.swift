@@ -9,12 +9,15 @@ import Testing
 ///
 /// Pure, over hand-built snapshots. The judgement is `AeolusXPCClient`'s, so the app and
 /// `fanctl` share it; it is tested here because this is the pure target that links the client
-/// and needs no helper to do it. The cases are those #324 wrote for `SetCommand.loss`, in
+/// and needs no helper to do it. Most cases are those #324 wrote for `SetCommand.loss`, in
 /// `SetLossTests`, asked of the shared function.
 ///
 /// Not ported: #324's `holderIsSanitised`. Removing a hostile holder's control characters is
 /// `fanctl`'s rendering, and stays with the caller that renders it; this function hands the
 /// listed lease back verbatim, and `listedLeaseIsReturnedVerbatim` holds it to that.
+///
+/// New here, from #472's review: `noLeaseListed`, the emergency that has already revoked the
+/// lease, an empty `covered`, the order across fans, and reclamation beside a target.
 @Suite("Whether a snapshot says control was lost")
 struct SnapshotControlLossTests {
 
@@ -48,10 +51,12 @@ struct SnapshotControlLossTests {
             isReclaimedBySystem: false, manualControlAvailability: .available)
     }
 
-    private static func reclaimed(_ index: Int) -> FanState {
+    /// A fan the helper reports reclaimed by the system. `target` is `nil` by default, as the
+    /// helper states it (`HeldTargetReport`); a test passes one to judge reclamation on its own.
+    private static func reclaimed(_ index: Int, target: Double? = nil) -> FanState {
         FanState(
             index: index, actualRPM: .measured(1350), minimumRPM: .measured(1350),
-            maximumRPM: .measured(5777), targetRPM: nil, mode: .automatic,
+            maximumRPM: .measured(5777), targetRPM: target, mode: .automatic,
             isReclaimedBySystem: true, manualControlAvailability: .unavailable(.reclaimedBySystem))
     }
 
@@ -109,13 +114,27 @@ struct SnapshotControlLossTests {
     /// snapshot on which both apply.
     ///
     /// **Mutation (M5):** swap the first two rules in `controlLoss`, so the emergency is judged
-    /// before the lease. Run: red on the `none` row.
+    /// before the lease. Run: red on the `none` row, and in `anEmergencyThatRevokedTheLease`.
     @Test("Order: the lease, then the emergency, then the fans")
     func order() {
         let both = Self.snapshot(fans: [Self.reclaimed(0)], lease: Self.lease(), emergency: true)
         #expect(Self.loss(in: both, covering: [0]) == .thermalEmergency)
         let none = Self.snapshot(fans: [Self.reclaimed(0)], lease: nil, emergency: true)
         #expect(Self.loss(in: none, covering: [0]) == .leaseNotListed(listed: nil))
+    }
+
+    /// **What the order decides during an emergency.** `docs/SAFETY.md` § 3 revokes every live
+    /// lease when it fires, and the helper grants none while its latch is set, so the snapshot
+    /// a client usually reads mid-emergency lists no lease, with its fans handed back and no
+    /// target. The answer is `.leaseNotListed(listed: nil)`, not `.thermalEmergency`: a caller
+    /// that has to name the emergency reads `isThermalEmergencyActive` itself, as
+    /// `controlLoss`'s documentation says.
+    @Test("An emergency that has revoked the lease reads as the lease not listed")
+    func anEmergencyThatRevokedTheLease() {
+        let revoked = Self.snapshot(
+            fans: [Self.held(0, target: nil, mode: .automatic)], lease: nil, emergency: true)
+        #expect(Self.loss(in: revoked, covering: [0]) == .leaseNotListed(listed: nil))
+        #expect(revoked.isThermalEmergencyActive, "the flag the caller reads is still there")
     }
 
     /// A reclaimed fan states no target either, but reclamation is the more specific thing to
@@ -126,7 +145,57 @@ struct SnapshotControlLossTests {
         #expect(Self.loss(in: snapshot, covering: [0]) == .reclaimedBySystem(fan: 0))
     }
 
+    /// Reclamation is judged on its own terms: a reclaimed fan is a loss whatever target it
+    /// carries. The helper states none beside one today, so this is a snapshot it does not send;
+    /// it is here so that the check cannot quietly come to depend on the missing target.
+    ///
+    /// **Mutation (X6):** in `controlLoss`, test `fan.isReclaimedBySystem && fan.targetRPM ==
+    /// nil`. Run: red here.
+    @Test("A reclaimed fan is a loss whatever target it carries")
+    func aReclaimedFanIsALossWhateverItsTarget() {
+        let snapshot = Self.snapshot(fans: [Self.reclaimed(0, target: 4_670)], lease: Self.lease())
+        #expect(Self.loss(in: snapshot, covering: [0]) == .reclaimedBySystem(fan: 0))
+    }
+
+    // MARK: - An empty list of covered fans
+
+    /// The helper never grants a lease over no fans (`AeolusXPCValidation.validateFanIndices`),
+    /// so an empty `covered` is a caller's mistake. It still judges the lease and the
+    /// emergency, and is never "holding" on the strength of having no fans to check.
+    ///
+    /// **Mutation (X1):** `if covered.isEmpty { return nil }` as the first line of
+    /// `controlLoss`. Run: red here and in `anEmptyListStillSeesTheEmergency`.
+    @Test("An empty list of covered fans still needs the lease")
+    func anEmptyListStillNeedsTheLease() {
+        let snapshot = Self.snapshot(fans: [Self.held(0)], lease: nil)
+        #expect(Self.loss(in: snapshot, covering: []) == .leaseNotListed(listed: nil))
+    }
+
+    @Test("An empty list of covered fans still sees the emergency")
+    func anEmptyListStillSeesTheEmergency() {
+        let snapshot = Self.snapshot(fans: [Self.held(0)], lease: Self.lease(), emergency: true)
+        #expect(Self.loss(in: snapshot, covering: []) == .thermalEmergency)
+    }
+
+    @Test("An empty list of covered fans with the lease listed and no emergency is no loss")
+    func anEmptyListWithTheLeaseIsNoLoss() {
+        let snapshot = Self.snapshot(fans: [Self.held(0)], lease: Self.lease())
+        #expect(Self.loss(in: snapshot, covering: []) == nil)
+    }
+
     // MARK: - The covered fans
+
+    /// Each covered fan is judged by every rule before the next fan is looked at, in the order
+    /// the caller gave. Here fan 0 has no target and fan 1 is not reported at all: fan 0 comes
+    /// first, so it is the one named.
+    ///
+    /// **Mutation (X2):** loop over `covered.reversed()`. Run: red here. **Mutation (X4):** check
+    /// every covered fan's presence before any fan's reclamation or target. Run: red here.
+    @Test("The first covered fan with a loss is the one named")
+    func theFirstCoveredFanIsTheOneNamed() {
+        let snapshot = Self.snapshot(fans: [Self.held(0, target: nil)], lease: Self.lease())
+        #expect(Self.loss(in: snapshot, covering: [0, 1]) == .fanNotHeld(fan: 0))
+    }
 
     /// A covered fan that is missing from the snapshot cannot be called held: the safe
     /// direction when the helper stops reporting a fan.

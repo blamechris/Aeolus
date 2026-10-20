@@ -24,47 +24,60 @@ import Foundation
 
 /// Why a snapshot says a lease is no longer proof of control.
 ///
-/// Every case is something the helper reported, in its own words. None of them is a guess from
-/// `FanState.mode` (see `SystemSnapshot.controlLoss(leaseID:covering:)`).
+/// Every case is read from what the snapshot states or leaves out: the lease it lists, its
+/// emergency flag, and each covered fan's presence, `isReclaimedBySystem` and `targetRPM`. None is
+/// inferred from `FanState.mode` (see `SystemSnapshot.controlLoss(leaseID:covering:)`).
 public enum ControlLoss: Sendable, Hashable {
-    /// The snapshot does not list the caller's lease. `listed` is the lease it lists instead,
-    /// another client's, or `nil` when it lists none.
+    /// The snapshot does not list the caller's lease. `listed` is the lease the snapshot lists
+    /// instead, one with another identifier, whoever holds it, or `nil` when it lists none.
     ///
-    /// **`listed.holderDescription` is another client's text**, chosen by that client and stored
-    /// by the helper. A caller that renders it removes what its medium cannot show safely, as
-    /// `fanctl` does with `DisplayText.sanitised(_:)`. It is carried verbatim here because what is
-    /// safe to show depends on where it is shown.
+    /// **`listed.holderDescription` is text chosen by the client that holds that lease**, and
+    /// stored by the helper. A caller that renders it removes what its medium cannot show
+    /// safely, as `fanctl` does with `DisplayText.sanitised(_:)`. It is carried verbatim here
+    /// because what is safe to show depends on where it is shown.
     case leaseNotListed(listed: Lease?)
-    /// The helper reports a thermal emergency. Its override outranks manual control, so the
-    /// helper's thermal protection, not the lease, decides what the fans do.
+    /// The helper reports a thermal emergency while it still lists the caller's lease.
+    /// `docs/SAFETY.md` § 3's override outranks manual control, so the helper's thermal
+    /// protection, not the lease, decides what the fans do. After § 3 revokes the lease, the
+    /// answer is `.leaseNotListed(listed: nil)` with `isThermalEmergencyActive` still set.
     case thermalEmergency
-    /// The snapshot no longer reports a fan the lease covers, so nothing says it is held.
+    /// The snapshot does not report a fan the lease covers, so nothing in it says that fan is
+    /// held.
     case fanNotReported(fan: Int)
     /// The helper reports a fan the lease covers as reclaimed by the system
     /// (`FanState.isReclaimedBySystem`).
     case reclaimedBySystem(fan: Int)
-    /// The snapshot lists the lease and states **no held target** for a fan it covers: the
-    /// helper does not say the fan is held.
+    /// The snapshot lists the lease and states **no positive held target** for a fan it covers,
+    /// either none or one that is not above 0 RPM: the helper does not say the fan is held.
     case fanNotHeld(fan: Int)
 }
 
 extension SystemSnapshot {
 
     /// Whether this snapshot says the lease `leaseID` is no longer proof of control over the fans
-    /// it covers, and if so why. `nil` means the snapshot is evidence that every covered fan is
-    /// held under that lease; it is the one judgement behind saying "holding" at all.
+    /// it covers, and if so why. `nil` means the snapshot lists that lease, reports no emergency,
+    /// and states a positive held target for every covered fan. A client is meant to say
+    /// "holding" only on a `nil`.
     ///
     /// **In this order**, and the first that applies is the answer:
     ///
-    /// 1. The lease is not listed, or a different one is. First, because the lease is the proof
-    ///    of control: until the snapshot lists the caller's lease, nothing else in it is about
-    ///    the caller's control, and this is the only answer that can say which lease the helper
-    ///    lists instead.
-    /// 2. A thermal emergency is active. Its override outranks a lease the helper still lists.
+    /// 1. The lease is not listed, or a different one is. This is the only answer that carries
+    ///    the lease the snapshot lists instead. The order is #324's, which records no reason for
+    ///    it. Note what it decides: `docs/SAFETY.md` § 3 revokes every live lease when it fires,
+    ///    and the helper grants none while its latch is set (`LeaseAuthority`'s
+    ///    `refuseIfThermalEmergencyActive`). So a snapshot taken during an emergency usually lists
+    ///    no lease and answers `.leaseNotListed(listed: nil)`, not `.thermalEmergency`. A caller
+    ///    that has to say an emergency ended its control reads `isThermalEmergencyActive` itself.
+    /// 2. A thermal emergency is active while the lease is still listed: the window between § 3
+    ///    firing and its revocation of the lease. § 3's override outranks manual control
+    ///    (ADR 0007).
     /// 3. For each covered fan, in the order given: it is not reported at all, it is reclaimed by
-    ///    the system, or it carries **no held target**. Reclamation is named before the missing
-    ///    target because a reclaimed fan states none either, and reclamation is the more
-    ///    specific thing to say about it.
+    ///    the system, or it carries **no held target**. Each fan is judged by all three before the
+    ///    next fan is looked at, so the first covered fan with any of them is the one named.
+    ///    Reclamation is checked before the target, and on its own terms: a reclaimed fan is a
+    ///    loss whatever target it carries. The helper states no target beside a reclaimed fan
+    ///    (`HeldTargetReport`), so today the order decides only which of the two is named, and
+    ///    reclamation is the more specific.
     ///
     /// **The held target is the evidence that a fan is held.** `FanState.targetRPM` is non-nil
     /// only while the same snapshot shows the fan in manual under the live lease, with no
@@ -74,16 +87,18 @@ extension SystemSnapshot {
     ///
     /// **`mode` is not read.** The helper reports an unreadable `F<n>Md` as `automatic`
     /// ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads automatic
-    /// beside a listed lease is as often an unread register as anything else, and a fan that
-    /// reads manual with no held target is not held. The held target already says what the mode
-    /// could not.
+    /// beside a listed lease may be an unread register rather than a fan the firmware returned to
+    /// automatic, and a fan that reads manual with no held target is not held. The held target
+    /// already says what the mode could not.
     ///
     /// Fans the lease does not cover are not its business: another fan reclaimed is not this
-    /// lease's loss. An empty `covered` therefore judges only the lease and the emergency.
+    /// lease's loss. An empty `covered` therefore judges only the lease and the emergency. The
+    /// helper never grants a lease over no fans (`AeolusXPCValidation.validateFanIndices`), so an
+    /// empty list here is a caller's mistake.
     ///
     /// - Parameters:
     ///   - leaseID: The lease the caller was granted. Compared by identity, never by holder: a
-    ///     lease with the caller's holder string and another identifier is someone else's.
+    ///     lease with the caller's holder string and another identifier is not this lease.
     ///   - covered: The fans that lease covers.
     /// - Returns: Why the lease is no longer proof of control, or `nil` when this snapshot shows
     ///   every covered fan held under it.
