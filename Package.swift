@@ -157,7 +157,9 @@ let package = Package(
             // HelperClientError values `fanctl reset --all` renders. Those tests are about
             // the rendering and the exit code; the round trip that produces those errors is
             // driven against the real helper session in AeolusHelperTests, which is the only
-            // target that can reach one.
+            // target that can reach one. SnapshotControlLossTests uses it too, for
+            // `SystemSnapshot.controlLoss`: a pure judgement over a snapshot, which needs no
+            // helper, so it is tested here rather than beside the client's connection suites.
             dependencies: ["fanctl", "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

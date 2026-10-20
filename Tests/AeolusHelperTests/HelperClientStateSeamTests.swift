@@ -52,18 +52,36 @@ struct HelperClientStateSeamTests {
     /// Data?` plus a re-decode in a `catch` is #238's failure scenario with the type name filed
     /// off. It was accounted for by
     /// `scalars` and forbidden by nothing.
+    ///
+    /// `ControlLoss` is the one entry declared in this target rather than by the helper, and it is
+    /// on both lists (#472). It is `SystemSnapshot.controlLoss(leaseID:covering:)`'s answer: a
+    /// judgement over a snapshot, not a DTO, so nothing above derives it. It is here because a
+    /// stored one is a remembered verdict on whether the fans are held. `nil` is "holding", and
+    /// `private var lastLoss: ControlLoss?` served after the helper stopped answering is rule 6
+    /// exactly as a stored snapshot is. It is on `leaseTypes` because `.leaseNotListed` carries a
+    /// `Lease`.
     static let fanStateTypes = [
         "SystemSnapshot", "SensorSample",
         "Fan", "FanState", "FanReading", "FanSetting",
         "FanControlMode", "ManualControlAvailability",
         "LabelConfidence", "Unit", "Control",
         "Data",
+        "ControlLoss",
     ]
 
     /// The types manual control arrives in. Separate from the list above because the rule they
     /// break is a different one: a stored snapshot is rule 6 (claiming control you do not
     /// have), a stored lease is ADR 0007 (manual control is never silently re-asserted).
-    static let leaseTypes = ["Lease", "LeaseRequest"]
+    ///
+    /// `ControlLoss` is here as well as above: `.leaseNotListed(listed:)` carries the `Lease` the
+    /// snapshot lists instead, and an enum case is not read by the type half below, so the enum
+    /// has to be named itself. Without it, `private var lastLoss: ControlLoss?` kept a lease on
+    /// the client and every suite here stayed green.
+    ///
+    /// **Mutation:** add `private var lastLoss: ControlLoss?` to `HelperClient`. Run: red on
+    /// `theClientStoresNoLease` and on `theClientStoresNoFanState`. It was green on both before
+    /// `ControlLoss` was listed.
+    static let leaseTypes = ["Lease", "LeaseRequest", "ControlLoss"]
 
     /// Where each **struct** on the two lists is declared, so its own fields can be read.
     ///
@@ -85,12 +103,14 @@ struct HelperClientStateSeamTests {
     /// value is not scanned, and every type here is either such an enum — `FanReading`,
     /// `ManualControlAvailability` and `FanSetting.Control` all carry values in their cases —
     /// or a raw-value enum with no storage at all (`FanControlMode`, `SensorSample.Unit`,
-    /// `SensorSample.LabelConfidence`), or `Data`, which is Foundation's. What catches a value
-    /// hidden in a case is the stored property of the enum's own type, which is exactly what
-    /// the two lists forbid.
+    /// `SensorSample.LabelConfidence`), or `Data`, which is Foundation's. `ControlLoss` is the
+    /// first kind: an enum whose `.leaseNotListed` case carries a `Lease`, and whose other cases
+    /// carry fan indices. What catches a value hidden in a case is the stored property of the
+    /// enum's own type, which is exactly what the two lists forbid.
     private static let opaqueToTheParser: Set<String> = [
         "FanReading", "FanControlMode", "ManualControlAvailability",
         "LabelConfidence", "Unit", "Control", "Data",
+        "ControlLoss",
     ]
 
     /// The scalars a DTO may carry without being fan state itself.

@@ -66,71 +66,18 @@ enum SafeState {
     /// Whether the helper reports this fan as back under automatic control: its mode reads
     /// automatic **and** its availability is not a reason the helper has not cleared it.
     ///
-    /// `.silent` is the only availability that lets the mode speak for itself. Anything else is
-    /// the helper saying something about the fan that a mode of `automatic` does not contradict,
-    /// because `automatic` is also what an unread mode is reported as.
-    static func isCleared(_ fan: FanState) -> Bool {
-        fan.mode == .automatic && clearance(of: fan.manualControlAvailability) == .silent
-    }
+    /// `FanState.isClearedToAutomatic`, in `FanKit` so the app asks the same question (#153). Why
+    /// the mode alone is not enough is written there.
+    static func isCleared(_ fan: FanState) -> Bool { fan.isClearedToAutomatic }
 
     /// What a fan's availability says about whether the helper has cleared it.
-    enum Clearance: Equatable, Sendable {
-        /// A reason that waiting will not change, whatever the mode reads.
-        case durable
-        /// The helper has not established this fan's mode, or a restore of it is outstanding.
-        /// Worth looking again.
-        case pending
-        /// Says nothing about whether the fan is back under automatic control: the mode decides.
-        case silent
-    }
+    typealias Clearance = ManualControlAvailability.Clearance
 
-    /// Classifies one availability.
-    ///
-    /// - **`durable`** — `foreignManualControl` ("nothing in Aeolus will change it, because
-    ///   nothing in Aeolus put the fan there") and `restoreToAutomaticFailed` ("the firmware
-    ///   never took the write").
-    /// - **`pending`** — the reasons that mean the helper has not established the fan's mode, or
-    ///   a restore is outstanding: `releaseInProgress`, `handbackUnconfirmed`,
-    ///   `restoreToAutomaticUnconfirmed`, `systemSleeping`, `unknown` (which the type says is
-    ///   never to be treated as available) and `supervisorBlind`. A blind fan's state is
-    ///   *unknown*, not manual, so it is 8 and not 9 even though reconciliation can leave it so
-    ///   for the life of the process. A snapshot carries it for that reconciliation refusal
-    ///   and, on a helper that can write, for a fan whose mode did not read on that snapshot
-    ///   ([#360](https://github.com/blamechris/Aeolus/issues/360)); never for § 5's ledger
-    ///   (#355). So a fan § 5 gave up blind that is *still* unreadable reads `automatic` (#178's
-    ///   fallback) with `supervisorBlind` beside it, and `auto` sends its restore and exits 8
-    ///   rather than 0, which ADR 0013 rejects under "Exit 0 on the mode alone". On a helper
-    ///   that cannot write, such a fan reads `writePathNotBuilt`, which is silent: #178's gap.
-    /// - **`silent`** — the reasons about manual control being *granted*, not about the fan:
-    ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
-    ///   `leaseHeldByAnotherClient` (a lease is judged from `activeLease`),
-    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem` (which no helper
-    ///   on `main` publishes as an availability; `isReclaimedBySystem` carries the fact).
-    ///
-    /// **Exhaustive, with no `default:` arm,** so a reason added to the vocabulary is a compile
-    /// error here rather than a quiet "silent": the classification decides whether to wait at
-    /// all, or to stop waiting, and a new reason has to be decided.
+    /// Classifies one availability: `ManualControlAvailability.clearance`, in `FanKit` so the app
+    /// shares it (#153). Each reason's class, and why, is written there, in the exhaustive switch
+    /// with no `default:` arm that makes a new reason a compile error until it is decided.
     static func clearance(of availability: ManualControlAvailability) -> Clearance {
-        guard case .unavailable(let reason) = availability else { return .silent }
-        switch reason {
-        case .foreignManualControl,
-            .restoreToAutomaticFailed:
-            return .durable
-        case .releaseInProgress,
-            .handbackUnconfirmed,
-            .restoreToAutomaticUnconfirmed,
-            .supervisorBlind,
-            .systemSleeping,
-            .unknown:
-            return .pending
-        case .writePathNotBuilt,
-            .boundsImplausible,
-            .leaseHeldByAnotherClient,
-            .selfRenewalNotBuilt,
-            .noThermalTelemetry,
-            .reclaimedBySystem:
-            return .silent
-        }
+        availability.clearance
     }
 
     // MARK: - Waiting
