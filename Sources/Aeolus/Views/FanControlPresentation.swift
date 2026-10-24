@@ -103,11 +103,14 @@ import Foundation
 /// sink on any one of them can pair one snapshot's rows with another's lease. Read them where every
 /// change has landed.
 ///
-/// A read taken part-way through is caught here as well. `render` assigns `renderedSnapshot` after
-/// every input this reads, so the licence holds only when the lease, the emergency and this fan's
-/// state are all the ones `renderedSnapshot` carries. A read that pairs two snapshots is therefore
-/// disabled and selects nothing, rather than showing Custom over a lease the newer snapshot has
-/// dropped.
+/// The licence also requires the lease, the emergency and this fan's state to be the ones
+/// `renderedSnapshot` carries. `render` assigns `renderedSnapshot` after the rows, the emergency
+/// and the lease, so a read that pairs a newer one of those with the older snapshot, where the two
+/// differ, is disabled and selects nothing. The check cannot see a read that holds only the older
+/// snapshot's values: a sink on `$fans`, which runs before anything has changed, or a sink on
+/// `$controlSource` when this fan's row did not change. Such a read shows the older snapshot's
+/// claim, Custom included, and a sink keeps it until its property next changes. Only the
+/// contract's first line prevents that.
 ///
 /// ## The contract the control must honour (#153's PR 6)
 ///
@@ -115,6 +118,9 @@ import Foundation
 ///   does**, reading `Inputs(polling:driver:)` and `polling.fans` together there, or calling
 ///   `everyFan(of:driver:)`, which does both. Never from a sink on any single published property
 ///   of `polling`.
+/// - **Recompute whenever the driver's state changes as well** (`LeaseDriver.stateUpdates()`):
+///   `revision` moves only with `polling`, so a control computed on it alone keeps showing Custom
+///   after the driver has lost the lease, until the next snapshot renders.
 /// - Read only from a started view model. After `stop()`, nothing withdraws the snapshot on screen.
 /// - `.hidden`: no control at all. State its reason once, where the control would be (#154).
 /// - `.disabled(reason)`: show the reason's summary, its advice and its wire value where present.
@@ -282,8 +288,9 @@ extension FanControlPresentation {
 
         /// Whether every input the presentation reads from a snapshot is the one `snapshot`
         /// carries: the generation check. `PollingViewModel.render` assigns `renderedSnapshot`
-        /// after the rows, the lease and the emergency, so a read taken part-way through a render
-        /// pairs the newer of those with the older snapshot, and fails here.
+        /// after the rows, the lease and the emergency, so a read that pairs a newer one of those
+        /// with the older snapshot fails here when the two differ. A read wholly of the older
+        /// snapshot passes; see the type's documentation on reads taken part-way through.
         private static func isOneSnapshot(
             _ snapshot: SystemSnapshot, lease: Lease?, state: FanState,
             emergency: ThermalEmergencyState
