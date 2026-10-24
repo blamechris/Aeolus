@@ -204,7 +204,9 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         parkedCalls.removeAll()
         for timer in timers.values { timer.cancel() }
         timers.removeAll()
-        for call in calls { call.continuation.resume(throwing: HelperClientError.connectionAbandoned) }
+        for call in calls {
+            call.continuation.resume(throwing: HelperClientError.connectionAbandoned)
+        }
         health.push(.idle)
     }
 
@@ -297,10 +299,12 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 /// whether the driver has let go of its watch.
 final class HealthFeed: Sendable {
 
+    private typealias Waiter = CheckedContinuation<HelperConnectionHealth?, Never>
+
     private struct Subscription: Sendable {
         var started = false
         var queue: [HelperConnectionHealth] = []
-        var waiter: CheckedContinuation<HelperConnectionHealth?, Never>?
+        var waiter: Waiter?
     }
 
     private enum Next {
@@ -320,7 +324,7 @@ final class HealthFeed: Sendable {
     }
 
     func next(for token: UUID) async -> HelperConnectionHealth? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<HelperConnectionHealth?, Never>) in
+        await withCheckedContinuation { (continuation: Waiter) in
             let next = subscriptions.withLock { all -> Next in
                 guard var subscription = all[token] else { return .now(nil) }
                 defer { all[token] = subscription }
@@ -342,8 +346,8 @@ final class HealthFeed: Sendable {
     }
 
     func push(_ value: HelperConnectionHealth) {
-        let waiters = subscriptions.withLock { all -> [CheckedContinuation<HelperConnectionHealth?, Never>] in
-            var woken: [CheckedContinuation<HelperConnectionHealth?, Never>] = []
+        let waiters = subscriptions.withLock { all -> [Waiter] in
+            var woken: [Waiter] = []
             for token in all.keys {
                 if let waiter = all[token]?.waiter {
                     all[token]?.waiter = nil

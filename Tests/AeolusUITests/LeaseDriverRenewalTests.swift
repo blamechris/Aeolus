@@ -157,7 +157,8 @@ struct LeaseDriverRenewalTests {
     /// asks for the fans again.
     ///
     /// **Mutation (re-acquire on wake):** in `LeaseDriver.systemDidWake`, start an acquisition of
-    /// the confirmed target. Red on the acquire count.
+    /// the confirmed target. Red on the acquire count. **Mutation (X12, wake is a no-op):** make
+    /// `systemDidWake` return at once. Red on the parked deadline.
     @Test("Wake renews at once and never re-acquires")
     func wakeNeverReacquires() async throws {
         let scene = await LeaseScene()
@@ -165,7 +166,10 @@ struct LeaseDriverRenewalTests {
         await scene.clock.untilParked { !$0.isEmpty }
         await scene.helper.script(.renew, .refuse(.leaseUnknown))
 
+        #expect(scene.clock.parked == [scene.at(.seconds(10))])
         await scene.driver.systemDidWake()
+        // The beat due at ten seconds is gone at once: the wake replaced it.
+        #expect(!scene.clock.parked.contains(scene.at(.seconds(10))), "the wake did nothing")
         await scene.ledger.waitFor { $0.lost != nil || $0.acquires.count > 1 }
 
         let entries = await scene.entries

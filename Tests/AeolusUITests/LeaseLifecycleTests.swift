@@ -12,8 +12,11 @@ import Testing
 @MainActor
 struct LeaseLifecycleTests {
 
-    /// Quit sends `releaseLease`, then tears the connection down, then answers the quit. The app
-    /// never relies on the helper's invalidation path alone.
+    /// Quit sends `releaseLease`, then tears the connection down, then answers the quit, with
+    /// "terminate". The app never relies on the helper's invalidation path alone.
+    ///
+    /// **Mutation (X22):** in `LeaseLifecycle.applicationShouldTerminate`, reply `false`. Red on
+    /// the reply.
     ///
     /// **Mutation (no explicit release):** in `LeaseDriver.shutDown`, delete
     /// `await releaseFans()`. Red on the release.
@@ -41,7 +44,8 @@ struct LeaseLifecycleTests {
     /// A release the helper never answers does not hold the quit: it is answered at the bound,
     /// and the teardown that follows answers the release.
     ///
-    /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value` instead
+    /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value`
+    /// instead
     /// of the bounded outcome. The quit is never answered, and the test is red on its time limit
     /// at the wait for that answer.
     @Test("Quit is answered within the bound when the release gets no reply")
@@ -102,6 +106,39 @@ struct LeaseLifecycleTests {
         await lifecycle.systemWillPowerOff()
 
         #expect(await scene.entries.releases == [held.lease.id], "one release for three events")
+        await scene.finish()
+    }
+
+    /// Closing the last control window releases the lease, and once the call returns the helper
+    /// has answered.
+    ///
+    /// **Mutation (X6b):** make `LeaseLifecycle.lastControlWindowClosed()` do nothing. Red.
+    @Test("Closing the last control window releases")
+    func closingReleases() async throws {
+        let scene = await LeaseScene()
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
+        let lifecycle = LeaseLifecycle(driver: scene.driver)
+
+        await lifecycle.lastControlWindowClosed()
+
+        #expect(await scene.entries.releases == [held.lease.id])
+        #expect(await scene.helper.heldLeases.isEmpty)
+        await scene.finish()
+    }
+
+    /// Logout releases the lease, and once the call returns the helper has answered.
+    ///
+    /// **Mutation (X6, Mlogout):** make `LeaseLifecycle.systemWillPowerOff()` do nothing. Red.
+    @Test("Logout releases")
+    func logoutReleases() async throws {
+        let scene = await LeaseScene()
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
+        let lifecycle = LeaseLifecycle(driver: scene.driver)
+
+        await lifecycle.systemWillPowerOff()
+
+        #expect(await scene.entries.releases == [held.lease.id])
+        #expect(await scene.helper.heldLeases.isEmpty)
         await scene.finish()
     }
 

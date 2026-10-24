@@ -40,7 +40,8 @@ struct LeaseDriverLossTests {
 
     /// § 3 revokes every lease when it fires, so the snapshot during an emergency lists none and
     /// `controlLoss` answers `.leaseNotListed(listed: nil)`, not `.thermalEmergency`. The flag is
-    /// kept beside the loss, and it is the only place the emergency is named.
+    /// kept beside the loss: for a loss a snapshot found, it is the only place the emergency is
+    /// named.
     @Test("No lease listed with the emergency flag set is lost, and the emergency is visible")
     func anEmergencyThatRevokedTheLeaseIsNamed() async throws {
         let scene = await LeaseScene()
@@ -128,6 +129,75 @@ struct LeaseDriverLossTests {
         await scene.finish()
     }
 
+    /// Between the grant and the first accepted `apply`, a snapshot asked for after the grant
+    /// answered is evidence about the lease itself. One that no longer lists it, during a 57 s
+    /// first `apply`, ends it there and then, with the emergency named; one that only shows the
+    /// fan not yet held does not.
+    ///
+    /// **Mutation:** in `LeaseDriver.observe`, require `fansJudgedFrom` for every loss, as before
+    /// this was added. Red on the loss.
+    @Test("A revoked lease is lost before its first apply answers")
+    func aRevokedLeaseIsLostBeforeTheFirstApply() async throws {
+        let scene = await LeaseScene()
+        await scene.helper.script(.apply, .parked)
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
+        await scene.ledger.waitFor { !$0.applies.isEmpty }
+        let lease = try #require(await scene.helper.heldLeases.values.first)
+        let ticket = await scene.driver.beginSnapshotRead()
+
+        await scene.driver.observe(
+            Self.snapshot([Self.fan(0, target: nil)], listing: lease), readWith: ticket)
+        #expect(await scene.driver.state.isHeld, "the fan is not held yet, and nobody said it was")
+
+        await scene.driver.observe(
+            Self.snapshot([Self.fan(0, target: nil)], listing: nil, emergency: true),
+            readWith: ticket)
+        let loss = try #require(await scene.driver.state.loss)
+        #expect(
+            loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: true))
+        await scene.finish()
+    }
+
+    /// A snapshot asked for before the grant answered says nothing about the lease, so even one
+    /// that lists none is not judged.
+    ///
+    /// **Mutation:** in `LeaseDriver.observe`, drop `ticket.epoch >= grant.leaseJudgedFrom`. Red.
+    @Test("A snapshot asked for before the grant is not judged")
+    func aSnapshotFromBeforeTheGrant() async throws {
+        let scene = await LeaseScene()
+        await scene.helper.script(.acquire, .parked)
+        await scene.helper.script(.apply, .parked)
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
+        await scene.ledger.waitFor { !$0.acquires.isEmpty }
+        let beforeTheGrant = await scene.driver.beginSnapshotRead()
+        await scene.helper.answerParked(.acquire)
+        await scene.ledger.waitFor { !$0.applies.isEmpty }
+
+        await scene.driver.observe(Self.snapshot([], listing: nil), readWith: beforeTheGrant)
+
+        #expect(await scene.driver.state.isHeld, "a snapshot from before the grant was judged")
+        await scene.finish()
+    }
+
+    /// A loss is followed by one release of that lease. `releaseFans()` joins it, so once it
+    /// returns the release has been sent.
+    ///
+    /// **Mutation (X11):** in `LeaseDriver.lose`, delete `startRelease(of: held.lease)`. Red.
+    @Test("A loss is followed by one release of that lease")
+    func aLossIsReleased() async throws {
+        let scene = await LeaseScene()
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
+        await scene.driver.observe(
+            Self.snapshot([Self.fan(0, target: nil)], listing: held.lease),
+            readWith: await scene.driver.beginSnapshotRead())
+        try #require(await scene.driver.state.isLost)
+
+        await scene.driver.releaseFans()
+
+        #expect(await scene.entries.releases == [held.lease.id])
+        await scene.finish()
+    }
+
     // MARK: - The connection
 
     /// The lease is bound to the control connection, so its health leaving `.handshaken` ends the
@@ -137,7 +207,10 @@ struct LeaseDriverLossTests {
     /// `return`, so the loop reads on. Red on the loss, for each case.
     @Test(
         "Health leaving handshaken is lost",
-        arguments: [HelperConnectionHealth.interrupted, .invalidated, .unresponsive])
+        arguments: [
+            HelperConnectionHealth.interrupted, .invalidated, .unresponsive, .idle, .refused,
+            .versionMismatched,
+        ])
     func healthLeavingHandshakenIsLost(_ health: HelperConnectionHealth) async throws {
         let scene = await LeaseScene()
         try await scene.take(LeaseScene.target([0: 3000]))
@@ -192,6 +265,7 @@ struct LeaseDriverLossTests {
         #expect(await scene.driver.state == .refused(fault))
         let entries = await scene.entries
         #expect(entries.applies.isEmpty && entries.renewals.isEmpty && entries.releases.isEmpty)
+        #expect(entries.index(of: .disconnect) == nil, "a refusal is an answer: nothing to end")
         #expect(scene.clock.parked.isEmpty, "no heartbeat for a lease never granted")
         await scene.finish()
     }

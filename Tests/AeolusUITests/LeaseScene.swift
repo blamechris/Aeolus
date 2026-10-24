@@ -63,11 +63,14 @@ struct LeaseScene: Sendable {
 
     enum TargetError: Error { case envelopeRefused }
 
-    /// Takes `target` and waits until the helper has confirmed its `apply`.
+    /// Takes `target` and waits until the helper has confirmed its `apply`, under a lease granted
+    /// after this call: a confirmation already in the ledger, from an earlier lease with the same
+    /// target, does not end the wait.
     @discardableResult
     func take(_ target: LeaseTarget) async -> HeldLease? {
+        let from = await mark()
         await driver.take(target)
-        await waitForState { state in
+        await waitForState(since: from) { state in
             if case .held(let held) = state, held.phase == .confirmed(target) { return true }
             return false
         }
@@ -75,14 +78,44 @@ struct LeaseScene: Sendable {
         return nil
     }
 
-    /// Waits until the ledger shows a state satisfying `matches`.
+    /// Where the ledger ends now, for a wait that must look only at what comes after.
+    func mark() async -> Int {
+        await ledger.entries.count
+    }
+
+    /// Waits until the ledger shows a state satisfying `matches`, anywhere in it.
     func waitForState(_ matches: @escaping @Sendable (LeaseDriverState) -> Bool) async {
         await ledger.waitFor { $0.states.contains(where: matches) }
+    }
+
+    /// Waits until the ledger shows a state satisfying `matches`, recorded after `mark`.
+    func waitForState(
+        since mark: Int, _ matches: @escaping @Sendable (LeaseDriverState) -> Bool
+    ) async {
+        await ledger.waitFor { Array($0.dropFirst(mark)).states.contains(where: matches) }
     }
 
     /// The ledger now.
     var entries: [LeaseLedger.Entry] {
         get async { await ledger.entries }
+    }
+
+    /// A few round trips through the fake and the driver, for a test about something a driver
+    /// must **not** do after a reply it has no reason to act on.
+    ///
+    /// That reply ends in the fake, then hops to the driver, and nothing a correct driver does
+    /// next is visible, so there is no event to wait for. Each round trip here queues behind
+    /// whatever the reply queued on the same actor, so after them the driver has handled it.
+    /// That rests on an actor running the jobs queued on it in order, which is how Swift's
+    /// default actors behave but not a language guarantee: a correct driver passes whatever the
+    /// order, and only a mutant's red could be missed. It is a fixed number of hops, never a
+    /// loop on a condition, and spends no time.
+    func settle() async {
+        for _ in 0..<4 {
+            _ = await helper.heldLeases
+            _ = await driver.state
+            _ = await ledger.entries.count
+        }
     }
 
     /// Ends the forwarding and answers anything still parked, so nothing waits on the fake.

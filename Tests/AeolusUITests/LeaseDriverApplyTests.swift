@@ -80,6 +80,7 @@ struct LeaseDriverApplyTests {
         await scene.helper.answerParked(.apply)
         await scene.ledger.waitFor { entries in
             entries.applies.count >= 3
+                || entries.filter({ $0.event.isApplyAnswer }).count >= 2
                 || entries.states.contains { state in
                     if case .held(let held) = state {
                         held.phase == .confirmed(latest)
@@ -114,6 +115,7 @@ struct LeaseDriverApplyTests {
 
         await scene.driver.selectAutomatic()
         await scene.ledger.waitFor { $0.releases == [lease.id] }
+        #expect(await scene.entries.releases == [lease.id], "the release was sent")
 
         #expect(
             await scene.entries.index(where: \.isApplyAnswer) == nil,
