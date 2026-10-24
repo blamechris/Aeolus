@@ -52,7 +52,8 @@ final class AppComposition {
     /// A static, because SwiftUI constructs `AeolusAppDelegate` itself: nothing can hand the
     /// delegate the root `AeolusApp.init()` built. Both reach this one instead, and a `static let`
     /// is built once, on first use.
-    static let running = AppComposition.forRunningApp(preferencesController: PreferencesController())
+    static let running = AppComposition.forRunningApp(
+        preferencesController: PreferencesController())
 
     /// The centre `NSWorkspace` posts power, wake and session notifications on. They are never
     /// posted to `NotificationCenter.default`.

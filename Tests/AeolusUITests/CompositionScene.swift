@@ -13,8 +13,8 @@ import Testing
 /// driver is that scene's, workspace events are posted to a centre of the test's own, and the
 /// process's counters are a `FakeProcessLifetime`.
 ///
-/// The root keeps the driver `private`, as it must (#419), so the scene hands the root the driver it
-/// already holds through `makeDriver`, and a test takes a lease on it directly.
+/// The root keeps the driver `private`, as it must (#419), so the scene hands the root the driver
+/// it already holds through `makeDriver`, and a test takes a lease on it directly.
 @MainActor
 struct CompositionScene {
 
@@ -81,7 +81,8 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
 
     enum Call: Equatable {
         case disableSudden, enableSudden
-        case disableAutomatic(String), enableAutomatic(String)
+        case disableAutomatic(String)
+        case enableAutomatic(String)
         case beginActivity(ProcessInfo.ActivityOptions.RawValue, String)
         case endActivity
     }
@@ -115,7 +116,9 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
     func enableAutomaticTermination(_ reason: String) {
         calls.append(.enableAutomatic(reason))
         automaticDisabled -= 1
-        if automaticDisabled < 0 { Issue.record("automatic termination enabled more than disabled") }
+        if automaticDisabled < 0 {
+            Issue.record("automatic termination enabled more than disabled")
+        }
     }
 
     func beginActivity(

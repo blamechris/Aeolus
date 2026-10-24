@@ -26,6 +26,22 @@ import Foundation
 /// This is a pair of closures over the driver, not the driver. The source keeps no reference to
 /// anything that can take, adjust or release a lease, and a source built with no observer, as in
 /// a build with no helper, reads exactly as it did before there was one.
+///
+/// ## Every successful reply is judged
+///
+/// Including one the source will not render: a reply that contradicts itself, or one whose
+/// request went out in an earlier episode. The driver's judgement can only end a lease, never
+/// claim one, so a reply the display refuses can still show that control ended, and giving the
+/// fans back is the direction `CLAUDE.md` rule 6 favours. A failed request has no snapshot, and
+/// nothing is judged.
+///
+/// ## What the source keeps from #478
+///
+/// The ticket's await is the one suspension added to a cycle. It comes before the episode is
+/// stamped and the request is sent, so a request is still stamped with the episode it went out
+/// in, and demand is checked again after it, so a last consumer that left during the hop sends
+/// nothing. One request is still in flight at a time and none is cancelled, and the freshness
+/// stamp is still taken on arrival, before the judgement.
 struct HelperSnapshotObserver: Sendable {
 
     /// What to do with a successful reply to the read the ticket was taken for.

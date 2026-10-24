@@ -126,7 +126,9 @@ struct AppCompositionLeaseTests {
         scene.post(NSWorkspace.didWakeNotification)
 
         try #require(await becomes { await scene.lease.driver.state.isLost }, "the wake renewed")
-        let reacquired = await becomes(turns: 2_000) { await scene.lease.entries.acquires.count > 1 }
+        let reacquired = await becomes(turns: 2_000) {
+            await scene.lease.entries.acquires.count > 1
+        }
         #expect(!reacquired, "nothing asked for the fans again")
         let loss = try #require(await scene.lease.driver.state.loss)
         #expect(loss.afterWake)
@@ -189,7 +191,9 @@ struct AppCompositionLeaseTests {
     ///
     /// **Mutation (V2, "the panel's close releases"):** in `AppWindow.isControlWindow`, answer
     /// `true` for `.menuBarPanel`. Red at `!released` for the panel.
-    @Test("Closing the menu bar panel or Settings releases nothing", arguments: [AppWindow.menuBarPanel, .settings])
+    @Test(
+        "Closing the menu bar panel or Settings releases nothing",
+        arguments: [AppWindow.menuBarPanel, .settings])
     func otherWindowsNeverRelease(_ window: AppWindow) async throws {
         let scene = await CompositionScene()
         _ = try #require(await scene.lease.take(LeaseScene.target([0: 3000])))
@@ -206,7 +210,9 @@ struct AppCompositionLeaseTests {
 
     /// An open panel or Settings window does not keep the lease once the last main window closes.
     /// The same mutation V2 is red here, the other way: the panel holds the release back.
-    @Test("An open panel does not keep the lease past the last main window", arguments: [AppWindow.menuBarPanel, .settings])
+    @Test(
+        "An open panel does not keep the lease past the last main window",
+        arguments: [AppWindow.menuBarPanel, .settings])
     func otherWindowsDoNotHoldTheLease(_ window: AppWindow) async throws {
         let scene = await CompositionScene()
         let held = try #require(await scene.lease.take(LeaseScene.target([0: 3000])))

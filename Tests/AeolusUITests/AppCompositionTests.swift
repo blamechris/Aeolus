@@ -113,8 +113,8 @@ struct AppCompositionTests {
     /// The production connections are two `HelperClient` instances. Constructing them connects
     /// nothing: a client builds its connection when it first sends.
     ///
-    /// **Mutation (C2):** in `HelperConnections.make`, build one `HelperClient` and pass it as both.
-    /// Red at `!==`.
+    /// **Mutation (C2):** in `HelperConnections.make`, build one `HelperClient` and pass it as
+    /// both. Red at `!==`.
     @Test("The read connection and the control connection are two clients")
     func readAndControlAreTwoClients() throws {
         let connections = HelperConnections.make(clientDescription: "Aeolus.app 0.0.0")
@@ -172,7 +172,9 @@ struct AppCompositionTests {
             let holder = AppComposition.holderDescription(of: source)
             #expect(holder == expected)
             #expect(holder == LeaseDriver.holderDescription(shortVersion: version))
-            #expect(throws: Never.self) { try AeolusXPCValidation.validateHolderDescription(holder) }
+            #expect(throws: Never.self) {
+                try AeolusXPCValidation.validateHolderDescription(holder)
+            }
             #expect(AppComposition.clientDescription(of: source) == expected)
         }
     }
@@ -188,6 +190,7 @@ struct AppCompositionTests {
     static func doubles() -> HelperConnections {
         let clock = HandWoundClock()
         return HelperConnections(
-            read: FakeSnapshotHelper(), control: FakeLeaseHelper(clock: clock, ledger: LeaseLedger()))
+            read: FakeSnapshotHelper(),
+            control: FakeLeaseHelper(clock: clock, ledger: LeaseLedger()))
     }
 }

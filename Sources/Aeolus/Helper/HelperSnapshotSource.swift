@@ -93,21 +93,9 @@ import Foundation
 ///
 /// ## The lease driver sees every reply, on a ticket taken before the read
 ///
-/// In a build with a helper the source is given a `HelperSnapshotObserver` over the app's lease
-/// driver. Each cycle takes the driver's ticket **before** the request's task exists, and hands
-/// every successful reply to the driver with it once the reply has been recorded. The source
-/// never owns the driver, and a source with no observer reads exactly as one did before there
-/// was a driver.
-///
-/// Every successful reply is judged, including one this source will not render: a reply that
-/// contradicts itself, or one whose request was sent in an earlier episode. The driver's judgement
-/// can only end a lease, never claim one, so a reply the display refuses can still be evidence
-/// that control ended, and giving the fans back is the direction `CLAUDE.md` rule 6 favours.
-///
-/// The ticket's await is the one suspension added to the cycle, and it sits before the episode is
-/// stamped and the request is sent, so the request is still stamped with the episode it went out
-/// in. Demand is checked again after it: a last consumer that left during the hop sends nothing.
-/// The freshness stamp is still taken when the reply arrives, before the judgement.
+/// In a build with a helper the source reports each read to the lease driver through a
+/// `HelperSnapshotObserver`: the ticket before the request's task exists, and every successful
+/// reply after it is recorded. See that type for why, and for what is judged.
 @MainActor
 public final class HelperSnapshotSource {
 

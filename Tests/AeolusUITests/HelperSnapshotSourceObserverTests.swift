@@ -113,7 +113,8 @@ struct HelperSnapshotSourceObserverTests {
         // The judgement is awaited before the next request is sent, so it has happened.
         let loss = try #require(await scene.driver.state.loss, "the lease was judged lost")
         #expect(loss.lease == held.lease)
-        #expect(loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: false))
+        #expect(
+            loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: false))
         #expect(Support.freshSnapshot(source) == revoked)
         await Support.tearDown(source, helper)
         await scene.finish()
@@ -139,7 +140,9 @@ struct HelperSnapshotSourceObserverTests {
         try await helper.waitForRequests(1)
 
         await scene.helper.answerParked(.acquire)
-        await scene.waitForState { if case .held(let held) = $0 { held.isConfirmed } else { false } }
+        await scene.waitForState {
+            if case .held(let held) = $0 { held.isConfirmed } else { false }
+        }
         await helper.reply(with: Support.snapshot(activeLease: nil))
         try await helper.waitForRequests(2)
         #expect(await scene.driver.state.isHeld, "a read from before the grant proves nothing")
