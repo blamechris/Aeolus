@@ -79,19 +79,49 @@ struct LeaseDriverHeartbeatGuardTests {
         await scene.finish()
     }
 
+    /// The five ways a lease ends that a test can bring about.
+    static let ends = ["snapshot", "refused apply", "health", "Auto", "release"]
+
     /// Every way a lease ends stops its heartbeat, at once: nothing stays parked on the clock. A
     /// parked sleep is removed the moment it is cancelled, so this is read straight after the end.
     ///
     /// **Mutation (Y7):** in `LeaseDriver.endLease`, delete `heartbeat?.cancel()`. **(Y9):** Y7,
     /// and delete the `isHeld` guard in `beat`. Red on every end, under both.
-    @Test(
-        "Every end stops the heartbeat",
-        arguments: ["snapshot", "refused apply", "health", "Auto", "release"])
+    @Test("Every end stops the heartbeat", arguments: Self.ends)
     func everyEndStopsTheHeartbeat(_ end: String) async throws {
         let scene = await LeaseScene()
-        let target = try LeaseScene.target([0: 3000])
+        try await Self.hold(endingBy: end, in: scene)
+
+        await Self.end(by: end, in: scene)
+
+        #expect(scene.clock.parked.isEmpty, "the beat of a lease that ended is gone (\(end))")
+        await scene.finish()
+    }
+
+    /// Every way a lease ends ends its health watch too. A cancelled watch lets go at once, so
+    /// four of the ends are read straight after; a health loss ends the watch from inside it, as
+    /// the watch returns, so that one is waited for.
+    ///
+    /// **Mutation (Y8):** in `LeaseDriver.endLease`, delete `healthWatch?.cancel()`. Red on
+    /// snapshot, refused apply, Auto and release. **Mutation:** move the cancel from `endLease`
+    /// into `beginRelease`. Red on snapshot and refused apply.
+    @Test("Every end stops the health watch", arguments: Self.ends)
+    func everyEndStopsTheHealthWatch(_ end: String) async throws {
+        let scene = await LeaseScene()
+        try await Self.hold(endingBy: end, in: scene)
+        #expect(scene.helper.health.live == 1)
+
+        await Self.end(by: end, in: scene)
+
+        if end == "health" { await scene.helper.health.untilLive(0) }
+        #expect(scene.helper.health.live == 0, "the watch outlived its lease (\(end))")
+        await scene.finish()
+    }
+
+    /// A lease held, its heartbeat armed and its health watched, ready to be ended by `end`.
+    static func hold(endingBy end: String, in scene: LeaseScene) async throws {
         if end == "refused apply" { await scene.helper.script(.apply, .parked) }
-        await scene.driver.take(target)
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         if end == "refused apply" {
             await scene.ledger.waitFor { !$0.applies.isEmpty }
         } else {
@@ -101,7 +131,10 @@ struct LeaseDriverHeartbeatGuardTests {
         }
         await scene.clock.untilParked { !$0.isEmpty }
         await scene.ledger.waitFor { $0.healthAsks >= 2 }
+    }
 
+    /// Ends the lease held by `end`.
+    static func end(by end: String, in scene: LeaseScene) async {
         switch end {
         case "snapshot":
             await scene.driver.observe(
@@ -118,26 +151,27 @@ struct LeaseDriverHeartbeatGuardTests {
         default:
             await scene.run { await scene.driver.releaseFans() }
         }
-
-        #expect(scene.clock.parked.isEmpty, "the beat of a lease that ended is gone (\(end))")
-        await scene.finish()
     }
 
-    /// The health watch ends with the lease: nothing is left subscribed to the connection's
-    /// health once the lease is released.
+    /// The guard before a renewal is sent stops a beat whose sleep ended normally after the lease
+    /// did: no renewal goes out for a lease no longer held. The clock's sleeps ignore cancellation
+    /// here, so the beat's sleep returns at its deadline as one that had already ended would.
     ///
-    /// **Mutation (Y8):** in `LeaseDriver.endLease`, delete `healthWatch?.cancel()`. Red on the
-    /// count.
-    @Test("Releasing ends the health watch")
-    func releasingEndsTheHealthWatch() async throws {
+    /// **Mutation:** in `LeaseDriver.beat`, delete the guard before `renewedAt = clock.now`. Red on
+    /// the renewals.
+    @Test("No renewal is sent for a lease that ended while the beat slept")
+    func noRenewalAfterTheLeaseEnded() async throws {
         let scene = await LeaseScene()
+        scene.clock.ignoreCancellation()
         try await scene.take(LeaseScene.target([0: 3000]))
-        await scene.ledger.waitFor { $0.healthAsks >= 2 }
-        #expect(scene.helper.health.live == 1)
-
+        await scene.clock.untilParked { $0.contains(scene.at(.seconds(10))) }
         await scene.driver.selectAutomatic()
+        await scene.waitForState { $0.isReleased }
 
-        #expect(scene.helper.health.live == 0, "the watch outlived its lease")
+        scene.clock.advance(to: scene.at(.seconds(10)))
+        await scene.settle()
+
+        #expect(await scene.entries.renewals.isEmpty, "a renewal went out for a released lease")
         await scene.finish()
     }
 
@@ -181,10 +215,11 @@ struct LeaseDriverHeartbeatGuardTests {
     /// make the heartbeat spin.
     ///
     /// **Mutation:** in `LeaseDriver.heartbeatInterval`, ignore `granted`. Red on the 15 s grant.
-    /// **Mutation:** drop the `leaseTTLRange` check. Red on the 1 s grant.
+    /// **Mutation:** drop the `leaseTTLRange` check. Red on the 1 s grant. **Mutation (Me):** use
+    /// `believed` alone, not the shorter of the two. Red on the 60 s grant.
     @Test("The interval is a third of the shorter TTL, and only of a believable one")
     func theShorterTTL() async throws {
-        for (granted, beat) in [(15.0, 5.0), (1.0, 10.0)] {
+        for (granted, beat) in [(15.0, 5.0), (1.0, 10.0), (60.0, 10.0)] {
             let scene = await LeaseScene()
             await scene.helper.grant(timeToLive: granted)
             try await scene.take(LeaseScene.target([0: 3000]))

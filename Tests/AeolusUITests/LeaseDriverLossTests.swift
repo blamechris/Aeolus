@@ -158,6 +158,28 @@ struct LeaseDriverLossTests {
         await scene.finish()
     }
 
+    /// Between the grant and the first accepted `apply`, § 3's emergency while the lease is still
+    /// listed ends it too: `controlLoss` decides that before it looks at a fan.
+    ///
+    /// **Mutation (Mg):** in `LeaseDriver.observe`, move `.thermalEmergency` into the cases that
+    /// wait for the first `apply`. Red on the loss.
+    @Test("An emergency while the lease is listed is lost before its first apply answers")
+    func anEmergencyWhileListedBeforeTheFirstApply() async throws {
+        let scene = await LeaseScene()
+        await scene.helper.script(.apply, .parked)
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
+        await scene.ledger.waitFor { !$0.applies.isEmpty }
+        let lease = try #require(await scene.helper.heldLeases.values.first)
+
+        await scene.driver.observe(
+            Self.snapshot([Self.fan(0, target: nil)], listing: lease, emergency: true),
+            readWith: await scene.driver.beginSnapshotRead())
+
+        let loss = try #require(await scene.driver.state.loss)
+        #expect(loss.cause == .snapshot(.thermalEmergency, isThermalEmergencyActive: true))
+        await scene.finish()
+    }
+
     /// A snapshot asked for before the grant answered says nothing about the lease, so even one
     /// that lists none is not judged.
     ///
