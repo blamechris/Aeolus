@@ -172,4 +172,42 @@ struct MenuBarSnapshotTests {
                 thermalEmergency: .unknown, controlSource: Self.monitor,
                 anyFanReportedReclaimed: false) == "fan")
     }
+
+    /// The icon for every reason nothing is tracked, from `ReasonTag` — exhaustive over
+    /// `ControlNotTracked` — with the literal name each must draw. Unknown is a question mark,
+    /// never the off icon, wherever there is a helper this build reads or is trying to; the
+    /// plain fan only with none (Monitor, a damaged bundle) or nothing read yet. Never red.
+    ///
+    /// **Mutations (ICa–ICf):** move each reason to the other side of `expectsHelper`.
+    /// **Mutation (ICg):** return the emergency icon for unknown. Run, each: red for the reason
+    /// moved, or for every reason that expects a helper.
+    @Test(
+        "Unknown draws the question mark exactly where a helper is expected",
+        arguments: ControlSourceDisplayTests.everyReason)
+    func unknownIconForEveryReason(_ why: ControlNotTracked) {
+        let expected: String
+        switch why {
+        case .noHelperInThisBuild, .helperInstallIncomplete, .nothingReadYet:
+            expected = "fan"
+        case .helperConnection, .awaitingSnapshot, .snapshotRequestFailed, .snapshotContradicted,
+            .snapshotStale:
+            expected = "questionmark.circle"
+        }
+        let unknown = MenuBarIcon.systemName(
+            thermalEmergency: .unknown, controlSource: .notTracked(why),
+            anyFanReportedReclaimed: false)
+        #expect(unknown == expected)
+        #expect(unknown != "exclamationmark.triangle.fill")
+        #expect(
+            MenuBarIcon.systemName(
+                thermalEmergency: .active, controlSource: .notTracked(why),
+                anyFanReportedReclaimed: false) == "exclamationmark.triangle.fill")
+        // Off, from a snapshot that says so, is the plain fan; where a helper is expected,
+        // unknown must not look like it.
+        let off = MenuBarIcon.systemName(
+            thermalEmergency: .inactive, controlSource: .helperSnapshot(activeLease: nil),
+            anyFanReportedReclaimed: false)
+        #expect(off == "fan")
+        #expect((unknown == off) == (expected == "fan"))
+    }
 }

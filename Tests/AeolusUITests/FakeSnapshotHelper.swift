@@ -189,6 +189,16 @@ enum SnapshotTestSupport {
         return await condition()
     }
 
+    /// A bounded wait for a view model's refresh loop to end. Replaces awaiting the loop's task,
+    /// which no cancellation interrupts: a loop that never ends is a `false` here, and the test
+    /// stops the view model and fails, rather than holding `swift test` open. The bound is in
+    /// turns, generous because the loop's steps cross other actors, and spent only on failure.
+    @MainActor
+    static func refreshLoopEnds(_ viewModel: PollingViewModel) async -> Bool {
+        let turns = 1_000_000
+        return await settle(turns: turns) { !viewModel.isRefreshLoopRunning }
+    }
+
     /// A bounded wait for the fake to have seen `count` requests.
     @MainActor
     static func requestsReach(_ count: Int, on helper: FakeSnapshotHelper) async -> Bool {
@@ -275,7 +285,12 @@ enum SnapshotTestSupport {
         _ source: HelperSnapshotSource, _ helper: FakeSnapshotHelper,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async {
-        while source.consumerCount > 0 { source.stop() }
+        // Bounded: a `stop()` that stopped counting down must be a red here, never a loop that
+        // holds the main actor and keeps `swift test` from exiting.
+        for _ in 0..<max(0, source.consumerCount) { source.stop() }
+        #expect(
+            source.consumerCount == 0, "stop() left consumers behind",
+            sourceLocation: sourceLocation)
         await helper.close()
         let ended = await settle { !source.isLoopRunning }
         #expect(

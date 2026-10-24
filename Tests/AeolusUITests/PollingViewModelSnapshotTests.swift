@@ -88,8 +88,10 @@ struct PollingViewModelSnapshotTests {
     // MARK: - Unknown the moment it may not be rendered
 
     /// **Mutation (M2):** delete the `health == .handshaken` guard in
-    /// `HelperSnapshotSource.authority()` — keep rendering the last snapshot. Run: red at every
-    /// expectation after the health changes.
+    /// `HelperSnapshotSource.authority()`. Run: red at the `fans` and `controlSource`
+    /// expectations, which name the reason. The emergency and label expectations stay green,
+    /// because leaving `.handshaken` also advances the episode, and that alone withdraws the
+    /// claims.
     @Test("Health leaving .handshaken makes every control claim unknown on the next tick")
     func healthLeavingHandshakenMakesEveryClaimUnknown() async throws {
         let helper = FakeSnapshotHelper()
@@ -201,7 +203,7 @@ struct PollingViewModelSnapshotTests {
 
     // MARK: - What a fresh tick carries
 
-    /// **Mutation (O5):** `controlSource = .helperSnapshot(activeLease: nil)` in `tick()`.
+    /// **Mutation (O5):** `controlSource = .helperSnapshot(activeLease: nil)` in `render`.
     /// **Mutation (O6):** infer the emergency from `snapshot.activeLease != nil` as well. Run,
     /// each: red here.
     @Test("A listed lease is carried, and does not make an emergency")
@@ -221,7 +223,7 @@ struct PollingViewModelSnapshotTests {
         await Support.tearDown(source, helper)
     }
 
-    /// **Mutation (O27):** `lastUpdated = snapshot.capturedAt` in `tick()`. Run: red here.
+    /// **Mutation (O27):** `lastUpdated = snapshot.capturedAt` in `render`. Run: red here.
     @Test("A fresh tick's lastUpdated is when the reply arrived, not the helper's capturedAt")
     func lastUpdatedIsTheArrival() async throws {
         let helper = FakeSnapshotHelper()

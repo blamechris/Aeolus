@@ -33,7 +33,9 @@ actor FlakyAfterFirstTickProvider: SensorProvider {
     }
 }
 
-@Suite("PollingViewModel — refresh loop and the direct-read path", .serialized)
+@Suite(
+    "PollingViewModel — refresh loop and the direct-read path", .serialized,
+    .timeLimit(.minutes(1)))
 @MainActor
 struct PollingViewModelTests {
 
@@ -111,15 +113,15 @@ struct PollingViewModelTests {
             provider: Self.provider(), clock: clock, snapshots: .noHelper())
 
         viewModel.start()
-        await viewModel.waitUntilLoopFinishes()
+        let ended = await SnapshotTestSupport.refreshLoopEnds(viewModel)
+        viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
 
         // 3 sleeps means 3 completed ticks (tick, sleep, tick, sleep, tick, sleep-throws).
         let sleepCount = await clock.sleepCallCount
         #expect(sleepCount == 3)
         #expect(viewModel.phase == .ready)
         #expect(viewModel.fans.first?.actual.value == 1712)
-
-        viewModel.stop()
     }
 
     @Test("A second start() call while already running does not start a competing loop")
@@ -130,7 +132,9 @@ struct PollingViewModelTests {
 
         viewModel.start()
         viewModel.start()  // must be a no-op — a second loop would double every sleep count
-        await viewModel.waitUntilLoopFinishes()
+        let ended = await SnapshotTestSupport.refreshLoopEnds(viewModel)
+        viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
 
         let sleepCount = await clock.sleepCallCount
         #expect(sleepCount == 2)
@@ -153,7 +157,9 @@ struct PollingViewModelTests {
             provider: Self.provider(), clock: clock, refreshInterval: 0, snapshots: .noHelper())
 
         viewModel.start()
-        await viewModel.waitUntilLoopFinishes()
+        let ended = await SnapshotTestSupport.refreshLoopEnds(viewModel)
+        viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
 
         let slept = await clock.sleptSeconds
         #expect(slept == [PollingViewModel.minimumRefreshInterval])

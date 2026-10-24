@@ -3,7 +3,9 @@ import Testing
 
 @testable import AeolusUI
 
-@Suite("MenuBarViewModel — default selection, resolution, and phase mirroring", .serialized)
+@Suite(
+    "MenuBarViewModel — default selection, resolution, and phase mirroring", .serialized,
+    .timeLimit(.minutes(1)))
 @MainActor
 struct MenuBarViewModelTests {
 
@@ -155,11 +157,11 @@ struct MenuBarViewModelTests {
         let viewModel = MenuBarViewModel(polling: polling)
 
         viewModel.start()
-        await polling.waitUntilLoopFinishes()
+        let ended = await SnapshotTestSupport.refreshLoopEnds(polling)
+        viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
 
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.readouts.isEmpty)
-
-        viewModel.stop()
     }
 }

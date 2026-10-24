@@ -119,8 +119,9 @@ struct PollingViewModelAuthorityWatchTests {
         viewModel.start()
         try #require(source.consumerCount == 1, "start() did not reach the source")
         try await helper.waitForRequests(1)
-        await viewModel.waitUntilLoopFinishes()
+        let ended = await Support.refreshLoopEnds(viewModel)
         viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
         try #require(source.consumerCount == 0, "stop() did not reach the source")
 
         await helper.reply(with: Support.snapshot())

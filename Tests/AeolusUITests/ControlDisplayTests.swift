@@ -92,6 +92,21 @@ struct HelperAuthoredTextTests {
         #expect(HelperAuthoredText.sanitised("fanctl 0.3.0") == "fanctl 0.3.0")
     }
 
+    /// Letters outside ASCII are text, not controls: a holder named in Japanese or Arabic keeps
+    /// its name. **Mutation (SAN3):** also strip `Lo` (other letters). Run: red at both.
+    @Test("Japanese and Arabic letters pass unchanged")
+    func lettersBeyondASCIIPass() {
+        #expect(HelperAuthoredText.sanitised("ファン制御 風扇") == "ファン制御 風扇")
+        #expect(HelperAuthoredText.sanitised("مروحة المعالج") == "مروحة المعالج")
+    }
+
+    /// A lone ellipsis is printable text that fits, not text so dense nothing fit.
+    /// **Mutation (BG2):** drop `trimmed != bounded` from the unprintable check. Run: red here.
+    @Test("A bare ellipsis is shown as itself")
+    func aBareEllipsisIsShown() {
+        #expect(HelperAuthoredText.sanitised("…") == "…")
+    }
+
     @Test("A key is shown verbatim only if nothing in it would be removed and it fits the caps")
     func verbatimKeys() {
         #expect(HelperAuthoredText.isDisplayableVerbatim("TC0P"))
@@ -150,6 +165,9 @@ struct ThermalEmergencyDisplayTests {
             ThermalEmergencyDisplay.banner(for: .unknown, source: Self.monitor))
 
         #expect(active.text.hasPrefix("Thermal emergency reported by the helper"))
+        // § 3 acts only on fans Aeolus took off automatic, so nothing is said to protect fans.
+        #expect(!active.text.lowercased().contains("protect"))
+        #expect(!active.compactText.lowercased().contains("protect"))
         #expect(unknown.text.contains("unknown"))
         #expect(!unknown.text.contains("reported by the helper"))
         // Neither infers a cause from a lease: § 3's flag can clear before it is read (#476).

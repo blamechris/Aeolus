@@ -103,6 +103,27 @@ struct SnapshotReadingsTests {
         #expect(sensor?.sample.isAvailable == false)
     }
 
+    /// A key of 100 graphemes, each `a` and four combining acute accents: 100 characters, within
+    /// the character cap, and 900 bytes, past the byte cap. It must be refused, not drawn.
+    ///
+    /// **Mutation (VK1):** drop `text.utf8.count <= maxUTF8Bytes` from
+    /// `isDisplayableVerbatim`. Run: red at both expectations.
+    @Test("A key within the character cap but past the byte cap is refused")
+    func aDenseKeyIsRefused() {
+        let dense = String(repeating: "a" + String(repeating: "\u{0301}", count: 4), count: 100)
+        #expect(dense.count == 100)
+        #expect(dense.utf8.count == 900)
+        let snapshot = SystemSnapshot(
+            fans: [],
+            sensors: [
+                SensorSample(key: dense, label: nil, labelConfidence: nil, value: 1, unit: .celsius)
+            ],
+            activeLease: nil, isThermalEmergencyActive: false, capturedAt: Date())
+
+        #expect(!HelperAuthoredText.isDisplayableVerbatim(dense))
+        #expect(SnapshotReadings.sensors(in: snapshot, labelSource: NoSensorLabels()).isEmpty)
+    }
+
     /// **Mutation (K1):** drop the `isDisplayableVerbatim` filter. Run: red here.
     @Test("A sensor whose key cannot be shown verbatim is left out, and the rest are sorted")
     func aKeyThatCannotBeShownIsLeftOut() {
