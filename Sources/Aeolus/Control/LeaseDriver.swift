@@ -209,12 +209,38 @@ public actor LeaseDriver {
     /// Where the lease stands now.
     public var state: LeaseDriverState { current }
 
-    /// The heartbeat running now, for a suite that has to know when a beat has finished.
+    /// A heartbeat that can be waited for, and nothing else.
     ///
-    /// `internal`, for the suite alone, as `HelperClient.deadlinesRunning` is: a test about a
-    /// renewal that must **not** be sent has no event to wait for, and waiting for the beat itself
-    /// is the only end it has.
-    var runningHeartbeat: Task<Void, Never>? { heartbeat }
+    /// **It holds no `Task`.** The beat's `Task` would hand its holder `cancel()`, and a cancelled
+    /// beat sends no renewal and reports no loss: the helper lets the lease go at its TTL while
+    /// the driver goes on drawing `held` (`CLAUDE.md` rule 6, #486). So the handle keeps only a
+    /// closure that waits for the beat, and no change to its access levels can hand the cancel
+    /// back. Only this file can make one.
+    struct HeartbeatHandle: Sendable {
+        private let wait: @Sendable () async -> Void
+
+        fileprivate init(_ beat: Task<Void, Never>) {
+            wait = { await beat.value }
+        }
+
+        /// Returns once the beat has finished, whatever it did.
+        ///
+        /// **Not cancellable.** It waits on the beat's `Task.value`, which does not end when the
+        /// waiting task is cancelled, so a time limit cannot end a test stuck here. Call it from
+        /// a task of its own (`LeaseScene.run`), never directly from a test.
+        func finished() async { await wait() }
+    }
+
+    /// The heartbeat running now, as a handle that can only be waited for, for a suite that has
+    /// to know when a beat has finished.
+    ///
+    /// `internal`, for the suite alone: a test about a renewal that must **not** be sent has no
+    /// event to wait for, and waiting for the beat itself is the only end it has. Unlike
+    /// `HelperClient.deadlinesRunning`, which is a count, it reaches a task the driver owns, so it
+    /// hands out a wait rather than the task. **Nothing in `Sources/` names it or its handle but
+    /// these two declarations:** `LeaseDriverSuiteSeamTests` fails when anything else does, in
+    /// this file or another.
+    var runningHeartbeat: HeartbeatHandle? { heartbeat.map(HeartbeatHandle.init) }
 
     /// The same, as a stream that starts with the value now.
     nonisolated public func stateUpdates() -> AsyncStream<LeaseDriverState> {
@@ -564,9 +590,16 @@ extension LeaseDriver {
     /// after a loss, is likewise not counted, so `held` is never drawn again for control the user
     /// gave back or the helper ended.
     ///
-    /// **No lease-id check of its own.** A beat that has not been stopped belongs to the lease
-    /// held: every end of a lease stops its beat (`endLease()`), and so does a wake
-    /// (`startHeartbeat`). The `case .held` below is only how `held` is reached.
+    /// **No lease-id check of its own, so the cancellation is load-bearing.** What keeps an old
+    /// lease's answer off a new one is `endLease()`'s `heartbeat?.cancel()`. Every end of a lease
+    /// cancels its beat, and `beat`'s `guard !Task.isCancelled` after the renewal stops the
+    /// cancelled beat before its answer reaches here. A wake cancels the beat it replaces the
+    /// same way (`startHeartbeat`). `everyEndStopsTheHeartbeat` pins the cancel on all five ends,
+    /// and `staleRenewalUnderAnOldLease` and `staleRenewalAfterAGrantOverOtherFans` pin the guard.
+    /// Without either, an old lease's renewal answered after a new grant replaces the new lease
+    /// in `held`, and the new lease's beat, finding it no longer held, stops renewing it. An id
+    /// check here would sit behind both, and no test could see it act unless one of them were
+    /// deleted. The `case .held` below is only how `held` is reached.
     private func renewalAccepted(_ renewed: Lease, for leaseID: UUID) -> Bool {
         guard case .held(let held) = current else { return false }
         guard renewed.id == leaseID else {

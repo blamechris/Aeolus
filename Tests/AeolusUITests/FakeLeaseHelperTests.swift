@@ -70,3 +70,40 @@ struct FakeLeaseHelperTests {
         await scene.finish()
     }
 }
+
+/// The fake answering one parked call rather than all of them, which the wake's suite leans on to
+/// answer an old beat's renewal while the wake's own is still waiting.
+@Suite("Fake helper: answering the oldest parked call", .timeLimit(.minutes(1)))
+struct FakeLeaseHelperOldestParkedTests {
+
+    /// `answerOldestParked` answers the call that parked first, and only that one: the other
+    /// stays parked with its timer running.
+    ///
+    /// Both calls are delayed, so each is known to have parked once its timer is on the clock: a
+    /// call's key, its timer and its parking are one step on the fake's actor, and nothing else
+    /// runs on it in between.
+    ///
+    /// **Mutation:** in `FakeLeaseHelper.answerOldestParked`, take `max()` rather than `min()`.
+    /// Red on the parked deadline and on which call returned. **Mutation:** answer every parked
+    /// call of the verb. Red on the parked deadline.
+    @Test("answerOldestParked answers the call that parked first, alone")
+    func answersTheOldestAlone() async throws {
+        let scene = await LeaseScene()
+        let lease = try await scene.helper.acquireLease(FakeLeaseHelperTests.request)
+        await scene.helper.script(.renew, .after(.seconds(100)), .after(.seconds(200)))
+        let older = scene.call { _ = try? await scene.helper.renewLease(id: lease.id) }
+        await scene.clock.untilParked(at: scene.at(.seconds(100)))
+        let newer = scene.call { _ = try? await scene.helper.renewLease(id: lease.id) }
+        await scene.clock.untilParked(at: scene.at(.seconds(200)))
+
+        #expect(await scene.helper.answerOldestParked(.renew))
+        #expect(scene.clock.parked == [scene.at(.seconds(200))], "the newer call's timer runs")
+        // Whichever call was answered returns; a mutant that answered the newer one ends the
+        // wait too, with the evidence.
+        await firstOf(
+            { await scene.waitForReturn(of: older) }, { await scene.waitForReturn(of: newer) })
+        #expect(await scene.hasReturned(older), "the older call was not the one answered")
+        #expect(await scene.entries.contains { $0.event == .renewAnswered(lease.id) })
+        await scene.finish()
+    }
+}

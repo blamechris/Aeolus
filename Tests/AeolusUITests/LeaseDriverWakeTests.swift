@@ -13,11 +13,23 @@ import Testing
 @Suite("Lease driver: wake", .timeLimit(.minutes(1)))
 struct LeaseDriverWakeTests {
 
-    /// The replaced beat's renewal is answered, with success, just before the wake handler runs.
-    /// The wake's own renewal then finds the lease gone, and the loss says it came after the wake.
+    /// The replaced beat's renewal is answered, with success, once the wake has replaced the beat
+    /// and before the wake's own renewal is answered. The wake's renewal then finds the lease
+    /// gone, and the loss says it came after the wake.
     ///
-    /// **Mutation (K2):** in `LeaseDriver.beat`, delete `guard !Task.isCancelled` after the
+    /// **The test sets the order, not the scheduler** (#486). The wake's own renewal arriving
+    /// shows that the wake has run, and so has cancelled the old beat, before the old answer is
+    /// given. The wake returning shows that the old beat has finished with that answer before the
+    /// wake's renewal is refused. So this red rests on no actor ordering, and the test calls no
+    /// `settle()`. Until #486 it answered the old renewal first and then started the wake, and
+    /// nothing made the wake reach the driver before that answer did: #486 records the test
+    /// passing under the two mutants below in 2 of 46 runs.
+    ///
+    /// **Mutation (K2a):** in `LeaseDriver.beat`, delete `guard !Task.isCancelled` after the
     /// renewal. The replaced beat counts its old answer and clears the wake: red on `afterWake`.
+    /// **Mutation (K2b):** K2a, and restore `held.lease.id == leaseID` to `renewalAccepted`'s
+    /// first guard. The old beat's lease is the one held, so the check lets the answer in: red on
+    /// `afterWake`.
     @Test("An answer the replaced beat already had does not clear the wake")
     func aReplacedBeatsAnswerIsNotCounted() async throws {
         let scene = await LeaseScene()
@@ -27,10 +39,13 @@ struct LeaseDriverWakeTests {
         scene.clock.advance(to: scene.at(.seconds(10)))
         await scene.ledger.waitFor { $0.renewals.count == 1 }
 
-        await scene.helper.answerParked(.renew)
-        await scene.run { await scene.driver.systemDidWake() }
+        let waking = scene.call { await scene.driver.systemDidWake() }
         await scene.ledger.waitFor { $0.renewals.count == 2 }
-        await scene.helper.answerParked(.renew, throwing: AeolusXPCFault.leaseUnknown)
+        try #require(await scene.helper.answerOldestParked(.renew), "the old renewal was parked")
+        await scene.waitForReturn(of: waking)
+        try #require(
+            await scene.helper.answerOldestParked(.renew, throwing: AeolusXPCFault.leaseUnknown),
+            "the wake's renewal was parked")
         await scene.waitForState { $0.isLost }
 
         let loss = try #require(await scene.driver.state.loss)

@@ -92,8 +92,8 @@ struct LeaseDriverGuardTests {
     /// A renewal of an old lease answered after a new lease is held does not put the old lease
     /// in the new one's place.
     ///
-    /// **Mutation (Z4):** in `LeaseDriver.renewalAccepted`, drop `held.lease.id == leaseID`. Red
-    /// on the lease the state shows.
+    /// **Mutation (Z4):** in `LeaseDriver.beat`, delete `guard !Task.isCancelled` after the
+    /// renewal. Red on the lease the state shows.
     @Test("A stale renewal answer under an old lease leaves the new lease's state alone")
     func staleRenewalUnderAnOldLease() async throws {
         let scene = await LeaseScene()
@@ -117,6 +117,62 @@ struct LeaseDriverGuardTests {
             return
         }
         #expect(held.lease.id == second.lease.id, "the state shows the old lease")
+        await scene.finish()
+    }
+
+    /// A renewal of an old lease answered with success after a new lease is granted over other
+    /// fans leaves the new lease held as itself, and the new lease's own beat still renews it.
+    /// The second half is the one the helper sees: a driver that let the old answer in would show
+    /// the old lease, stop renewing the new one, and go on drawing `held` while the helper let the
+    /// new lease go at its TTL.
+    ///
+    /// Event-ordered throughout, with no `settle()`: the old beat is waited for until it has
+    /// finished with the answer, or until it has re-armed on the clock, as a beat nothing stopped
+    /// would.
+    ///
+    /// **Mutation (Z4):** in `LeaseDriver.beat`, delete `guard !Task.isCancelled` after the
+    /// renewal. Red on the lease the state shows, and on the new lease's renewal. **Mutation
+    /// (Y7):** in `LeaseDriver.endLease`, delete `heartbeat?.cancel()`. Red on both, the same way.
+    @Test("A stale renewal success after a grant over other fans leaves the new lease renewing")
+    func staleRenewalAfterAGrantOverOtherFans() async throws {
+        let scene = await LeaseScene()
+        let first = try #require(await scene.take(LeaseScene.target([0: 3000])))
+        await scene.clock.untilParked { !$0.isEmpty }
+        let oldBeat = try #require(await scene.driver.runningHeartbeat)
+        await scene.helper.script(.renew, .parkedThroughCancellation)
+        // Refused, so the old lease stays in the fake's table and its renewal answers with success.
+        await scene.helper.script(.release, .refuse(.leaseUnknown))
+        scene.clock.advance(to: scene.at(.seconds(10)))
+        await scene.ledger.waitFor { $0.renewals.count == 1 }
+        await scene.driver.observe(
+            Loss.snapshot([], listing: nil), readWith: await scene.driver.beginSnapshotRead())
+        try #require(await scene.driver.state.isLost)
+        let second = try #require(await scene.take(LeaseScene.target([0: 3000, 1: 3000])))
+        let due = scene.at(.seconds(20))
+        await scene.clock.untilParked { $0.contains(due) }
+        let newBeat = try #require(await scene.driver.runningHeartbeat)
+
+        await scene.helper.answerParked(.renew)
+        await firstOf(
+            { await scene.run { await oldBeat.finished() } },
+            { await scene.clock.untilParked { $0.count > 1 } })
+
+        guard case .held(let held) = await scene.driver.state else {
+            Issue.record("the new lease is not held")
+            return
+        }
+        #expect(held.lease.id == second.lease.id, "the state shows the old lease")
+        #expect(held.fans == [0, 1])
+
+        scene.clock.advance(to: due)
+        // The new lease's renewal, or its beat ending without one, as a mutant's does.
+        await firstOf(
+            { await scene.ledger.waitFor { $0.contains { $0.event == .renew(second.lease.id) } } },
+            { await scene.run { await newBeat.finished() } })
+        #expect(
+            await scene.entries.contains { $0.event == .renew(second.lease.id) },
+            "the new lease's beat stopped without renewing it")
+        #expect(first.lease.id != second.lease.id)
         await scene.finish()
     }
 
