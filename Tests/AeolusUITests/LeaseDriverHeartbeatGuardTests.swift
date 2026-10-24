@@ -29,7 +29,7 @@ struct LeaseDriverHeartbeatGuardTests {
         scene.clock.advance(to: scene.at(.seconds(10)))
         await scene.ledger.waitFor { $0.renewals.count == 1 }
 
-        await scene.driver.systemDidWake()
+        await scene.run { await scene.driver.systemDidWake() }
 
         #expect(await scene.driver.state.isHeld, "the cancelled renewal ended the lease")
         #expect(await scene.entries.lost == nil)
@@ -49,7 +49,7 @@ struct LeaseDriverHeartbeatGuardTests {
         scene.clock.advance(to: scene.at(.seconds(5)))
 
         // Not awaited: a driver that left the old beat running would wait on it here.
-        let waking = Task { await scene.driver.systemDidWake() }
+        let waking = scene.call { await scene.driver.systemDidWake() }
         let next = scene.at(.seconds(15))
         await scene.clock.untilParked { $0.contains(next) }
 
@@ -83,7 +83,7 @@ struct LeaseDriverHeartbeatGuardTests {
     /// parked sleep is removed the moment it is cancelled, so this is read straight after the end.
     ///
     /// **Mutation (Y7):** in `LeaseDriver.endLease`, delete `heartbeat?.cancel()`. **(Y9):** Y7,
-    /// and     /// delete both `isHeld` guards in `beat`. Red on every end, under both.
+    /// and delete the `isHeld` guard in `beat`. Red on every end, under both.
     @Test(
         "Every end stops the heartbeat",
         arguments: ["snapshot", "refused apply", "health", "Auto", "release"])
@@ -116,7 +116,7 @@ struct LeaseDriverHeartbeatGuardTests {
         case "Auto":
             await scene.driver.selectAutomatic()
         default:
-            await scene.driver.releaseFans()
+            await scene.run { await scene.driver.releaseFans() }
         }
 
         #expect(scene.clock.parked.isEmpty, "the beat of a lease that ended is gone (\(end))")
@@ -213,7 +213,7 @@ struct LeaseDriverHeartbeatGuardTests {
         try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { !$0.isEmpty }
 
-        await scene.driver.systemDidWake()
+        await scene.run { await scene.driver.systemDidWake() }
         await scene.clock.untilParked { $0.contains(scene.at(.seconds(10))) }
         #expect(await scene.entries.renewals == [scene.start], "the wake's renewal")
         await scene.driver.observe(

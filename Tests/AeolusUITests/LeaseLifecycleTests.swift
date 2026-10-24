@@ -83,11 +83,11 @@ struct LeaseLifecycleTests {
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
         // Close: the release is sent and parked; the close is let go at the bound.
-        let closing = Task { await lifecycle.lastControlWindowClosed() }
+        let closing = scene.call { await lifecycle.lastControlWindowClosed() }
         await scene.ledger.waitFor { $0.releases.count == 1 }
         let sent = try #require(await scene.entries.first { $0.event == .release(held.lease.id) })
         scene.clock.advance(to: sent.at.advanced(by: LeaseDriver.releaseBound))
-        await closing.value
+        await scene.waitForReturn(of: closing)
 
         // Quit, with that release still in flight: joined, bounded, then the teardown answers it.
         // The wait ends on the quit's bound being armed, or on a second release, whichever comes
@@ -103,7 +103,7 @@ struct LeaseLifecycleTests {
         await scene.ledger.waitFor { $0.index(where: \.isTerminationReply) != nil }
 
         // Logout, after the quit.
-        await lifecycle.systemWillPowerOff()
+        await scene.run { await lifecycle.systemWillPowerOff() }
 
         #expect(await scene.entries.releases == [held.lease.id], "one release for three events")
         await scene.finish()
@@ -119,7 +119,7 @@ struct LeaseLifecycleTests {
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
-        await lifecycle.lastControlWindowClosed()
+        await scene.run { await lifecycle.lastControlWindowClosed() }
 
         #expect(await scene.entries.releases == [held.lease.id])
         #expect(await scene.helper.heldLeases.isEmpty)
@@ -135,7 +135,7 @@ struct LeaseLifecycleTests {
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
-        await lifecycle.systemWillPowerOff()
+        await scene.run { await lifecycle.systemWillPowerOff() }
 
         #expect(await scene.entries.releases == [held.lease.id])
         #expect(await scene.helper.heldLeases.isEmpty)
@@ -151,12 +151,13 @@ struct LeaseLifecycleTests {
         await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.acquires.isEmpty }
 
-        let releasing = Task { await scene.driver.releaseFans() }
+        let outcome = ResultBox<ReleaseOutcome>()
+        let releasing = scene.call { outcome.set(await scene.driver.releaseFans()) }
         await scene.waitForState { $0 == .releasing }
         await scene.helper.answerParked(.acquire)
-        let outcome = await releasing.value
+        await scene.waitForReturn(of: releasing)
 
-        #expect(outcome == .released)
+        #expect(outcome.value == .released)
         let entries = await scene.entries
         #expect(entries.applies.isEmpty, "nothing applied under a grant nobody wanted")
         #expect(entries.releases.count == 1)

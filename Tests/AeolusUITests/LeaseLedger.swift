@@ -31,6 +31,8 @@ actor LeaseLedger {
         case state(LeaseDriverState)
         /// A quit was answered, with whether to terminate.
         case terminationReplied(Bool)
+        /// A call `LeaseScene.call(_:)` started has returned.
+        case callReturned(UUID)
     }
 
     struct Entry: Sendable, Hashable {

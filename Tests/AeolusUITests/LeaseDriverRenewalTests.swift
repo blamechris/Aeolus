@@ -167,7 +167,7 @@ struct LeaseDriverRenewalTests {
         await scene.helper.script(.renew, .refuse(.leaseUnknown))
 
         #expect(scene.clock.parked == [scene.at(.seconds(10))])
-        await scene.driver.systemDidWake()
+        await scene.run { await scene.driver.systemDidWake() }
         // The beat due at ten seconds is gone at once: the wake replaced it.
         try #require(!scene.clock.parked.contains(scene.at(.seconds(10))), "the wake did nothing")
         await scene.ledger.waitFor { $0.lost != nil || $0.acquires.count > 1 }
@@ -193,7 +193,7 @@ struct LeaseDriverRenewalTests {
         await scene.ledger.waitFor { !$0.releases.isEmpty }
         let before = await scene.entries.count
 
-        await scene.driver.systemDidWake()
+        await scene.run { await scene.driver.systemDidWake() }
         await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { $0.acquires.count == 2 }
 
@@ -213,11 +213,6 @@ extension LeaseLedger.Event {
 
     var isApplyAnswer: Bool {
         if case .applyAnswered = self { return true }
-        return false
-    }
-
-    var isState: Bool {
-        if case .state = self { return true }
         return false
     }
 

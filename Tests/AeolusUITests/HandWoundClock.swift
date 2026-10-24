@@ -33,6 +33,7 @@ final class HandWoundClock: HeartbeatClock, Sendable {
     private struct State: Sendable {
         var now: ContinuousClock.Instant
         var issued: UInt64 = 0
+        var ignoringCancellation = false
         var sleepers: [UInt64: Sleeper] = [:]
         var watchers: [UInt64: Watcher] = [:]
 
@@ -55,6 +56,12 @@ final class HandWoundClock: HeartbeatClock, Sendable {
 
     var now: ContinuousClock.Instant { state.withLock { $0.now } }
 
+    /// Makes later sleeps ignore their task's cancellation, as a sleep that had already returned
+    /// when the cancellation came would: the deadline still ends them, and nothing else does.
+    func ignoreCancellation() {
+        state.withLock { $0.ignoringCancellation = true }
+    }
+
     /// The deadlines of the sleeps parked now, ascending.
     var parked: [ContinuousClock.Instant] { state.withLock { $0.deadlines } }
 
@@ -76,9 +83,21 @@ final class HandWoundClock: HeartbeatClock, Sendable {
     }
 
     func sleep(until deadline: ContinuousClock.Instant) async throws {
-        let id = state.withLock { state -> UInt64 in
+        let (id, ignoring) = state.withLock { state -> (UInt64, Bool) in
             state.issued &+= 1
-            return state.issued
+            return (state.issued, state.ignoringCancellation)
+        }
+        if ignoring {
+            try await withCheckedThrowingContinuation { (continuation: Wake) in
+                let (due, watchers) = state.withLock { state -> (Bool, Wakeups) in
+                    if deadline <= state.now { return (true, []) }
+                    state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
+                    return (false, state.satisfiedWatchers())
+                }
+                for watcher in watchers { watcher.resume() }
+                if due { continuation.resume() }
+            }
+            return
         }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: Wake) in

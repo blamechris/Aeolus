@@ -80,7 +80,7 @@ struct LeaseDriverTakeAdjustTests {
     func noTakeAfterShutdown() async throws {
         let scene = await LeaseScene()
         try await scene.take(LeaseScene.target([0: 3000]))
-        await scene.driver.shutDown()
+        await scene.run { await scene.driver.shutDown() }
         let after = await scene.driver.state
 
         await scene.driver.take(try LeaseScene.target([0: 3000]))
@@ -163,7 +163,7 @@ struct LeaseDriverTakeAdjustTests {
             await scene.ledger.waitFor { $0.releases == [held.lease.id] }
         case .released:
             try await scene.take(LeaseScene.target([0: 3000]))
-            await scene.driver.releaseFans()
+            await scene.run { await scene.driver.releaseFans() }
             try #require(await scene.driver.state == .released)
         }
     }

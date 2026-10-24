@@ -192,7 +192,7 @@ struct LeaseDriverLossTests {
             readWith: await scene.driver.beginSnapshotRead())
         try #require(await scene.driver.state.isLost)
 
-        await scene.driver.releaseFans()
+        await scene.run { await scene.driver.releaseFans() }
 
         #expect(await scene.entries.releases == [held.lease.id])
         await scene.finish()

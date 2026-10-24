@@ -63,6 +63,8 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     private var applying = 0
     private var mostApplying = 0
     private var grantedTimeToLive: TimeInterval?
+    /// Whether a call has built the connection `disconnect()` would tear down.
+    private var connected = false
     private var renewsAnotherLease = false
 
     init(clock: HandWoundClock, ledger: LeaseLedger) {
@@ -108,11 +110,6 @@ actor FakeLeaseHelper: HelperLeaseControlling {
                 call.continuation.resume()
             }
         }
-    }
-
-    /// How many calls of `verb` are parked now.
-    func parkedCount(_ verb: Verb) -> Int {
-        parkedCalls.values.filter { $0.verb == verb }.count
     }
 
     /// Delivers `health` to every live subscription, as `HelperClient` publishes a change.
@@ -189,8 +186,12 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     nonisolated func healthUpdates() -> AsyncStream<HelperConnectionHealth> {
         let token = health.subscribe()
         let feed = health
+        // Ends the subscription when the driver lets go of the stream without cancelling it, as
+        // a watch that returned does: the closure below is released with the stream.
+        let lifetime = HealthFeed.Lifetime(feed: feed, token: token)
         return AsyncStream(
             unfolding: {
+                _ = lifetime
                 await self.ledger.record(.healthAsked, at: self.clock.now)
                 return await feed.next(for: token)
             },
@@ -199,6 +200,12 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 
     func disconnect() async {
         await ledger.record(.disconnect, at: clock.now)
+        // `HelperClient.disconnect()` publishes `.idle` only when it had a connection, and its
+        // health never repeats a value.
+        if connected {
+            connected = false
+            health.push(.idle)
+        }
         leases.removeAll()
         let calls = parkedCalls.values
         parkedCalls.removeAll()
@@ -207,7 +214,6 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         for call in calls {
             call.continuation.resume(throwing: HelperClientError.connectionAbandoned)
         }
-        health.push(.idle)
     }
 
     // MARK: - Answers
@@ -216,6 +222,11 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     /// is the instant a test saw it arrive: reading the clock again here could read it after the
     /// test had already moved it on, and push the answer past the instant the test meant.
     private func settle(_ verb: Verb, arrivedAt arrived: ContinuousClock.Instant) async throws {
+        // A call builds the connection if there is none, and re-handshakes one the helper
+        // interrupted, as `HelperClient` does on its next message: the health is handshaken
+        // again. `push` repeats nothing, so on a healthy connection this publishes nothing.
+        connected = true
+        health.push(.handshaken)
         let answer: Answer
         if var queued = scripts[verb], !queued.isEmpty {
             answer = queued.removeFirst()
@@ -293,18 +304,51 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     }
 }
 
-/// The control connection's health, for the fake's subscriptions: each starts with `.handshaken`
-/// and then sees what is pushed while it is live. A subscription ends the moment its consumer is
-/// cancelled, synchronously, so a value pushed after that reaches nobody and `live` says at once
-/// whether the driver has let go of its watch.
+/// The control connection's health, for the fake's subscriptions.
+///
+/// Each subscription starts with the health now and then sees each change while it is live, and
+/// a value equal to the health now is not a change, as `HelperClient` publishes. A subscription
+/// ends the moment its consumer is cancelled, synchronously, or when its consumer lets go of the
+/// stream, so `live` says whether the driver still watches.
+///
+/// **Stricter than `HelperClient` in one way:** a value pushed after a subscription ended reaches
+/// nobody, where a real `AsyncStream` may still deliver a value it buffered before the cancel.
+/// The driver's correctness never rests on that: `LeaseDriver.lose(_:_:)` ignores a lease that is
+/// not the one held.
 final class HealthFeed: Sendable {
 
     private typealias Waiter = CheckedContinuation<HelperConnectionHealth?, Never>
 
+    /// Ends a subscription when the stream holding it is released.
+    final class Lifetime: Sendable {
+        let feed: HealthFeed
+        let token: UUID
+
+        init(feed: HealthFeed, token: UUID) {
+            self.feed = feed
+            self.token = token
+        }
+
+        deinit { feed.end(token) }
+    }
+
     private struct Subscription: Sendable {
-        var started = false
+        var first: HelperConnectionHealth?
         var queue: [HelperConnectionHealth] = []
         var waiter: Waiter?
+    }
+
+    private struct State: Sendable {
+        var current: HelperConnectionHealth = .handshaken
+        var subscriptions: [UUID: Subscription] = [:]
+        var liveWatchers: [UUID: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+
+        mutating func satisfiedWatchers() -> [CheckedContinuation<Void, Never>] {
+            let count = subscriptions.count
+            let ready = liveWatchers.filter { $0.value.count == count }
+            for key in ready.keys { liveWatchers[key] = nil }
+            return ready.values.map(\.continuation)
+        }
     }
 
     private enum Next {
@@ -312,25 +356,25 @@ final class HealthFeed: Sendable {
         case waiting
     }
 
-    private let subscriptions = OSAllocatedUnfairLock(initialState: [UUID: Subscription]())
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     /// How many subscriptions are live now.
-    var live: Int { subscriptions.withLock { $0.count } }
+    var live: Int { state.withLock { $0.subscriptions.count } }
 
     func subscribe() -> UUID {
         let token = UUID()
-        subscriptions.withLock { $0[token] = Subscription() }
+        state.withLock { $0.subscriptions[token] = Subscription(first: $0.current) }
         return token
     }
 
     func next(for token: UUID) async -> HelperConnectionHealth? {
         await withCheckedContinuation { (continuation: Waiter) in
-            let next = subscriptions.withLock { all -> Next in
-                guard var subscription = all[token] else { return .now(nil) }
-                defer { all[token] = subscription }
-                if !subscription.started {
-                    subscription.started = true
-                    return .now(.handshaken)
+            let next = state.withLock { all -> Next in
+                guard var subscription = all.subscriptions[token] else { return .now(nil) }
+                defer { all.subscriptions[token] = subscription }
+                if let first = subscription.first {
+                    subscription.first = nil
+                    return .now(first)
                 }
                 if !subscription.queue.isEmpty { return .now(subscription.queue.removeFirst()) }
                 subscription.waiter = continuation
@@ -341,23 +385,48 @@ final class HealthFeed: Sendable {
     }
 
     func end(_ token: UUID) {
-        let waiter = subscriptions.withLock { $0.removeValue(forKey: token)?.waiter }
+        let (waiter, watchers) = state.withLock { all in
+            let waiter = all.subscriptions.removeValue(forKey: token)?.waiter
+            return (waiter, all.satisfiedWatchers())
+        }
         waiter?.resume(returning: nil)
+        for watcher in watchers { watcher.resume() }
     }
 
+    /// Publishes `value` to every live subscription, unless it is the health now.
     func push(_ value: HelperConnectionHealth) {
-        let waiters = subscriptions.withLock { all -> [Waiter] in
+        let waiters = state.withLock { all -> [Waiter] in
+            guard value != all.current else { return [] }
+            all.current = value
             var woken: [Waiter] = []
-            for token in all.keys {
-                if let waiter = all[token]?.waiter {
-                    all[token]?.waiter = nil
+            for token in all.subscriptions.keys {
+                if let waiter = all.subscriptions[token]?.waiter {
+                    all.subscriptions[token]?.waiter = nil
                     woken.append(waiter)
                 } else {
-                    all[token]?.queue.append(value)
+                    all.subscriptions[token]?.queue.append(value)
                 }
             }
             return woken
         }
         for waiter in waiters { waiter.resume(returning: value) }
+    }
+
+    /// Suspends until exactly `count` subscriptions are live, or the calling task is cancelled.
+    func untilLive(_ count: Int) async {
+        let token = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let ready = state.withLock { all -> Bool in
+                    if Task.isCancelled || all.subscriptions.count == count { return true }
+                    all.liveWatchers[token] = (count, continuation)
+                    return false
+                }
+                if ready { continuation.resume() }
+            }
+        } onCancel: {
+            let watcher = state.withLock { $0.liveWatchers.removeValue(forKey: token) }
+            watcher?.continuation.resume()
+        }
     }
 }

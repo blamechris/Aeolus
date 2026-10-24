@@ -3,6 +3,7 @@ import AeolusXPCClient
 import FanKit
 import Foundation
 import Testing
+import os
 
 @testable import AeolusUI
 
@@ -118,10 +119,69 @@ struct LeaseScene: Sendable {
         }
     }
 
+    /// A driver or lifecycle call running on a task of its own.
+    struct Call: Sendable {
+        let token: UUID
+    }
+
+    /// Starts `operation` on a task of its own, and writes its return to the ledger.
+    ///
+    /// **Why no test awaits a driver call directly.** `releaseFans()`, `shutDown()`,
+    /// `systemDidWake()` and the lifecycle's entry points can wait on a `Task`'s value, which does
+    /// not end when the waiting task is cancelled. Awaited from the test itself, a driver that
+    /// never returns would hold the test past its time limit, and `swift test` would never exit.
+    /// Waiting on the ledger instead can be cancelled, so the time limit ends the test as a red.
+    @discardableResult
+    func call(_ operation: @escaping @Sendable () async -> Void) -> Call {
+        let token = UUID()
+        let ledger = self.ledger
+        let clock = self.clock
+        Task {
+            await operation()
+            await ledger.record(.callReturned(token), at: clock.now)
+        }
+        return Call(token: token)
+    }
+
+    /// Waits until `call` has returned.
+    func waitForReturn(of call: Call) async {
+        await ledger.waitFor { $0.contains { $0.event == .callReturned(call.token) } }
+    }
+
+    /// Whether `call` has returned yet.
+    func hasReturned(_ call: Call) async -> Bool {
+        await ledger.entries.contains { $0.event == .callReturned(call.token) }
+    }
+
+    /// Runs `operation` on a task of its own and waits until it has returned.
+    func run(_ operation: @escaping @Sendable () async -> Void) async {
+        await waitForReturn(of: call(operation))
+    }
+
+    /// Runs `operation` on a task of its own, and returns what it returned once it has.
+    func result<Value: Sendable>(
+        of operation: @escaping @Sendable () async -> Value
+    ) async -> Value? {
+        let box = ResultBox<Value>()
+        await run { box.set(await operation()) }
+        return box.value
+    }
+
     /// Ends the forwarding and answers anything still parked, so nothing waits on the fake.
     func finish() async {
         forwarding.cancel()
         await helper.disconnect()
+    }
+}
+
+/// One value, set from one task and read from another.
+final class ResultBox<Value: Sendable>: Sendable {
+    private let stored = OSAllocatedUnfairLock<Value?>(initialState: nil)
+
+    var value: Value? { stored.withLock { $0 } }
+
+    func set(_ value: Value) {
+        stored.withLock { $0 = value }
     }
 }
 
