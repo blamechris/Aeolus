@@ -125,7 +125,8 @@ struct LeaseDriverRenewalTests {
     /// losing the lease. The next beat renews again: red on the renewal count and the state.
     ///
     /// **Mutation (re-acquire):** in `LeaseDriver.lose`, after the transition, start an
-    /// acquisition of the confirmed target. Red on the acquire count and the state.
+    /// acquisition of the confirmed target. Red on the state, which has moved to `acquiring`, and
+    /// on the acquire count too when the second acquire has been sent by the time it is read.
     @Test("A refused renewal is lost, with no second renewal and no second acquire")
     func aRefusedRenewalIsLost() async throws {
         let scene = await LeaseScene()
@@ -156,9 +157,11 @@ struct LeaseDriverRenewalTests {
     /// renews at once, finds the lease gone, and says control ended across the sleep. It never
     /// asks for the fans again.
     ///
-    /// **Mutation (re-acquire on wake):** in `LeaseDriver.systemDidWake`, start an acquisition of
-    /// the confirmed target. Red on the acquire count. **Mutation (X12, wake is a no-op):** make
-    /// `systemDidWake` return at once. Red on the parked deadline.
+    /// **Mutation (re-acquire on wake):** in `LeaseDriver.systemDidWake`, end the lease and start
+    /// an acquisition of the confirmed target. Red on the acquire count, the renewals and the
+    /// loss; a form that leaves the old beat parked is red first at the `#require` on the parked
+    /// deadline. **Mutation (X12, wake is a no-op):** make `systemDidWake` return at once. Red on
+    /// the parked deadline.
     @Test("Wake renews at once and never re-acquires")
     func wakeNeverReacquires() async throws {
         let scene = await LeaseScene()
