@@ -6,8 +6,10 @@ import Foundation
 /// The app's one lease on the fans: it asks for them, keeps proving it is alive, gives them back,
 /// and says so when it can no longer show it holds them (`CLAUDE.md` rules 2 and 6, #155).
 ///
-/// **Nothing constructs one yet.** This is the logic and its tests; the wiring into `AeolusApp`
-/// lands with the first control, so nothing in the shipping app can acquire a lease through it.
+/// **Built by `AppComposition`, and nothing takes a lease through it yet.** A build with a helper
+/// constructs one, over the app's control connection, and wires quit, logout, wake, fast user
+/// switching and the last control window to it. Nothing calls `take(_:)` or `adjust(_:)` until the
+/// first control (#153's PR 6b), so the shipping app acquires no lease.
 ///
 /// ## States
 ///
