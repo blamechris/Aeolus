@@ -163,11 +163,12 @@ struct PollingViewModelSnapshotTests {
 
     // MARK: - Direct reads
 
-    /// **Mutation:** in `FanPoller.poll(provider:untracked:)`, give every fan
-    /// `control: .reported(FanState(index: fan.index, actualRPM: .measured(1), minimumRPM:
-    /// .measured(1), maximumRPM: .measured(2), targetRPM: nil, mode: .automatic,
+    /// **Mutation:** in `FanPoller.poll(provider:untracked:)`, add `import FanKit` and give every
+    /// fan `control: .reported(FanKit.FanState(index: fan.index, actualRPM: .measured(1),
+    /// minimumRPM: .measured(1), maximumRPM: .measured(2), targetRPM: nil, mode: .automatic,
     /// isReclaimedBySystem: false, manualControlAvailability: .available))` — default the mode
-    /// to automatic. Run: red at the control and label expectations.
+    /// to automatic. Run: red at the control and label expectations, and in
+    /// `FanPollerTests.directlyReadFansAreNotTracked`.
     @Test("Direct reads never say Automatic: every fan is not tracked, and says so")
     func directReadsNeverSayAutomatic() async {
         let viewModel = PollingViewModel(

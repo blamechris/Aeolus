@@ -251,7 +251,9 @@ struct HelperSnapshotSourceTests {
         await Support.tearDown(source, helper)
     }
 
-    /// **Mutation:** make `nextPause()` return `refreshInterval` unconditionally. Run: red.
+    /// **Mutation:** in `nextPause()`, change `guard consecutiveFailures > 0` to `guard
+    /// consecutiveFailures > 1_000_000`, so every pause is `refreshInterval`. Run: red at the
+    /// `sleptSeconds` expectation.
     @Test("Failures double the pause up to the ceiling, and a reply resets it")
     func failuresBackOffAndAReplyResets() async throws {
         let helper = FakeSnapshotHelper()

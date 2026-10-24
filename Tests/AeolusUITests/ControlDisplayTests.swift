@@ -8,8 +8,8 @@ import Testing
 @Suite("HelperAuthoredText — the one sanitiser for text the helper sent")
 struct HelperAuthoredTextTests {
 
-    /// **Mutation:** in `HelperAuthoredText.sanitised(_:)`, drop the `controlCharacters`
-    /// filter. Run: red at both.
+    /// **Mutation:** in `HelperAuthoredText.sanitised(_:)`, replace the `controlCharacters`
+    /// filter's closure with `{ _ in true }`. Run: red at both, and in `aNewlineIsRemoved`.
     @Test("A right-to-left override is removed")
     func aBidiOverrideIsRemoved() {
         let cleaned = HelperAuthoredText.sanitised("fanctl\u{202E}lortnoc")
