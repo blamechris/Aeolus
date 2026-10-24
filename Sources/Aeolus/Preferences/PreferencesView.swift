@@ -130,9 +130,13 @@ struct PreferencesView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text("Takes effect the next time this window's data or the menu bar restarts.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(
+                "The helper's snapshots follow this at once. The main window and the menu bar "
+                    + "change how often they redraw, and read sensors themselves, the next time "
+                    + "each starts."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 }

@@ -56,15 +56,24 @@ struct FanRowModel: Equatable, Identifiable {
     ///   unreadable `F<n>Md` as `automatic` (#178), so `mode == .automatic` beside a pending or
     ///   durable availability — a restore not yet confirmed, a blind supervisor, a fan another
     ///   program holds — is not a fan cleared to automatic, and it says "Not confirmed as
-    ///   automatic" instead.
+    ///   automatic" instead. On a helper that cannot write, an unread mode arrives beside
+    ///   `writePathNotBuilt`, which is silent, so it still reads "Automatic" — #178's gap; this
+    ///   row cannot close it until the wire can say a mode is unknown.
+    /// - **Under a thermal emergency, a fan in manual says so** — "Under thermal protection" —
+    ///   and never "Manual — fixed speed": `docs/SAFETY.md` § 3 has revoked every lease and is
+    ///   driving that fan itself, and the label a user's own fixed speed gets would read as
+    ///   their choice.
     /// - Otherwise the mode the helper reports.
     ///
     /// Everything but the first is the helper's report, and the fan pane says so once, above
     /// the rows (`ControlSourceDisplay`).
     static func controlStateLabel(for control: FanControlSource) -> String {
-        guard case .reported(let state) = control else { return "Mode not tracked" }
+        guard case .reported(let state, let thermalEmergency) = control else {
+            return "Mode not tracked"
+        }
         if state.isReclaimedBySystem { return "Reclaimed by system" }
         if state.isClearedToAutomatic { return "Automatic" }
+        if thermalEmergency, state.mode != .automatic { return "Under thermal protection" }
         switch state.mode {
         case .automatic: return "Not confirmed as automatic"
         case .manualFixed: return "Manual — fixed speed"
@@ -73,7 +82,7 @@ struct FanRowModel: Equatable, Identifiable {
     }
 
     private static func refusal(for control: FanControlSource) -> Refusal? {
-        guard case .reported(let state) = control,
+        guard case .reported(let state, _) = control,
             case .unavailable(let reason) = state.manualControlAvailability
         else { return nil }
         return Refusal(

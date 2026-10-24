@@ -1,4 +1,5 @@
 import AeolusXPC
+import AppKit
 import FanKit
 import SwiftUI
 
@@ -25,19 +26,22 @@ public struct AeolusApp: App {
     /// window's, the menu bar's and the Settings window's. A plain constant rather than a
     /// `StateObject`: nothing renders the source itself, and `init()` runs once per process.
     /// In a build with no helper it holds no client at all (`HelperSnapshotSource.forBundle`).
+    /// It reads the refresh interval preference live, so its cadence and freshness bound
+    /// follow a change at once.
     private let snapshots: HelperSnapshotSource
 
     public init() {
         // `preferencesController` must exist before the other two `StateObject`s: both
         // read its already-loaded `Preferences` value once, at construction, to seed the
-        // refresh interval and menu bar selection this build starts with — see
+        // refresh interval and menu bar selection this build starts with (the snapshot
+        // source alone reads the interval live, through the closure below) — see
         // `PreferencesRefreshInterval`'s and `Preferences.menuBarReadouts`'s own
         // documentation for why those are read here rather than left at
         // `PollingViewModel`'s and `MenuBarViewModel`'s own hardcoded defaults.
         let preferencesController = PreferencesController()
         _preferencesController = StateObject(wrappedValue: preferencesController)
         let snapshots = HelperSnapshotSource.forRunningApp(
-            refreshInterval: preferencesController.preferences.refreshInterval)
+            refreshInterval: { preferencesController.preferences.refreshInterval })
         self.snapshots = snapshots
         _launchAtLoginController = StateObject(
             wrappedValue: LaunchAtLoginController(preferences: preferencesController))
@@ -81,7 +85,18 @@ public struct AeolusApp: App {
         } label: {
             MenuBarLabelView(
                 viewModel: menuBarViewModel,
-                temperatureUnit: preferencesController.preferences.temperatureUnit)
+                temperatureUnit: preferencesController.preferences.temperatureUnit
+            )
+            // Here rather than in the window, because the menu bar item is always mounted:
+            // coming back to the app is when an approval made in System Settings may have
+            // taken effect, so a backoff from the helper's earlier absence ends now. Only a
+            // pause is cut short; no request is cancelled or doubled (`retrySoon()`).
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: NSApplication.didBecomeActiveNotification)
+            ) { _ in
+                snapshots.retrySoon()
+            }
         }
         .menuBarExtraStyle(.window)
 
@@ -119,14 +134,17 @@ struct MainView: View {
     @ObservedObject var preferencesController: PreferencesController
     @StateObject private var viewModel: PollingViewModel
     @StateObject private var helperController = HelperLifecycleController()
+    private let snapshots: HelperSnapshotSource
 
     /// Reads `preferencesController.preferences.refreshInterval` once, at construction,
-    /// to seed this window's own `PollingViewModel` — see `AeolusApp.init()`'s identical
-    /// note on why a preference changed later needs this window reopened to take effect
-    /// on the refresh cadence specifically (`selectedSensorKeys`/`temperatureUnit`, by
-    /// contrast, are read fresh on every `body` evaluation below and apply immediately).
+    /// to seed this window's own `PollingViewModel`: how often this window redraws, and how
+    /// often it reads the SMC itself on the direct-read path, change when the window is
+    /// reopened. The helper's snapshots follow a change at once, because the shared source
+    /// reads the preference live. (`selectedSensorKeys`/`temperatureUnit` are read fresh on
+    /// every `body` evaluation below and apply immediately.)
     init(preferencesController: PreferencesController, snapshots: HelperSnapshotSource) {
         self.preferencesController = preferencesController
+        self.snapshots = snapshots
         _viewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
@@ -134,12 +152,17 @@ struct MainView: View {
                 snapshots: snapshots))
     }
 
+    private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
+        ThermalEmergencyDisplay.banner(
+            for: viewModel.thermalEmergency, source: viewModel.controlSource)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // On, off or unknown — the last whenever no fresh helper snapshot speaks, which is
             // always under Monitor. See `ThermalEmergencyDisplay` for why unknown is a line of
             // its own rather than no banner.
-            if let banner = ThermalEmergencyDisplay.banner(for: viewModel.thermalEmergency) {
+            if let banner = thermalEmergencyBanner {
                 ThermalEmergencyBanner(banner: banner)
             }
             HSplitView {
@@ -155,5 +178,11 @@ struct MainView: View {
         .frame(minWidth: 720, minHeight: 420)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+        // macOS just reported the helper enabled — typically the approval the footer asked
+        // for — so a backoff from its earlier absence ends now, rather than leaving this pane
+        // saying "cannot reach its helper" beside a footer saying "installed and enabled".
+        .onReceive(helperController.$state) { state in
+            if state == .enabled { snapshots.retrySoon() }
+        }
     }
 }

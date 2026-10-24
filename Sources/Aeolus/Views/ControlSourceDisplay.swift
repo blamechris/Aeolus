@@ -38,6 +38,8 @@ enum ControlSourceDisplay {
     ///
     /// The two cases with no helper client reuse `HelperStatusDisplay`'s titles, so the pane and
     /// the footer name the same condition the same way; the footer carries the full account.
+    /// Both broken-install defects share one title there, "This copy of Aeolus is damaged", and
+    /// `ControlSourceDisplayTests` holds that they still do.
     static func explanation(_ why: ControlNotTracked) -> String {
         switch why {
         case .nothingReadYet:
@@ -45,13 +47,16 @@ enum ControlSourceDisplay {
         case .noHelperInThisBuild:
             return HelperStatusDisplay.text(for: .unavailableInThisBuild).title + "."
         case .helperInstallIncomplete:
-            return "This copy of Aeolus is incomplete, so it does not talk to its helper."
+            return HelperStatusDisplay.text(for: .brokenInstall(.helperExecutableMissing)).title
+                + ", so it does not talk to its helper."
         case .helperConnection(let health):
             return explanation(health)
         case .awaitingSnapshot:
             return "Waiting for the helper's first snapshot."
         case .snapshotRequestFailed(let detail):
             return "The last snapshot request failed: \(detail)"
+        case .snapshotContradicted(let detail):
+            return "The helper's last snapshot contradicted itself (\(detail)), so it is not shown."
         case .snapshotStale:
             return "The helper's last snapshot is too old to show as current."
         }
@@ -63,7 +68,7 @@ enum ControlSourceDisplay {
     private static func explanation(_ health: HelperConnectionHealth) -> String {
         switch health {
         case .idle:
-            return "Aeolus has not finished connecting to its helper."
+            return "Aeolus has not connected to its helper yet."
         case .handshaken:
             // Never produced with this value: `HelperSnapshotSource` reports the connection
             // only when it is not handshaken. Written out anyway, truthfully.

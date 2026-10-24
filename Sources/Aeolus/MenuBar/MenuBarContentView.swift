@@ -14,9 +14,14 @@ struct MenuBarContentView: View {
     /// existing rendering for every call site that does not pass one explicitly.
     var temperatureUnit: TemperatureUnit = .celsius
 
+    private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
+        ThermalEmergencyDisplay.banner(
+            for: viewModel.thermalEmergency, source: viewModel.controlSource)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let banner = ThermalEmergencyDisplay.banner(for: viewModel.thermalEmergency) {
+            if let banner = thermalEmergencyBanner {
                 thermalEmergencyLine(banner)
             }
 
@@ -30,6 +35,8 @@ struct MenuBarContentView: View {
 
             Divider()
 
+            controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
+
             statusText
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -42,6 +49,21 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(minWidth: 240)
+    }
+
+    /// The fan pane's line, in the dropdown: whose report the fans are — with a listed lease's
+    /// holder, through the sanitiser — or why nothing is tracked.
+    private func controlSourceLine(_ text: ControlSourceDisplay.Text) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(text.headline)
+                .font(.caption.weight(.semibold))
+            if let detail = text.detail {
+                Text(detail)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
     }
 
     /// The same three answers the main window draws, in the dropdown's few words: an
@@ -94,6 +116,8 @@ struct MenuBarContentView: View {
             Text("Waiting for first reading\u{2026}")
         case .polling:
             Text("Refreshing\u{2026}")
+        case .waitingForHelper:
+            Text("Waiting for the helper\u{2026}")
         case .ready:
             if let lastUpdated = viewModel.lastUpdated {
                 Text("Updated \(Self.timeFormatter.string(from: lastUpdated))")

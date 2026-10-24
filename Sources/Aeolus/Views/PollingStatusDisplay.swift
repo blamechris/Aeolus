@@ -32,6 +32,15 @@ enum PollingStatusDisplay {
         switch phase {
         case .notStarted:
             return Text(message: "Waiting for first reading…", severity: .normal)
+        case .waitingForHelper:
+            guard let lastUpdated else {
+                return Text(message: "Waiting for the helper's first snapshot…", severity: .normal)
+            }
+            return Text(
+                message:
+                    "Waiting for the helper — showing the last reading from "
+                    + elapsed(since: lastUpdated, now: now),
+                severity: .warning)
         case .polling:
             guard let lastUpdated else {
                 return Text(message: "Reading sensors…", severity: .normal)

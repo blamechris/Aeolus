@@ -91,7 +91,7 @@ enum MenuBarReadoutFormatting {
     /// taken back is never silently omitted from the strip on the strength of this
     /// suppression.
     private static func isNoteworthyControlState(_ readout: ResolvedMenuBarReadout) -> Bool {
-        guard case .reported(let state) = readout.fanControl else { return false }
+        guard case .reported(let state, _) = readout.fanControl else { return false }
         return !state.isClearedToAutomatic || state.isReclaimedBySystem
     }
 

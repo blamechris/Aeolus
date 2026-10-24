@@ -14,21 +14,23 @@ import Foundation
 /// whether the main window is even open. What the two **do** share is the app's one
 /// `HelperSnapshotSource` (#156): while the helper answers, neither reads the SMC and there
 /// is one snapshot stream, not two. Only on the direct-read fallback does each run its own
-/// 1 Hz `SensorProvider` poll; both readers are read-only, so running two is redundant
-/// rather than unsafe.
+/// `SensorProvider` poll, at the user's refresh interval. Whether two readers are harmless
+/// beside the helper's unlock sequence on M3 and later is not known (ADR 0006), which is one
+/// more reason the fallback is only a fallback.
 ///
-/// ## Why this reacts to `phase`, not to `fans`/`sensors` directly
+/// ## Why this reacts to `revision`, not to `fans`/`sensors` directly
 ///
 /// `PollingViewModel.tick()` assigns `fans`, then `sensors`, then (for a successful tick)
-/// `lastUpdated`, then finally `phase = .ready` — four separate `@Published` mutations,
-/// each of which publishes to its own subscribers independently and in that order.
-/// Subscribing to `$fans.combineLatest($sensors)` would fire once per upstream emission,
-/// meaning the *first* combined event of any given tick pairs the just-updated `fans`
-/// with the *previous* tick's `sensors` — exactly the kind of half-updated read this
-/// project's honesty rules exist to prevent. `phase` is always the last thing `tick()`
-/// sets, so by the time a `$phase` change reaches `handle(phase:)` below, every other
-/// `@Published` property on `polling` has already finished settling and a direct property
-/// read (`polling.fans`, not a value captured from a `combineLatest` payload) is safe.
+/// `lastUpdated`, then finally `phase` — separate `@Published` mutations, each of which
+/// publishes to its own subscribers independently and in that order. Subscribing to
+/// `$fans.combineLatest($sensors)` would fire once per upstream emission, meaning the
+/// *first* combined event of any given tick pairs the just-updated `fans` with the
+/// *previous* tick's `sensors` — exactly the kind of half-updated read this project's
+/// honesty rules exist to prevent. `revision` moves as the last step of each change
+/// `polling` makes — after every `phase` assignment, and after a withdrawal by its authority
+/// watch, which changes no phase and would otherwise leave the menu bar showing a claim the
+/// window had already taken down — so by the time it reaches `refresh()` below, every other
+/// property on `polling` has settled and a direct read (`polling.fans`) is safe.
 @MainActor
 public final class MenuBarViewModel: ObservableObject {
     @Published public private(set) var readouts: [ResolvedMenuBarReadout] = []
@@ -37,11 +39,19 @@ public final class MenuBarViewModel: ObservableObject {
     /// Mirrors `PollingViewModel.thermalEmergency`: on, off, or unknown — never a
     /// hardcoded `false`.
     @Published public private(set) var thermalEmergency: ThermalEmergencyState = .unknown
+    /// Mirrors `PollingViewModel.controlSource`, so the dropdown says whose report the fans
+    /// are, or why nothing is tracked, as the window's fan pane does.
+    @Published public private(set) var controlSource: ControlSource = .notTracked(
+        .nothingReadYet)
+    /// Whether the helper reports **any** fan reclaimed by the system — every fan in the
+    /// poll, not only the ones selected as readouts, so a reclamation is never hidden by a
+    /// selection that left its fan out.
+    @Published public private(set) var isAnyFanReportedReclaimed = false
 
     private let polling: PollingViewModel
     /// `nil` until either an explicit selection was supplied at `init` or
     /// `MenuBarReadoutSelection.defaultSelection(fans:sensors:)` has run once against real
-    /// data — see `handle(phase:)`. Distinct from "selected nothing," which is
+    /// data — see `refresh()`. Distinct from "selected nothing," which is
     /// `[]` (a user, via `#64`, can deliberately choose to show no readouts; this view
     /// model must not overwrite that choice with a default on the next tick).
     private var selection: [MenuBarReadout]?
@@ -101,24 +111,26 @@ public final class MenuBarViewModel: ObservableObject {
     }
 
     private func observe() {
-        polling.$phase
-            .sink { [weak self] phase in
-                self?.handle(phase: phase)
+        polling.$revision
+            .sink { [weak self] _ in
+                self?.refresh()
             }
             .store(in: &cancellables)
     }
 
-    /// Runs on every `PollingViewModel.phase` transition — success, failure, or the
-    /// transient `.polling` state alike — so `phase`/`lastUpdated`/
-    /// `thermalEmergency` here always mirror `polling`'s exactly, and `readouts`
-    /// is recomputed from whatever `polling.fans`/`.sensors` currently hold. A failed tick
-    /// leaves those two untouched (`PollingViewModel.tick()`'s own contract), so this
-    /// naturally keeps showing the last known good values alongside the honest `.failed`
+    /// Runs on every `PollingViewModel.revision` — each phase transition, success, failure or
+    /// the transient `.polling` alike, and each withdrawal of claims — so `phase`/
+    /// `lastUpdated`/`thermalEmergency`/`controlSource` here always mirror `polling`'s exactly,
+    /// and `readouts` is recomputed from whatever `polling.fans`/`.sensors` currently hold. A
+    /// failed tick leaves those two untouched (`PollingViewModel.tick()`'s own contract), so
+    /// this naturally keeps showing the last known good values alongside the honest `.failed`
     /// phase, the same behaviour `PollingViewModel` gives every other consumer.
-    private func handle(phase: PollingPhase) {
-        self.phase = phase
+    private func refresh() {
+        self.phase = polling.phase
         self.lastUpdated = polling.lastUpdated
         self.thermalEmergency = polling.thermalEmergency
+        self.controlSource = polling.controlSource
+        self.isAnyFanReportedReclaimed = polling.fans.contains { $0.control.reportsReclamation }
 
         let fans = polling.fans
         let sensors = polling.sensors

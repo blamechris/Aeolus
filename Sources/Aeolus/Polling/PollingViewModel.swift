@@ -13,14 +13,28 @@ import SMCCore
 /// - **A fresh helper snapshot.** Fans, sensors, the lease and the thermal emergency all come
 ///   from that one snapshot, and this view model reads **nothing** from the SMC on that tick:
 ///   one continuous SMC reader per machine, and while the helper answers it is the helper.
-/// - **Anything else.** Fans and sensors are read directly from the SMC, as in the `Monitor`
-///   build, and every control claim is unknown: each fan is `.notTracked(why)`,
-///   `thermalEmergency` is `.unknown`, and `controlSource` says why.
+/// - **Read directly.** No helper in this build, or one that is refused, mismatched or
+///   unreachable: fans and sensors are read from the SMC, as in the `Monitor` build, and every
+///   control claim is unknown — each fan is `.notTracked(why)`, `thermalEmergency` is
+///   `.unknown`, and `controlSource` says why.
+/// - **Await the helper.** Connecting, or handshaken and owed this episode's first snapshot:
+///   every claim is unknown as above, and **nothing** is read; `phase` is `.waitingForHelper`.
 ///
-/// The second answer withdraws the first's claims **before** it reads anything, so a tick
-/// whose direct read then fails still leaves no claim on screen from a snapshot that may no
-/// longer be rendered. Observations from that snapshot (an RPM, a temperature) may stay up
-/// with the failure noted; the claims beside them may not.
+/// The last two withdraw every claim **before** anything else, so a tick whose direct read then
+/// fails still leaves no claim on screen from a snapshot that may no longer be rendered.
+/// Observations from that snapshot (an RPM, a temperature) may stay up with the failure noted;
+/// the claims beside them may not.
+///
+/// ## A claim leaves the screen within a second of losing its licence
+///
+/// The refresh interval can be a minute, and a snapshot's licence can end long before the next
+/// tick — the helper stops answering, or the bound runs out. So a second loop, the **authority
+/// watch**, asks the source every `authorityWatchInterval` seconds whether what is on screen may
+/// still be, and when it may not, withdraws the claims at once. It reads nothing from the SMC
+/// and never renders anything new; it only takes claims down. A separate loop rather than a
+/// shorter tick, because the tick's cadence is the user's and costs SMC reads on the direct
+/// path, and the watch's cadence is the claim's and costs nothing. A source that published
+/// every change would need a timer for expiry anyway, which is this loop by another name.
 ///
 /// ## Refresh design
 ///
@@ -67,7 +81,9 @@ public final class PollingViewModel: ObservableObject {
 
     @Published public private(set) var fans: [FanPollingReading] = []
     @Published public private(set) var sensors: [SensorPollingReading] = []
-    @Published public private(set) var phase: PollingPhase = .notStarted
+    @Published public private(set) var phase: PollingPhase = .notStarted {
+        didSet { revision &+= 1 }
+    }
     /// When `fans`/`sensors` were last successfully refreshed: the end of a direct read, or
     /// the arrival of the helper snapshot they came from. `nil` until the first successful
     /// tick — never backdated to `Date()` at construction, which would let a view show a
@@ -81,14 +97,27 @@ public final class PollingViewModel: ObservableObject {
     /// Where this tick's control facts came from, for the whole machine.
     @Published public private(set) var controlSource: ControlSource = .notTracked(.nothingReadYet)
 
+    /// Moves as the last step of every change a consumer must see whole: each `phase`
+    /// assignment, and each withdrawal the authority watch makes, which changes no phase. A
+    /// consumer that reads several properties together (`MenuBarViewModel`) subscribes to this
+    /// rather than to any one of them.
+    @Published public private(set) var revision: UInt64 = 0
+
+    /// How often the authority watch asks whether the claims on screen may still be shown:
+    /// half a second, so a claim is withdrawn within a second of losing its licence whatever
+    /// the refresh interval. See this type's documentation.
+    nonisolated public static let authorityWatchInterval: TimeInterval = 0.5
+
     private let provider: any SensorProvider
     private let labelSource: any SensorLabelSource
     private let clock: any PollingClock
+    private let authorityWatchClock: any PollingClock
     private let refreshInterval: TimeInterval
     private let snapshots: HelperSnapshotSource
 
     private var discoveredSensors: [DiscoveredSensor] = []
     private var loopTask: Task<Void, Never>?
+    private var watchTask: Task<Void, Never>?
 
     /// - Parameters:
     ///   - provider: Where direct readings come from. Defaults to the real SMC — a fake is
@@ -105,16 +134,20 @@ public final class PollingViewModel: ObservableObject {
     ///   - snapshots: The app's one helper snapshot source. Required, with no default, so
     ///     that a view model nobody wired cannot quietly become a second SMC reader beside a
     ///     healthy helper.
+    ///   - authorityWatchClock: How the authority watch waits — injectable for the same reason
+    ///     as `clock`, and separate from it so a suite can hold one still and move the other.
     public init(
         provider: some SensorProvider = SMCSensorProvider(),
         labelSource: some SensorLabelSource = NoSensorLabels(),
         clock: some PollingClock = SystemPollingClock(),
         refreshInterval: TimeInterval = 1,
-        snapshots: HelperSnapshotSource
+        snapshots: HelperSnapshotSource,
+        authorityWatchClock: some PollingClock = SystemPollingClock()
     ) {
         self.provider = provider
         self.labelSource = labelSource
         self.clock = clock
+        self.authorityWatchClock = authorityWatchClock
         self.refreshInterval =
             refreshInterval.isFinite
             ? max(refreshInterval, Self.minimumRefreshInterval)
@@ -137,6 +170,7 @@ public final class PollingViewModel: ObservableObject {
     public func start() {
         guard loopTask == nil else { return }
         snapshots.start()
+        startAuthorityWatch()
         let clock = clock
         let interval = refreshInterval
         loopTask = Task { [weak self] in
@@ -155,14 +189,46 @@ public final class PollingViewModel: ObservableObject {
         }
     }
 
-    /// Cancels the refresh loop, and tells the snapshot source this consumer is gone.
+    /// Cancels the refresh loop and the authority watch, and tells the snapshot source this
+    /// consumer is gone — once, however often this is called, so a view whose `onDisappear`
+    /// fires twice cannot take another consumer's place at the source away.
     /// `fans`/`sensors`/`lastUpdated` are left exactly as they were on the last successful
     /// tick — stopping is not the same as losing the last known reading.
     public func stop() {
         guard let loopTask else { return }
         loopTask.cancel()
         self.loopTask = nil
+        watchTask?.cancel()
+        watchTask = nil
         snapshots.stop()
+    }
+
+    private func startAuthorityWatch() {
+        let watchClock = authorityWatchClock
+        let interval = Self.authorityWatchInterval
+        watchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await watchClock.sleep(seconds: interval)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                self.reassessAuthority()
+            }
+        }
+    }
+
+    /// The authority watch's one step: if a helper snapshot's claims are on screen and the
+    /// source no longer licenses them, withdraw them now. Reads nothing and renders nothing.
+    ///
+    /// `internal`, for the suite, which drives it through a held clock rather than by calling it.
+    func reassessAuthority() {
+        guard case .helperSnapshot = controlSource,
+            let why = snapshots.authority().notTracked
+        else { return }
+        withdrawControlClaims(why)
+        revision &+= 1
     }
 
     /// Awaits the refresh loop's underlying `Task` until it finishes on its own — e.g.
@@ -192,7 +258,10 @@ public final class PollingViewModel: ObservableObject {
             controlSource = .helperSnapshot(activeLease: snapshot.activeLease)
             lastUpdated = receivedAt
             phase = .ready
-        case .notTracked(let why):
+        case .awaitHelper(let why):
+            withdrawControlClaims(why)
+            phase = .waitingForHelper
+        case .readDirectly(let why):
             withdrawControlClaims(why)
             phase = .polling
             await readDirectly(untracked: why)

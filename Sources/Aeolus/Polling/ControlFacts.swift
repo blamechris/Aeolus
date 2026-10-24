@@ -24,7 +24,12 @@ public enum FanControlSource: Sendable, Hashable {
     /// The helper's own report, from a snapshot within its freshness bound
     /// (`HelperSnapshotSource`). Carried whole, so a renderer judges it with FanKit's shared
     /// predicates (`FanState.isClearedToAutomatic`) rather than a second reading of `mode`.
-    case reported(FanState)
+    ///
+    /// `thermalEmergency` is the same snapshot's `isThermalEmergencyActive`, carried beside
+    /// each fan because it changes what the fan's mode means: while it is set, `docs/SAFETY.md`
+    /// § 3 has revoked every lease and is driving any fan in manual itself, so a manual mode is
+    /// thermal protection and not anybody's chosen speed.
+    case reported(FanState, thermalEmergency: Bool)
 
     /// Whether the helper reports this fan reclaimed by the system.
     ///
@@ -33,7 +38,7 @@ public enum FanControlSource: Sendable, Hashable {
     /// exists for the two places that raise a warning when a reclamation is reported, and must
     /// not be read as "this fan is under control".
     public var reportsReclamation: Bool {
-        guard case .reported(let state) = self else { return false }
+        guard case .reported(let state, _) = self else { return false }
         return state.isReclaimedBySystem
     }
 }
@@ -67,14 +72,20 @@ public enum ControlNotTracked: Sendable, Hashable {
     /// A helper client exists and its connection is not `.handshaken`: ADR 0006's switch.
     /// Never carries `.handshaken`; `HelperSnapshotSource` only produces it for the others.
     case helperConnection(HelperConnectionHealth)
-    /// Handshaken, and no snapshot has answered yet.
+    /// Handshaken, and nothing has answered yet in this handshaken episode. A snapshot from an
+    /// earlier episode — before the helper process was replaced, or the connection dropped —
+    /// does not count.
     case awaitingSnapshot
     /// The most recent snapshot request failed. `detail` has already been through
     /// `HelperAuthoredText.sanitised(_:)`, because an `AeolusXPCFault` can carry the helper's
     /// words.
     case snapshotRequestFailed(detail: String)
-    /// The most recent snapshot arrived longer ago than its freshness bound allows
-    /// (`HelperSnapshotSource.freshnessBound`).
+    /// The most recent snapshot arrived and contradicted itself — it names one fan, or one
+    /// sensor key, twice — so the app refused it. Not a failed request: the helper answered.
+    /// `detail` says what was named twice, with any helper text in it already cleaned.
+    case snapshotContradicted(detail: String)
+    /// Handshaken, and the snapshot this episode has is older than its freshness bound allows
+    /// (`HelperSnapshotSource.freshnessBound`): the next answer is due.
     case snapshotStale
 }
 

@@ -73,8 +73,9 @@ import os
 /// - **A SwiftUI `.task` never owns an XPC await.** SwiftUI cancels a `.task` when its view
 ///   disappears, which is exactly the cancellation this rule forbids. Views call the source's
 ///   `start()` and `stop()`, and the request's task belongs to the source.
-/// - **Control travels on a second connection**, so no `snapshot` ever queues behind an
-///   `apply`. The control side's own test of this rule lands with its driver.
+/// - **Control is to travel on a second connection** (later PRs of #153), so that no
+///   `snapshot` ever queues behind an `apply`; until then the app sends no control verb. The
+///   control side's own test of this rule lands with its driver.
 ///
 /// ## A discard answers everything still in flight on its connection
 ///

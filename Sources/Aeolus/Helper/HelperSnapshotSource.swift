@@ -7,9 +7,16 @@ import Foundation
 ///
 /// [ADR 0006](../../../docs/ADR/0006-single-smc-reader.md) is the policy: while the connection
 /// is `.handshaken` and the latest snapshot is within its bound, the app renders that snapshot
-/// and stops reading the SMC for anything it carries; otherwise it reads directly and every
-/// control claim is unknown. `authority()` is that decision, and every `PollingViewModel`
-/// asks it once per tick.
+/// and stops reading the SMC for anything it carries. `authority()` is that decision, and it
+/// has three answers rather than two, because the ADR allows direct reads in a build with a
+/// helper only while the helper is absent, unapproved, refused, version-mismatched or
+/// unreachable:
+///
+/// - `.fresh`: render the snapshot.
+/// - `.readDirectly(why)`: no claim, and the app reads the SMC itself.
+/// - `.awaitHelper(why)`: no claim, and the app reads **nothing** — the connection is being
+///   made, or is handshaken and its first answer in this episode has not come yet. Reading the
+///   SMC then would put a discovery walk of every key beside the helper's own, for a second.
 ///
 /// ## One per app
 ///
@@ -25,12 +32,12 @@ import Foundation
 /// one only when none exists, and a loop that is waiting for a reply when its last consumer
 /// leaves finishes that wait before it ends.
 ///
-/// **Nothing here cancels a request.** `stop()` cancels only the pause between requests. A
-/// request outstanding at `stop()` is left to finish, and its answer is **kept**: it is a real
-/// reply, stamped when it arrived, and the freshness bound decides whether anything may render
-/// it later. A `start()` that arrives while it is outstanding does not send another; the loop
-/// that sent it carries on once it is answered. Each request also runs in its own unstructured
-/// task, so even a cancelled loop could not cancel it.
+/// **Nothing here cancels a request.** `stop()` and `retrySoon()` cancel only the pause between
+/// requests. A request outstanding at `stop()` is left to finish, and its answer is **kept**: it
+/// is a real reply, stamped when it arrived, and the freshness bound decides whether anything
+/// may render it later. A `start()` that arrives while it is outstanding does not send another;
+/// the loop that sent it carries on once it is answered. Each request also runs in its own
+/// unstructured task, so even a cancelled loop could not cancel it.
 ///
 /// That is #419's rule for the read side. `HelperClient` keeps a cancelled caller's sequenced
 /// message in flight with its deadline running (`InFlightMessages`), so a view that cancelled
@@ -40,12 +47,26 @@ import Foundation
 /// type exists not to make. Views call `start()` and `stop()`; the loop's task belongs to this
 /// object.
 ///
+/// ## Only a snapshot from this handshaken episode is ever rendered
+///
+/// The connection's episode advances every time this object sees its health **leave**
+/// `.handshaken`. A request is stamped with the episode it was sent in, and its reply may be
+/// rendered only while that is still the episode. So once the helper process is replaced —
+/// `.interrupted`, then a fresh `hello` publishing `.handshaken` again before the next reply —
+/// nothing the dead process said is shown as current, however young it is: its lease, its
+/// modes and its emergency flag all went with it (`HelperConnectionHealth.interrupted`). A reply
+/// that straddles a departure is dropped the same way. The stamp is taken at send rather than
+/// at arrival for exactly that case, and it is not "the health at send": the first handshake
+/// happens inside the first request, so the health then is `.idle`.
+///
 /// ## Fresh is measured from arrival, on a clock that does not stop in sleep
 ///
 /// A snapshot is fresh for `refreshInterval + HelperClientDeadlines.gatedVerb`, measured from
 /// the instant its reply reached this object. The bound is one pause plus one full deadline:
 /// if the helper wedges on the next request, `HelperClient` gives up on it at `gatedVerb`, and
-/// by then this snapshot has already gone stale rather than outliving the wedge.
+/// by then this snapshot has already gone stale rather than outliving the wedge. The interval is
+/// read **live**, on every cycle and every judgement, so a change to the preference applies at
+/// once.
 ///
 /// **`SystemSnapshot.capturedAt` is never compared against.** It is the helper's wall clock,
 /// which can jump, and an age read off it would make a snapshot fresh forever after a clock
@@ -59,6 +80,8 @@ import Foundation
 /// resets it. `HelperClient` never retries on its own, because a client reconnecting to a
 /// mach name launchd is restarting a daemon behind is a boot-loop amplifier; a fixed one-second
 /// cadence against an absent or refusing helper would be that amplifier at the caller's level.
+/// `retrySoon()` ends a backoff early when the user has just done something that may have
+/// fixed it — approving the helper, or coming back to the app.
 ///
 /// ## No client at all in a build with no helper
 ///
@@ -68,13 +91,25 @@ import Foundation
 @MainActor
 public final class HelperSnapshotSource {
 
-    /// What a consumer may render right now.
+    /// What a consumer may render right now, and whether it may read the SMC itself.
     public enum Authority: Sendable, Hashable {
-        /// A snapshot within its bound on a handshaken connection. `receivedAt` is this
+        /// A snapshot from this handshaken episode, within its bound. `receivedAt` is this
         /// process's wall clock when the reply arrived, for a "last updated" label only.
         case fresh(SystemSnapshot, receivedAt: Date)
-        /// Nothing may be claimed about control, and why.
-        case notTracked(ControlNotTracked)
+        /// Nothing may be claimed about control, and the consumer reads the SMC itself:
+        /// ADR 0006's fallback.
+        case readDirectly(ControlNotTracked)
+        /// Nothing may be claimed about control, and the consumer reads nothing: a helper is
+        /// being connected to, or has handshaken and owes this episode its first answer.
+        case awaitHelper(ControlNotTracked)
+
+        /// Why nothing may be claimed, or `nil` for a fresh snapshot.
+        public var notTracked: ControlNotTracked? {
+            switch self {
+            case .fresh: return nil
+            case .readDirectly(let why), .awaitHelper(let why): return why
+            }
+        }
     }
 
     /// The longest pause after failed requests, in seconds. A failure pauses twice
@@ -82,22 +117,19 @@ public final class HelperSnapshotSource {
     /// `refreshInterval` itself if that is longer.
     public static let retryCeiling: TimeInterval = 30
 
-    /// How long after its arrival a snapshot may be rendered:
-    /// `refreshInterval + HelperClientDeadlines.gatedVerb`.
-    let freshnessBound: Duration
-
     private enum Reading {
         case none(ControlNotTracked)
         case helper(any HelperSnapshotReading)
     }
 
-    private enum Latest {
+    private enum Answer {
         case received(SystemSnapshot, arrivedAt: ContinuousClock.Instant, wallClock: Date)
         case failed(detail: String)
+        case contradicted(detail: String)
     }
 
     private let reading: Reading
-    private let refreshInterval: TimeInterval
+    private let refreshInterval: @MainActor () -> TimeInterval
     private let now: @Sendable () -> ContinuousClock.Instant
     private let pacing: any PollingClock
 
@@ -105,7 +137,10 @@ public final class HelperSnapshotSource {
     /// report arrives, which licenses nothing.
     private(set) var health: HelperConnectionHealth = .idle
 
-    private var latest: Latest?
+    /// Advances every time `health` leaves `.handshaken`. See this type's documentation.
+    private var episode: UInt64 = 0
+    /// The latest answer, and the episode its request was sent in.
+    private var latest: (answer: Answer, episode: UInt64)?
     private var consecutiveFailures = 0
     private var demand = 0
 
@@ -113,20 +148,24 @@ public final class HelperSnapshotSource {
     private var loop: Task<Void, Never>?
     /// The request in flight, while one is. Nothing in this type cancels it.
     private var outstanding: Task<SystemSnapshot, any Error>?
-    /// The pause between two requests: the only task `stop()` cancels.
+    /// The pause between two requests: the only task `stop()` and `retrySoon()` cancel.
     private var pause: Task<Void, Never>?
     private var healthWatch: Task<Void, Never>?
 
     /// A source for a process with no helper to read: `authority()` is always
-    /// `.notTracked(why)`, and `start()`/`stop()` do nothing.
+    /// `.readDirectly(why)`, and `start()`/`stop()` only count consumers.
     public convenience init(withoutHelper why: ControlNotTracked) {
         self.init(
-            reading: .none(why), refreshInterval: PreferencesRefreshInterval.defaultValue,
+            reading: .none(why), refreshInterval: { PreferencesRefreshInterval.defaultValue },
             clock: ContinuousClock(), pacing: SystemPollingClock())
     }
 
-    /// A source reading `reader` every `refreshInterval` seconds, on the real clocks.
-    public convenience init(reader: any HelperSnapshotReading, refreshInterval: TimeInterval) {
+    /// A source reading `reader`, pausing `refreshInterval()` seconds between requests — read
+    /// afresh each time — on the real clocks.
+    public convenience init(
+        reader: any HelperSnapshotReading,
+        refreshInterval: @escaping @MainActor () -> TimeInterval
+    ) {
         self.init(
             reader: reader, refreshInterval: refreshInterval, clock: ContinuousClock(),
             pacing: SystemPollingClock())
@@ -137,7 +176,7 @@ public final class HelperSnapshotSource {
     /// do, so a test can wind one by hand.
     convenience init<C: Clock>(
         reader: any HelperSnapshotReading,
-        refreshInterval: TimeInterval,
+        refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
         pacing: any PollingClock
     ) where C.Instant == ContinuousClock.Instant {
@@ -148,17 +187,12 @@ public final class HelperSnapshotSource {
 
     private init<C: Clock>(
         reading: Reading,
-        refreshInterval: TimeInterval,
+        refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
         pacing: any PollingClock
     ) where C.Instant == ContinuousClock.Instant {
-        let interval =
-            refreshInterval.isFinite
-            ? max(refreshInterval, PollingViewModel.minimumRefreshInterval)
-            : PollingViewModel.minimumRefreshInterval
         self.reading = reading
-        self.refreshInterval = interval
-        self.freshnessBound = .seconds(interval) + HelperClientDeadlines.gatedVerb
+        self.refreshInterval = refreshInterval
         self.now = { clock.now }
         self.pacing = pacing
 
@@ -166,7 +200,7 @@ public final class HelperSnapshotSource {
         let updates = reader.healthUpdates()
         healthWatch = Task { [weak self] in
             for await health in updates {
-                self?.health = health
+                self?.observe(health)
             }
         }
     }
@@ -175,25 +209,53 @@ public final class HelperSnapshotSource {
         healthWatch?.cancel()
     }
 
+    /// The refresh interval as it stands now, clamped as `PollingViewModel` clamps its own.
+    private var interval: TimeInterval {
+        let value = refreshInterval()
+        return value.isFinite
+            ? max(value, PollingViewModel.minimumRefreshInterval)
+            : PollingViewModel.minimumRefreshInterval
+    }
+
+    /// How long after its arrival a snapshot may be rendered:
+    /// `refreshInterval + HelperClientDeadlines.gatedVerb`, at the interval as it stands now.
+    var freshnessBound: Duration {
+        .seconds(interval) + HelperClientDeadlines.gatedVerb
+    }
+
+    private func observe(_ new: HelperConnectionHealth) {
+        if health == .handshaken, new != .handshaken {
+            episode &+= 1
+        }
+        health = new
+    }
+
     // MARK: - What a consumer may render
 
-    /// Whether the latest snapshot may be rendered now, and if not, why.
+    /// Whether the latest snapshot may be rendered now, whether the SMC may be read instead,
+    /// and why.
     ///
-    /// In this order: no helper to read; a connection that is not `.handshaken`; no answer
-    /// yet; a failed answer; an answer older than `freshnessBound`. Only past all five is a
-    /// snapshot `.fresh`. The age is read here, on this object's own clock, against the
-    /// instant this object stamped when the reply arrived.
+    /// In this order: no helper to read; a connection that is not `.handshaken` (`.idle`
+    /// waits, every other state reads directly); no answer in this episode (waits); a failed
+    /// or self-contradicting answer (reads directly); an answer older than `freshnessBound`
+    /// (waits — the connection is handshaken, so the next answer is due). Only past all of
+    /// them is a snapshot `.fresh`. The age is read here, on this object's own clock, against
+    /// the instant this object stamped when the reply arrived.
     public func authority() -> Authority {
-        if case .none(let why) = reading { return .notTracked(why) }
-        guard health == .handshaken else { return .notTracked(.helperConnection(health)) }
-        switch latest {
-        case nil:
-            return .notTracked(.awaitingSnapshot)
+        if case .none(let why) = reading { return .readDirectly(why) }
+        guard health == .handshaken else {
+            let why = ControlNotTracked.helperConnection(health)
+            return health == .idle ? .awaitHelper(why) : .readDirectly(why)
+        }
+        guard let latest, latest.episode == episode else { return .awaitHelper(.awaitingSnapshot) }
+        switch latest.answer {
         case .failed(let detail):
-            return .notTracked(.snapshotRequestFailed(detail: detail))
+            return .readDirectly(.snapshotRequestFailed(detail: detail))
+        case .contradicted(let detail):
+            return .readDirectly(.snapshotContradicted(detail: detail))
         case .received(let snapshot, let arrivedAt, let wallClock):
             guard arrivedAt.duration(to: now()) < freshnessBound else {
-                return .notTracked(.snapshotStale)
+                return .awaitHelper(.snapshotStale)
             }
             return .fresh(snapshot, receivedAt: wallClock)
         }
@@ -212,7 +274,8 @@ public final class HelperSnapshotSource {
 
     /// One fewer consumer wants snapshots. When none does, the pause between requests is cut
     /// short and the loop ends — after the request it is waiting for, if any, is answered.
-    /// Never cancels that request: see this type's documentation.
+    /// Never cancels that request: see this type's documentation. A `stop()` with no consumer
+    /// left does nothing, so one consumer stopping twice cannot take another's place away.
     public func stop() {
         guard demand > 0 else { return }
         demand -= 1
@@ -220,14 +283,25 @@ public final class HelperSnapshotSource {
         pause?.cancel()
     }
 
+    /// The user has just done something that may have changed the helper's answer: approved
+    /// it, or come back to the app. A backoff pause ends now and the next request goes out at
+    /// once; the failure count starts again. A request already in flight is left alone, and no
+    /// second one is sent beside it — only a pause is ever cut short.
+    public func retrySoon() {
+        guard consecutiveFailures > 0 else { return }
+        consecutiveFailures = 0
+        pause?.cancel()
+    }
+
     private func run(_ reader: any HelperSnapshotReading) async {
         while demand > 0 {
+            let sentIn = episode
             // Unstructured, so that it inherits no cancellation from this loop.
             let request = Task { try await reader.snapshot() }
             outstanding = request
             let result = await request.result
             outstanding = nil
-            record(result)
+            record(result, sentIn: sentIn)
 
             guard demand > 0 else { break }
             let pacing = pacing
@@ -241,38 +315,45 @@ public final class HelperSnapshotSource {
         loop = nil
     }
 
-    /// Stores one answer. A reply is stamped here, on arrival, with this object's own clock.
-    private func record(_ result: Result<SystemSnapshot, any Error>) {
+    /// Stores one answer with the episode its request was sent in. A reply is stamped here,
+    /// on arrival, with this object's own clock.
+    private func record(_ result: Result<SystemSnapshot, any Error>, sentIn: UInt64) {
         switch result {
         case .success(let snapshot):
-            if let repeated = Self.repeatedFanIndex(in: snapshot) {
-                // A correct helper builds one entry per enumerated fan (#474). A snapshot that
-                // names one fan twice contradicts itself about that fan, and SwiftUI would draw
-                // two rows with one identity, so none of it is rendered.
-                latest = .failed(detail: "the helper's snapshot lists fan \(repeated) twice")
+            if let contradiction = Self.contradiction(in: snapshot) {
+                latest = (.contradicted(detail: contradiction), sentIn)
                 consecutiveFailures += 1
             } else {
-                latest = .received(snapshot, arrivedAt: now(), wallClock: Date())
+                latest = (.received(snapshot, arrivedAt: now(), wallClock: Date()), sentIn)
                 consecutiveFailures = 0
             }
         case .failure(let error):
             let description = (error as? any LocalizedError)?.errorDescription
-            latest = .failed(
-                detail: HelperAuthoredText.sanitised(description ?? String(describing: error)))
+            let detail = HelperAuthoredText.sanitised(description ?? String(describing: error))
+            latest = (.failed(detail: detail), sentIn)
             consecutiveFailures += 1
         }
     }
 
     private func nextPause() -> TimeInterval {
-        guard consecutiveFailures > 0 else { return refreshInterval }
-        let doubled = refreshInterval * pow(2, Double(min(consecutiveFailures, 16)))
-        return max(refreshInterval, min(doubled, Self.retryCeiling))
+        let interval = interval
+        guard consecutiveFailures > 0 else { return interval }
+        let doubled = interval * pow(2, Double(min(consecutiveFailures, 16)))
+        return max(interval, min(doubled, Self.retryCeiling))
     }
 
-    private static func repeatedFanIndex(in snapshot: SystemSnapshot) -> Int? {
-        var seen: Set<Int> = []
-        for fan in snapshot.fans where !seen.insert(fan.index).inserted {
-            return fan.index
+    /// Why a reply contradicts itself, or `nil`. A correct helper builds one entry per
+    /// enumerated fan and per sensor key (#474), so a reply that names one twice is not a
+    /// failed request but an answer the app refuses: it says two things about one fan or key,
+    /// and SwiftUI would draw two rows with one identity.
+    private static func contradiction(in snapshot: SystemSnapshot) -> String? {
+        var fans: Set<Int> = []
+        for fan in snapshot.fans where !fans.insert(fan.index).inserted {
+            return "it lists fan \(fan.index) twice"
+        }
+        var keys: Set<String> = []
+        for sample in snapshot.sensors where !keys.insert(sample.key).inserted {
+            return "it lists sensor \(HelperAuthoredText.sanitised(sample.key)) twice"
         }
         return nil
     }
@@ -282,56 +363,11 @@ public final class HelperSnapshotSource {
     /// Whether a request is outstanding. Read by the suite to show `stop()` left it alone.
     var hasOutstandingRequest: Bool { outstanding != nil }
 
-    /// Waits for the request loop to end, for a suite that has stopped it.
-    func waitUntilIdle() async {
-        await loop?.value
-    }
-}
+    /// How many consumers want snapshots. Read by the suite, so an unbalanced `start()` or
+    /// `stop()` fails on an assertion rather than as a wait that never ends.
+    var consumerCount: Int { demand }
 
-extension HelperSnapshotSource {
-
-    /// The source for this bundle: a `HelperClient` only when the bundle ships a helper.
-    ///
-    /// - Parameters:
-    ///   - embedding: What the bundle contains (`HelperBundleLayout.embedding`).
-    ///   - refreshInterval: Seconds between requests.
-    ///   - makeReader: Builds the reader. **Never called** unless `embedding` is `.embedded`:
-    ///     a `Monitor` build constructs no client, and so cannot reach the helper's mach name
-    ///     even by accident.
-    /// - Returns: A source reading the new client, or a source with no reader that says why.
-    static func forBundle(
-        _ embedding: HelperEmbedding,
-        refreshInterval: TimeInterval,
-        makeReader: () -> any HelperSnapshotReading
-    ) -> HelperSnapshotSource {
-        switch embedding {
-        case .absent:
-            return HelperSnapshotSource(withoutHelper: .noHelperInThisBuild)
-        case .incomplete:
-            return HelperSnapshotSource(withoutHelper: .helperInstallIncomplete)
-        case .embedded:
-            return HelperSnapshotSource(reader: makeReader(), refreshInterval: refreshInterval)
-        }
-    }
-
-    /// The running app's source: its own bundle, and a `HelperClient` on the default
-    /// transport and pinning if, and only if, that bundle ships a helper.
-    static func forRunningApp(refreshInterval: TimeInterval) -> HelperSnapshotSource {
-        forBundle(
-            HelperBundleLayout.embedding(inBundleAt: Bundle.main.bundleURL),
-            refreshInterval: refreshInterval
-        ) {
-            HelperClient(clientDescription: clientDescription(of: .main))
-        }
-    }
-
-    /// What the app calls itself in the helper's log: `Aeolus.app <version>`.
-    static func clientDescription(of bundle: Bundle) -> String {
-        guard
-            let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-                as? String,
-            !version.isEmpty
-        else { return "Aeolus.app" }
-        return "Aeolus.app \(version)"
-    }
+    /// Whether the request loop exists. The suite waits on this with a bounded wait, never on
+    /// the loop's task itself, so a loop that never ends is a red and not a hung run.
+    var isLoopRunning: Bool { loop != nil }
 }

@@ -12,6 +12,12 @@ public enum PollingPhase: Sendable, Hashable {
     /// A poll is currently in flight — the first one (which also runs sensor discovery)
     /// or a subsequent refresh.
     case polling
+    /// Nothing is read: a helper is being connected to, or owes this connection its first
+    /// snapshot (`HelperSnapshotSource.Authority.awaitHelper`). ADR 0006 allows the app's own
+    /// SMC reads only while the helper is absent, refused or unreachable, so `fans`/`sensors`
+    /// are left as they were — empty before anything has been read, or the last readings,
+    /// which a view says are not current.
+    case waitingForHelper
     /// The most recent tick completed successfully. `fans`/`sensors` reflect it.
     case ready
     /// The most recent tick failed. `fans`/`sensors` still hold whatever the last

@@ -14,7 +14,7 @@ import SMCCore
 enum SnapshotReadings {
 
     /// One row per fan the snapshot reports, in index order, each carrying the helper's
-    /// `FanState` whole.
+    /// `FanState` whole and the snapshot's emergency flag beside it.
     ///
     /// The raw keys come from `SMCFanEnumeration`, the functions the direct path and the
     /// helper's own fan reads both name them with — never respelled here — because the snapshot
@@ -31,11 +31,17 @@ enum SnapshotReadings {
                         SMCFanEnumeration.minimumKey(forFan: fan.index), fan.minimumRPM),
                     maximum: keyed(
                         SMCFanEnumeration.maximumKey(forFan: fan.index), fan.maximumRPM),
-                    control: .reported(fan))
+                    control: .reported(
+                        fan, thermalEmergency: snapshot.isThermalEmergencyActive))
             }
     }
 
     /// One row per sensor sample, sorted by key as the direct path's discovery is.
+    ///
+    /// A key is the helper's text and is shown, and kept, exactly as it arrives — a selection
+    /// is persisted by it — so it is not cleaned but **checked**: a sample whose key could not
+    /// be shown verbatim (`HelperAuthoredText.isDisplayableVerbatim(_:)`) is left out rather
+    /// than drawn with a control or line-breaking character in it, or under a different name.
     ///
     /// Labels come from `labelSource`, the same catalog the direct path decorates with, and not
     /// from the snapshot's own `label`: a key then reads the same in the window whichever
@@ -44,6 +50,7 @@ enum SnapshotReadings {
         in snapshot: SystemSnapshot, labelSource: some SensorLabelSource
     ) -> [SensorPollingReading] {
         snapshot.sensors
+            .filter { HelperAuthoredText.isDisplayableVerbatim($0.key) }
             .sorted { $0.key < $1.key }
             .map { sample in
                 SensorPollingReading(
