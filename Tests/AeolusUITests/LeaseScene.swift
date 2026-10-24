@@ -92,6 +92,19 @@ struct LeaseScene: Sendable {
     }
 }
 
+/// Waits until either wait returns, and cancels the other. Both waits a scene offers end when
+/// cancelled, so this always finishes once one of them does.
+func firstOf(
+    _ first: @escaping @Sendable () async -> Void, _ second: @escaping @Sendable () async -> Void
+) async {
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask(operation: first)
+        group.addTask(operation: second)
+        await group.next()
+        group.cancelAll()
+    }
+}
+
 extension LeaseDriverState {
 
     var loss: LeaseLoss? {

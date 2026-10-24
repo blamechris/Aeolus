@@ -86,10 +86,16 @@ struct LeaseLifecycleTests {
         await closing.value
 
         // Quit, with that release still in flight: joined, bounded, then the teardown answers it.
+        // The wait ends on the quit's bound being armed, or on a second release, whichever comes
+        // first, so a driver that sends one more is caught by the count below rather than left
+        // waiting for a bound its own answered release has already cancelled.
         let quitAt = scene.clock.now
+        let quitBound = quitAt.advanced(by: LeaseDriver.releaseBound)
         lifecycle.applicationShouldTerminate(reply: scene.recordReply)
-        await scene.clock.untilParked { $0.contains(quitAt.advanced(by: LeaseDriver.releaseBound)) }
-        scene.clock.advance(to: quitAt.advanced(by: LeaseDriver.releaseBound))
+        await firstOf(
+            { await scene.clock.untilParked { $0.contains(quitBound) } },
+            { await scene.ledger.waitFor { $0.releases.count > 1 } })
+        scene.clock.advance(to: quitBound)
         await scene.ledger.waitFor { $0.index(of: .terminationReplied) != nil }
 
         // Logout, after the quit.
