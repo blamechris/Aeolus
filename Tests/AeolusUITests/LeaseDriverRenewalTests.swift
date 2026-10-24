@@ -25,7 +25,7 @@ struct LeaseDriverRenewalTests {
     @Test("No renewal at 9.99 s, and one at 10 s")
     func renewsAtTheThirdOfTheTTL() async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { !$0.isEmpty }
 
         let justBefore = scene.at(.milliseconds(9_990))
@@ -51,7 +51,7 @@ struct LeaseDriverRenewalTests {
     func scheduleStartsAtTheRequest() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.acquire, .after(.seconds(5)))
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         let grantAt = scene.at(.seconds(5))
         await scene.clock.untilParked(at: grantAt)
         scene.clock.advance(to: grantAt)
@@ -91,7 +91,7 @@ struct LeaseDriverRenewalTests {
     func renewsDuringALongApply() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.apply, .after(.seconds(57)))
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.applies.isEmpty }
 
         for beat in 1...5 {
@@ -130,7 +130,7 @@ struct LeaseDriverRenewalTests {
     func aRefusedRenewalIsLost() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.renew, .refuse(.leaseExpired))
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { !$0.isEmpty }
 
         scene.clock.advance(to: scene.at(.seconds(10)))
@@ -161,7 +161,7 @@ struct LeaseDriverRenewalTests {
     @Test("Wake renews at once and never re-acquires")
     func wakeNeverReacquires() async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { !$0.isEmpty }
         await scene.helper.script(.renew, .refuse(.leaseUnknown))
 
@@ -182,7 +182,7 @@ struct LeaseDriverRenewalTests {
     func wakeAfterALossSendsNothing() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.renew, .refuse(.leaseExpired))
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { !$0.isEmpty }
         scene.clock.advance(to: scene.at(.seconds(10)))
         await scene.waitForState { $0.isLost }
@@ -190,7 +190,7 @@ struct LeaseDriverRenewalTests {
         let before = await scene.entries.count
 
         await scene.driver.systemDidWake()
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { $0.acquires.count == 2 }
 
         let after = Array(await scene.entries.dropFirst(before))
@@ -214,6 +214,11 @@ extension LeaseLedger.Event {
 
     var isState: Bool {
         if case .state = self { return true }
+        return false
+    }
+
+    var isTerminationReply: Bool {
+        if case .terminationReplied = self { return true }
         return false
     }
 }

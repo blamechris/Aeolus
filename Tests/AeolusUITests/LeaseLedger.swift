@@ -29,7 +29,8 @@ actor LeaseLedger {
         case healthAsked
         case healthPushed(HelperConnectionHealth)
         case state(LeaseDriverState)
-        case terminationReplied
+        /// A quit was answered, with whether to terminate.
+        case terminationReplied(Bool)
     }
 
     struct Entry: Sendable, Hashable {

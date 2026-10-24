@@ -2,6 +2,7 @@ import AeolusXPC
 import AeolusXPCClient
 import FanKit
 import Foundation
+import os
 
 @testable import AeolusUI
 
@@ -9,13 +10,15 @@ import Foundation
 ///
 /// - **A lease table.** `acquireLease` grants and lists a lease; `renewLease` and `releaseLease`
 ///   look it up and refuse an unknown one with `.leaseUnknown`, as `LeaseAuthority` does; a
-///   refused renewal drops the lease, as an expiry would. `apply` checks the lease after it has
-///   worked, as level 6 does before it replies.
+///   refused renewal drops the lease, as an expiry would. A renewal answers the lease with a new
+///   `expiresAt`, as the helper's does. `apply` checks the lease after it has worked, as level 6
+///   does before it replies.
 /// - **Scripted answers**, consumed one per call: at once (the default), after a stretch of the
 ///   hand-wound clock, parked until the test answers it, refused with a fault, or failed with a
 ///   client error.
-/// - **Parked replies released by hand** (`answerParked(_:)`), and by `disconnect()`, which
-///   answers every parked call `connectionAbandoned` as `HelperClient.disconnect()` does.
+/// - **Parked replies released by hand** (`answerParked(_:throwing:)`), and by `disconnect()`,
+///   which answers every call still waiting, parked or delayed, `connectionAbandoned`, and
+///   publishes `.idle`, as `HelperClient.disconnect()` does.
 /// - **An event log** (`LeaseLedger`) of each call as it arrives and as it is answered, at the
 ///   clock's instant.
 ///
@@ -29,8 +32,11 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         case now
         /// Answered when the clock reaches the instant the call arrived, plus this.
         case after(Duration)
-        /// Answered when the test calls `answerParked(_:)`, or by `disconnect()`.
+        /// Answered when the test calls `answerParked(_:throwing:)`, or by `disconnect()`.
         case parked
+        /// As `parked`, and a cancelled caller is not answered early: the reply a helper sent
+        /// before it heard of the cancellation.
+        case parkedThroughCancellation
         /// The helper says no.
         case refuse(AeolusXPCFault)
         /// No answer the client could read.
@@ -38,7 +44,6 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     }
 
     private typealias Parked = CheckedContinuation<Void, any Error>
-    private typealias HealthWaiter = CheckedContinuation<HelperConnectionHealth?, Never>
 
     enum Verb: Sendable, Hashable {
         case acquire, renew, release, apply
@@ -46,20 +51,24 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 
     let clock: HandWoundClock
     let ledger: LeaseLedger
+    /// The control connection's health, as the driver's subscriptions see it.
+    nonisolated let health = HealthFeed()
 
+    private let start: ContinuousClock.Instant
     private var scripts: [Verb: [Answer]] = [:]
     private var leases: [UUID: Lease] = [:]
     private var parkedCalls: [UInt64: (verb: Verb, continuation: Parked)] = [:]
+    private var timers: [UInt64: Task<Void, Never>] = [:]
     private var issued: UInt64 = 0
     private var applying = 0
     private var mostApplying = 0
-    private var pushedHealth: [HelperConnectionHealth] = []
-    private var healthWaiters: [UInt64: HealthWaiter] = [:]
-    private var subscribed: Set<UUID> = []
+    private var grantedTimeToLive: TimeInterval?
+    private var renewsAnotherLease = false
 
     init(clock: HandWoundClock, ledger: LeaseLedger) {
         self.clock = clock
         self.ledger = ledger
+        self.start = clock.now
     }
 
     /// The most `apply` calls that were ever in flight here at once.
@@ -74,11 +83,31 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         scripts[verb, default: []].append(contentsOf: answers)
     }
 
-    /// Answers every parked call of `verb`, as the table would have answered it.
-    func answerParked(_ verb: Verb) {
+    /// Grants the next leases with this TTL rather than the one asked for, as a helper that
+    /// clamps would.
+    func grant(timeToLive: TimeInterval) {
+        grantedTimeToLive = timeToLive
+    }
+
+    /// Answers renewals with a lease of another identifier, as a broken helper might.
+    func renewAnotherLease() {
+        renewsAnotherLease = true
+    }
+
+    /// Answers every parked call of `verb`: as the table would have, or with `error`.
+    func answerParked(_ verb: Verb, throwing error: (any Error)? = nil) {
         let ready = parkedCalls.filter { $0.value.verb == verb }
-        for key in ready.keys { parkedCalls[key] = nil }
-        for call in ready.values { call.continuation.resume() }
+        for key in ready.keys {
+            parkedCalls[key] = nil
+            timers.removeValue(forKey: key)?.cancel()
+        }
+        for call in ready.values {
+            if let error {
+                call.continuation.resume(throwing: error)
+            } else {
+                call.continuation.resume()
+            }
+        }
     }
 
     /// How many calls of `verb` are parked now.
@@ -86,15 +115,10 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         parkedCalls.values.filter { $0.verb == verb }.count
     }
 
-    /// Delivers `health` to the driver's subscription, as `HelperClient` publishes a change.
-    func pushHealth(_ health: HelperConnectionHealth) async {
-        await ledger.record(.healthPushed(health), at: clock.now)
-        if let (key, waiter) = healthWaiters.first {
-            healthWaiters[key] = nil
-            waiter.resume(returning: health)
-        } else {
-            pushedHealth.append(health)
-        }
+    /// Delivers `health` to every live subscription, as `HelperClient` publishes a change.
+    func pushHealth(_ value: HelperConnectionHealth) async {
+        await ledger.record(.healthPushed(value), at: clock.now)
+        health.push(value)
     }
 
     // MARK: - The control connection
@@ -103,10 +127,10 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         let arrived = clock.now
         await ledger.record(.acquire(request), at: arrived)
         try await settle(.acquire, arrivedAt: arrived)
+        let timeToLive = grantedTimeToLive ?? request.timeToLive
         let lease = Lease(
-            holderDescription: request.holderDescription,
-            expiresAt: Date(timeIntervalSince1970: 1_000_000 + request.timeToLive),
-            timeToLive: request.timeToLive, isSelfRenewing: request.isSelfRenewing)
+            holderDescription: request.holderDescription, expiresAt: expiry(after: timeToLive),
+            timeToLive: timeToLive, isSelfRenewing: request.isSelfRenewing)
         leases[lease.id] = lease
         await ledger.record(.acquireAnswered, at: clock.now)
         return lease
@@ -122,8 +146,15 @@ actor FakeLeaseHelper: HelperLeaseControlling {
             throw fault
         }
         guard let lease = leases[id] else { throw AeolusXPCFault.leaseUnknown }
+        let renewed = Lease(
+            id: renewsAnotherLease ? UUID() : lease.id, holderDescription: lease.holderDescription,
+            expiresAt: expiry(after: lease.timeToLive), timeToLive: lease.timeToLive,
+            isSelfRenewing: lease.isSelfRenewing)
+        leases[id] = Lease(
+            id: id, holderDescription: lease.holderDescription, expiresAt: renewed.expiresAt,
+            timeToLive: lease.timeToLive, isSelfRenewing: lease.isSelfRenewing)
         await ledger.record(.renewAnswered(id), at: clock.now)
-        return lease
+        return renewed
     }
 
     func releaseLease(id: UUID) async throws {
@@ -153,11 +184,17 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     }
 
     /// The value now (`.handshaken`, since the driver subscribes once a grant has arrived), then
-    /// whatever the test pushes. Each time the driver asks for the next value is logged, so a test
-    /// can tell that it has finished with the last one.
+    /// whatever the test pushes while this subscription is live. Each time the driver asks for
+    /// the next value is logged, so a test can tell that it has finished with the last one.
     nonisolated func healthUpdates() -> AsyncStream<HelperConnectionHealth> {
-        let token = UUID()
-        return AsyncStream(unfolding: { await self.nextHealth(for: token) })
+        let token = health.subscribe()
+        let feed = health
+        return AsyncStream(
+            unfolding: {
+                await self.ledger.record(.healthAsked, at: self.clock.now)
+                return await feed.next(for: token)
+            },
+            onCancel: { feed.end(token) })
     }
 
     func disconnect() async {
@@ -165,9 +202,10 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         leases.removeAll()
         let calls = parkedCalls.values
         parkedCalls.removeAll()
-        for call in calls {
-            call.continuation.resume(throwing: HelperClientError.connectionAbandoned)
-        }
+        for timer in timers.values { timer.cancel() }
+        timers.removeAll()
+        for call in calls { call.continuation.resume(throwing: HelperClientError.connectionAbandoned) }
+        health.push(.idle)
     }
 
     // MARK: - Answers
@@ -187,9 +225,11 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         case .now:
             return
         case .after(let duration):
-            try await clock.sleep(until: arrived.advanced(by: duration))
+            try await park(verb, answeredAt: arrived.advanced(by: duration))
         case .parked:
             try await park(verb)
+        case .parkedThroughCancellation:
+            try await park(verb, throughCancellation: true)
         case .refuse(let fault):
             throw fault
         case .fail(let failure):
@@ -197,9 +237,27 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         }
     }
 
-    private func park(_ verb: Verb) async throws {
+    /// Waits to be answered: by the test, by `disconnect()`, by the clock reaching `deadline` if
+    /// one is given, or, unless `throughCancellation`, by the caller's cancellation.
+    private func park(
+        _ verb: Verb, answeredAt deadline: ContinuousClock.Instant? = nil,
+        throughCancellation: Bool = false
+    ) async throws {
         issued &+= 1
         let id = issued
+        if let deadline {
+            let clock = self.clock
+            timers[id] = Task {
+                do { try await clock.sleep(until: deadline) } catch { return }
+                self.answerTimed(id)
+            }
+        }
+        if throughCancellation {
+            try await withCheckedThrowingContinuation { (continuation: Parked) in
+                parkedCalls[id] = (verb, continuation)
+            }
+            return
+        }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: Parked) in
                 if Task.isCancelled {
@@ -213,30 +271,89 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         }
     }
 
+    private func answerTimed(_ id: UInt64) {
+        timers[id] = nil
+        parkedCalls.removeValue(forKey: id)?.continuation.resume()
+    }
+
     private func cancelParked(_ id: UInt64) {
+        timers.removeValue(forKey: id)?.cancel()
         parkedCalls.removeValue(forKey: id)?.continuation.resume(throwing: CancellationError())
     }
 
-    private func nextHealth(for token: UUID) async -> HelperConnectionHealth? {
-        await ledger.record(.healthAsked, at: clock.now)
-        if subscribed.insert(token).inserted { return .handshaken }
-        if !pushedHealth.isEmpty { return pushedHealth.removeFirst() }
-        issued &+= 1
-        let id = issued
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: HealthWaiter) in
-                if Task.isCancelled {
-                    continuation.resume(returning: nil)
-                } else {
-                    healthWaiters[id] = continuation
+    /// A display expiry `timeToLive` after now, on a wall clock that moves with the hand-wound
+    /// one.
+    private func expiry(after timeToLive: TimeInterval) -> Date {
+        let elapsed = start.duration(to: clock.now)
+        let seconds =
+            Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        return Date(timeIntervalSince1970: 1_000_000 + seconds + timeToLive)
+    }
+}
+
+/// The control connection's health, for the fake's subscriptions: each starts with `.handshaken`
+/// and then sees what is pushed while it is live. A subscription ends the moment its consumer is
+/// cancelled, synchronously, so a value pushed after that reaches nobody and `live` says at once
+/// whether the driver has let go of its watch.
+final class HealthFeed: Sendable {
+
+    private struct Subscription: Sendable {
+        var started = false
+        var queue: [HelperConnectionHealth] = []
+        var waiter: CheckedContinuation<HelperConnectionHealth?, Never>?
+    }
+
+    private enum Next {
+        case now(HelperConnectionHealth?)
+        case waiting
+    }
+
+    private let subscriptions = OSAllocatedUnfairLock(initialState: [UUID: Subscription]())
+
+    /// How many subscriptions are live now.
+    var live: Int { subscriptions.withLock { $0.count } }
+
+    func subscribe() -> UUID {
+        let token = UUID()
+        subscriptions.withLock { $0[token] = Subscription() }
+        return token
+    }
+
+    func next(for token: UUID) async -> HelperConnectionHealth? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<HelperConnectionHealth?, Never>) in
+            let next = subscriptions.withLock { all -> Next in
+                guard var subscription = all[token] else { return .now(nil) }
+                defer { all[token] = subscription }
+                if !subscription.started {
+                    subscription.started = true
+                    return .now(.handshaken)
                 }
+                if !subscription.queue.isEmpty { return .now(subscription.queue.removeFirst()) }
+                subscription.waiter = continuation
+                return .waiting
             }
-        } onCancel: {
-            Task { await self.cancelHealth(id) }
+            if case .now(let value) = next { continuation.resume(returning: value) }
         }
     }
 
-    private func cancelHealth(_ id: UInt64) {
-        healthWaiters.removeValue(forKey: id)?.resume(returning: nil)
+    func end(_ token: UUID) {
+        let waiter = subscriptions.withLock { $0.removeValue(forKey: token)?.waiter }
+        waiter?.resume(returning: nil)
+    }
+
+    func push(_ value: HelperConnectionHealth) {
+        let waiters = subscriptions.withLock { all -> [CheckedContinuation<HelperConnectionHealth?, Never>] in
+            var woken: [CheckedContinuation<HelperConnectionHealth?, Never>] = []
+            for token in all.keys {
+                if let waiter = all[token]?.waiter {
+                    all[token]?.waiter = nil
+                    woken.append(waiter)
+                } else {
+                    all[token]?.queue.append(value)
+                }
+            }
+            return woken
+        }
+        for waiter in waiters { waiter.resume(returning: value) }
     }
 }

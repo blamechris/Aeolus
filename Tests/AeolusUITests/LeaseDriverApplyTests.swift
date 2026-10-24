@@ -22,7 +22,7 @@ struct LeaseDriverApplyTests {
     )
     func theRequest() async throws {
         let scene = await LeaseScene()
-        await scene.driver.hold(try LeaseScene.target([1: 4000, 0: 3000]))
+        await scene.driver.take(try LeaseScene.target([1: 4000, 0: 3000]))
         await scene.ledger.waitFor { !$0.acquires.isEmpty }
 
         let request = try #require(await scene.entries.acquires.first)
@@ -66,11 +66,11 @@ struct LeaseDriverApplyTests {
         let second = try LeaseScene.target([0: 3000])
         let latest = try LeaseScene.target([0: 4000])
         await scene.helper.script(.apply, .parked)
-        await scene.driver.hold(first)
+        await scene.driver.take(first)
         await scene.ledger.waitFor { $0.applies.count == 1 }
 
-        await scene.driver.hold(second)
-        await scene.driver.hold(latest)
+        await scene.driver.take(second)
+        await scene.driver.take(latest)
         if case .held(let held) = await scene.driver.state {
             #expect(held.phase == .applying(first, queued: latest))
         } else {
@@ -108,7 +108,7 @@ struct LeaseDriverApplyTests {
     func autoDuringAnApplyReleasesImmediately() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.apply, .parked)
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.applies.isEmpty }
         let lease = try #require(await scene.helper.heldLeases.values.first)
 
@@ -132,7 +132,7 @@ struct LeaseDriverApplyTests {
     @Test("Auto releases, and nothing is held afterwards")
     func autoReleases() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
 
         await scene.driver.selectAutomatic()
         await scene.waitForState { $0.isReleased }
@@ -149,10 +149,10 @@ struct LeaseDriverApplyTests {
     @Test("A change of fans is release, then acquire, then apply")
     func aChangeOfFans() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         let wider = try LeaseScene.target([0: 3000, 1: 3000])
 
-        try #require(await scene.hold(wider) != nil)
+        try #require(await scene.take(wider) != nil)
 
         let entries = await scene.entries
         let released = try #require(entries.index(of: .releaseAnswered(held.lease.id)))

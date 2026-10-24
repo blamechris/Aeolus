@@ -63,10 +63,10 @@ struct LeaseScene: Sendable {
 
     enum TargetError: Error { case envelopeRefused }
 
-    /// Holds `target` and waits until the helper has confirmed its `apply`.
+    /// Takes `target` and waits until the helper has confirmed its `apply`.
     @discardableResult
-    func hold(_ target: LeaseTarget) async -> HeldLease? {
-        await driver.hold(target)
+    func take(_ target: LeaseTarget) async -> HeldLease? {
+        await driver.take(target)
         await waitForState { state in
             if case .held(let held) = state, held.phase == .confirmed(target) { return true }
             return false

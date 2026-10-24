@@ -21,7 +21,7 @@ struct LeaseDriverLossTests {
     @Test("A snapshot controlLoss judges lost is lost")
     func aLossSnapshotIsLost() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
 
         let fine = await scene.driver.beginSnapshotRead()
         await scene.driver.observe(
@@ -44,7 +44,7 @@ struct LeaseDriverLossTests {
     @Test("No lease listed with the emergency flag set is lost, and the emergency is visible")
     func anEmergencyThatRevokedTheLeaseIsNamed() async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         let ticket = await scene.driver.beginSnapshotRead()
 
         await scene.driver.observe(
@@ -62,7 +62,7 @@ struct LeaseDriverLossTests {
     @Test("The lease gone with the flag already clear names no emergency")
     func aClearedFlagNamesNothing() async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         let ticket = await scene.driver.beginSnapshotRead()
 
         await scene.driver.observe(
@@ -80,7 +80,7 @@ struct LeaseDriverLossTests {
     @Test("Another client's holder text is carried verbatim")
     func anotherHolderIsCarriedVerbatim() async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         let other = Lease(
             holderDescription: "fanctl\u{202E}\nnot really",
             expiresAt: Date(timeIntervalSince1970: 0))
@@ -110,7 +110,7 @@ struct LeaseDriverLossTests {
     func anEarlySnapshotIsNotJudged() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.apply, .parked)
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.applies.isEmpty }
         let early = await scene.driver.beginSnapshotRead()
         let lease = try #require(await scene.helper.heldLeases.values.first)
@@ -140,7 +140,7 @@ struct LeaseDriverLossTests {
         arguments: [HelperConnectionHealth.interrupted, .invalidated, .unresponsive])
     func healthLeavingHandshakenIsLost(_ health: HelperConnectionHealth) async throws {
         let scene = await LeaseScene()
-        try await scene.hold(LeaseScene.target([0: 3000]))
+        try await scene.take(LeaseScene.target([0: 3000]))
         // The driver has taken `.handshaken` and is waiting for the next value.
         await scene.ledger.waitFor { $0.healthAsks >= 2 }
 
@@ -160,7 +160,7 @@ struct LeaseDriverLossTests {
         let scene = await LeaseScene()
         await scene.helper.script(.acquire, .fail(.replyNotDelivered))
 
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.waitForState { $0.isLost }
 
         let loss = try #require(await scene.driver.state.loss)
@@ -185,14 +185,14 @@ struct LeaseDriverLossTests {
         let scene = await LeaseScene()
         await scene.helper.script(.acquire, .refuse(fault))
 
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.waitForState { if case .refused = $0 { true } else { false } }
         scene.clock.advance(to: scene.at(.seconds(30)))
 
         #expect(await scene.driver.state == .refused(fault))
         let entries = await scene.entries
         #expect(entries.applies.isEmpty && entries.renewals.isEmpty && entries.releases.isEmpty)
-        #expect(await scene.clock.parked.isEmpty, "no heartbeat for a lease never granted")
+        #expect(scene.clock.parked.isEmpty, "no heartbeat for a lease never granted")
         await scene.finish()
     }
 
@@ -204,7 +204,7 @@ struct LeaseDriverLossTests {
         await scene.helper.script(
             .apply, .refuse(.manualControlUnavailable(reason: .supervisorBlind)))
 
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.waitForState { $0.isLost }
 
         let loss = try #require(await scene.driver.state.loss)

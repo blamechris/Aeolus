@@ -20,18 +20,18 @@ struct LeaseLifecycleTests {
     @Test("Quit sends releaseLease before the connection is torn down")
     func quitReleasesBeforeDisconnect() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
         let answer = lifecycle.applicationShouldTerminate(reply: scene.recordReply)
-        await scene.ledger.waitFor { $0.index(of: .terminationReplied) != nil }
+        await scene.ledger.waitFor { $0.index(where: \.isTerminationReply) != nil }
 
         #expect(answer == .later)
         let entries = await scene.entries
         let released = try #require(
             entries.index(of: .release(held.lease.id)), "an explicit release was sent")
         let disconnected = try #require(entries.index(of: .disconnect))
-        let replied = try #require(entries.index(of: .terminationReplied))
+        let replied = try #require(entries.index(of: .terminationReplied(true)))
         #expect(released < disconnected, "released before the connection was torn down")
         #expect(disconnected < replied)
         #expect(entries.index(of: .releaseAnswered(held.lease.id)) != nil)
@@ -41,13 +41,13 @@ struct LeaseLifecycleTests {
     /// A release the helper never answers does not hold the quit: it is answered at the bound,
     /// and the teardown that follows answers the release.
     ///
-    /// **Mutation (unbounded wait):** in `LeaseDriver.release`, return `await task.value` instead
+    /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value` instead
     /// of the bounded outcome. The quit is never answered, and the test is red on its time limit
     /// at the wait for that answer.
     @Test("Quit is answered within the bound when the release gets no reply")
     func quitIsBounded() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         await scene.helper.script(.release, .parked)
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
@@ -55,14 +55,14 @@ struct LeaseLifecycleTests {
         await scene.ledger.waitFor { $0.releases == [held.lease.id] }
         let sent = try #require(await scene.entries.first { $0.event == .release(held.lease.id) })
         scene.clock.advance(to: sent.at.advanced(by: LeaseDriver.releaseBound))
-        await scene.ledger.waitFor { $0.index(of: .terminationReplied) != nil }
+        await scene.ledger.waitFor { $0.index(where: \.isTerminationReply) != nil }
 
         let entries = await scene.entries
-        let reply = try #require(entries.first { $0.event == .terminationReplied })
+        let reply = try #require(entries.first { $0.event == .terminationReplied(true) })
         #expect(reply.at == sent.at.advanced(by: LeaseDriver.releaseBound), "answered at the bound")
         #expect(entries.index(of: .releaseAnswered(held.lease.id)) == nil, "the helper never did")
         let disconnected = try #require(entries.index(of: .disconnect))
-        #expect(disconnected < entries.index(of: .terminationReplied) ?? -1)
+        #expect(disconnected < entries.index(of: .terminationReplied(true)) ?? -1)
         await scene.finish()
     }
 
@@ -74,7 +74,7 @@ struct LeaseLifecycleTests {
     @Test("Close, then quit, then logout sends exactly one release")
     func oneReleaseForThreeEvents() async throws {
         let scene = await LeaseScene()
-        let held = try #require(await scene.hold(LeaseScene.target([0: 3000])))
+        let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         await scene.helper.script(.release, .parked)
         let lifecycle = LeaseLifecycle(driver: scene.driver)
 
@@ -96,7 +96,7 @@ struct LeaseLifecycleTests {
             { await scene.clock.untilParked { $0.contains(quitBound) } },
             { await scene.ledger.waitFor { $0.releases.count > 1 } })
         scene.clock.advance(to: quitBound)
-        await scene.ledger.waitFor { $0.index(of: .terminationReplied) != nil }
+        await scene.ledger.waitFor { $0.index(where: \.isTerminationReply) != nil }
 
         // Logout, after the quit.
         await lifecycle.systemWillPowerOff()
@@ -111,7 +111,7 @@ struct LeaseLifecycleTests {
     func aReleaseWhileAcquiring() async throws {
         let scene = await LeaseScene(releaseBound: .seconds(1_000))
         await scene.helper.script(.acquire, .parked)
-        await scene.driver.hold(try LeaseScene.target([0: 3000]))
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.acquires.isEmpty }
 
         let releasing = Task { await scene.driver.releaseFans() }
@@ -135,9 +135,9 @@ extension LeaseScene {
     var recordReply: @MainActor @Sendable (Bool) -> Void {
         let ledger = self.ledger
         let clock = self.clock
-        return { _ in
+        return { terminate in
             let at = clock.now
-            Task { await ledger.record(.terminationReplied, at: at) }
+            Task { await ledger.record(.terminationReplied(terminate), at: at) }
         }
     }
 }
