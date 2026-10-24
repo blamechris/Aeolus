@@ -22,8 +22,8 @@ enum FanPoller {
     ///
     /// Every fan comes back `.notTracked(why)`. A direct read is an observation of RPM and
     /// nothing else: it reads no mode register and no lease, so it has no control claim to
-    /// make, and `why` is the caller's account of why the helper is not making one instead. Required rather than defaulted, so a caller cannot reach a fan row
-    /// without saying.
+    /// make, and `why` is the caller's account of why the helper is not making one instead.
+    /// Required rather than defaulted, so a caller cannot reach a fan row without saying.
     static func poll(
         provider: some SensorProvider, untracked why: ControlNotTracked
     ) async throws -> [FanPollingReading] {
