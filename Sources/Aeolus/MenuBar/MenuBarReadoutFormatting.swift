@@ -3,8 +3,8 @@ import Foundation
 /// Formats a `ResolvedMenuBarReadout` for display — the single place `MenuBarLabelView`
 /// (the compact strip) and `MenuBarContentView` (the full dropdown) both go through, so a
 /// value's identity and unit are never left to the reader to infer. One deliberate
-/// exception: the strip suppresses a fan's control-state suffix when it is the default
-/// (automatic, not reclaimed) to save width, while the dropdown always spells it out —
+/// exception: the strip suppresses a fan's control-state suffix when it is cleared to
+/// automatic or not tracked, to save width, while the dropdown always spells it out —
 /// see `isNoteworthyControlState` below for why that asymmetry is safe.
 ///
 /// ## `#249`: the strip must never drop the meaning a value depends on
@@ -49,14 +49,13 @@ enum MenuBarReadoutFormatting {
 
     /// What a fan-sourced readout's control state should say, reusing `FanRowModel`'s
     /// exact wording — the same module already has one correct answer for "Automatic" /
-    /// "Manual — fixed speed" / "Reclaimed by system (was …)"; the menu bar restating it
-    /// with different words would be exactly the "renders three different ways"
-    /// inconsistency `#249` reported between the main window, the dropdown, and the
-    /// strip. `nil` for a `.sensor`-sourced readout, which has no control mode to report.
+    /// "Mode not tracked" / "Reclaimed by system"; the menu bar restating it with different
+    /// words would be exactly the "renders three different ways" inconsistency `#249`
+    /// reported between the main window, the dropdown, and the strip. `nil` for a
+    /// `.sensor`-sourced readout, which has no control mode to report.
     static func controlStateSuffix(for readout: ResolvedMenuBarReadout) -> String? {
-        guard let state = readout.fanControlState else { return nil }
-        return FanRowModel.controlStateLabel(
-            mode: state.mode, isReclaimedBySystem: state.isReclaimedBySystem)
+        guard let control = readout.fanControl else { return nil }
+        return FanRowModel.controlStateLabel(for: control)
     }
 
     /// The strip's compact, self-describing form: `"<identifier> <value>"`, plus
@@ -80,19 +79,20 @@ enum MenuBarReadoutFormatting {
     }
 
     /// True when a fan-sourced readout's control state is worth spending the strip's
-    /// scarce width on: anything other than the default state every fan starts in
-    /// (automatic, not reclaimed). Every fan on a `Monitor` build reports exactly that
-    /// default today (`FanPollingReading.mode` is hardcoded `.automatic`), which is what
-    /// made `"(Automatic)"` dead weight on every strip entry rather than information —
-    /// see the width finding in this PR's review. This does not narrow rule 6's
-    /// visibility guarantee: `isReclaimedBySystem` alone makes this `true` regardless of
-    /// what `mode` reads as, so a fan the system has taken back is never silently
-    /// omitted from the strip on the strength of this suppression. The dropdown
-    /// (`MenuBarContentView`) calls `controlStateSuffix(for:)` directly and is
-    /// unaffected — it always has the width to spell out "Automatic".
+    /// scarce width on: anything the helper reports other than a fan cleared to automatic.
+    ///
+    /// Two states are left out, and both for width: "Automatic" (a fan the helper reports
+    /// cleared, `FanState.isClearedToAutomatic`), and "Mode not tracked", which every fan on a
+    /// `Monitor` build carries and which would otherwise be dead weight on every strip entry.
+    /// Leaving a suffix out claims nothing either way — the strip shows an RPM — and the
+    /// dropdown (`MenuBarContentView`) calls `controlStateSuffix(for:)` directly and always
+    /// spells the state out. This does not narrow rule 6's visibility guarantee: a reported
+    /// reclamation alone makes this `true` whatever the mode reads, so a fan the system has
+    /// taken back is never silently omitted from the strip on the strength of this
+    /// suppression.
     private static func isNoteworthyControlState(_ readout: ResolvedMenuBarReadout) -> Bool {
-        guard let state = readout.fanControlState else { return false }
-        return state.mode != .automatic || state.isReclaimedBySystem
+        guard case .reported(let state, _) = readout.fanControl else { return false }
+        return !state.isClearedToAutomatic || state.isReclaimedBySystem
     }
 
     /// Every readout's `identifiedText(for:temperatureUnit:)`, in order, joined for the

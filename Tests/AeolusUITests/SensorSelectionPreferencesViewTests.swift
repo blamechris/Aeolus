@@ -100,7 +100,8 @@ struct SensorSelectionPreferencesViewTests {
     func viewRowModelForwardsTheLivePreference() {
         let store = InMemoryPreferencesStore(stored: Preferences(temperatureUnit: .fahrenheit))
         let preferencesController = PreferencesController(store: store)
-        let pollingViewModel = PollingViewModel(labelSource: NoSensorLabels())
+        let pollingViewModel = PollingViewModel(
+            labelSource: NoSensorLabels(), snapshots: .noHelper())
         let view = SensorSelectionPreferencesView(
             preferencesController: preferencesController, pollingViewModel: pollingViewModel)
         let reading = SensorPollingReading(

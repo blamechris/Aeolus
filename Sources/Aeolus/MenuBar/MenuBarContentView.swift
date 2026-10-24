@@ -14,11 +14,15 @@ struct MenuBarContentView: View {
     /// existing rendering for every call site that does not pass one explicitly.
     var temperatureUnit: TemperatureUnit = .celsius
 
+    private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
+        ThermalEmergencyDisplay.banner(
+            for: viewModel.thermalEmergency, source: viewModel.controlSource)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.isThermalEmergencyActive {
-                Label("Thermal emergency active", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+            if let banner = thermalEmergencyBanner {
+                thermalEmergencyLine(banner)
             }
 
             if viewModel.readouts.isEmpty {
@@ -30,6 +34,8 @@ struct MenuBarContentView: View {
             }
 
             Divider()
+
+            controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
 
             statusText
                 .font(.caption)
@@ -43,6 +49,36 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(minWidth: 240)
+    }
+
+    /// The fan pane's line, in the dropdown: whose report the fans are — with a listed lease's
+    /// holder, through the sanitiser — or why nothing is tracked.
+    private func controlSourceLine(_ text: ControlSourceDisplay.Text) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(text.headline)
+                .font(.caption.weight(.semibold))
+            if let detail = text.detail {
+                Text(detail)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    /// The same three answers the main window draws, in the dropdown's few words: an
+    /// emergency in red, unknown in grey, and nothing when the helper reports none.
+    @ViewBuilder
+    private func thermalEmergencyLine(_ banner: ThermalEmergencyDisplay.Banner) -> some View {
+        switch banner.severity {
+        case .emergency:
+            Label(banner.compactText, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        case .unknown:
+            Label(banner.compactText, systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// Shown when nothing is currently selected — either no fan/sensor has been chosen
@@ -80,6 +116,8 @@ struct MenuBarContentView: View {
             Text("Waiting for first reading\u{2026}")
         case .polling:
             Text("Refreshing\u{2026}")
+        case .waitingForHelper:
+            Text("Waiting for the helper\u{2026}")
         case .ready:
             if let lastUpdated = viewModel.lastUpdated {
                 Text("Updated \(Self.timeFormatter.string(from: lastUpdated))")
@@ -120,7 +158,7 @@ private struct MenuBarReadoutRow: View {
 
             Spacer()
 
-            if let state = readout.fanControlState, state.isReclaimedBySystem {
+            if readout.fanControl?.reportsReclamation == true {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .help("System reclaimed control of this fan")

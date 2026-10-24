@@ -35,9 +35,9 @@ public enum PollingError: Error, Sendable, Hashable, CustomStringConvertible {
 
 extension PollingError {
     /// Reclassifies `SMCFanEnumeration`'s enumeration-level failures into this module's
-    /// own error vocabulary, case for case — `FanPoller.poll(provider:)` throws this,
-    /// never `SMCFanEnumerationError` directly, so `PollingViewModel` and its tests keep
-    /// speaking one error type regardless of which layer actually did the enumerating.
+    /// own error vocabulary, case for case — `FanPoller.poll(provider:untracked:)` throws
+    /// this, never `SMCFanEnumerationError` directly, so `PollingViewModel` and its tests
+    /// keep speaking one error type regardless of which layer actually did the enumerating.
     init(_ error: SMCFanEnumerationError) {
         switch error {
         case .noSMC:

@@ -13,11 +13,24 @@ struct MenuBarReadoutFormattingTests {
         label: String? = nil,
         kind: SensorReading.Kind = .temperatureCelsius,
         value: Double = 42,
-        fanControlState: FanControlState? = nil
+        fanControl: FanControlSource? = nil
     ) -> ResolvedMenuBarReadout {
         ResolvedMenuBarReadout(
             key: key, source: source, label: label, kind: kind,
-            reading: .value(key: key, value), fanControlState: fanControlState)
+            reading: .value(key: key, value), fanControl: fanControl)
+    }
+
+    /// A fan the helper reports, cleared to automatic unless told otherwise.
+    private static func reported(
+        mode: FanControlMode = .automatic,
+        availability: ManualControlAvailability = .unavailable(.writePathNotBuilt),
+        reclaimed: Bool = false
+    ) -> FanControlSource {
+        .reported(
+            SnapshotTestSupport.fan(
+                mode: mode, availability: availability, reclaimed: reclaimed,
+                target: mode == .automatic || reclaimed ? nil : 3000),
+            thermalEmergency: false)
     }
 
     // MARK: - value(for:temperatureUnit:)
@@ -35,7 +48,7 @@ struct MenuBarReadoutFormattingTests {
         let readout = ResolvedMenuBarReadout(
             key: "F0Ac", source: .fan, label: nil, kind: .rpm,
             reading: .unavailable(key: "F0Ac", reason: "no fan reports this key right now"),
-            fanControlState: nil)
+            fanControl: nil)
         #expect(
             MenuBarReadoutFormatting.value(for: readout, temperatureUnit: .celsius)
                 == "unavailable (no fan reports this key right now)")
@@ -45,29 +58,30 @@ struct MenuBarReadoutFormattingTests {
 
     @Test("A sensor-sourced readout has no control state to report")
     func sensorHasNoControlStateSuffix() {
-        let readout = Self.resolved(source: .sensor, fanControlState: nil)
+        let readout = Self.resolved(source: .sensor, fanControl: nil)
         #expect(MenuBarReadoutFormatting.controlStateSuffix(for: readout) == nil)
     }
 
     @Test("A fan-sourced readout's control state matches FanRowModel's own wording")
     func fanControlStateSuffixMatchesFanRowModel() {
-        let readout = Self.resolved(
-            source: .fan,
-            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
+        let readout = Self.resolved(source: .fan, fanControl: Self.reported())
         #expect(MenuBarReadoutFormatting.controlStateSuffix(for: readout) == "Automatic")
         #expect(
             MenuBarReadoutFormatting.controlStateSuffix(for: readout)
-                == FanRowModel.controlStateLabel(mode: .automatic, isReclaimedBySystem: false))
+                == FanRowModel.controlStateLabel(for: Self.reported()))
     }
 
-    @Test("A reclaimed fan's control state names what it was reclaimed from")
+    @Test("A reclaimed fan's control state says it was reclaimed")
     func reclaimedFanControlStateSuffix() {
         let readout = Self.resolved(
-            source: .fan,
-            fanControlState: FanControlState(mode: .manualFixed, isReclaimedBySystem: true))
-        #expect(
-            MenuBarReadoutFormatting.controlStateSuffix(for: readout)
-                == "Reclaimed by system (was Manual — fixed speed)")
+            source: .fan, fanControl: Self.reported(mode: .manualFixed, reclaimed: true))
+        #expect(MenuBarReadoutFormatting.controlStateSuffix(for: readout) == "Reclaimed by system")
+    }
+
+    @Test("A fan nothing reports on says Mode not tracked in the dropdown")
+    func untrackedFanControlStateSuffix() {
+        let readout = Self.resolved(source: .fan, fanControl: .notTracked(.noHelperInThisBuild))
+        #expect(MenuBarReadoutFormatting.controlStateSuffix(for: readout) == "Mode not tracked")
     }
 
     // MARK: - identifiedText(for:temperatureUnit:) — the #249 fix
@@ -102,24 +116,40 @@ struct MenuBarReadoutFormattingTests {
         #expect(text != "0")
     }
 
-    @Test("A fan in the default automatic, non-reclaimed state carries no suffix in the strip")
-    func identifiedTextSuppressesTheDefaultAutomaticControlState() {
-        // "(Automatic)" is dead weight on the strip's limited width when every fan
-        // starts in exactly this state — see this PR's review. The dropdown still shows
-        // it: this suppression is local to identifiedText/stripText.
+    @Test(
+        "A fan cleared to automatic, or not tracked, carries no suffix in the strip",
+        arguments: [
+            FanControlSource.reported(
+                SnapshotTestSupport.fan(mode: .automatic), thermalEmergency: false),
+            .notTracked(.noHelperInThisBuild),
+        ])
+    func identifiedTextSuppressesTheQuietControlStates(_ control: FanControlSource) {
+        // "(Automatic)" and "(Mode not tracked)" are dead weight on the strip's limited
+        // width — the second is on every fan of a Monitor build. The dropdown still shows
+        // both: this suppression is local to identifiedText/stripText.
         let readout = Self.resolved(
             key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
-            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
+            fanControl: control)
         #expect(
             MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
                 == "Fan 0 1712 RPM")
+    }
+
+    @Test("A fan reading automatic that the helper has not cleared keeps its suffix")
+    func identifiedTextAppendsAnUnclearedAutomatic() {
+        let readout = Self.resolved(
+            key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
+            fanControl: Self.reported(availability: .unavailable(.restoreToAutomaticUnconfirmed)))
+        #expect(
+            MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
+                == "Fan 0 1712 RPM (Not confirmed as automatic)")
     }
 
     @Test("A manually-controlled fan's identified text still appends its control state")
     func identifiedTextAppendsANoteworthyControlState() {
         let readout = Self.resolved(
             key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
-            fanControlState: FanControlState(mode: .manualFixed, isReclaimedBySystem: false))
+            fanControl: Self.reported(mode: .manualFixed))
         #expect(
             MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
                 == "Fan 0 1712 RPM (Manual — fixed speed)")
@@ -129,17 +159,17 @@ struct MenuBarReadoutFormattingTests {
         "A fan reclaimed while reporting mode .automatic still appends its control state — rule 6"
     )
     func identifiedTextAppendsControlStateWhenReclaimedEvenIfModeReadsAutomatic() {
-        // The safety net for isNoteworthyControlState's OR: whatever `mode` a reclaimed
-        // fan happens to report, `isReclaimedBySystem` alone must be enough to keep this
+        // The safety net for isNoteworthyControlState's OR: a reclaimed fan can read
+        // automatic and be cleared, and `isReclaimedBySystem` alone must be enough to keep this
         // fan's line off the "nothing to see here" list the automatic-suppression exists
         // to shorten — CLAUDE.md rule 6 forbids ever looking like this app still has
         // control when the system has taken it back.
         let readout = Self.resolved(
             key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
-            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: true))
+            fanControl: Self.reported(mode: .automatic, availability: .available, reclaimed: true))
         #expect(
             MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
-                == "Fan 0 1712 RPM (Reclaimed by system (was Automatic))")
+                == "Fan 0 1712 RPM (Reclaimed by system)")
     }
 
     // MARK: - stripText(for:temperatureUnit:) — the reported #249 scenario
@@ -148,10 +178,10 @@ struct MenuBarReadoutFormattingTests {
     func stripTextNeverConflatesModeOrSetpointWithALiveReading() {
         let fan0 = Self.resolved(
             key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1340.73,
-            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
+            fanControl: Self.reported())
         let fan1 = Self.resolved(
             key: "F1Ac", source: .fan, label: "Fan 1", kind: .rpm, value: 1470.74,
-            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
+            fanControl: .notTracked(.noHelperInThisBuild))
         let mode = Self.resolved(key: "F0Md", label: "Fan 0 Mode", kind: .unknown, value: 0)
         let target = Self.resolved(
             key: "F0Tg", label: "Fan 0 Target Speed", kind: .rpm, value: 1350)
@@ -159,8 +189,8 @@ struct MenuBarReadoutFormattingTests {
         let text = MenuBarReadoutFormatting.stripText(
             for: [fan0, fan1, mode, target], temperatureUnit: .celsius)
 
-        // Both fans are in the default automatic state, so neither carries a
-        // "(Automatic)" suffix here — see identifiedTextSuppressesTheDefaultAutomaticControlState.
+        // One fan is cleared to automatic and the other is not tracked, so neither carries a
+        // suffix here — see identifiedTextSuppressesTheQuietControlStates.
         #expect(
             text
                 == "Fan 0 1340.73 RPM  Fan 1 1470.74 RPM  "

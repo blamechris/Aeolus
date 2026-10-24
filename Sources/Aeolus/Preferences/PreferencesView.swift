@@ -10,7 +10,9 @@ import SwiftUI
 /// fan/sensor data to populate the sensor-selection and menu-bar-contents lists, and
 /// coupling it to either of those other two instances would tie three independently
 /// developed view trees together for a cost (one more 1 Hz poll while this window is
-/// open) that is small and already paid twice over elsewhere in this app.
+/// open) that is small and already paid twice over elsewhere in this app. It shares the
+/// app's one `HelperSnapshotSource` with the other two, so while the helper answers it adds
+/// no SMC reads and no second snapshot stream at all.
 struct PreferencesView: View {
     @ObservedObject var preferencesController: PreferencesController
     @ObservedObject var launchAtLoginController: LaunchAtLoginController
@@ -33,7 +35,8 @@ struct PreferencesView: View {
     init(
         preferencesController: PreferencesController,
         launchAtLoginController: LaunchAtLoginController,
-        menuBarViewModel: MenuBarViewModel
+        menuBarViewModel: MenuBarViewModel,
+        snapshots: HelperSnapshotSource
     ) {
         self.preferencesController = preferencesController
         self.launchAtLoginController = launchAtLoginController
@@ -41,7 +44,8 @@ struct PreferencesView: View {
         _pollingViewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
-                refreshInterval: preferencesController.preferences.refreshInterval))
+                refreshInterval: preferencesController.preferences.refreshInterval,
+                snapshots: snapshots))
     }
 
     var body: some View {
@@ -126,9 +130,13 @@ struct PreferencesView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text("Takes effect the next time this window's data or the menu bar restarts.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(
+                "The helper's snapshots, and the window and menu bar showing them, follow this "
+                    + "at once. When Aeolus reads sensors itself, the main window changes pace "
+                    + "when it is next opened, and the menu bar when Aeolus next starts."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 }
