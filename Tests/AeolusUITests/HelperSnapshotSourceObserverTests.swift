@@ -51,10 +51,13 @@ struct HelperSnapshotSourceObserverTests {
     }
 
     /// A successful reply is judged, with the ticket taken for it, before the next request goes
-    /// out. A failed one is not: there is no snapshot to judge.
+    /// out. A failed one is not: there is no snapshot to judge, and the one before it is not judged
+    /// again in its place.
     ///
     /// **Mutation (T2):** in `HelperSnapshotSource.run`, delete `await judgement(snapshot)`. Red
-    /// at `judged == [answered]`, and in every test here that needs a reply judged.
+    /// at `judged == [first]`, and in every test here that needs a reply judged.
+    /// **Mutation (X6, "the last good snapshot judged again"):** keep the last successful snapshot,
+    /// and judge it after a failed request too. Red at `judged == [first]` after the failure.
     @Test("A successful reply is judged before the next request, and a failed one is not")
     func aReplyIsJudged() async throws {
         let helper = FakeSnapshotHelper()
@@ -63,15 +66,20 @@ struct HelperSnapshotSourceObserverTests {
 
         source.start()
         try await helper.waitForRequests(1)
-        await helper.fail(with: FakeSnapshotHelper.Closed())
+        let first = Support.snapshot(fans: [Support.fan(actual: 2002)])
+        await helper.reply(with: first)
         try await helper.waitForRequests(2)
-        #expect(recorder.judged.isEmpty, "a failed request has nothing to judge")
+        #expect(recorder.judged == [first])
+
+        await helper.fail(with: FakeSnapshotHelper.Closed())
+        try await helper.waitForRequests(3)
+        #expect(recorder.judged == [first], "a failed request has nothing to judge")
 
         let answered = Support.snapshot(fans: [Support.fan(actual: 3003)])
         await helper.reply(with: answered)
-        try await helper.waitForRequests(3)
-        #expect(recorder.judged == [answered])
-        #expect(recorder.requestsSeenAtTicket == [0, 1, 2])
+        try await helper.waitForRequests(4)
+        #expect(recorder.judged == [first, answered])
+        #expect(recorder.requestsSeenAtTicket == [0, 1, 2, 3])
         await Support.tearDown(source, helper)
     }
 
@@ -89,6 +97,86 @@ struct HelperSnapshotSourceObserverTests {
 
         #expect(Support.freshSnapshot(source) == first)
         #expect(await helper.peakAtHelper == 1)
+        await Support.tearDown(source, helper)
+    }
+
+    // MARK: - What the ticket's hop must not change (#478's properties)
+
+    /// A last consumer that leaves while the ticket is being taken sends nothing: demand is
+    /// checked again after the hop.
+    ///
+    /// **Mutation (M1):** in `HelperSnapshotSource.run`, delete the `guard demand > 0` after the
+    /// ticket. Red at `!sent`.
+    @Test("A consumer that leaves during the ticket's hop sends nothing")
+    func aStopDuringTheTicketSendsNothing() async throws {
+        let helper = FakeSnapshotHelper()
+        let gate = ObserverGate()
+        let source = try await Support.handshakenSource(helper, observer: gate.atTicket)
+
+        source.start()
+        try #require(
+            await Support.eventually { await gate.arrivals == 1 }, "the ticket was asked for")
+        source.stop()
+        await gate.open()
+        let sent = await Support.eventually(turns: 2_000) { await helper.requests > 0 }
+        await helper.close()
+
+        #expect(!sent, "a request went out after the last consumer left")
+        #expect(await Support.settle { !source.isLoopRunning })
+    }
+
+    /// A departure while the ticket is being taken: the request goes out in the new episode, and
+    /// its reply is rendered. The episode is stamped after the hop, at the send.
+    ///
+    /// **Mutation (M2):** in `HelperSnapshotSource.run`, stamp `sentIn` before the ticket. Red at
+    /// the `freshSnapshot` expectation.
+    @Test("A departure during the ticket's hop stamps the request with the new episode")
+    func aDepartureDuringTheTicketStampsTheNewEpisode() async throws {
+        let helper = FakeSnapshotHelper()
+        let gate = ObserverGate()
+        let source = try await Support.handshakenSource(helper, observer: gate.atTicket)
+
+        source.start()
+        try #require(
+            await Support.eventually { await gate.arrivals == 1 }, "the ticket was asked for")
+        try await Support.report(.interrupted, to: source, from: helper)
+        try await Support.report(.handshaken, to: source, from: helper)
+        await gate.open()
+        try await helper.waitForRequests(1)
+        let reply = Support.snapshot(fans: [Support.fan(actual: 4321)])
+        await helper.reply(with: reply)
+        try await helper.waitForRequests(2)
+
+        #expect(
+            Support.freshSnapshot(source) == reply,
+            "a request sent after the departure was stamped with the old episode")
+        await Support.tearDown(source, helper)
+    }
+
+    /// The freshness stamp is taken when the reply arrives, before the judgement's hop: a judgement
+    /// that takes as long as the bound leaves the snapshot stale.
+    ///
+    /// **Mutation (M3):** in `HelperSnapshotSource.run`, judge before `record`. Red at
+    /// `.snapshotStale`.
+    @Test("The freshness stamp is taken on arrival, before the judgement")
+    func theStampIsTakenBeforeTheJudgement() async throws {
+        let helper = FakeSnapshotHelper()
+        let gate = ObserverGate()
+        let clock = SnapshotTestClock()
+        let source = try await Support.handshakenSource(
+            helper, clock: clock, observer: gate.atJudgement)
+
+        source.start()
+        try await helper.waitForRequests(1)
+        await helper.reply(with: Support.snapshot())
+        try #require(
+            await Support.eventually { await gate.arrivals == 1 }, "the reply was being judged")
+        clock.advance(by: source.freshnessBound)
+        await gate.open()
+        try await helper.waitForRequests(2)
+
+        #expect(
+            Support.notTracked(source) == .snapshotStale, "the stamp was taken after the judgement")
         await Support.tearDown(source, helper)
     }
 
@@ -187,18 +275,38 @@ final class ReadRecorder: Sendable {
     }
 }
 
-extension SnapshotTestSupport {
+/// A gate a ticket or a judgement waits at until the test opens it, counting arrivals. Opened at
+/// the end of every test that uses it, and every wait on it ends when it is.
+actor ObserverGate {
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private var isOpen = false
+    private(set) var arrivals = 0
 
-    /// A source on a helper that reports `.handshaken`, reporting every read to `observer`.
-    @MainActor
-    static func handshakenSource(
-        _ helper: FakeSnapshotHelper, observer: HelperSnapshotObserver
-    ) async throws -> HelperSnapshotSource {
-        helper.report(.handshaken)
-        let source = HelperSnapshotSource(
-            reader: helper, refreshInterval: { 1 }, clock: SnapshotTestClock(),
-            pacing: FakePollingClock(), observer: observer)
-        try #require(await settle { source.health == .handshaken })
-        return source
+    func pass() async {
+        arrivals += 1
+        guard !isOpen else { return }
+        await withCheckedContinuation { parked.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let all = parked
+        parked = []
+        for continuation in all { continuation.resume() }
+    }
+
+    /// An observer whose ticket waits at the gate.
+    nonisolated var atTicket: HelperSnapshotObserver {
+        HelperSnapshotObserver {
+            await self.pass()
+            return { _ in }
+        }
+    }
+
+    /// An observer whose judgement waits at the gate.
+    nonisolated var atJudgement: HelperSnapshotObserver {
+        HelperSnapshotObserver {
+            { _ in await self.pass() }
+        }
     }
 }

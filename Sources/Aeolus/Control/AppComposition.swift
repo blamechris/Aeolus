@@ -27,7 +27,7 @@ import Foundation
 /// exist only when the bundle ships a helper (`HelperEmbedding.embedded`). A `Monitor` build, and
 /// a damaged bundle, gets a source with no reader and none of the rest, and cannot reach the
 /// helper's mach name even by accident. Every entry point below then does what it would do with
-/// nothing held: a quit is answered once, and nothing else happens.
+/// nothing held: a quit is answered `.terminateNow`, and nothing else happens.
 ///
 /// ## Inert: nothing here takes a lease
 ///
@@ -75,9 +75,6 @@ final class AppComposition {
     /// The control windows open now, by the identifier each reported.
     private var controlWindows: Set<UUID> = []
 
-    /// Whether a quit has been asked for. Its one reply answers every later request too.
-    private var quitting = false
-
     private struct LeaseWiring {
         let lifecycle: LeaseLifecycle
         let assertions: LeaseProcessAssertions
@@ -94,13 +91,15 @@ final class AppComposition {
     ///     `embedding` is `.embedded`.
     ///   - workspaceNotifications: Where power, wake and session events are posted.
     ///   - process: The process's termination counters and activities.
+    ///   - mainRunLoop: How a quit's reply reaches the main thread (`LeaseLifecycle`).
     init(
         preferencesController: PreferencesController,
         embedding: HelperEmbedding,
         connect: () -> HelperConnections,
         makeDriver: (any HelperLeaseControlling) -> LeaseDriver,
         workspaceNotifications: NotificationCenter,
-        process: any ProcessLifetimeControlling
+        process: any ProcessLifetimeControlling,
+        mainRunLoop: any MainRunLoopPerforming
     ) {
         self.preferencesController = preferencesController
         self.workspaceNotifications = workspaceNotifications
@@ -117,7 +116,7 @@ final class AppComposition {
         case .embedded:
             let connections = connect()
             let driver = makeDriver(connections.control)
-            let lifecycle = LeaseLifecycle(driver: driver)
+            let lifecycle = LeaseLifecycle(driver: driver, mainRunLoop: mainRunLoop)
             snapshots = HelperSnapshotSource(
                 reader: connections.read, observer: .judging(with: driver),
                 refreshInterval: refreshInterval)
@@ -135,19 +134,24 @@ final class AppComposition {
 
     /// Quit, from `AeolusAppDelegate.applicationShouldTerminate(_:)`.
     ///
-    /// Always `.terminateLater`, and `reply` is called exactly once per quit: after the driver's
-    /// release and teardown when there is a driver (`LeaseLifecycle.applicationShouldTerminate`),
-    /// and on the next turn of the main actor when there is none. A second request while a quit is
-    /// already waiting sends nothing and replies to nothing; the reply already promised answers it.
+    /// - **With a driver:** `.terminateLater`, and `reply(true)` exactly once, from the main run
+    ///   loop, after the driver's release and teardown
+    ///   (`LeaseLifecycle.applicationShouldTerminate`). Nothing it waits for runs on the main
+    ///   actor, because AppKit's nested loop after `.terminateLater` can hold the main actor until
+    ///   the reply comes (`MainRunLoop`).
+    /// - **With none:** `.terminateNow`, and `reply` is never called. There is nothing to release,
+    ///   so there is nothing to wait for and nothing that could wait on the main actor.
+    ///
+    /// **A second quit does not reach here.** A second `terminate(_:)` while a quit waits does not
+    /// ask again: AppKit runs `applicationWillTerminate(_:)` and exits (probed on macOS 27 from a
+    /// main-actor task, a timer and a dispatched event). The process can therefore exit
+    /// mid-release, and so can one sent `SIGTERM`; either way the helper's connection-invalidation
+    /// backstop ends the lease. There is no guard against a second request here, because none
+    /// arrives.
     func applicationShouldTerminate(
         reply: @escaping @MainActor @Sendable (Bool) -> Void
     ) -> NSApplication.TerminateReply {
-        guard !quitting else { return LeaseLifecycle.TerminationAnswer.later.terminateReply }
-        quitting = true
-        guard let lease else {
-            Task { reply(true) }
-            return LeaseLifecycle.TerminationAnswer.later.terminateReply
-        }
+        guard let lease else { return .terminateNow }
         return lease.lifecycle.applicationShouldTerminate(reply: reply).terminateReply
     }
 
@@ -201,10 +205,17 @@ final class AppComposition {
 extension AppComposition {
 
     /// The root for this process: its own bundle decides whether there is a helper, both clients
-    /// are `HelperClient`s on the default transport and pinning, and power, wake and session
-    /// events come from `NSWorkspace`'s own centre.
-    static func forRunningApp(preferencesController: PreferencesController) -> AppComposition {
-        let bundle = Bundle.main
+    /// are `HelperClient`s on the default transport and pinning, power, wake and session events
+    /// come from `NSWorkspace`'s own centre, and a quit's reply comes from the main run loop.
+    ///
+    /// - Parameters:
+    ///   - preferencesController: The preferences every window reads.
+    ///   - bundle: `Bundle.main` in the app. The suite names a fixture, so the arm a bundle with a
+    ///     helper takes is exercised without one.
+    /// - Returns: The root, with a driver only if `bundle` ships a helper.
+    static func forRunningApp(
+        preferencesController: PreferencesController, bundle: Bundle = .main
+    ) -> AppComposition {
         let client = clientDescription(of: bundle)
         let holder = holderDescription(of: bundle)
         return AppComposition(
@@ -213,7 +224,8 @@ extension AppComposition {
             connect: { HelperConnections.make(clientDescription: client) },
             makeDriver: { LeaseDriver(control: $0, holderDescription: holder) },
             workspaceNotifications: workspaceNotificationCenter,
-            process: SystemProcessLifetime())
+            process: ProcessInfo.processInfo,
+            mainRunLoop: MainRunLoop())
     }
 
     /// What the app calls itself in the helper's log, on both connections: `Aeolus.app <version>`.

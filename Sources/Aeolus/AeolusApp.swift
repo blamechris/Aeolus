@@ -69,10 +69,10 @@ public struct AeolusApp: App {
 
     public var body: some Scene {
         // The control window: the last of these to close releases the lease
-        // (`AppComposition.windowDisappeared(_:id:)`, #155's default).
+        // (`AppComposition.windowDisappeared(_:id:)`, #155's default). Each window's root view
+        // reports its own presence, as its own kind (`AppWindow`).
         WindowGroup {
-            MainView(preferencesController: preferencesController, snapshots: snapshots)
-                .reportsPresence(as: .main, to: composition)
+            MainView(preferencesController: preferencesController, composition: composition)
         }
 
         // `MenuBarExtra` with multiple simultaneous readouts (`MenuBarLabelView`) and a
@@ -97,10 +97,8 @@ public struct AeolusApp: App {
         MenuBarExtra {
             // Not a control window: the panel closes on every click elsewhere.
             MenuBarContentView(
-                viewModel: menuBarViewModel,
-                temperatureUnit: preferencesController.preferences.temperatureUnit
-            )
-            .reportsPresence(as: .menuBarPanel, to: composition)
+                viewModel: menuBarViewModel, composition: composition,
+                temperatureUnit: preferencesController.preferences.temperatureUnit)
         } label: {
             MenuBarLabelView(
                 viewModel: menuBarViewModel,
@@ -136,9 +134,7 @@ public struct AeolusApp: App {
                 preferencesController: preferencesController,
                 launchAtLoginController: launchAtLoginController,
                 menuBarViewModel: menuBarViewModel,
-                snapshots: snapshots
-            )
-            .reportsPresence(as: .settings, to: composition)
+                composition: composition)
         }
     }
 }
@@ -161,10 +157,14 @@ public struct AeolusApp: App {
 /// leave "can this app change my fans?" to be inferred, and inference is what `CLAUDE.md`
 /// rule 6 exists to prevent.
 struct MainView: View {
+    /// The kind of window this view is the root of: the control window.
+    static let window = AppWindow.main
+
     @ObservedObject var preferencesController: PreferencesController
     @StateObject private var viewModel: PollingViewModel
     @StateObject private var helperController = HelperLifecycleController()
-    private let snapshots: HelperSnapshotSource
+    private let composition: AppComposition
+    private var snapshots: HelperSnapshotSource { composition.snapshots }
 
     /// Reads `preferencesController.preferences.refreshInterval` once, at construction,
     /// to seed this window's own `PollingViewModel`: how often this window reads the SMC itself,
@@ -173,14 +173,14 @@ struct MainView: View {
     /// once, because the shared source reads the preference live and cuts its pause short.
     /// (`selectedSensorKeys`/`temperatureUnit` are read fresh on every `body` evaluation below
     /// and apply immediately.)
-    init(preferencesController: PreferencesController, snapshots: HelperSnapshotSource) {
+    init(preferencesController: PreferencesController, composition: AppComposition) {
         self.preferencesController = preferencesController
-        self.snapshots = snapshots
+        self.composition = composition
         _viewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
                 refreshInterval: preferencesController.preferences.refreshInterval,
-                snapshots: snapshots))
+                snapshots: composition.snapshots))
     }
 
     private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
@@ -209,6 +209,7 @@ struct MainView: View {
         .frame(minWidth: 720, minHeight: 420)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+        .reportsPresence(as: Self.window, to: composition)
         // macOS just reported the helper enabled — typically the approval the footer asked
         // for — so a backoff from its earlier absence ends now, rather than leaving this pane
         // saying "cannot reach its helper" beside a footer saying "installed and enabled".

@@ -4,14 +4,16 @@ import AppKit
 import FanKit
 import Foundation
 import Testing
+import os
 
 @testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// An `AppComposition` built as a build with a helper builds it, over doubles: the read connection
 /// is a `FakeSnapshotHelper`, the control connection is a `LeaseScene`'s `FakeLeaseHelper`, the
-/// driver is that scene's, workspace events are posted to a centre of the test's own, and the
-/// process's counters are a `FakeProcessLifetime`.
+/// driver is that scene's, workspace events are posted to a centre of the test's own, the
+/// process's counters are a `FakeProcessLifetime`, and a quit's reply comes through a
+/// `TestMainRunLoop`.
 ///
 /// The root keeps the driver `private`, as it must (#419), so the scene hands the root the driver
 /// it already holds through `makeDriver`, and a test takes a lease on it directly.
@@ -22,24 +24,31 @@ struct CompositionScene {
     let reader: FakeSnapshotHelper
     let workspace: NotificationCenter
     let process: FakeProcessLifetime
+    let runLoop: TestMainRunLoop
     let root: AppComposition
 
-    init(releaseBound: Duration = LeaseDriver.releaseBound) async {
+    init(
+        releaseBound: Duration = LeaseDriver.releaseBound,
+        runLoop: TestMainRunLoop.Mode = .atOnce
+    ) async {
         let lease = await LeaseScene(releaseBound: releaseBound)
         let reader = FakeSnapshotHelper()
         let workspace = NotificationCenter()
         let process = FakeProcessLifetime()
+        let mainRunLoop = TestMainRunLoop(runLoop)
         self.lease = lease
         self.reader = reader
         self.workspace = workspace
         self.process = process
+        self.runLoop = mainRunLoop
         root = AppComposition(
             preferencesController: PreferencesController(store: InMemoryPreferencesStore()),
             embedding: .embedded,
             connect: { HelperConnections(read: reader, control: lease.helper) },
             makeDriver: { _ in lease.driver },
             workspaceNotifications: workspace,
-            process: process)
+            process: process,
+            mainRunLoop: mainRunLoop)
     }
 
     /// Posts `name` to the root's workspace centre, as `NSWorkspace` would.
@@ -54,21 +63,75 @@ struct CompositionScene {
     }
 }
 
-/// A bounded wait for an actor-held condition, for a step a mutation can stop from happening, so
-/// the mutation is a red at the next line rather than a minute's wait. Spends no wall-clock time
-/// against a budget: it counts turns.
-@MainActor
-func becomes(turns: Int = 20_000, _ condition: () async -> Bool) async -> Bool {
-    await SnapshotTestSupport.eventually(turns: turns, condition)
+/// The main run loop, for the suite: every `perform` is counted, and its block either runs at once
+/// on the main actor (`.atOnce`) or waits for `runParked()` (`.parked`), so a test can look at what
+/// had happened by the time the reply was handed over, before it is delivered.
+final class TestMainRunLoop: MainRunLoopPerforming {
+
+    enum Mode: Sendable {
+        case atOnce, parked
+    }
+
+    private struct State: Sendable {
+        var performed = 0
+        var parked: [@MainActor @Sendable () -> Void] = []
+    }
+
+    private let mode: Mode
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(_ mode: Mode) {
+        self.mode = mode
+    }
+
+    /// How many blocks have been handed to `perform`.
+    var performed: Int { state.withLock { $0.performed } }
+
+    func perform(_ block: @escaping @MainActor @Sendable () -> Void) {
+        switch mode {
+        case .atOnce:
+            state.withLock { $0.performed += 1 }
+            Task { @MainActor in block() }
+        case .parked:
+            state.withLock {
+                $0.performed += 1
+                $0.parked.append(block)
+            }
+        }
+    }
+
+    /// Runs every parked block, in the order it was handed over.
+    @MainActor
+    func runParked() {
+        let blocks = state.withLock { state -> [@MainActor @Sendable () -> Void] in
+            defer { state.parked = [] }
+            return state.parked
+        }
+        for block in blocks { block() }
+    }
 }
 
-/// The quit replies one test received, counted on the main actor as `NSApplication` would get them.
+/// Whatever takes a quit's reply, for the suite: every reply, through `record`.
 @MainActor
-final class ReplyCounter {
-    private(set) var replies: [Bool] = []
+final class RecordingReplier: TerminationReplying {
+    private let record: @MainActor @Sendable (Bool) -> Void
 
-    var reply: @MainActor @Sendable (Bool) -> Void {
-        { [weak self] terminate in self?.replies.append(terminate) }
+    init(_ record: @escaping @MainActor @Sendable (Bool) -> Void) {
+        self.record = record
+    }
+
+    func reply(toApplicationShouldTerminate shouldTerminate: Bool) {
+        record(shouldTerminate)
+    }
+}
+
+extension [LeaseLedger.Entry] {
+
+    /// The quit replies, in order.
+    var terminationReplies: [Bool] {
+        compactMap {
+            if case .terminationReplied(let terminate) = $0.event { terminate } else { nil }
+        }
     }
 }
 

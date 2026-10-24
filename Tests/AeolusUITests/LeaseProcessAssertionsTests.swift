@@ -71,7 +71,7 @@ struct LeaseProcessAssertionsTests {
             let depth = kind.blocksTermination ? 1 : 0
             let activities = kind == .held ? 1 : 0
             try #require(
-                await becomes {
+                await SnapshotTestSupport.eventually {
                     process.suddenDisabled == depth && process.automaticDisabled == depth
                         && process.openActivities == activities
                 }, "\(from) → \(to), at \(kind): \(process.calls)")
@@ -97,19 +97,25 @@ struct LeaseProcessAssertionsTests {
         await scene.lease.helper.script(.acquire, .parked)
         await scene.lease.driver.take(try LeaseScene.target([0: 3000]))
 
-        try #require(await becomes { process.calls == Self.disabled }, "\(process.calls)")
+        try #require(
+            await SnapshotTestSupport.eventually { process.calls == Self.disabled },
+            "\(process.calls)")
         #expect(process.suddenDisabled == 1)
         #expect(process.automaticDisabled == 1)
         #expect(process.openActivities == 0, "nothing is held yet")
 
         await scene.lease.helper.answerParked(.acquire)
-        try #require(await becomes { process.calls == Self.disabled + [Self.began] })
+        try #require(
+            await SnapshotTestSupport.eventually { process.calls == Self.disabled + [Self.began] })
         #expect(process.suddenDisabled == 1)
         #expect(process.openActivities == 1)
 
         await scene.lease.helper.script(.release, .parked)
         let releasing = scene.lease.call { await scene.lease.driver.releaseFans() }
-        try #require(await becomes { process.calls == Self.disabled + [Self.began, .endActivity] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                process.calls == Self.disabled + [Self.began, .endActivity]
+            })
         #expect(await scene.lease.driver.state == .releasing)
         #expect(process.suddenDisabled == 1, "still blocked until the release answers")
         #expect(process.automaticDisabled == 1)
@@ -118,7 +124,7 @@ struct LeaseProcessAssertionsTests {
         await scene.lease.helper.answerParked(.release)
         await scene.lease.waitForReturn(of: releasing)
         try #require(
-            await becomes {
+            await SnapshotTestSupport.eventually {
                 process.calls == Self.disabled + [Self.began, .endActivity] + Self.enabled
             }, "\(process.calls)")
         #expect(process.suddenDisabled == 0)
@@ -137,7 +143,8 @@ struct LeaseProcessAssertionsTests {
         let scene = await CompositionScene()
         let process = scene.process
         _ = try #require(await scene.lease.take(LeaseScene.target([0: 3000])))
-        try #require(await becomes { process.calls == Self.disabled + [Self.began] })
+        try #require(
+            await SnapshotTestSupport.eventually { process.calls == Self.disabled + [Self.began] })
 
         await scene.lease.clock.untilParked { !$0.isEmpty }
         await scene.lease.helper.script(.renew, .refuse(.leaseUnknown))
@@ -145,7 +152,7 @@ struct LeaseProcessAssertionsTests {
         await scene.lease.waitForState { $0.isLost }
 
         try #require(
-            await becomes {
+            await SnapshotTestSupport.eventually {
                 process.calls == Self.disabled + [Self.began, .endActivity] + Self.enabled
             }, "\(process.calls)")
         #expect(process.openActivities == 0)
@@ -162,7 +169,9 @@ struct LeaseProcessAssertionsTests {
         let process = scene.process
         await scene.lease.helper.script(.acquire, .parked)
         await scene.lease.driver.take(try LeaseScene.target([0: 3000]))
-        try #require(await becomes { process.calls == Self.disabled }, "\(process.calls)")
+        try #require(
+            await SnapshotTestSupport.eventually { process.calls == Self.disabled },
+            "\(process.calls)")
 
         await scene.lease.helper.answerParked(
             .acquire,
@@ -170,7 +179,8 @@ struct LeaseProcessAssertionsTests {
         await scene.lease.waitForState { if case .refused = $0 { true } else { false } }
 
         try #require(
-            await becomes { process.calls == Self.disabled + Self.enabled }, "\(process.calls)")
+            await SnapshotTestSupport.eventually { process.calls == Self.disabled + Self.enabled },
+            "\(process.calls)")
         #expect(process.suddenDisabled == 0)
         #expect(process.openActivities == 0)
         await scene.finish()

@@ -31,54 +31,73 @@ struct AppCompositionLeaseTests {
         #expect(LeaseLifecycle.TerminationAnswer.later.terminateReply == .terminateLater)
     }
 
-    /// Quit answers `.terminateLater`, releases, tears the connection down, and only then replies,
-    /// once. A second quit while the first is waiting changes nothing.
+    /// Quit answers `.terminateLater`, releases, tears the connection down, and only then hands the
+    /// reply to the main run loop. Nothing replies while the release is still waiting for the
+    /// helper, and the reply is delivered only when the run loop runs it.
     ///
-    /// **Mutation (Q2, "a second reply"):** in `AppComposition.applicationShouldTerminate`, delete
-    /// `guard !quitting else { … }`. Red at `!extra` and `replies == [true]`, here and in the
-    /// no-driver test.
-    @Test("Quit replies once, after the release and the teardown")
-    func quitRepliesOnceAfterTheRelease() async throws {
-        let scene = await CompositionScene()
+    /// **Mutation (X19, "an early reply"):** in `AppComposition.applicationShouldTerminate`, reply
+    /// through `Task { reply(true) }` and give the lifecycle a reply that does nothing. Red at
+    /// `!early`.
+    /// **Mutation (R1, "the reply through the main actor"):** in
+    /// `LeaseLifecycle.applicationShouldTerminate`, deliver the reply with
+    /// `Task { @MainActor in reply(true) }` instead of `mainRunLoop.perform`. Red at the
+    /// requirement that the reply was handed to the run loop.
+    @Test("Quit replies once, from the run loop, after the release and the teardown")
+    func quitRepliesAfterTheTeardown() async throws {
+        let scene = await CompositionScene(runLoop: .parked)
         let held = try #require(await scene.lease.take(LeaseScene.target([0: 3000])))
-        let counter = ReplyCounter()
+        await scene.lease.helper.script(.release, .parked)
 
-        #expect(scene.root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        #expect(scene.root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        try #require(await becomes { !counter.replies.isEmpty }, "the quit was answered")
-        let extra = await becomes(turns: 2_000) { counter.replies.count > 1 }
+        let answer = scene.root.applicationShouldTerminate(reply: scene.lease.recordReply)
+        #expect(answer == .terminateLater)
+        await scene.lease.ledger.waitFor { $0.releases == [held.lease.id] }
+        let early = await SnapshotTestSupport.eventually(turns: 2_000) {
+            !(await scene.lease.entries.terminationReplies.isEmpty)
+        }
+        #expect(!early, "a reply went out while the release was still waiting")
 
-        #expect(!extra)
-        #expect(counter.replies == [true])
+        await scene.lease.helper.answerParked(.release)
+        try #require(
+            await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
+            "the reply was handed to the main run loop")
+        #expect(await scene.lease.entries.index(of: .disconnect) != nil, "torn down before it")
+        scene.runLoop.runParked()
+        await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
+
         let entries = await scene.lease.entries
+        #expect(entries.terminationReplies == [true])
         let released = try #require(entries.index(of: .release(held.lease.id)))
         let disconnected = try #require(entries.index(of: .disconnect))
+        let replied = try #require(entries.index(of: .terminationReplied(true)))
         #expect(released < disconnected, "released before the connection was torn down")
+        #expect(disconnected < replied, "replied only after the teardown")
         #expect(entries.filter { $0.event == .disconnect }.count == 1, "one teardown")
         await scene.finish()
     }
 
-    /// With no driver, the quit is still answered `.terminateLater` and replied to exactly once.
+    /// With no driver there is nothing to release: the quit is `.terminateNow`, and no reply is
+    /// sent, because AppKit expects none after it.
     ///
-    /// **Mutation (Q3):** in `AppComposition.applicationShouldTerminate`, delete
-    /// `Task { reply(true) }` from the no-driver arm. Red at the first requirement: a quit nothing
-    /// ever answers.
-    @Test("With no driver, quit is answered once")
-    func quitWithNoDriverRepliesOnce() async throws {
+    /// **Mutation (R2, "terminateLater with no driver"):** in
+    /// `AppComposition.applicationShouldTerminate`, answer the no-driver arm with
+    /// `Task { reply(true) }` and `.terminateLater`, as before #493's review. Red at
+    /// `== .terminateNow` and at `!replied`.
+    @Test("With no driver, quit is terminateNow and nothing replies")
+    func quitWithNoDriverIsImmediate() async throws {
+        let scene = await LeaseScene()
         let root = AppComposition(
             preferencesController: PreferencesController(store: InMemoryPreferencesStore()),
             embedding: .absent, connect: { AppCompositionTests.doubles() },
             makeDriver: { LeaseDriver(control: $0, holderDescription: "unused") },
-            workspaceNotifications: NotificationCenter(), process: FakeProcessLifetime())
-        let counter = ReplyCounter()
+            workspaceNotifications: NotificationCenter(), process: FakeProcessLifetime(),
+            mainRunLoop: TestMainRunLoop(.atOnce))
 
-        #expect(root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        try #require(await becomes { !counter.replies.isEmpty }, "the quit was answered")
-        #expect(root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        let extra = await becomes(turns: 2_000) { counter.replies.count > 1 }
-
-        #expect(!extra)
-        #expect(counter.replies == [true])
+        #expect(root.applicationShouldTerminate(reply: scene.recordReply) == .terminateNow)
+        let replied = await SnapshotTestSupport.eventually(turns: 2_000) {
+            !(await scene.entries.terminationReplies.isEmpty)
+        }
+        #expect(!replied, "AppKit expects no reply after terminateNow")
+        await scene.finish()
     }
 
     // MARK: - Logout, wake, fast user switching
@@ -93,7 +112,10 @@ struct AppCompositionLeaseTests {
 
         scene.post(NSWorkspace.willPowerOffNotification)
 
-        try #require(await becomes { await scene.lease.entries.releases == [held.lease.id] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                await scene.lease.entries.releases == [held.lease.id]
+            })
         #expect(await scene.lease.helper.heldLeases.isEmpty)
         await scene.finish()
     }
@@ -107,7 +129,10 @@ struct AppCompositionLeaseTests {
 
         scene.post(NSWorkspace.sessionDidResignActiveNotification)
 
-        try #require(await becomes { await scene.lease.entries.releases == [held.lease.id] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                await scene.lease.entries.releases == [held.lease.id]
+            })
         #expect(await scene.lease.helper.heldLeases.isEmpty)
         await scene.finish()
     }
@@ -128,8 +153,9 @@ struct AppCompositionLeaseTests {
 
         // The ledger keeps every state, so a driver that moved on from `lost` still shows it.
         try #require(
-            await becomes { await scene.lease.entries.lost != nil }, "the wake renewed at once")
-        let reacquired = await becomes(turns: 2_000) {
+            await SnapshotTestSupport.eventually { await scene.lease.entries.lost != nil },
+            "the wake renewed at once")
+        let reacquired = await SnapshotTestSupport.eventually(turns: 2_000) {
             await scene.lease.entries.acquires.count > 1
         }
         #expect(!reacquired, "nothing asked for the fans again")
@@ -152,14 +178,20 @@ struct AppCompositionLeaseTests {
         await scene.lease.clock.untilParked { !$0.isEmpty }
         await scene.lease.helper.script(.renew, .parkedThroughCancellation, .parked)
         scene.lease.clock.advance(to: scene.lease.at(.seconds(10)))
-        await scene.lease.ledger.waitFor { $0.renewals.count == 1 }
+        try #require(
+            await SnapshotTestSupport.eventually { await scene.lease.entries.renewals.count == 1 })
 
         // The wake replaces the beat, whose renewal is deaf to its cancellation, so the wake waits.
         scene.post(NSWorkspace.didWakeNotification)
-        await scene.lease.ledger.waitFor { $0.renewals.count == 2 }
+        try #require(
+            await SnapshotTestSupport.eventually { await scene.lease.entries.renewals.count == 2 },
+            "the wake renewed")
 
         scene.post(NSWorkspace.willPowerOffNotification)
-        try #require(await becomes { await scene.lease.entries.releases == [held.lease.id] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                await scene.lease.entries.releases == [held.lease.id]
+            })
         await scene.finish()
     }
 
@@ -185,7 +217,10 @@ struct AppCompositionLeaseTests {
         #expect(!releasedEarly, "a main window is still open")
 
         scene.root.windowDisappeared(.main, id: second)
-        try #require(await becomes { await scene.lease.entries.releases == [held.lease.id] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                await scene.lease.entries.releases == [held.lease.id]
+            })
         await scene.finish()
     }
 
@@ -225,7 +260,10 @@ struct AppCompositionLeaseTests {
 
         scene.root.windowDisappeared(.main, id: main)
 
-        try #require(await becomes { await scene.lease.entries.releases == [held.lease.id] })
+        try #require(
+            await SnapshotTestSupport.eventually {
+                await scene.lease.entries.releases == [held.lease.id]
+            })
         await scene.finish()
     }
 
@@ -246,7 +284,7 @@ struct AppCompositionLeaseTests {
 
         await scene.reader.reply(with: SnapshotTestSupport.snapshot(activeLease: nil))
 
-        try #require(await becomes { await scene.lease.driver.state.isLost })
+        try #require(await SnapshotTestSupport.eventually { await scene.lease.driver.state.isLost })
         scene.root.snapshots.stop()
         await scene.finish()
     }
@@ -256,7 +294,7 @@ struct AppCompositionLeaseTests {
     /// Whether a release reaches the fake, or the driver leaves `held`, within a bounded number of
     /// turns: for a close that must not release, where a correct root gives no event to wait for.
     static func releasesSoon(_ scene: CompositionScene) async -> Bool {
-        await becomes(turns: 2_000) {
+        await SnapshotTestSupport.eventually(turns: 2_000) {
             if !(await scene.lease.entries.releases.isEmpty) { return true }
             return !(await scene.lease.driver.state.isHeld)
         }
