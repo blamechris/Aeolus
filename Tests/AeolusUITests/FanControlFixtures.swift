@@ -4,6 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// Screens, leases and driver states for the `FanControlPresentation` suites. Namespaced, so

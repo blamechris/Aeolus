@@ -1,3 +1,4 @@
+import AeolusLeaseControl
 import AeolusXPC
 import AeolusXPCClient
 import FanKit

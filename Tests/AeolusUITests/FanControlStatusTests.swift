@@ -4,6 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// The line beneath the control: `lost` and `refused` as past events, the emergency named only
