@@ -156,9 +156,10 @@ writes to a fan today — but Aeolus is designed so that when the write path shi
 obvious way to cause that damage is unavailable:
 
 - **Manual control is a lease, not a setting.** Whatever holds the fans has to keep
-  saying so. If the app crashes, hangs, or is killed, the fans go back to automatic
-  within seconds. Setting your fans low for silence and then forgetting about it while a
-  two-hour render runs is not a state this software can be left in.
+  saying so. If the app crashes or is killed, or you force-quit one that has frozen, the
+  fans go back to automatic within seconds. Setting your fans low for silence and then
+  forgetting about it while a two-hour render runs is not a state this software can be
+  left in.
 - **The firmware's limits win.** Speeds are clamped to the range the hardware reports.
   A configuration file cannot widen that range, and no fan can be stopped.
 - **There is a ceiling you cannot raise.** Above a compiled-in temperature the fan is
