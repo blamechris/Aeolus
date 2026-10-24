@@ -215,9 +215,10 @@ struct AppCompositionTests {
         #expect(adaptor is NSApplicationDelegateAdaptor<AeolusAppDelegate>)
     }
 
-    /// The delegate hands the quit to its root and passes AppKit's reply through, from the run loop.
-    /// The teardown is in the ledger when the reply is handed over; the order the quit keeps is
-    /// pinned by `AppCompositionLeaseTests.quitRepliesAfterTheTeardown`, which parks the release.
+    /// The delegate hands the quit to its root and passes AppKit's reply through, from the run
+    /// loop. The teardown is in the ledger when the reply is handed over; the order the quit keeps
+    /// is pinned by `AppCompositionLeaseTests.quitRepliesAfterTheTeardown`, which parks the
+    /// release.
     ///
     /// **Mutation (E1, "the delegate bypasses the root"):** in
     /// `AeolusAppDelegate.applicationShouldTerminate(replyingTo:)`, return `.terminateNow`. Red at
