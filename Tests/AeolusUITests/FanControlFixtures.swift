@@ -25,6 +25,10 @@ enum FanControlFixtures {
     /// `cleaned`.
     static let hostile = "x\u{202E}y\nz\u{2028}w"
     static let cleaned = "xyzw"
+    /// `hostile`, then more than the sanitiser's cap of plain text, so a cleaner that strips the
+    /// same scalars and does not cap cannot produce `cleanedLong`.
+    static let hostileLong = hostile + String(repeating: "a", count: 300)
+    static let cleanedLong = HelperAuthoredText.sanitised(hostileLong)
 
     /// A fan the helper reports held under a lease: manual, offered, and a positive held target.
     static func heldFan(_ index: Int, target: Double = 3000) -> FanState {
@@ -158,15 +162,19 @@ extension FanControlFixtures {
             }
         }
 
-        /// For each of `losses`, a snapshot for which `controlLoss(leaseID: ours.id,
-        /// covering: [0])` answers it, and otherwise shows fan 0 held under `ours`.
+        /// For each kind, snapshots of a two-fan lease over `[0, 1]` for which
+        /// `controlLoss(leaseID: ours.id, covering: [0, 1])` answers that kind, with fan 0 reported
+        /// held under `ours` in every one. Where the loss names a fan, it names fan 1, so fan 0's
+        /// own row is in the same snapshot as everything else and passes the generation check.
         var snapshots: [(snapshot: SystemSnapshot, loss: ControlLoss)] {
+            let held0 = heldFan(0, target: 3000)
+            let held1 = heldFan(1, target: 3200)
             switch self {
             case .leaseNotListed:
                 return [
-                    (Support.snapshot(fans: [heldFan(0)]), .leaseNotListed(listed: nil)),
+                    (Support.snapshot(fans: [held0, held1]), .leaseNotListed(listed: nil)),
                     (
-                        Support.snapshot(fans: [heldFan(0)], activeLease: theirs),
+                        Support.snapshot(fans: [held0, held1], activeLease: theirs),
                         .leaseNotListed(listed: theirs)
                     ),
                 ]
@@ -174,29 +182,32 @@ extension FanControlFixtures {
                 return [
                     (
                         Support.snapshot(
-                            fans: [heldFan(0)], activeLease: ours, isThermalEmergencyActive: true),
+                            fans: [held0, held1], activeLease: ours,
+                            isThermalEmergencyActive: true),
                         .thermalEmergency
                     )
                 ]
             case .fanNotReported:
                 return [
-                    (
-                        Support.snapshot(fans: [heldFan(1)], activeLease: ours),
-                        .fanNotReported(fan: 0)
-                    )
+                    (Support.snapshot(fans: [held0], activeLease: ours), .fanNotReported(fan: 1))
                 ]
             case .reclaimedBySystem:
                 let reclaimed = Support.fan(
-                    0, mode: .manualFixed, availability: .available, reclaimed: true)
+                    1, mode: .manualFixed, availability: .available, reclaimed: true)
                 return [
                     (
-                        Support.snapshot(fans: [reclaimed], activeLease: ours),
-                        .reclaimedBySystem(fan: 0)
+                        Support.snapshot(fans: [held0, reclaimed], activeLease: ours),
+                        .reclaimedBySystem(fan: 1)
                     )
                 ]
             case .fanNotHeld:
-                let unheld = Support.fan(0, mode: .manualFixed, availability: .available)
-                return [(Support.snapshot(fans: [unheld], activeLease: ours), .fanNotHeld(fan: 0))]
+                let unheld = Support.fan(1, mode: .manualFixed, availability: .available)
+                return [
+                    (
+                        Support.snapshot(fans: [held0, unheld], activeLease: ours),
+                        .fanNotHeld(fan: 1)
+                    )
+                ]
             }
         }
     }

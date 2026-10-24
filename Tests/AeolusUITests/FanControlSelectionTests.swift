@@ -30,11 +30,19 @@ struct FanControlSelectionTests {
 
     // MARK: - Custom
 
+    /// The snapshot's held targets, 2900 and 3100 RPM, are not the confirmed ones, 3000 and 3200,
+    /// as after an adjust whose apply the snapshot predates. Each fan's line names both of its own.
+    ///
+    /// **Mutation (SV1):** make the Custom line's snapshot figure the accepted speed. **Mutation
+    /// (SV2):** read it from the snapshot's first fan. **Mutation (SV5):** read the accepted speed
+    /// from the target's first fan. Run, each: red at fan 1's line.
     @Test("Custom when held, confirmed, a licensed snapshot is on screen and nothing is lost")
     func customWhenEverythingHolds() throws {
         let target = try Fixtures.target([0: 3000, 1: 3200])
         let driver = Fixtures.held(Fixtures.ours, fans: [0, 1], .confirmed(target))
-        let snapshot = Self.heldEverywhere()
+        let snapshot = Support.snapshot(
+            fans: [Fixtures.heldFan(0, target: 2900), Fixtures.heldFan(1, target: 3100)],
+            activeLease: Fixtures.ours)
         #expect(snapshot.controlLoss(leaseID: Fixtures.ours.id, covering: [0, 1]) == nil)
         let screen = Fixtures.screen(snapshot, driver: driver)
 
@@ -46,27 +54,35 @@ struct FanControlSelectionTests {
             #expect(presentation.affordance == .enabled, "fan \(index)")
         }
         #expect(
-            try Fixtures.present(0, on: screen).status
-                == StatusLine(text: "The helper reports a held target of 3000 RPM.", detail: nil))
+            try Fixtures.present(0, on: screen).status?.text
+                == "Accepted 3000 RPM; the helper's last snapshot reports 2900 RPM.")
+        #expect(
+            try Fixtures.present(1, on: screen).status?.text
+                == "Accepted 3200 RPM; the helper's last snapshot reports 3100 RPM.")
     }
 
     /// The snapshot would prove control; only the phase says the apply has not answered.
     ///
     /// **Mutation (C1):** in `heldClaim`'s `.applying` arm, return `.custom(speed)`. Run: red at
-    /// the selection.
+    /// the selection. **Mutation (SV4):** make the applying line read the target's first fan. Run:
+    /// red at fan 1's line.
     @Test("An apply in flight is drawn as asked for, never as achieved")
     func anApplyInFlightIsNeverCustom() throws {
         let sent = try Fixtures.target([0: 3000, 1: 3200])
         let queued = try Fixtures.target([0: 4000, 1: 4000])
         let driver = Fixtures.held(Fixtures.ours, fans: [0, 1], .applying(sent, queued: queued))
-        let presentation = try Fixtures.present(
-            0, on: Fixtures.screen(Self.heldEverywhere(), driver: driver))
+        let screen = Fixtures.screen(Self.heldEverywhere(), driver: driver)
+        let presentation = try Fixtures.present(0, on: screen)
 
         #expect(presentation.selection == .applying(try Fixtures.speed(sent, 0)))
         #expect(
             presentation.status
                 == StatusLine(
                     text: "Asked the helper for 3000 RPM. Not confirmed yet.", detail: nil))
+        // Fan 1's own speed, not the first fan's.
+        let other = try Fixtures.present(1, on: screen)
+        #expect(other.selection == .applying(try Fixtures.speed(sent, 1)))
+        #expect(other.status?.text == "Asked the helper for 3200 RPM. Not confirmed yet.")
     }
 
     /// After a wake, the snapshot from before the sleep is stale and is withdrawn: `.snapshotStale`
@@ -89,25 +105,21 @@ struct FanControlSelectionTests {
                     text: "Not confirmed: no current helper snapshot is on screen.", detail: nil))
     }
 
-    /// Each fixture is checked against `controlLoss` itself first, so it is the loss it says.
+    /// A two-fan lease. Fan 0 is reported held in every snapshot, and each snapshot is checked
+    /// against `controlLoss` itself first, so it is the loss it says. Every row comes from the
+    /// snapshot it is presented against.
     ///
-    /// **Mutation (C3):** drop `controlLoss(...) == nil` from `heldClaim`'s `.confirmed` guard.
-    /// Run: red at the selection for every argument.
+    /// **Mutation (C3):** drop the `controlLoss(...) == nil` guard from `heldClaim`'s `.confirmed`
+    /// arm. Run: red at the selection for every argument.
     @Test("Custom needs controlLoss to answer nil", arguments: Fixtures.LossTag.allCases)
     func customNeedsNoLoss(_ tag: Fixtures.LossTag) throws {
         let driver = Fixtures.held(
-            Fixtures.ours, fans: [0], .confirmed(try Fixtures.target([0: 3000])))
-
-        // `.fanNotReported`'s snapshot has no row for fan 0, so that one presents the row from
-        // a snapshot that had it, against this one.
-        let earlier = try #require(
-            Fixtures.screen(Self.heldEverywhere(), driver: driver).rows.first { $0.index == 0 })
+            Fixtures.ours, fans: [0, 1], .confirmed(try Fixtures.target([0: 3000, 1: 3200])))
 
         for (snapshot, loss) in tag.snapshots {
-            #expect(snapshot.controlLoss(leaseID: Fixtures.ours.id, covering: [0]) == loss)
-            let screen = Fixtures.screen(snapshot, driver: driver)
-            let row = screen.rows.first { $0.index == 0 } ?? earlier
-            let presentation = FanControlPresentation(reading: row, given: screen.inputs)
+            #expect(snapshot.controlLoss(leaseID: Fixtures.ours.id, covering: [0, 1]) == loss)
+            let presentation = try Fixtures.present(
+                0, on: Fixtures.screen(snapshot, driver: driver))
             #expect(presentation.selection == .unknown, "\(loss)")
             #expect(presentation.status == Self.notConfirmed, "\(loss)")
         }
@@ -145,10 +157,13 @@ struct FanControlSelectionTests {
                 Self.heldEverywhere(), driver: Fixtures.held(Fixtures.ours, fans: [0, 1], phase))
         }
 
-        #expect(try Fixtures.present(1, on: screen(.confirmed(target))).selection == .unknown)
-        #expect(
-            try Fixtures.present(1, on: screen(.applying(target, queued: nil))).selection
-                == .unknown)
+        let noSpeed = StatusLine(
+            text: "Not confirmed: no speed for this fan has been accepted.", detail: nil)
+        for phase in Fixtures.PhaseTag.allCases.map({ $0.phase(target) }) {
+            let presentation = try Fixtures.present(1, on: screen(phase))
+            #expect(presentation.selection == .unknown, "\(phase)")
+            #expect(presentation.status == noSpeed, "\(phase)")
+        }
         #expect(
             try Fixtures.present(0, on: screen(.confirmed(target))).selection
                 == .custom(try Fixtures.speed(target, 0)))

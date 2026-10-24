@@ -96,10 +96,8 @@ struct FanControlAffordanceTests {
             controlSource: .helperSnapshot(activeLease: nil), thermalEmergency: .inactive,
             renderedSnapshot: nil, driver: .idle)
         let blank = FanControlPresentation(reading: row, given: nothingOnScreen)
-        #expect(blank.affordance == .disabled(.notTracked(nil)))
-        #expect(
-            Fixtures.reason(blank.affordance)?.summary == "No current helper snapshot is on screen."
-        )
+        #expect(blank.affordance == .disabled(.nothingOnScreen))
+        #expect(Fixtures.reason(blank.affordance)?.summary == "No helper snapshot is on screen.")
 
         #expect(FanControlPresentation(reading: row, given: tracked.inputs).affordance == .enabled)
     }
@@ -143,16 +141,18 @@ struct FanControlAffordanceTests {
         #expect(presentation.selection == .unknown, "controlLoss answers .thermalEmergency")
     }
 
-    /// Every emergency state beside a licensed snapshot that is otherwise clear. `.unknown` there
-    /// is a mixture `PollingViewModel` never publishes, and it disables rather than enables.
+    /// Every emergency state, beside a snapshot whose flag is set exactly when the state is
+    /// `.active`. `.unknown` beside a snapshot is an emergency input that is not that snapshot's,
+    /// so the generation check refuses it.
     ///
-    /// **Mutation (E2):** in `Reason.thermalEmergency(_:)`, return `nil` for `.unknown`. Run: red
-    /// for the `.unknown` argument.
+    /// **Mutation (G3):** delete the emergency `guard` in `Licence.isOneSnapshot`. Run: red for
+    /// the `.unknown` argument, which then reads enabled.
     @Test(
         "Only a reported absence of an emergency leaves the control enabled",
         arguments: Fixtures.EmergencyTag.allCases)
     func eachEmergencyStateHasItsAffordance(_ tag: Fixtures.EmergencyTag) throws {
-        let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0)])
+        let snapshot = Support.snapshot(
+            fans: [Fixtures.clearedFan(0)], isThermalEmergencyActive: tag == .active)
         let screen = Fixtures.screen(snapshot, driver: .idle)
         let inputs = FanControlPresentation.Inputs(
             controlSource: screen.inputs.controlSource, thermalEmergency: tag.state,
@@ -166,10 +166,7 @@ struct FanControlAffordanceTests {
         case .inactive:
             expected = .enabled
         case .unknown:
-            expected = .disabled(
-                Reason(
-                    summary: ThermalEmergencyDisplay.unknown(because: nil).text, advice: nil,
-                    wireValue: nil))
+            expected = .disabled(.betweenSnapshots)
         }
         #expect(FanControlPresentation(reading: row, given: inputs).affordance == expected)
     }
@@ -199,24 +196,34 @@ struct FanControlAffordanceTests {
                         wireValue: nil)))
     }
 
-    /// Another client chose our holder string. Only the identifier says it is not ours.
+    /// Another client chose our holder string. Only the identifier says it is not ours, in every
+    /// driver state: `.lost` carries the app's old lease, whose holder string is the same.
     ///
     /// **Mutation (US):** in `isHeldByThisDriver`, compare `holderDescription`s instead of `id`s.
-    /// Run: red at the impostor's affordance. **Mutation (AH2):** make `isHeldByThisDriver` return
-    /// `false` always. Run: red at our own lease's affordance.
-    @Test("This is us by identifier only: our holder string under another id is another lease")
-    func usIsDecidedByIdentifierAlone() throws {
+    /// Run: red for the `.held` argument. **Mutation (SVLOSTUS):** make `isHeldByThisDriver` also
+    /// accept `.lost(let loss)` when `loss.lease?.holderDescription == lease.holderDescription`.
+    /// Run: red for the `.lost` argument.
+    @Test(
+        "This is us by identifier only: our holder string under another id is another lease",
+        arguments: Fixtures.DriverTag.allCases)
+    func anImpostorIsNeverUs(_ tag: Fixtures.DriverTag) throws {
         #expect(Fixtures.impostor.holderDescription == Fixtures.ours.holderDescription)
         #expect(Fixtures.impostor.id != Fixtures.ours.id)
+        let impostor = Support.snapshot(fans: [Fixtures.heldFan(0)], activeLease: Fixtures.impostor)
+        let presentation = try Fixtures.present(
+            0, on: Fixtures.screen(impostor, driver: try tag.state()))
+
+        #expect(presentation.affordance == .disabled(.heldElsewhere(Fixtures.impostor)))
+        #expect(presentation.selection == .unknown)
+    }
+
+    /// **Mutation (AH2):** make `isHeldByThisDriver` return `false` always. Run: red.
+    @Test("The lease the driver holds, by identifier, is ours")
+    func ourLeaseByIdentifierIsOurs() throws {
         let driver = Fixtures.held(
             Fixtures.ours, fans: [0], .confirmed(try Fixtures.target([0: 3000])))
-
-        let impostor = Support.snapshot(fans: [Fixtures.heldFan(0)], activeLease: Fixtures.impostor)
-        let theirs = try Fixtures.present(0, on: Fixtures.screen(impostor, driver: driver))
-        #expect(theirs.affordance == .disabled(.heldElsewhere(Fixtures.impostor)))
-        #expect(theirs.selection == .unknown)
-
         let ours = Support.snapshot(fans: [Fixtures.heldFan(0)], activeLease: Fixtures.ours)
+
         #expect(
             try Fixtures.present(0, on: Fixtures.screen(ours, driver: driver)).affordance
                 == .enabled)
@@ -224,14 +231,14 @@ struct FanControlAffordanceTests {
 
     /// **Mutation (SH):** in `Reason.heldElsewhere(_:)`, build the summary as
     /// `"Manual-control lease held by “" + lease.holderDescription + "”."`. Run: red.
-    @Test("The holder of another lease is shown through the sanitiser")
+    @Test("The holder of another lease is shown through the sanitiser, cap included")
     func theHolderIsSanitised() throws {
-        let hostile = Lease(holderDescription: Fixtures.hostile, expiresAt: Date())
+        let hostile = Lease(holderDescription: Fixtures.hostileLong, expiresAt: Date())
         let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: hostile)
         let presentation = try Fixtures.present(0, on: Fixtures.screen(snapshot, driver: .idle))
         let summary = try #require(Fixtures.reason(presentation.affordance)?.summary)
 
-        #expect(summary == "Manual-control lease held by “\(Fixtures.cleaned)”.")
+        #expect(summary == "Manual-control lease held by “\(Fixtures.cleanedLong)”.")
         #expect(!summary.unicodeScalars.contains(where: HelperAuthoredText.isRemoved))
     }
 
@@ -306,56 +313,5 @@ struct FanControlAffordanceTests {
         #expect(
             try Fixtures.present(0, on: Fixtures.screen(leaseAndRefusal, driver: .idle)).affordance
                 == .disabled(.heldElsewhere(Fixtures.theirs)))
-    }
-}
-
-/// `Inputs(polling:driver:)` reads what the view model has on screen, and the snapshot on screen
-/// is the one `PollingViewModel.renderedSnapshot` returns until the claims are withdrawn.
-@Suite("FanControlPresentation.Inputs — what the view model has on screen", .timeLimit(.minutes(1)))
-@MainActor
-struct FanControlInputsTests {
-
-    typealias Fixtures = FanControlFixtures
-    typealias Support = SnapshotTestSupport
-
-    /// **Mutation (R1):** make `renderedSnapshot` return `nil`. Run: red at the first
-    /// `renderedSnapshot` expectation and at the first inputs comparison.
-    @Test("The inputs are the view model's own; the snapshot is the one on screen until withdrawn")
-    func theInputsAreTheViewModels() async throws {
-        let helper = FakeSnapshotHelper()
-        let snapshot = Support.snapshot(fans: [Fixtures.heldFan(0)], activeLease: Fixtures.ours)
-        let source = try await Support.freshSource(helper, answering: snapshot)
-        let viewModel = PollingViewModel(
-            provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
-        let driver = Fixtures.held(
-            Fixtures.ours, fans: [0], .confirmed(try Fixtures.target([0: 3000])))
-
-        await viewModel.tick()
-        #expect(viewModel.renderedSnapshot == snapshot)
-        let shown = Fixtures.screen(snapshot, driver: driver)
-        #expect(FanControlPresentation.Inputs(polling: viewModel, driver: driver) == shown.inputs)
-        #expect(viewModel.fans == shown.rows)
-
-        try await Support.report(.unresponsive, to: source, from: helper)
-        await viewModel.tick()
-        #expect(viewModel.renderedSnapshot == nil)
-        let gone = Fixtures.withdrawn(
-            .helperConnection(.unresponsive), driver: driver, from: snapshot)
-        #expect(FanControlPresentation.Inputs(polling: viewModel, driver: driver) == gone.inputs)
-        #expect(viewModel.fans.map(\.control) == gone.rows.map(\.control))
-
-        await Support.tearDown(source, helper)
-    }
-
-    /// **Mutation (KP):** give `renderedSnapshot` a setter, `public private(set) var
-    /// renderedSnapshot: SystemSnapshot? { get { rendered?.snapshot } set { _ = newValue } }`.
-    /// Run: red at the first expectation: `private(set)` hides the setter from lookup and not
-    /// from a key path (SR-5218).
-    @Test("The snapshot on screen cannot be written through a key path")
-    func theSnapshotOnScreenIsReadOnly() {
-        let path: AnyKeyPath = \PollingViewModel.renderedSnapshot
-
-        #expect(!(path is ReferenceWritableKeyPath<PollingViewModel, SystemSnapshot?>))
-        #expect(path is KeyPath<PollingViewModel, SystemSnapshot?>)
     }
 }

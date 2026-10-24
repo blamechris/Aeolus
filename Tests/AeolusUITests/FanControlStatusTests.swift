@@ -79,7 +79,9 @@ struct FanControlStatusTests {
     /// **Mutation (ED):** make `LeaseEventText.fault` return
     /// `HelperAuthoredText.sanitised(fault.errorDescription ?? fault.wireCode)`. Run: red at the
     /// "returned to automatic" expectation for `.leaseExpired`, and at the detail's shape for
-    /// every argument.
+    /// every argument. **Mutation (PT):** render `.manualControlUnavailable` as the reason's
+    /// summary followed by its wire value, which reads as the state now. Run: red for that
+    /// argument.
     @Test(
         "A refusal says it was refused, by the helper's own code, and claims no fan state",
         arguments: Fixtures.FaultTag.allCases)
@@ -91,7 +93,10 @@ struct FanControlStatusTests {
         let detail = try #require(line.detail)
         switch fault {
         case .manualControlUnavailable(let reason):
-            #expect(detail == reason.userFacingSummary + " (detail)")
+            #expect(
+                detail
+                    == "manualControlUnavailable (detail). At the time, that meant: "
+                    + reason.userFacingSummary)
         case .unknown:
             #expect(detail == "detail: detail")
         default:
@@ -132,44 +137,113 @@ struct FanControlStatusTests {
 
     // MARK: - Helper text is cleaned
 
-    /// Every field the helper or another client writes, with a right-to-left override, a newline
-    /// and a line separator in it.
+    /// Every field the helper or another client writes, with a right-to-left override, a newline,
+    /// a line separator and more plain text than the sanitiser's cap. Each piece must be exactly
+    /// `HelperAuthoredText.sanitised` of what was sent, so a cleaner that strips the same scalars
+    /// without the cap is a red too.
     ///
     /// **Mutations (S1–S5):** drop `HelperAuthoredText.sanitised` around (S1) a fault's detail in
     /// `LeaseEventText.fault`, (S2) `HelperFailure.other`, (S3) the holder in
     /// `.leaseNotListed(listed:)`, (S4) a client error's description, (S5) an `unknown` fault's
-    /// code. Run, each: red at its states.
-    @Test("Every string the helper wrote is cleaned before it is shown")
+    /// code. **Mutations (SV3a, SV3b):** replace every `HelperAuthoredText.sanitised` in
+    /// `LeaseEventText.fault` (SV3a), or in `failure` and `snapshot` (SV3b), with a strip of the
+    /// same scalars that does not cap. Run, each: red at its states.
+    @Test("Every string the helper wrote is shown exactly as the sanitiser leaves it")
     func everyHelperStringIsCleaned() throws {
-        let hostile = Fixtures.hostile
-        let other = Lease(holderDescription: hostile, expiresAt: Date())
-        var states: [LeaseDriverState] = Fixtures.FaultTag.allCases.filter(\.carriesText).map {
-            .refused($0.fault(carrying: hostile))
-        }
-        states += [
-            Self.loss(.renewal(.other(hostile))),
-            Self.loss(.apply(.failed(.protocolViolation(detail: hostile)))),
-            Self.loss(.acquireUnanswered(.refused(.helperFailed(detail: hostile)))),
-            Self.loss(.snapshot(.leaseNotListed(listed: other), isThermalEmergencyActive: false)),
-        ]
-        #expect(states.count == 10)
+        #expect(Fixtures.cleanedLong.count == HelperAuthoredText.maxLength, "over the cap")
+        let expected = try Self.cleanedDetails()
+        let carrying = Fixtures.FaultTag.allCases.filter(\.carriesText)
+        #expect(
+            Set(
+                expected.compactMap { state, _ -> Fixtures.FaultTag? in
+                    guard case .refused(let fault) = state else { return nil }
+                    return Fixtures.FaultTag(fault)
+                }) == Set(carrying),
+            "every fault that carries text is listed")
 
-        for state in states {
-            let shown = Self.whole(try Self.line(for: state))
-            #expect(!shown.unicodeScalars.contains(where: HelperAuthoredText.isRemoved), "\(state)")
-            #expect(shown.contains(Fixtures.cleaned), "\(state)")
+        for (state, detail) in expected {
+            let line = try Self.line(for: state)
+            #expect(line.detail == detail, "\(Fixtures.DriverTag(state))")
+            #expect(
+                !Self.whole(line).unicodeScalars.contains(where: HelperAuthoredText.isRemoved),
+                "\(Fixtures.DriverTag(state))")
         }
+    }
+
+    /// Each state carrying `Fixtures.hostileLong` in a helper-authored field, beside the detail it
+    /// must show: the fixed words, and each piece as `HelperAuthoredText.sanitised` leaves it.
+    static func cleanedDetails() throws -> [(LeaseDriverState, String)] {
+        let sent = Fixtures.hostileLong
+        let piece = Fixtures.cleanedLong
+        let other = Lease(holderDescription: sent, expiresAt: Date())
+        let violation = HelperClientError.protocolViolation(detail: sent)
+        let violationText = HelperAuthoredText.sanitised(
+            try #require(violation.errorDescription))
+        let summary = ManualControlAvailability.Reason.unknown(sent).userFacingSummary
+
+        return [
+            (.refused(.malformedPayload(detail: sent)), "malformedPayload: \(piece)"),
+            (
+                .refused(.invalidParameter(name: sent, detail: sent)),
+                "invalidParameter \(piece): \(piece)"
+            ),
+            (
+                .refused(.manualControlUnavailable(reason: .unknown(sent))),
+                "manualControlUnavailable (\(piece)). At the time, that meant: \(summary)"
+            ),
+            (
+                .refused(.boundsImplausible(fanIndex: 0, detail: sent)),
+                "boundsImplausible, fan 0: \(piece)"
+            ),
+            (.refused(.helperFailed(detail: sent)), "helperFailed: \(piece)"),
+            (.refused(.unknown(code: sent, detail: sent)), "\(piece): \(piece)"),
+            (Self.loss(.renewal(.other(sent))), "A renewal failed: \(piece)"),
+            (
+                Self.loss(.apply(.failed(violation))),
+                "A speed change went unanswered. \(violationText)"
+            ),
+            (
+                Self.loss(.acquireUnanswered(.refused(.helperFailed(detail: sent)))),
+                "The request for control was refused: helperFailed: \(piece)"
+            ),
+            (
+                Self.loss(
+                    .snapshot(.leaseNotListed(listed: other), isThermalEmergencyActive: false)),
+                "The helper's snapshot listed another lease instead, held by “\(piece)”."
+            ),
+        ]
     }
 
     // MARK: - What each cause says
 
+    /// What the connection did, in the past tense, with the state's name beside it. Not the pane's
+    /// sentences, which describe the connection now: a replacement connection reports `.idle`, and
+    /// the pane's "has not connected to its helper yet" is false after a lease was held.
+    ///
+    /// **Mutation (CN):** render the cause with
+    /// `ControlSourceDisplay.explanation(.helperConnection(health))`. Run: red for every argument.
     @Test(
-        "A connection that left .handshaken says so in the pane's words",
-        arguments: HealthTag.departures)
-    func aConnectionLossUsesThePanesSentence(_ health: HelperConnectionHealth) throws {
+        "A connection that changed says what it did then, by its state's name",
+        arguments: HealthTag.all)
+    func aConnectionLossSaysWhatHappened(_ health: HelperConnectionHealth) throws {
         let line = try Self.line(for: Self.loss(.connection(health)))
 
-        #expect(line.detail == ControlSourceDisplay.explanation(.helperConnection(health)))
+        let expected: String
+        switch HealthTag(health) {
+        case .idle: expected = "The connection to the helper reported no handshake (idle)."
+        case .handshaken:
+            expected = "The connection to the helper reported a handshake (handshaken)."
+        case .unresponsive: expected = "The helper stopped answering (unresponsive)."
+        case .interrupted: expected = "The helper process went away (interrupted)."
+        case .invalidated: expected = "The connection to the helper ended (invalidated)."
+        case .refused: expected = "Aeolus and the helper would not agree to talk (refused)."
+        case .versionMismatched:
+            expected =
+                "This copy of Aeolus and the helper did not share a protocol version "
+                + "(versionMismatched)."
+        }
+        #expect(line.detail == expected)
+        #expect(!(line.detail ?? "").contains(" yet"))
     }
 
     @Test("Each loss a snapshot found says what that snapshot showed")
