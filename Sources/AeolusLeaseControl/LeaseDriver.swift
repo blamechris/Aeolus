@@ -242,10 +242,22 @@ public actor LeaseDriver {
     /// **The module boundary keeps it in the suite (#489).** This file is in `AeolusLeaseControl`,
     /// so `AeolusUI`, the app and every other module are refused at compile time: `internal` does
     /// not cross a module. Only a deliberate `@testable import AeolusLeaseControl` reaches it,
-    /// which `AeolusUITests` does and a release build refuses. The compiler holds that line for
-    /// everything outside this target and nothing inside it, so the files in `AeolusLeaseControl`
-    /// are reviewed together, and a file added to it must not name `runningHeartbeat` or
-    /// `HeartbeatHandle`.
+    /// which `AeolusUITests` does.
+    ///
+    /// **A production `@testable import` is refused by a Release build, and CI runs one (#491).**
+    /// A Debug build, which builds with testability, accepts it and reaches the accessor. The
+    /// `Build (release, without testability)` step of CI's workflow does not, so it fails the
+    /// pull request. Its error names the wrong file: `unable to resolve Swift module dependency
+    /// to a compatible module: 'AeolusLeaseControl'`, at the `import` of a file that merely
+    /// imports the module (today `LeaseLifecycle.swift:1:8`), not at the file that wrote
+    /// `@testable`. Search `Sources/` for `@testable`.
+    ///
+    /// The compiler holds that line for everything outside this target and nothing inside it, so
+    /// the files in `AeolusLeaseControl` are reviewed together: no code in this target other than
+    /// the declaration names either `runningHeartbeat` or `HeartbeatHandle`. The accessor's own
+    /// level is held separately, by `scripts/lending-probes/refused-heartbeat-accessor.swift`,
+    /// which CI compiles and which fails if the accessor is widened to `package` or `public`, or
+    /// the target is folded back into `AeolusUI`.
     ///
     /// Reflection: `Mirror(reflecting:)` on the driver reads `heartbeat` itself, from any module;
     /// no access level stops that, and no accidental edit takes that route.

@@ -109,12 +109,18 @@ let package = Package(
         // it is refused. Nothing was widened to get that: all the driver API `AeolusUI` uses was
         // already `public`.
         //
-        // `LeaseLifecycle`, the `@MainActor` adapter the app's quit, logout and window events
-        // reach, stays in `AeolusUI`. The files here are reviewed together, and a file added to
-        // this target must not name `runningHeartbeat`.
+        // The same boundary means `AeolusUI` cannot construct a `HeldLease` or a `LeaseLoss`,
+        // whose initialisers are `internal`, so presentation code cannot forge a held or a lost
+        // state.
         //
-        // Not a library product: nothing outside this package links it, and the Xcode app target
-        // reaches it through `AeolusUI` without naming it in `project.yml`.
+        // `LeaseLifecycle`, the `@MainActor` adapter the app's quit, logout and window events
+        // reach, stays in `AeolusUI`. The compiler holds the accessor out of every module but
+        // this one, so the files here are reviewed together: no code in this target other than
+        // the declaration names `runningHeartbeat` or `HeartbeatHandle`.
+        //
+        // Not a library product: nothing outside this package names it. The Xcode app target
+        // links it through the `AeolusUI` product, which carries every target `AeolusUI` depends
+        // on, so `project.yml` does not list it.
         .target(
             name: "AeolusLeaseControl",
             dependencies: ["AeolusXPC", "AeolusXPCClient", "FanKit"],
