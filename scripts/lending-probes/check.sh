@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Compiles each lending probe against the helper module `swift build` produced, with the toolchain
-# that runs this script, and requires the compiler to accept every `allowed-*.swift` probe and to
-# refuse every `refused-*.swift` probe for exactly the reason it states:
+# Compiles each probe against the modules `swift build` produced, with the toolchain that runs this
+# script, and requires the compiler to accept every `allowed-*.swift` probe and to refuse every
+# `refused-*.swift` probe for exactly the reason it states:
 #
 # - every error the compile reports, in any file, must be in that probe and say exactly the
-#   ownership-specific diagnostic its `// expect:` names; and
+#   diagnostic its `// expect:` names; and
 # - the shape's own line, its `// expect-line:`, must carry that error, or the move checker's
 #   "consumed here" note that points at it (the move checker reports the error at the borrowed
 #   parameter and the note at the use that would keep it).
@@ -24,15 +24,28 @@
 # substring test this replaced let through (#451): a probe broken another way then still passed,
 # because these messages all carry a `c`. Write the message as the compiler prints it, in full:
 # the two compiler-bug probes included, with their "Please file a bug…" tail. When a toolchain
-# rewords a refusal, replace the expectation with the new ownership-specific diagnostic, and never
-# broaden it: no alternation, and no shorter fragment that an unrelated error would also carry.
+# rewords a refusal, replace the expectation with the new diagnostic, and never broaden it: no
+# alternation, and no shorter fragment that an unrelated error would also carry.
 #
-# Why it exists: ADR 0012's #440 amendment rests "§ 3's handback is lent, never kept" on the
-# compiler refusing to let a `borrowing` parameter of a generic constrained
-# `FanRestoring & ~Copyable` be stored, boxed, copied, consumed or captured. Those refusals were
-# observed on one toolchain. Each is a shape that must *not* compile, so no test can hold it: this
-# compiles each one, fully (`-c`, never `-typecheck`, because the move checker runs in SIL), on
-# every CI run's toolchain.
+# Two families of probe live here, and the harness holds them to the same rules:
+#
+# - **The lending shapes** (ten `refused-*.swift` and their `allowed-lend-and-call.swift` control).
+#   ADR 0012's #440 amendment rests "§ 3's handback is lent, never kept" on the compiler refusing
+#   to let a `borrowing` parameter of a generic constrained `FanRestoring & ~Copyable` be stored,
+#   boxed, copied, consumed or captured. Those refusals were observed on one toolchain. Each is a
+#   shape that must *not* compile, so no test can hold it: this compiles each one, fully (`-c`,
+#   never `-typecheck`, because the move checker runs in SIL), on every CI run's toolchain.
+# - **The lease-control boundary** (`refused-heartbeat-accessor.swift` and its
+#   `allowed-lease-driver-state.swift` control; #489, #491). `LeaseDriver.runningHeartbeat` is
+#   `internal`, for the test suite alone, and the `AeolusLeaseControl` target is what puts every
+#   other module out of its reach. That is an access-level refusal, not an ownership one, and
+#   nothing in the suite can hold it, because a test sees the accessor through `@testable`.
+#   Widening the accessor to `package` or `public`, or folding the target back into `AeolusUI`,
+#   leaves every test green; this goes red. The probe imports the module plainly, never
+#   `@testable`, which is the app's side of the boundary.
+#
+# A probe whose compile succeeds has stopped being refused, and the failure says what to read
+# first: its `// see:` line, or, for the lending shapes that carry none, ADR 0012's amendment.
 #
 # Reads only: it writes its objects to a temporary directory and touches nothing in the tree.
 # Run it after `swift build`, from anywhere in the repository.
@@ -185,8 +198,12 @@ for probe in "${probes}"/refused-*.swift; do
         continue
     fi
     if compile "${probe}"; then
-        echo "error: ${name} compiled. This toolchain no longer refuses the shape, so the"
-        echo "       handback can be kept: see ADR 0012's #440 amendment before going further."
+        see="$(sed -n 's|^// see: ||p' "${probe}" | head -1)"
+        if [ -z "${see}" ]; then
+            see="ADR 0012's #440 amendment (a lending shape: the handback can be kept)"
+        fi
+        echo "error: ${name} compiled. This compiler no longer refuses the shape it exists to refuse."
+        echo "       Read ${see} before going further."
         failures=$((failures + 1))
         continue
     fi
@@ -205,8 +222,8 @@ for probe in "${probes}"/refused-*.swift; do
 done
 
 # Coverage, not decoration: a glob that matched nothing would pass over no probe at all.
-if [ "${allowed}" -ne 1 ] || [ "${refused}" -ne 10 ]; then
-    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 1 and 10"
+if [ "${allowed}" -ne 2 ] || [ "${refused}" -ne 11 ]; then
+    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 2 and 11"
     failures=$((failures + 1))
 fi
 if [ "${controls}" -ne 17 ]; then
@@ -215,10 +232,10 @@ if [ "${controls}" -ne 17 ]; then
 fi
 
 if [ "${failures}" -ne 0 ]; then
-    echo "LENDING PROBES FAILED: ${failures} problem(s)"
+    echo "PROBES FAILED: ${failures} problem(s)"
     exit 1
 fi
-echo "LENDING PROBES PASSED: ${refused} shapes refused, ${allowed} lend compiled," \
+echo "PROBES PASSED: ${refused} shapes refused, ${allowed} positive controls compiled," \
     "${controls} matcher controls held"
 # This must stay the script's last statement: anything after it that crashes would read as a pass
 # on bash 3.2 again (see the trap above).
