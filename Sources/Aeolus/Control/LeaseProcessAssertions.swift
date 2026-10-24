@@ -52,11 +52,12 @@ final class SystemProcessLifetime: ProcessLifetimeControlling {
 ///
 /// ## Termination: while acquiring, held or releasing
 ///
-/// Sudden and automatic termination let the system end the app with `SIGKILL` and no chance to
-/// run anything, at logout among other times. A lease ended that way is ended by the helper's
-/// invalidation path, which is the backstop and not the mechanism (#155): the explicit
-/// `releaseLease` never goes out. So both are disabled from the moment a lease is asked for until
-/// the release has answered, and enabled again once the state leaves those three cases.
+/// Sudden termination lets the system end the app with `SIGKILL`, and no chance to run anything,
+/// at logout among other times; automatic termination lets it end an app it judges idle without
+/// the user asking. A lease ended by `SIGKILL` is ended by the helper's invalidation path, which
+/// is the backstop and not the mechanism (#155): the explicit `releaseLease` never goes out. So
+/// both are disabled from the moment a lease is asked for until the release has answered, and
+/// enabled again once the state leaves those three cases.
 ///
 /// ## App Nap: while held
 ///
@@ -68,10 +69,11 @@ final class SystemProcessLifetime: ProcessLifetimeControlling {
 ///
 /// ## Balanced, because these are counters
 ///
-/// `disableSuddenTermination()` and its siblings increment a process-wide count, and an enable
-/// without its disable, or a disable never enabled, outlives this type. So each is called only on
-/// an edge: once when the state enters the set, once when it leaves. The state can skip cases in
-/// between, so each edge is decided from the state alone, never from which state came before it.
+/// `ProcessInfo` counts the termination calls process-wide, and an enable without its disable, or
+/// a disable never enabled, outlives this type; an activity begun and never ended does too. So
+/// each is called only on an edge: once when the state enters the set, once when it leaves. The
+/// state can skip cases in between, so each edge is decided from the state alone, never from
+/// which state came before it.
 @MainActor
 final class LeaseProcessAssertions {
 

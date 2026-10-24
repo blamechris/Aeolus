@@ -11,12 +11,12 @@ import Foundation
 ///
 /// - **The app's one `HelperSnapshotSource`**, on a read `HelperClient` that sends only
 ///   `snapshot`, shared by every `PollingViewModel`.
-/// - **One `LeaseDriver`**, on a **second** `HelperClient`: the control connection. `apply` may
-///   take its whole 57 s deadline, and a `snapshot` sequenced behind it on one connection would
-///   freeze the display for that long (`HelperLeaseControlling`).
+/// - **One `LeaseDriver`**, on a **second** `HelperClient`: the control connection. One `apply`
+///   may take its whole deadline, 57 s for one fan, and a `snapshot` sequenced behind it on one
+///   connection would freeze the display for that long (`HelperLeaseControlling`).
 /// - **One `LeaseLifecycle`**, the one place each lifecycle event reaches the driver.
-/// - The preferences every window reads, so that `AeolusApp` and `AeolusAppDelegate` reach one
-///   root through `running`.
+/// - The `PreferencesController` every window reads. The source reads its refresh interval, and
+///   `running` builds both, so `AeolusApp` and `AeolusAppDelegate` share one of each.
 ///
 /// The source reports every read to the driver through a `HelperSnapshotObserver`: a ticket taken
 /// before `snapshot` is sent, and each reply judged with it. The source never holds the driver.
@@ -38,12 +38,12 @@ import Foundation
 ///
 /// ## Every driver call is on a task this type spawns (#419)
 ///
-/// SwiftUI cancels a `.task` when its view goes, and `onChange` runs inside an update. A view that
-/// owned a driver await would cancel a call the driver means to finish, or wait in an update for a
-/// release bounded at two seconds. So the driver and the lifecycle are `private` here, and nothing
-/// a view can reach is `async`: every entry point is synchronous and starts its own unstructured
-/// `Task`. That much the compiler holds. That a member added later stays synchronous is
-/// documented here and not enforced.
+/// SwiftUI cancels a `.task` when its view goes away, and a `.task(id:)` each time its id
+/// changes, so a view that owned a driver await would cancel calls the driver means to finish. So
+/// the driver is held only inside `private` members here, through the lifecycle, and nothing a
+/// view can reach on this type is `async`: every entry point is synchronous and starts its own
+/// unstructured `Task`. That much the compiler holds. That a member added later stays synchronous
+/// is documented here and not enforced.
 @MainActor
 final class AppComposition {
 
