@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// `adjust(_:)` under a lease that is acquiring or held: it moves the speed over the same fans and
 /// does nothing over any others; and a target equal to one already sent or confirmed sends nothing

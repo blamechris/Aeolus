@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import os
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// The helper's side of the control connection, for `LeaseDriver`'s suite.
 ///

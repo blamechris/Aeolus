@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// `take(_:)` is the one call that acquires; `adjust(_:)` only moves a lease that is acquiring or
 /// held. A slider wired to `adjust` can therefore never ask for the fans again after a loss, and

@@ -5,7 +5,7 @@ import Foundation
 import Testing
 import os
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// A `LeaseDriver` over a `FakeLeaseHelper` and a `HandWoundClock`, with the driver's states
 /// forwarded into the scene's `LeaseLedger`.

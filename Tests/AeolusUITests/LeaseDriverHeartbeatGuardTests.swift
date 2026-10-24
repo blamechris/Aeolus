@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// The heartbeat's guards: it ends with every lease, a wake replaces it rather than doubling it,
 /// a cancelled renewal is not a loss, and a renewal is stamped before it is sent and answered for

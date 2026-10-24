@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// The guards a review found nothing pinning: each test here goes red when its guard is deleted,
 /// and the guard is named on the test.

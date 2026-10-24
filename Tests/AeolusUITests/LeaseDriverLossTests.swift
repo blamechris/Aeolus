@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// Every way control ends that the app did not ask for is `lost`, and `lost` is never drawn as
 /// `held`. A refusal of the lease itself is `refused`: a state, not an error.

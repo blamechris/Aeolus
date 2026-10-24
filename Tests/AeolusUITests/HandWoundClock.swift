@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// A `HeartbeatClock` whose hands move only when the test moves them: the shape of the helper
 /// suite's `ManualClock`, written again here because `AeolusUITests` cannot link the helper's
