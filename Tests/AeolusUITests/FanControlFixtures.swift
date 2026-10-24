@@ -217,9 +217,7 @@ extension FanControlFixtures {
         }
 
         /// One failure of each kind, none of them a helper refusal that names an emergency.
-        static let failures: [HelperFailure] = [
-            .refused(.leaseUnknown), .failed(.helperRestarted), .other("the disk is full"),
-        ]
+        static let failures = FailureTag.allCases.map(\.failure)
 
         /// Every cause of this kind with no emergency flag set: one per failure kind for the three
         /// verbs, one per loss for a snapshot, one per connection state.
@@ -293,6 +291,69 @@ extension FanControlFixtures {
             case .handshakeRequired, .versionMismatch, .leaseExpired, .leaseUnknown,
                 .leaseNotHeldByThisConnection, .thermalEmergencyActive, .reclaimedBySystem:
                 return false
+            }
+        }
+    }
+
+    /// One tag per `HelperFailure` case.
+    enum FailureTag: CaseIterable {
+        case refused, failed, other
+
+        init(_ failure: HelperFailure) {
+            switch failure {
+            case .refused: self = .refused
+            case .failed: self = .failed
+            case .other: self = .other
+            }
+        }
+
+        /// A failure of this kind. The refusal is not one that names an emergency.
+        var failure: HelperFailure {
+            switch self {
+            case .refused: return .refused(.leaseUnknown)
+            case .failed: return .failed(.helperRestarted)
+            case .other: return .other("the disk is full")
+            }
+        }
+    }
+
+    /// One tag per `ThermalEmergencyState` case.
+    enum EmergencyTag: CaseIterable {
+        case active, inactive, unknown
+
+        init(_ state: ThermalEmergencyState) {
+            switch state {
+            case .active: self = .active
+            case .inactive: self = .inactive
+            case .unknown: self = .unknown
+            }
+        }
+
+        var state: ThermalEmergencyState {
+            switch self {
+            case .active: return .active
+            case .inactive: return .inactive
+            case .unknown: return .unknown
+            }
+        }
+    }
+
+    /// One tag per `HeldLease.Phase` case.
+    enum PhaseTag: CaseIterable {
+        case applying, confirmed
+
+        init(_ phase: HeldLease.Phase) {
+            switch phase {
+            case .applying: self = .applying
+            case .confirmed: self = .confirmed
+            }
+        }
+
+        /// A phase of this kind, with `target` in it.
+        func phase(_ target: LeaseTarget) -> HeldLease.Phase {
+            switch self {
+            case .applying: return .applying(target, queued: nil)
+            case .confirmed: return .confirmed(target)
             }
         }
     }

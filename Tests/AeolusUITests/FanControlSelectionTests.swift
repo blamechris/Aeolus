@@ -191,8 +191,9 @@ struct FanControlSelectionTests {
     /// first `apply`. Only the driver says it is wanted.
     ///
     /// **Mutation (A2):** delete `claim`'s `.acquiring(let fans) where fans.contains(index)` arm.
-    /// **Mutation (A3):** make its `.releasing` arm return `automaticOrUnknown(licence)`. Run,
-    /// each: red at its expectation.
+    /// **Mutation (A3):** make its `.releasing` arm return `automaticOrUnknown(licence)`.
+    /// **Mutation (A4):** delete its `.held(let held) where held.fans.contains(index)` arm, so a
+    /// held fan is judged as if nothing held it. Run, each: red at its expectation.
     @Test("A fan the driver holds, is asking for or is releasing never reads Automatic")
     func aFanTheDriverWantsIsNeverAutomatic() throws {
         let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0), Fixtures.clearedFan(1)])
@@ -205,18 +206,18 @@ struct FanControlSelectionTests {
 
         #expect(try selection(0, .acquiring(fans: [0])) == .unknown)
         #expect(try selection(0, .releasing) == .unknown)
-        #expect(
-            try selection(0, Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)))
-                == .unknown)
-        #expect(
-            try selection(
-                0, Fixtures.held(Fixtures.ours, fans: [0], .applying(target, queued: nil)))
-                == .applying(try Fixtures.speed(target, 0)))
-        // A fan the driver is not asking for and does not hold is judged on its own.
+        for tag in Fixtures.PhaseTag.allCases {
+            let held = Fixtures.held(Fixtures.ours, fans: [0], tag.phase(target))
+            let expected: FanControlPresentation.Selection
+            switch tag {
+            case .applying: expected = .applying(try Fixtures.speed(target, 0))
+            case .confirmed: expected = .unknown
+            }
+            #expect(try selection(0, held) == expected, "\(tag)")
+            // A fan the driver does not hold is judged on its own.
+            #expect(try selection(1, held) == .automatic, "\(tag)")
+        }
         #expect(try selection(1, .acquiring(fans: [0])) == .automatic)
-        #expect(
-            try selection(1, Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)))
-                == .automatic)
     }
 
     // MARK: - A click selects nothing

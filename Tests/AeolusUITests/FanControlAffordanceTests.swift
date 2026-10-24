@@ -143,22 +143,35 @@ struct FanControlAffordanceTests {
         #expect(presentation.selection == .unknown, "controlLoss answers .thermalEmergency")
     }
 
-    /// **Mutation (E2):** in `Reason.thermalEmergency(_:)`, return `nil` for `.unknown`. Run: red.
-    @Test("An emergency nobody reports either way disables the control too")
-    func anUnknownEmergencyDisables() throws {
+    /// Every emergency state beside a licensed snapshot that is otherwise clear. `.unknown` there
+    /// is a mixture `PollingViewModel` never publishes, and it disables rather than enables.
+    ///
+    /// **Mutation (E2):** in `Reason.thermalEmergency(_:)`, return `nil` for `.unknown`. Run: red
+    /// for the `.unknown` argument.
+    @Test(
+        "Only a reported absence of an emergency leaves the control enabled",
+        arguments: Fixtures.EmergencyTag.allCases)
+    func eachEmergencyStateHasItsAffordance(_ tag: Fixtures.EmergencyTag) throws {
         let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0)])
         let screen = Fixtures.screen(snapshot, driver: .idle)
-        let unknown = FanControlPresentation.Inputs(
-            controlSource: screen.inputs.controlSource, thermalEmergency: .unknown,
+        let inputs = FanControlPresentation.Inputs(
+            controlSource: screen.inputs.controlSource, thermalEmergency: tag.state,
             renderedSnapshot: snapshot, driver: .idle)
         let row = try #require(screen.rows.first)
 
-        #expect(
-            FanControlPresentation(reading: row, given: unknown).affordance
-                == .disabled(
-                    Reason(
-                        summary: ThermalEmergencyDisplay.unknown(because: nil).text, advice: nil,
-                        wireValue: nil)))
+        let expected: FanControlPresentation.Affordance
+        switch tag {
+        case .active:
+            expected = .disabled(.thermalEmergencyActive)
+        case .inactive:
+            expected = .enabled
+        case .unknown:
+            expected = .disabled(
+                Reason(
+                    summary: ThermalEmergencyDisplay.unknown(because: nil).text, advice: nil,
+                    wireValue: nil))
+        }
+        #expect(FanControlPresentation(reading: row, given: inputs).affordance == expected)
     }
 
     // MARK: - 4. Another lease
