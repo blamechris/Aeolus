@@ -58,10 +58,23 @@ import os
 /// then does the next one's begin. So a read behind N orphans waits N deadlines before its own
 /// starts. A caller that cancels and re-sends a `snapshot` every 2 s behind a wedged `apply` adds
 /// orphans faster than their 5 s deadlines retire them, and the read it is waiting for is never
-/// cut off. No client does that today: `fanctl` awaits each verb, and the app has no control UI.
-/// [#419](https://github.com/blamechris/Aeolus/issues/419) is the design note that the control UI
-/// must settle first — either it never cancels a sequenced verb it means to re-send, or an
-/// orphan's expiry discards when a live message waits behind it.
+/// cut off. No client does that: `fanctl` awaits each verb, and the app follows the rule below.
+///
+/// **The rule the app chose for [#419](https://github.com/blamechris/Aeolus/issues/419): the UI
+/// never cancels a sequenced verb it means to send again.** This client still does not bound the
+/// cost of orphans; the app simply makes none.
+///
+/// - **The read connection sends only `snapshot`, one at a time, and never cancels one.**
+///   `HelperSnapshotSource`, in the app, owns its own `HelperClient` and nothing else talks on
+///   it. Its loop awaits each answer before it pauses and sends the next; a consumer that leaves
+///   cuts short only the pause, and a request outstanding at that moment is left to finish.
+///   `HelperSnapshotSourceTests` holds it there with a parked reply: cancelling that request
+///   from `stop()` turns them red.
+/// - **A SwiftUI `.task` never owns an XPC await.** SwiftUI cancels a `.task` when its view
+///   disappears, which is exactly the cancellation this rule forbids. Views call the source's
+///   `start()` and `stop()`, and the request's task belongs to the source.
+/// - **Control travels on a second connection**, so no `snapshot` ever queues behind an
+///   `apply`. The control side's own test of this rule lands with its driver.
 ///
 /// ## A discard answers everything still in flight on its connection
 ///
