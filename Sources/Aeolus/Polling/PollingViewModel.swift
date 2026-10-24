@@ -136,6 +136,16 @@ public final class PollingViewModel: ObservableObject {
     /// source's licence against. `nil` whenever no snapshot's claims are on screen.
     private var rendered: (snapshot: SystemSnapshot, receivedAt: Date)?
 
+    /// The snapshot whose claims are on screen, or `nil` when none are: what
+    /// `FanControlPresentation` judges a lease against. `render` assigns it after `fans`,
+    /// `thermalEmergency` and `controlSource`, so a sink on any of those sees the previous
+    /// snapshot here.
+    ///
+    /// Get-only and computed, so it is a plain `KeyPath` and nothing outside this type can write
+    /// the snapshot on screen; not `private(set) var`, whose key path a dynamic cast can still make
+    /// writable (SR-5218). `internal`, because nothing outside this module reads it.
+    var renderedSnapshot: SystemSnapshot? { rendered?.snapshot }
+
     /// True while a tick awaits a direct read. A snapshot rendered then would be overwritten by
     /// that read's results, which carry no claims; the authority watch waits a step instead.
     private var isReadingDirectly = false
