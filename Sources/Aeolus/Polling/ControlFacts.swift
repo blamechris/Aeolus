@@ -26,9 +26,10 @@ public enum FanControlSource: Sendable, Hashable {
     /// predicates (`FanState.isClearedToAutomatic`) rather than a second reading of `mode`.
     ///
     /// `thermalEmergency` is the same snapshot's `isThermalEmergencyActive`, carried beside
-    /// each fan because it changes what the fan's mode means: while it is set, `docs/SAFETY.md`
-    /// § 3 has revoked every lease and is driving any fan in manual itself, so a manual mode is
-    /// thermal protection and not anybody's chosen speed.
+    /// each fan so a row can say what is true of it: the flag is set and the fan reads manual.
+    /// It says nothing about who is driving the fan. `docs/SAFETY.md` § 3 acts only on fans
+    /// Aeolus itself took off automatic control, never on one another program holds, and on a
+    /// helper that cannot write it has taken none.
     case reported(FanState, thermalEmergency: Bool)
 
     /// Whether the helper reports this fan reclaimed by the system.

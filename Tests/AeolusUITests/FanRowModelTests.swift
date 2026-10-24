@@ -88,19 +88,47 @@ struct FanRowModelTests {
         #expect(Self.row(mode: pair.0).controlStateLabel == pair.1)
     }
 
-    /// While the snapshot's emergency flag is set, § 3 has revoked every lease and drives any
-    /// fan in manual itself. "Manual — fixed speed" there would read as a user's own setting.
+    /// Every availability a fan can carry: `.available` and each reason, from `Tag`.
+    static let everyAvailability: [ManualControlAvailability] =
+        [.available] + Tag.allCases.map { .unavailable($0.reason) }
+
+    /// The emergency flag is set and the fan reads manual: that, and nothing more, is what the
+    /// row may say. It must not read as a user's chosen speed, and it must not claim anything
+    /// is protecting the fan — `docs/SAFETY.md` § 3 acts only on fans Aeolus took off automatic,
+    /// so not on a fan another program holds (`.foreignManualControl`), and on a helper that
+    /// cannot write (`.writePathNotBuilt`) on none at all.
     ///
     /// **Mutation (T1):** delete the `thermalEmergency` branch of `controlStateLabel(for:)`.
-    /// Run: red for both modes.
+    /// **Mutation (P2):** return "Under thermal protection" from it. Run, each: red for every
+    /// argument.
     @Test(
-        "A fan in manual during a thermal emergency says thermal protection, not a chosen speed",
-        arguments: [FanControlMode.manualFixed, .manualCurve])
-    func aManualFanDuringAnEmergencyIsThermalProtection(_ mode: FanControlMode) {
-        let row = Self.row(mode: mode, thermalEmergency: true)
+        "A manual fan during an emergency says exactly that, whatever holds it",
+        arguments: everyAvailability)
+    func aManualFanDuringAnEmergencySaysOnlyWhatIsTrue(
+        _ availability: ManualControlAvailability
+    ) {
+        for mode in [FanControlMode.manualFixed, .manualCurve] {
+            let row = Self.row(mode: mode, availability: availability, thermalEmergency: true)
 
-        #expect(row.controlStateLabel == "Under thermal protection")
-        #expect(!row.controlStateLabel.hasPrefix("Manual"))
+            #expect(row.controlStateLabel == "Manual during a thermal emergency", "\(mode)")
+            #expect(!row.controlStateLabel.lowercased().contains("protect"), "\(mode)")
+            #expect(row.controlStateLabel != "Manual — fixed speed", "\(mode)")
+        }
+    }
+
+    /// The emergency label is for a fan that reads manual. An automatic fan the helper has not
+    /// cleared keeps saying so during an emergency too.
+    ///
+    /// **Mutation (TH3):** drop `state.mode != .automatic` from the emergency rule. Run: red for
+    /// every argument.
+    @Test(
+        "During an emergency, an automatic fan not yet cleared still says Not confirmed",
+        arguments: notClearing)
+    func anUnclearedAutomaticFanDuringAnEmergencyIsNotConfirmed(_ reason: Reason) {
+        let row = Self.row(
+            mode: .automatic, availability: .unavailable(reason), thermalEmergency: true)
+
+        #expect(row.controlStateLabel == "Not confirmed as automatic")
     }
 
     @Test("A fan cleared to automatic during an emergency still says Automatic")

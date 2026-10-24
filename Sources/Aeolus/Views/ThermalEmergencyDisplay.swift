@@ -11,7 +11,9 @@ import Foundation
 /// `Monitor` build cannot see an emergency at all, which is a different thing to know from a
 /// helper that has stopped answering.
 ///
-/// **The copy names the emergency only while the flag is set**, and says nothing about leases.
+/// **The copy names the emergency only while the flag is set**, says only what the helper does
+/// while it is — grant no manual control — and says nothing about leases or about protecting any
+/// particular fan: § 3 acts only on fans Aeolus took off automatic, never on another program's.
 /// § 3 revokes every lease when it fires, and its flag clears once the latch releases (#476
 /// NB3), so a banner that inferred a cause from a lease that had gone would be guessing.
 enum ThermalEmergencyDisplay {
@@ -34,8 +36,8 @@ enum ThermalEmergencyDisplay {
     static let emergency = Banner(
         severity: .emergency,
         text:
-            "Thermal emergency reported by the helper — its thermal protection outranks manual "
-            + "control of every fan.",
+            "Thermal emergency reported by the helper — it grants no manual control while this "
+            + "lasts.",
         compactText: "Thermal emergency active")
 
     /// The unknown line, with the reason nothing is tracked.
