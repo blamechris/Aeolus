@@ -29,7 +29,8 @@ struct MenuBarReadoutFormattingTests {
         .reported(
             SnapshotTestSupport.fan(
                 mode: mode, availability: availability, reclaimed: reclaimed,
-                target: mode == .automatic || reclaimed ? nil : 3000))
+                target: mode == .automatic || reclaimed ? nil : 3000),
+            thermalEmergency: false)
     }
 
     // MARK: - value(for:temperatureUnit:)
@@ -118,7 +119,8 @@ struct MenuBarReadoutFormattingTests {
     @Test(
         "A fan cleared to automatic, or not tracked, carries no suffix in the strip",
         arguments: [
-            FanControlSource.reported(SnapshotTestSupport.fan(mode: .automatic)),
+            FanControlSource.reported(
+                SnapshotTestSupport.fan(mode: .automatic), thermalEmergency: false),
             .notTracked(.noHelperInThisBuild),
         ])
     func identifiedTextSuppressesTheQuietControlStates(_ control: FanControlSource) {

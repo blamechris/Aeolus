@@ -22,14 +22,16 @@ struct FanRowModelTests {
     private static func row(
         mode: FanControlMode = .automatic,
         availability: ManualControlAvailability = .unavailable(.writePathNotBuilt),
-        reclaimed: Bool = false
+        reclaimed: Bool = false,
+        thermalEmergency: Bool = false
     ) -> FanRowModel {
         FanRowModel(
             reading: reading(
                 .reported(
                     Support.fan(
                         mode: mode, availability: availability, reclaimed: reclaimed,
-                        target: mode == .automatic || reclaimed ? nil : 3000))))
+                        target: mode == .automatic || reclaimed || thermalEmergency ? nil : 3000),
+                    thermalEmergency: thermalEmergency)))
     }
 
     @Test("The raw keys for actual/minimum/maximum are always carried into the row")
@@ -84,6 +86,26 @@ struct FanRowModelTests {
         ])
     func aManualFanShowsItsMode(_ pair: (FanControlMode, String)) {
         #expect(Self.row(mode: pair.0).controlStateLabel == pair.1)
+    }
+
+    /// While the snapshot's emergency flag is set, § 3 has revoked every lease and drives any
+    /// fan in manual itself. "Manual — fixed speed" there would read as a user's own setting.
+    ///
+    /// **Mutation (T1):** delete the `thermalEmergency` branch of `controlStateLabel(for:)`.
+    /// Run: red for both modes.
+    @Test(
+        "A fan in manual during a thermal emergency says thermal protection, not a chosen speed",
+        arguments: [FanControlMode.manualFixed, .manualCurve])
+    func aManualFanDuringAnEmergencyIsThermalProtection(_ mode: FanControlMode) {
+        let row = Self.row(mode: mode, thermalEmergency: true)
+
+        #expect(row.controlStateLabel == "Under thermal protection")
+        #expect(!row.controlStateLabel.hasPrefix("Manual"))
+    }
+
+    @Test("A fan cleared to automatic during an emergency still says Automatic")
+    func aClearedFanDuringAnEmergencyIsAutomatic() {
+        #expect(Self.row(mode: .automatic, thermalEmergency: true).controlStateLabel == "Automatic")
     }
 
     @Test(

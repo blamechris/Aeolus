@@ -21,6 +21,10 @@ import os
 /// counted in `cancellations` **synchronously**, from the cancellation handler itself — a
 /// `cancel()` made inside `HelperSnapshotSource.stop()` is visible the moment `stop()` returns,
 /// with nothing to wait for.
+///
+/// **Every wait here ends when the test is cancelled**, by throwing. A test that waits for a
+/// request that never comes is then ended by its `.timeLimit` as a red, instead of holding
+/// `swift test` open forever (#478's review, item 13).
 actor FakeSnapshotHelper: HelperSnapshotReading {
 
     struct Closed: Error, LocalizedError {
@@ -29,7 +33,9 @@ actor FakeSnapshotHelper: HelperSnapshotReading {
 
     private var parked: [(id: Int, continuation: CheckedContinuation<SystemSnapshot, any Error>)] =
         []
-    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var waiters: [Int: (count: Int, continuation: CheckedContinuation<Void, any Error>)] =
+        [:]
+    private var nextWaiter = 0
     private var atHelper = 0
     private var isClosed = false
 
@@ -53,10 +59,10 @@ actor FakeSnapshotHelper: HelperSnapshotReading {
     func snapshot() async throws -> SystemSnapshot {
         requests += 1
         let id = requests
+        resumeWaiters()
         if isClosed { throw Closed() }
         atHelper += 1
         peakAtHelper = max(peakAtHelper, atHelper)
-        resumeWaiters()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 parked.append((id: id, continuation: continuation))
@@ -109,11 +115,18 @@ actor FakeSnapshotHelper: HelperSnapshotReading {
         for entry in all { entry.continuation.resume(throwing: Closed()) }
     }
 
-    /// Suspends until this fake has seen `count` requests.
-    func waitForRequests(_ count: Int) async {
+    /// Suspends until this fake has seen `count` requests. Throws if the waiting test is
+    /// cancelled first — by its time limit, for one — so a request that never comes is a red.
+    func waitForRequests(_ count: Int) async throws {
         guard requests < count else { return }
-        await withCheckedContinuation { continuation in
-            waiters.append((count: count, continuation: continuation))
+        nextWaiter += 1
+        let token = nextWaiter
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters[token] = (count: count, continuation: continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(token) }
         }
     }
 
@@ -136,32 +149,15 @@ actor FakeSnapshotHelper: HelperSnapshotReading {
         parked.remove(at: index).continuation.resume(throwing: CancellationError())
     }
 
+    private func cancelWaiter(_ token: Int) {
+        waiters.removeValue(forKey: token)?.continuation.resume(throwing: CancellationError())
+    }
+
     private func resumeWaiters() {
-        let ready = waiters.filter { $0.count <= requests }
-        waiters.removeAll { $0.count <= requests }
-        for waiter in ready { waiter.continuation.resume() }
-    }
-}
-
-/// A `ContinuousClock`-instant clock the test moves by hand, as `SMCCoreTests`' `SteppedClock`
-/// does for the round-trip monitor. `HelperSnapshotSource` only ever reads `now` from it; the
-/// waits between requests are on a `PollingClock`.
-final class SnapshotTestClock: Clock, Sendable {
-    typealias Instant = ContinuousClock.Instant
-
-    private let base = ContinuousClock.now
-    private let elapsed = OSAllocatedUnfairLock(initialState: Duration.zero)
-
-    var now: Instant { base.advanced(by: elapsed.withLock { $0 }) }
-    var minimumResolution: Duration { .nanoseconds(1) }
-
-    func advance(by amount: Duration) {
-        elapsed.withLock { $0 += amount }
-    }
-
-    /// Never called by the source. Throws rather than waiting on anything real.
-    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
-        throw CancellationError()
+        for (token, waiter) in waiters where waiter.count <= requests {
+            waiters.removeValue(forKey: token)
+            waiter.continuation.resume()
+        }
     }
 }
 
@@ -181,16 +177,71 @@ enum SnapshotTestSupport {
         return condition()
     }
 
+    /// A bounded wait on something an actor holds: yields until `condition` holds, for at most
+    /// `turns` turns, and says whether it did. For a step a mutation can stop from happening,
+    /// so the mutation is a red at the next line and not a minute's wait.
+    @MainActor
+    static func eventually(turns: Int = 10_000, _ condition: () async -> Bool) async -> Bool {
+        for _ in 0..<turns {
+            if await condition() { return true }
+            await Task.yield()
+        }
+        return await condition()
+    }
+
+    /// A bounded wait for the fake to have seen `count` requests.
+    @MainActor
+    static func requestsReach(_ count: Int, on helper: FakeSnapshotHelper) async -> Bool {
+        await eventually { await helper.requests >= count }
+    }
+
+    /// A provider that would answer every direct read — one fan and one sensor — so a view
+    /// model that read the SMC when it should not have would succeed at it, and only the read
+    /// counts show it did.
+    static func directProvider(isAvailable: Bool = true) -> FakeSensorProvider {
+        FakeSensorProvider(
+            isAvailable: isAvailable,
+            allReadings: [.fake(key: "Tp09", value: 42, kind: .temperatureCelsius)],
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 1)),
+                "F0Ac": .success(.fake(key: "F0Ac", value: 1712, kind: .rpm)),
+                "F0Mn": .success(.fake(key: "F0Mn", value: 1200, kind: .rpm)),
+                "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
+                "Tp09": .success(.fake(key: "Tp09", value: 44.2, kind: .temperatureCelsius)),
+            ])
+    }
+
+    /// How many reads a fake provider has served, of either kind.
+    static func readCount(_ provider: FakeSensorProvider) async -> Int {
+        await provider.readAllCallCount + provider.readKeysCalls.count
+    }
+
+    /// A started source whose latest reply is `snapshot`, recorded: the loop has sent its next
+    /// request, which it does only after recording the last answer.
+    @MainActor
+    static func freshSource(
+        _ helper: FakeSnapshotHelper, answering snapshot: SystemSnapshot,
+        clock: SnapshotTestClock = SnapshotTestClock()
+    ) async throws -> HelperSnapshotSource {
+        let source = try await handshakenSource(helper, clock: clock)
+        source.start()
+        try await helper.waitForRequests(1)
+        await helper.reply(with: snapshot)
+        try await helper.waitForRequests(2)
+        try #require(freshSnapshot(source) == snapshot)
+        return source
+    }
+
     /// A source on `helper`, with a hand-wound age clock and an instant pacing clock.
     @MainActor
     static func source(
         _ helper: FakeSnapshotHelper,
         clock: SnapshotTestClock = SnapshotTestClock(),
-        pacing: FakePollingClock = FakePollingClock(),
+        pacing: any PollingClock = FakePollingClock(),
         refreshInterval: TimeInterval = 1
     ) -> HelperSnapshotSource {
         HelperSnapshotSource(
-            reader: helper, refreshInterval: refreshInterval, clock: clock, pacing: pacing)
+            reader: helper, refreshInterval: { refreshInterval }, clock: clock, pacing: pacing)
     }
 
     /// A source on a helper that reports `.handshaken`, once the source has heard it.
@@ -198,7 +249,7 @@ enum SnapshotTestSupport {
     static func handshakenSource(
         _ helper: FakeSnapshotHelper,
         clock: SnapshotTestClock = SnapshotTestClock(),
-        pacing: FakePollingClock = FakePollingClock(),
+        pacing: any PollingClock = FakePollingClock(),
         refreshInterval: TimeInterval = 1
     ) async throws -> HelperSnapshotSource {
         helper.report(.handshaken)
@@ -207,12 +258,29 @@ enum SnapshotTestSupport {
         return source
     }
 
-    /// Stops `source`, fails whatever it is waiting for, and waits for its loop to end.
+    /// Reports `health` and waits, boundedly, until the source has heard it.
     @MainActor
-    static func tearDown(_ source: HelperSnapshotSource, _ helper: FakeSnapshotHelper) async {
-        source.stop()
+    static func report(
+        _ health: HelperConnectionHealth, to source: HelperSnapshotSource,
+        from helper: FakeSnapshotHelper
+    ) async throws {
+        helper.report(health)
+        try #require(await settle { source.health == health })
+    }
+
+    /// Stops `source`, fails whatever it is waiting for, and waits — boundedly — for its loop
+    /// to end. A loop that does not end is an issue recorded here, never a hang.
+    @MainActor
+    static func tearDown(
+        _ source: HelperSnapshotSource, _ helper: FakeSnapshotHelper,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        while source.consumerCount > 0 { source.stop() }
         await helper.close()
-        await source.waitUntilIdle()
+        let ended = await settle { !source.isLoopRunning }
+        #expect(
+            ended, "the source's loop did not end after its consumers left",
+            sourceLocation: sourceLocation)
     }
 
     static func fan(
@@ -253,9 +321,42 @@ enum SnapshotTestSupport {
     /// Why `authority` licenses nothing, or `nil` when it licenses a snapshot.
     @MainActor
     static func notTracked(_ source: HelperSnapshotSource) -> ControlNotTracked? {
-        guard case .notTracked(let why) = source.authority() else { return nil }
-        return why
+        source.authority().notTracked
     }
+}
+
+/// One tag per `HelperConnectionHealth`, with an exhaustive switch and no `default:`, so a
+/// state added to the client's vocabulary does not compile in these suites until it is listed —
+/// and every argument list below is `allCases`, never a hand-written list.
+enum HealthTag: CaseIterable {
+    case idle, handshaken, unresponsive, interrupted, invalidated, refused, versionMismatched
+
+    init(_ health: HelperConnectionHealth) {
+        switch health {
+        case .idle: self = .idle
+        case .handshaken: self = .handshaken
+        case .unresponsive: self = .unresponsive
+        case .interrupted: self = .interrupted
+        case .invalidated: self = .invalidated
+        case .refused: self = .refused
+        case .versionMismatched: self = .versionMismatched
+        }
+    }
+
+    var health: HelperConnectionHealth {
+        switch self {
+        case .idle: return .idle
+        case .handshaken: return .handshaken
+        case .unresponsive: return .unresponsive
+        case .interrupted: return .interrupted
+        case .invalidated: return .invalidated
+        case .refused: return .refused
+        case .versionMismatched: return .versionMismatched
+        }
+    }
+
+    static var all: [HelperConnectionHealth] { allCases.map(\.health) }
+    static var departures: [HelperConnectionHealth] { all.filter { $0 != .handshaken } }
 }
 
 extension HelperSnapshotSource {

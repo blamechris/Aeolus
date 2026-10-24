@@ -48,9 +48,10 @@ struct MenuBarReadoutTests {
     func fanReadoutCarriesReclamationHonestly() {
         let readout = MenuBarReadout(key: "F0Ac", source: .fan)
         let state = SnapshotTestSupport.fan(mode: .manualFixed, reclaimed: true)
-        let resolved = readout.resolve(fans: [Self.fan(control: .reported(state))], sensors: [])
+        let control = FanControlSource.reported(state, thermalEmergency: false)
+        let resolved = readout.resolve(fans: [Self.fan(control: control)], sensors: [])
 
-        #expect(resolved.fanControl == .reported(state))
+        #expect(resolved.fanControl == control)
         #expect(resolved.fanControl?.reportsReclamation == true)
     }
 
