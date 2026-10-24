@@ -16,9 +16,10 @@ import os
 /// - **Scripted answers**, consumed one per call: at once (the default), after a stretch of the
 ///   hand-wound clock, parked until the test answers it, refused with a fault, or failed with a
 ///   client error.
-/// - **Parked replies released by hand** (`answerParked(_:throwing:)`), and by `disconnect()`,
-///   which answers every call still waiting, parked or delayed, `connectionAbandoned`, and
-///   publishes `.idle`, as `HelperClient.disconnect()` does.
+/// - **Parked replies released by hand**, every one of a verb (`answerParked(_:throwing:)`) or
+///   the one that parked first (`answerOldestParked(_:throwing:)`), and by `disconnect()`, which
+///   answers every call still waiting, parked or delayed, `connectionAbandoned`, and publishes
+///   `.idle`, as `HelperClient.disconnect()` does.
 /// - **An event log** (`LeaseLedger`) of each call as it arrives and as it is answered, at the
 ///   clock's instant.
 ///
@@ -98,16 +99,34 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 
     /// Answers every parked call of `verb`: as the table would have, or with `error`.
     func answerParked(_ verb: Verb, throwing error: (any Error)? = nil) {
-        let ready = parkedCalls.filter { $0.value.verb == verb }
-        for key in ready.keys {
-            parkedCalls[key] = nil
-            timers.removeValue(forKey: key)?.cancel()
+        answer(parkedCalls.filter { $0.value.verb == verb }.keys, throwing: error)
+    }
+
+    /// Answers one parked call of `verb`, the one that parked first, and leaves any others
+    /// parked: as the table would have, or with `error`.
+    ///
+    /// - Returns: Whether a call of `verb` was parked to answer.
+    @discardableResult
+    func answerOldestParked(_ verb: Verb, throwing error: (any Error)? = nil) -> Bool {
+        // Each call's key is issued as it parks, so the smallest key parked first.
+        guard let oldest = parkedCalls.filter({ $0.value.verb == verb }).keys.min() else {
+            return false
         }
-        for call in ready.values {
+        answer([oldest], throwing: error)
+        return true
+    }
+
+    private func answer(_ keys: some Collection<UInt64>, throwing error: (any Error)?) {
+        var ready: [Parked] = []
+        for key in keys {
+            timers.removeValue(forKey: key)?.cancel()
+            if let call = parkedCalls.removeValue(forKey: key) { ready.append(call.continuation) }
+        }
+        for continuation in ready {
             if let error {
-                call.continuation.resume(throwing: error)
+                continuation.resume(throwing: error)
             } else {
-                call.continuation.resume()
+                continuation.resume()
             }
         }
     }
