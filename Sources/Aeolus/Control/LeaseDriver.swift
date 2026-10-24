@@ -73,7 +73,9 @@ import Foundation
 /// up to its whole deadline, and arrive with a target the user has already moved past; every
 /// sequenced message behind it, such as a change of fans' acquire, would wait too. Level 6 also
 /// admits one at a time, but through XPC it never sees two under one lease. A change to **which**
-/// fans are held is a release, then an acquire, then an apply.
+/// fans are held is a release, then an acquire, then an apply. The acquire goes ahead whatever the
+/// release answered: a release refused as `.leaseUnknown` means the old lease had already gone,
+/// and that answer is not kept.
 ///
 /// ## Auto is a release
 ///
@@ -298,8 +300,14 @@ public actor LeaseDriver {
     /// The Mac woke. If a lease is held, the next renewal is sent now, so a lease that did not
     /// survive the sleep is reported as lost at once. **Never asks for the fans again.**
     ///
-    /// Returns once the heartbeat it replaced has finished: a renewal that beat had in flight is
-    /// cancelled, and its cancellation is not a loss.
+    /// Returns once the heartbeat it replaced has finished, so that when it returns, that beat can
+    /// no longer change the state. `beat`'s `Task.isCancelled` checks are what keep the replaced
+    /// beat's cancelled renewal from being read as a loss, and an answer it already had from being
+    /// counted.
+    ///
+    /// **How long that takes:** at once, unless the replaced renewal is waiting on the connection's
+    /// handshake, which does not end on cancellation: up to `HelperClientDeadlines.handshakeVerb`.
+    /// Call it from a task of its own, never from the main actor's own path.
     public func systemDidWake() async {
         guard case .held(let held) = current, let grant else { return }
         wokeSinceRenewal = true
@@ -530,6 +538,9 @@ extension LeaseDriver {
                 if !Task.isCancelled { lose(leaseID, .renewal(HelperFailure(error))) }
                 return
             }
+            // A beat stopped while its renewal was in flight does not count the answer: after a
+            // wake, the helper may have given it before the sleep.
+            guard !Task.isCancelled else { return }
             guard renewalAccepted(renewed, for: leaseID) else { return }
         }
     }
@@ -540,13 +551,17 @@ extension LeaseDriver {
     /// helper's latest word rather than the grant's. An answer that names another lease is no
     /// proof this one is alive, and ends it.
     ///
-    /// An answer for a lease no longer held changes nothing: a renewal can be answered after a
-    /// release, and drawing `held` again then would claim control the user gave back. A beat that
-    /// a wake replaced may still be answered here for the lease it renewed; that answer is the
-    /// helper's word about the lease held, so it counts, and the replaced beat ends at its next
-    /// sleep, which its cancellation makes throw.
+    /// Only a beat that has not been stopped reaches here. An answer a wake-replaced beat already
+    /// had is not counted: the helper may have given it before the sleep, and the wake's own
+    /// renewal is what says whether the lease survived. A renewal answered after a release, or
+    /// after a loss, is likewise not counted, so `held` is never drawn again for control the user
+    /// gave back or the helper ended.
+    ///
+    /// **No lease-id check of its own.** A beat that has not been stopped belongs to the lease
+    /// held: every end of a lease stops its beat (`endLease()`), and so does a wake
+    /// (`startHeartbeat`). The `case .held` below is only how `held` is reached.
     private func renewalAccepted(_ renewed: Lease, for leaseID: UUID) -> Bool {
-        guard case .held(let held) = current, held.lease.id == leaseID else { return false }
+        guard case .held(let held) = current else { return false }
         guard renewed.id == leaseID else {
             lose(leaseID, .renewal(.other("the helper renewed a different lease")))
             return false
@@ -564,8 +579,9 @@ extension LeaseDriver {
     }
 
     /// The control connection's health, for as long as `leaseID` is held. No check of its own
-    /// that the lease is still held: `endLease()` cancels this watch, which ends the stream, and
-    /// `lose(_:_:)` ignores a lease that is not the one held.
+    /// that the lease is still held: `endLease()` cancels this watch, but a value buffered before
+    /// the cancel can still arrive after it; `lose(_:_:)`'s lease-id check is what makes it
+    /// harmless.
     private func watch(_ updates: AsyncStream<HelperConnectionHealth>, for leaseID: UUID) async {
         for await health in updates where health != .handshaken {
             lose(leaseID, .connection(health))
