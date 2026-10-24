@@ -8,8 +8,9 @@ import Foundation
 /// is enabled and why not, what it shows as selected, whether it must offer to give the fans back,
 /// and the line beneath it (#154, #155).
 ///
-/// **Nothing renders this yet.** It is the logic and its tests. The control that draws it is
-/// #153's PR 6b, and the contract that control must honour is at the end of this comment.
+/// **Rendered by the main window's one control for all fans** (`AllFansControlPresentation`, drawn
+/// at the head of `FanListView`, #153's PR 6b). The contract that control honours is at the end of
+/// this comment. Per-fan control is PR 8.
 ///
 /// Pure, like `FanRowModel`: no I/O, no clock and no actor. It is a function of what the window
 /// already has, gathered by `Inputs`, and of one fan's row.
@@ -80,11 +81,14 @@ import Foundation
 /// What the driver is doing about this fan, or the last thing that happened to the lease.
 ///
 /// - **Custom says both numbers**: the speed the helper accepted and the held target the snapshot
-///   on screen reports. After an adjust they differ until the next snapshot, at most the refresh
-///   interval.
+///   on screen reports, named as a held target so that it never reads as a measured speed beside
+///   the row's actual RPM. After an adjust they differ until the next snapshot, at most the
+///   refresh interval.
 /// - **`lost` and `refused` are past events**, worded as what happened ("ended", "could not be
 ///   shown to have begun", "refused") and what the helper said then, never as a state now. A
-///   lease is one per machine and `LeaseLoss` names no fans, so every fan carries the line.
+///   lease is one per machine and `LeaseLoss` names no fans, so every fan carries the line. A
+///   refused reason is said in the past tense (`pastTenseSummary`), with the wire code after it as
+///   a detail, never ahead of it.
 /// - **The emergency is named only from a flag that is set**: the one in
 ///   `LeaseLoss.Cause.snapshot(_:isThermalEmergencyActive:)`. The flag clears when § 3's latch
 ///   releases (#476 NB3), so a lease gone with the flag clear says only that control ended. A
@@ -118,9 +122,12 @@ import Foundation
 /// ## The contract the control must honour (#153's PR 6b)
 ///
 /// - **Compute presentations in a SwiftUI `body`, or on `polling.$revision` as `MenuBarViewModel`
-///   does**, reading `Inputs(polling:driver:)` and `polling.fans` together there, or calling
-///   `everyFan(of:driver:)`, which does both. Never from a sink on any single published property
-///   of `polling`.
+///   does, through `everyFan(of:driver:)`**, which reads the rows and the inputs together. Never
+///   from a sink on any single published property of `polling`. `everyFan` is the only entry
+///   production code takes. `init(reading:given:)` and `Inputs(polling:driver:)` stay `internal`
+///   for this file and for the suite, which pins each rule one fan at a time, and nothing else in
+///   the app pairs a row with inputs by hand. That is documented here, not enforced by an access
+///   level.
 /// - **Recompute whenever the driver's state changes as well** (`LeaseDriver.stateUpdates()`):
 ///   `revision` moves only with `polling`, so a control computed on it alone keeps showing Custom
 ///   after the driver has lost the lease, until `polling` next moves `revision`.
@@ -453,12 +460,22 @@ extension FanControlPresentation {
                     detail: nil)
                 return (.unknown, line)
             }
-            let reported = state.targetRPM.map { rpm($0) } ?? "no held target"
-            let line = StatusLine(
-                text: "Accepted \(rpm(speed.rpm)); the helper's last snapshot reports \(reported).",
-                detail: nil)
-            return (.custom(speed), line)
+            return (.custom(speed), StatusLine(text: customLine(speed, state), detail: nil))
         }
+    }
+
+    /// The Custom line: the speed the helper accepted, then the held target the snapshot on screen
+    /// reports, named as a target so that it does not read as a measured speed beside the row's
+    /// actual RPM. Under `.custom` the snapshot always states one, because `controlLoss` found
+    /// every covered fan with a positive held target. The other wording is for a change that broke
+    /// that: it says what is on screen rather than inventing a figure.
+    private static func customLine(_ speed: FanTargetRPM, _ state: FanState) -> String {
+        guard let target = state.targetRPM else {
+            return "Accepted \(rpm(speed.rpm)); the snapshot on screen reports no held target for "
+                + "this fan."
+        }
+        return "Accepted \(rpm(speed.rpm)); the snapshot on screen reports a held target of "
+            + "\(rpm(target))."
     }
 
     /// Why a confirmed lease cannot be checked against what is on screen.
@@ -527,12 +544,19 @@ private enum LeaseEventText {
     /// What the control connection did, in the past tense, with the state's own name beside it.
     /// Not `ControlSourceDisplay`'s sentences: those describe the connection now, and a
     /// replacement connection reports `.idle`, which that text calls "not connected yet".
+    ///
+    /// - **`.idle` names the trigger exactly.** The driver ends a lease on the first health that is
+    ///   not `.handshaken` (`LeaseDriver.watch(_:for:)`), and `.idle` is what a torn-down or
+    ///   replaced connection reports: the control connection was no longer handshaken.
+    /// - **`.handshaken` is unreachable.** That same watch skips every `.handshaken`, so no loss
+    ///   carries it. The switch stays exhaustive, with no `default:`, so the arm says only what the
+    ///   state was and claims no cause.
     private static func connection(_ health: HelperConnectionHealth) -> String {
         switch health {
         case .idle:
-            return "The connection to the helper reported no handshake (idle)."
+            return "The control connection to the helper was no longer handshaken (idle)."
         case .handshaken:
-            return "The connection to the helper reported a handshake (handshaken)."
+            return "The control connection reported its state as handshaken (handshaken)."
         case .unresponsive:
             return "The helper stopped answering (unresponsive)."
         case .interrupted:
@@ -584,15 +608,17 @@ private enum LeaseEventText {
     /// A fault by its wire code, with any free text it carries cleaned.
     ///
     /// Not `errorDescription`: that text says `.leaseExpired` means "the fans have returned to
-    /// automatic control", which is a snapshot's to show. A refused reason's summary describes the
-    /// reason as it stands, so it is introduced as what the helper's answer meant at the time.
+    /// automatic control", which is a snapshot's to show. A refused reason is said first, in the
+    /// past tense (`pastTenseSummary`): `userFacingSummary` describes the reason as it stands, and
+    /// this line is about an answer already given. The wire code and the reason's wire value
+    /// follow as a detail, as a raw key follows a label.
     /// **Exhaustive, with no `default:`**, so a fault added to the vocabulary is a compile error
     /// here until it is rendered.
     private static func fault(_ fault: AeolusXPCFault) -> String {
         switch fault {
         case .manualControlUnavailable(let reason):
-            return fault.wireCode + " (" + HelperAuthoredText.sanitised(reason.wireValue)
-                + "). At the time, that meant: " + reason.userFacingSummary
+            return reason.pastTenseSummary + " (" + fault.wireCode + ": "
+                + HelperAuthoredText.sanitised(reason.wireValue) + ")"
         case .malformedPayload(let detail), .helperFailed(let detail):
             return fault.wireCode + ": " + HelperAuthoredText.sanitised(detail)
         case .invalidParameter(let name, let detail):

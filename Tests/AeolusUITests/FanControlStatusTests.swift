@@ -80,9 +80,9 @@ struct FanControlStatusTests {
     /// **Mutation (ED):** make `LeaseEventText.fault` return
     /// `HelperAuthoredText.sanitised(fault.errorDescription ?? fault.wireCode)`. Run: red at the
     /// "returned to automatic" expectation for `.leaseExpired`, and at the detail's shape for
-    /// every argument. **Mutation (PT):** render `.manualControlUnavailable` as the reason's
-    /// summary followed by its wire value, which reads as the state now. Run: red for that
-    /// argument.
+    /// every argument. **Mutation (PT):** render `.manualControlUnavailable` with the reason's
+    /// `userFacingSummary`, which reads as the state now, in place of `pastTenseSummary`. Run: red
+    /// for that argument.
     @Test(
         "A refusal says it was refused, by the helper's own code, and claims no fan state",
         arguments: Fixtures.FaultTag.allCases)
@@ -94,10 +94,7 @@ struct FanControlStatusTests {
         let detail = try #require(line.detail)
         switch fault {
         case .manualControlUnavailable(let reason):
-            #expect(
-                detail
-                    == "manualControlUnavailable (detail). At the time, that meant: "
-                    + reason.userFacingSummary)
+            #expect(detail == reason.pastTenseSummary + " (manualControlUnavailable: detail)")
         case .unknown:
             #expect(detail == "detail: detail")
         default:
@@ -180,7 +177,7 @@ struct FanControlStatusTests {
         let violation = HelperClientError.protocolViolation(detail: sent)
         let violationText = HelperAuthoredText.sanitised(
             try #require(violation.errorDescription))
-        let summary = ManualControlAvailability.Reason.unknown(sent).userFacingSummary
+        let summary = ManualControlAvailability.Reason.unknown(sent).pastTenseSummary
 
         return [
             (.refused(.malformedPayload(detail: sent)), "malformedPayload: \(piece)"),
@@ -190,7 +187,7 @@ struct FanControlStatusTests {
             ),
             (
                 .refused(.manualControlUnavailable(reason: .unknown(sent))),
-                "manualControlUnavailable (\(piece)). At the time, that meant: \(summary)"
+                "\(summary) (manualControlUnavailable: \(piece))"
             ),
             (
                 .refused(.boundsImplausible(fanIndex: 0, detail: sent)),
@@ -231,9 +228,10 @@ struct FanControlStatusTests {
 
         let expected: String
         switch HealthTag(health) {
-        case .idle: expected = "The connection to the helper reported no handshake (idle)."
+        case .idle:
+            expected = "The control connection to the helper was no longer handshaken (idle)."
         case .handshaken:
-            expected = "The connection to the helper reported a handshake (handshaken)."
+            expected = "The control connection reported its state as handshaken (handshaken)."
         case .unresponsive: expected = "The helper stopped answering (unresponsive)."
         case .interrupted: expected = "The helper process went away (interrupted)."
         case .invalidated: expected = "The connection to the helper ended (invalidated)."

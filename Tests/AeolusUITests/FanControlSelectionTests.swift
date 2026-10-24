@@ -56,10 +56,10 @@ struct FanControlSelectionTests {
         }
         #expect(
             try Fixtures.present(0, on: screen).status?.text
-                == "Accepted 3000 RPM; the helper's last snapshot reports 2900 RPM.")
+                == "Accepted 3000 RPM; the snapshot on screen reports a held target of 2900 RPM.")
         #expect(
             try Fixtures.present(1, on: screen).status?.text
-                == "Accepted 3200 RPM; the helper's last snapshot reports 3100 RPM.")
+                == "Accepted 3200 RPM; the snapshot on screen reports a held target of 3100 RPM.")
     }
 
     /// The snapshot would prove control; only the phase says the apply has not answered.
