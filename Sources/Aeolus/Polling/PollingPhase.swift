@@ -13,7 +13,8 @@ public enum PollingPhase: Sendable, Hashable {
     /// or a subsequent refresh.
     case polling
     /// Nothing is read: a helper is being connected to, or owes this connection its first
-    /// snapshot (`HelperSnapshotSource.Authority.awaitHelper`). ADR 0006 allows the app's own
+    /// snapshot, or its last answer in this episode has outlived its bound
+    /// (`HelperSnapshotSource.Authority.awaitHelper`). ADR 0006 allows the app's own
     /// SMC reads only while the helper is absent, refused or unreachable, so `fans`/`sensors`
     /// are left as they were — empty before anything has been read, or the last readings,
     /// which a view says are not current.

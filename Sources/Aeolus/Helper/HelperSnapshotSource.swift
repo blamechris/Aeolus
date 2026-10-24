@@ -15,8 +15,9 @@ import Foundation
 /// - `.fresh`: render the snapshot.
 /// - `.readDirectly(why)`: no claim, and the app reads the SMC itself.
 /// - `.awaitHelper(why)`: no claim, and the app reads **nothing** — the connection is being
-///   made, or is handshaken and its first answer in this episode has not come yet. Reading the
-///   SMC then would put a discovery walk of every key beside the helper's own, for a second.
+///   made, or is handshaken and its first answer in this episode has not come yet, or its last
+///   answer in this episode has outlived its bound. Reading the SMC then would put a discovery
+///   walk of every key beside the helper's own, for as long as the handshake takes.
 ///
 /// ## One per app
 ///
@@ -65,8 +66,9 @@ import Foundation
 /// the instant its reply reached this object. The bound is one pause plus one full deadline:
 /// if the helper wedges on the next request, `HelperClient` gives up on it at `gatedVerb`, and
 /// by then this snapshot has already gone stale rather than outliving the wedge. The interval is
-/// read **live**, on every cycle and every judgement, so a change to the preference applies at
-/// once.
+/// read **live**, on every cycle and every judgement, and a pause already under way is cut short
+/// when the preference changes (`refreshIntervalDidChange()`), so a change applies at once in
+/// either direction.
 ///
 /// **`SystemSnapshot.capturedAt` is never compared against.** It is the helper's wall clock,
 /// which can jump, and an age read off it would make a snapshot fresh forever after a clock
@@ -100,7 +102,8 @@ public final class HelperSnapshotSource {
         /// ADR 0006's fallback.
         case readDirectly(ControlNotTracked)
         /// Nothing may be claimed about control, and the consumer reads nothing: a helper is
-        /// being connected to, or has handshaken and owes this episode its first answer.
+        /// being connected to, or has handshaken and owes this episode its first answer, or its
+        /// last answer in this episode has outlived its bound.
         case awaitHelper(ControlNotTracked)
 
         /// Why nothing may be claimed, or `nil` for a fresh snapshot.
@@ -263,6 +266,24 @@ public final class HelperSnapshotSource {
 
     // MARK: - Consumers
 
+    /// Whether there is a helper to read at all. `false` in a build with no helper and for a
+    /// damaged bundle, where `authority()` can only ever say why nothing is tracked — so a
+    /// consumer has nothing to watch for (`PollingViewModel` starts no authority watch).
+    public var hasReader: Bool {
+        if case .helper = reading { return true }
+        return false
+    }
+
+    /// The refresh interval preference changed. The pause between requests in progress was
+    /// measured on the old interval; it is cut short, so the next request goes out now and
+    /// the pause after it is the new length. Without this, lowering the interval from 60 s to
+    /// 1 s would leave a healthy helper's snapshot stale — and the window waiting, reading
+    /// nothing — for most of a minute. Like `retrySoon()`, it cuts only a pause: a request in
+    /// flight is left alone, and no second one is sent beside it.
+    public func refreshIntervalDidChange() {
+        pause?.cancel()
+    }
+
     /// One more consumer wants snapshots. The first starts the request loop, unless one is
     /// still finishing a request from before the last `stop()` — then that loop carries on,
     /// and no second request is sent.
@@ -284,9 +305,11 @@ public final class HelperSnapshotSource {
     }
 
     /// The user has just done something that may have changed the helper's answer: approved
-    /// it, or come back to the app. A backoff pause ends now and the next request goes out at
-    /// once; the failure count starts again. A request already in flight is left alone, and no
-    /// second one is sent beside it — only a pause is ever cut short.
+    /// it, or come back to the app. A **backoff** pause ends now and the next request goes out
+    /// at once; the failure count starts again. An ordinary pause, after an answer, is left
+    /// alone — the app becomes active all the time, and a healthy helper is not polled faster
+    /// for it. A request already in flight is left alone, and no second one is sent beside
+    /// it — only a pause is ever cut short.
     public func retrySoon() {
         guard consecutiveFailures > 0 else { return }
         consecutiveFailures = 0

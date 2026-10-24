@@ -33,13 +33,15 @@ enum PollingStatusDisplay {
         case .notStarted:
             return Text(message: "Waiting for first reading…", severity: .normal)
         case .waitingForHelper:
+            // The only marker that the readings on screen are not current, so it is a warning
+            // whenever there are readings to qualify, and it never says "just now".
             guard let lastUpdated else {
                 return Text(message: "Waiting for the helper's first snapshot…", severity: .normal)
             }
             return Text(
                 message:
-                    "Waiting for the helper — showing the last reading from "
-                    + elapsed(since: lastUpdated, now: now),
+                    "Waiting for the helper — the readings shown are from "
+                    + elapsedWithoutJustNow(since: lastUpdated, now: now),
                 severity: .warning)
         case .polling:
             guard let lastUpdated else {
@@ -70,6 +72,13 @@ enum PollingStatusDisplay {
                     + elapsed(since: lastUpdated, now: now),
                 severity: .warning)
         }
+    }
+
+    /// `elapsed(since:now:)` without "just now", for readings that are being shown as not
+    /// current: "just now" there would read as an all-clear.
+    private static func elapsedWithoutJustNow(since date: Date, now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        return seconds < 1 ? "less than a second ago" : elapsed(since: date, now: now)
     }
 
     private static func elapsed(since date: Date, now: Date) -> String {

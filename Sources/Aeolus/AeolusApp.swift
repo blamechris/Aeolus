@@ -1,5 +1,6 @@
 import AeolusXPC
 import AppKit
+import Combine
 import FanKit
 import SwiftUI
 
@@ -26,8 +27,9 @@ public struct AeolusApp: App {
     /// window's, the menu bar's and the Settings window's. A plain constant rather than a
     /// `StateObject`: nothing renders the source itself, and `init()` runs once per process.
     /// In a build with no helper it holds no client at all (`HelperSnapshotSource.forBundle`).
-    /// It reads the refresh interval preference live, so its cadence and freshness bound
-    /// follow a change at once.
+    /// It reads the refresh interval preference live, and is told when it changes so a pause
+    /// already under way is cut short: its cadence and freshness bound follow a change at once,
+    /// in either direction.
     private let snapshots: HelperSnapshotSource
 
     public init() {
@@ -97,6 +99,14 @@ public struct AeolusApp: App {
             ) { _ in
                 snapshots.retrySoon()
             }
+            // A pause the source began on the old interval would otherwise run its full length
+            // — after a drop from 60 s to 1 s, nearly a minute of a stale snapshot and no reads.
+            .onReceive(
+                preferencesController.$preferences.map(\.refreshInterval).removeDuplicates()
+                    .dropFirst()
+            ) { _ in
+                snapshots.refreshIntervalDidChange()
+            }
         }
         .menuBarExtraStyle(.window)
 
@@ -137,11 +147,12 @@ struct MainView: View {
     private let snapshots: HelperSnapshotSource
 
     /// Reads `preferencesController.preferences.refreshInterval` once, at construction,
-    /// to seed this window's own `PollingViewModel`: how often this window redraws, and how
-    /// often it reads the SMC itself on the direct-read path, change when the window is
-    /// reopened. The helper's snapshots follow a change at once, because the shared source
-    /// reads the preference live. (`selectedSensorKeys`/`temperatureUnit` are read fresh on
-    /// every `body` evaluation below and apply immediately.)
+    /// to seed this window's own `PollingViewModel`: how often this window reads the SMC itself,
+    /// on the direct-read path, changes when the window is reopened. The helper's snapshots —
+    /// and this window showing each new one, through the authority watch — follow a change at
+    /// once, because the shared source reads the preference live and cuts its pause short.
+    /// (`selectedSensorKeys`/`temperatureUnit` are read fresh on every `body` evaluation below
+    /// and apply immediately.)
     init(preferencesController: PreferencesController, snapshots: HelperSnapshotSource) {
         self.preferencesController = preferencesController
         self.snapshots = snapshots

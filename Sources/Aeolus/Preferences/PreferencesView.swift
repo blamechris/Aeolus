@@ -131,9 +131,9 @@ struct PreferencesView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             Text(
-                "The helper's snapshots follow this at once. The main window and the menu bar "
-                    + "change how often they redraw, and read sensors themselves, the next time "
-                    + "each starts."
+                "The helper's snapshots, and the window and menu bar showing them, follow this "
+                    + "at once. When Aeolus reads sensors itself, the main window changes pace "
+                    + "when it is next opened, and the menu bar when Aeolus next starts."
             )
             .font(.caption2)
             .foregroundStyle(.secondary)
