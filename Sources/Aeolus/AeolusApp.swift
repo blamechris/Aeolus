@@ -7,8 +7,13 @@ import SwiftUI
 /// The SwiftUI application.
 ///
 /// This target is a *view* of helper state, not an owner of it. It edits configuration
-/// and renders snapshots; it never writes to the SMC and never holds authoritative fan
-/// state. Closing the window or quitting the app is always safe.
+/// and renders snapshots, and it never writes to the SMC: every write is the helper's,
+/// under a lease, clamped helper-side. The app can now hold that lease (`LeaseDriver`,
+/// built by `AppComposition` in a build with a helper), though nothing in it takes one yet.
+/// What the fans are doing is still the helper's snapshot to say, never a value the app
+/// keeps. Quitting, logging out and closing the last control window each give back a held
+/// lease explicitly, with the helper's connection-invalidation path as the backstop
+/// (`LeaseLifecycle`).
 ///
 /// Built two ways:
 ///   * `Monitor` — read-only, no helper, no entitlements. Ad-hoc signable, so anyone can
@@ -19,32 +24,38 @@ import SwiftUI
 ///   type is compiled as a plain library under `swift build` so CI type-checks the views
 ///   without needing an app bundle.
 public struct AeolusApp: App {
+    /// The quit's one AppKit callback, answered by `composition` (`AeolusAppDelegate`).
+    @NSApplicationDelegateAdaptor(AeolusAppDelegate.self) private var appDelegate
     @StateObject private var preferencesController: PreferencesController
     @StateObject private var launchAtLoginController: LaunchAtLoginController
     @StateObject private var menuBarViewModel: MenuBarViewModel
 
+    /// The app's one composition root (`AppComposition.running`): the snapshot source, and in
+    /// a build with a helper the lease driver and every event that reaches it. A plain
+    /// constant rather than a `StateObject`: nothing renders it, and `init()` runs once per
+    /// process.
+    private let composition: AppComposition
+
     /// The app's one reader of helper snapshots, shared by every `PollingViewModel` — the
-    /// window's, the menu bar's and the Settings window's. A plain constant rather than a
-    /// `StateObject`: nothing renders the source itself, and `init()` runs once per process.
-    /// In a build with no helper it holds no client at all (`HelperSnapshotSource.forBundle`).
-    /// It reads the refresh interval preference live, and is told when it changes so a pause
-    /// already under way is cut short: its cadence and freshness bound follow a change at once,
-    /// in either direction.
-    private let snapshots: HelperSnapshotSource
+    /// window's, the menu bar's and the Settings window's. In a build with no helper it holds
+    /// no client at all (`AppComposition`). It reads the refresh interval preference live,
+    /// and is told when it changes so a pause already under way is cut short: its cadence and
+    /// freshness bound follow a change at once, in either direction.
+    private var snapshots: HelperSnapshotSource { composition.snapshots }
 
     public init() {
         // `preferencesController` must exist before the other two `StateObject`s: both
         // read its already-loaded `Preferences` value once, at construction, to seed the
         // refresh interval and menu bar selection this build starts with (the snapshot
-        // source alone reads the interval live, through the closure below) — see
-        // `PreferencesRefreshInterval`'s and `Preferences.menuBarReadouts`'s own
-        // documentation for why those are read here rather than left at
-        // `PollingViewModel`'s and `MenuBarViewModel`'s own hardcoded defaults.
-        let preferencesController = PreferencesController()
+        // source alone reads the interval live) — see `PreferencesRefreshInterval`'s and
+        // `Preferences.menuBarReadouts`'s own documentation for why those are read here
+        // rather than left at `PollingViewModel`'s and `MenuBarViewModel`'s own hardcoded
+        // defaults. The root built it, so the delegate's root and this one share it.
+        let composition = AppComposition.running
+        self.composition = composition
+        let preferencesController = composition.preferencesController
         _preferencesController = StateObject(wrappedValue: preferencesController)
-        let snapshots = HelperSnapshotSource.forRunningApp(
-            refreshInterval: { preferencesController.preferences.refreshInterval })
-        self.snapshots = snapshots
+        let snapshots = composition.snapshots
         _launchAtLoginController = StateObject(
             wrappedValue: LaunchAtLoginController(preferences: preferencesController))
         _menuBarViewModel = StateObject(
@@ -57,8 +68,11 @@ public struct AeolusApp: App {
     }
 
     public var body: some Scene {
+        // The control window: the last of these to close releases the lease
+        // (`AppComposition.windowDisappeared(_:id:)`, #155's default). Each window's root view
+        // reports its own presence, as its own kind (`AppWindow`).
         WindowGroup {
-            MainView(preferencesController: preferencesController, snapshots: snapshots)
+            MainView(preferencesController: preferencesController, composition: composition)
         }
 
         // `MenuBarExtra` with multiple simultaneous readouts (`MenuBarLabelView`) and a
@@ -81,8 +95,9 @@ public struct AeolusApp: App {
         //   lives instead in `MenuBarContentView`, in the view layer, where `#available`
         //   branching is fully supported.
         MenuBarExtra {
+            // Not a control window: the panel closes on every click elsewhere.
             MenuBarContentView(
-                viewModel: menuBarViewModel,
+                viewModel: menuBarViewModel, composition: composition,
                 temperatureUnit: preferencesController.preferences.temperatureUnit)
         } label: {
             MenuBarLabelView(
@@ -114,11 +129,12 @@ public struct AeolusApp: App {
         // contents, and launch at login. macOS surfaces this as "Aeolus › Settings…" (or
         // "Preferences…" pre-Ventura) automatically — no menu item is defined for it here.
         Settings {
+            // Not a control window either.
             PreferencesView(
                 preferencesController: preferencesController,
                 launchAtLoginController: launchAtLoginController,
                 menuBarViewModel: menuBarViewModel,
-                snapshots: snapshots)
+                composition: composition)
         }
     }
 }
@@ -141,10 +157,14 @@ public struct AeolusApp: App {
 /// leave "can this app change my fans?" to be inferred, and inference is what `CLAUDE.md`
 /// rule 6 exists to prevent.
 struct MainView: View {
+    /// The kind of window this view is the root of: the control window.
+    static let window = AppWindow.main
+
     @ObservedObject var preferencesController: PreferencesController
     @StateObject private var viewModel: PollingViewModel
     @StateObject private var helperController = HelperLifecycleController()
-    private let snapshots: HelperSnapshotSource
+    private let composition: AppComposition
+    private var snapshots: HelperSnapshotSource { composition.snapshots }
 
     /// Reads `preferencesController.preferences.refreshInterval` once, at construction,
     /// to seed this window's own `PollingViewModel`: how often this window reads the SMC itself,
@@ -153,14 +173,14 @@ struct MainView: View {
     /// once, because the shared source reads the preference live and cuts its pause short.
     /// (`selectedSensorKeys`/`temperatureUnit` are read fresh on every `body` evaluation below
     /// and apply immediately.)
-    init(preferencesController: PreferencesController, snapshots: HelperSnapshotSource) {
+    init(preferencesController: PreferencesController, composition: AppComposition) {
         self.preferencesController = preferencesController
-        self.snapshots = snapshots
+        self.composition = composition
         _viewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
                 refreshInterval: preferencesController.preferences.refreshInterval,
-                snapshots: snapshots))
+                snapshots: composition.snapshots))
     }
 
     private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
@@ -189,6 +209,7 @@ struct MainView: View {
         .frame(minWidth: 720, minHeight: 420)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+        .reportsPresence(as: Self.window, to: composition)
         // macOS just reported the helper enabled — typically the approval the footer asked
         // for — so a backoff from its earlier absence ends now, rather than leaving this pane
         // saying "cannot reach its helper" beside a footer saying "installed and enabled".

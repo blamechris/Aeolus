@@ -153,8 +153,8 @@ tolerated. A single scheduling hiccup must not surrender control; a dead client 
 
 **That tolerance is a property of the client's *sending*, and the helper used to be able to
 defeat it** ([#229](https://github.com/blamechris/Aeolus/issues/229)). After #90 six of the
-seven XPC verbs shared one per-connection queue, `renewLease` among them, and § 3 has the app
-rendering the snapshot at 1 Hz on the connection it also holds its lease on — so on a machine
+seven XPC verbs shared one per-connection queue, `renewLease` among them, and the app was to render
+the snapshot at 1 Hz (§ 3) on the same connection it would hold its lease on — so on a machine
 whose reads cost more than a second the backlog grew monotonically, and once it was longer than
 the TTL a beat sent exactly on schedule reached the lease table after the lease had gone. The
 direction was fail-safe, and it was still a live, healthy client losing manual control for a
@@ -165,6 +165,12 @@ precondition neither may acquire. The queue itself is still unbounded, deliberat
 it would answer some other message with a refusal a compliant client could not avoid either,
 which is the defect moved rather than closed. `AeolusXPCProtocol`'s ordering section states
 exactly which verbs are sequenced and what the remaining cost is.
+
+**The app no longer reads and holds on one connection.** It holds its lease on a control
+connection of its own, a second `HelperClient` separate from the read connection it renders
+snapshots from (`AppComposition`, #153), so no `snapshot` is queued behind the app's own `apply`.
+Nothing in the app takes a lease yet; the control that will is #153's PR 6b. The helper-side fix
+above is unchanged by this, and still covers a client that reads and holds on one connection.
 
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
@@ -932,6 +938,33 @@ are sometimes eight seconds long, all night, in a bag. What the app does about t
 maintainer's call and this document does not make it. That is what keeps "never claim control you do not have" a structural property rather
 than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
+
+**The app ships three defaults that are the maintainer's to change, and none of them is the
+maintainer's decision.** Each is #153's default, recorded here so it is not read as one. Nothing in
+the app takes a lease yet, so none of them acts on today's build.
+
+**Wake never re-acquires.** On `NSWorkspace.didWakeNotification` the app's lease driver sends its
+next renewal at once, so a lease that did not survive the sleep is reported as lost then, and it
+asks for nothing (`LeaseDriver.systemDidWake()`, wired by `AppComposition`). Changing this is a
+change to the driver and a safety review, not a flag: `LeaseLoss` carries no target to ask for
+again.
+
+**Fast user switching releases.** When this user's session resigns active
+(`NSWorkspace.sessionDidResignActiveNotification`) the app releases its lease, and switching back
+asks for nothing. Giving the fans back is always safe. The alternative, holding the lease across the
+switch, would leave the user at the console refused with `leaseHeldByAnotherClient`.
+
+**Closing the last main window releases.** That is #155's text. The menu bar item keeps running, so
+"set 75 %, close the window" puts the fans back on automatic; the Settings window and the menu bar
+panel never release. Whether the lease should instead live as long as the menu bar item is the
+maintainer's open question on #153.
+
+**One effect of those defaults is the maintainer's to weigh as well: an idle sleep ends a held
+lease.** While it holds a lease the app keeps an App Nap activity with
+`.userInitiatedAllowingIdleSystemSleep` (`LeaseProcessAssertions`), which still allows idle sleep.
+A Mac left idle with its lid open sleeps, the helper hands the fans back across the sleep as this
+section describes, and wake does not ask for them again. Keeping the Mac awake while a lease is held
+would take a different option, and that is the maintainer's decision.
 
 The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is
 **answered for a read-only handle on `Mac16,5`**: #68 asked which of three outcomes happens, and
@@ -2129,13 +2162,48 @@ scripted firmware: restored exactly once, failed mode read and failed enumeratio
 back to the machine-wide verb, a second pass declined, budget exhaustion. None of it proves a real
 firmware takes the mode write.
 
-**4. App quit restores automatic control.** *Executes: during E3/E4 bring-up.* Same mechanism as
-row 1 — lease teardown on connection invalidation — and write-blocked for the same reason.
+**4. App quit restores automatic control.** *Executes: during E3/E4 bring-up, and maintainer-only:
+the app's explicit release needs a signed Full build.* Write-blocked for the same reason as row 1,
+and it no longer shares row 1's mechanism. A quit now sends an explicit `releaseLease` on the app's
+control connection, waits up to `LeaseDriver.releaseBound` for the answer, and only then tears the
+connection down, so lease teardown on connection invalidation is the backstop rather than the
+mechanism (`LeaseLifecycle`, `AppComposition`, #155). The shutdown runs off the main actor and the
+reply comes back through the main run loop, because AppKit's `.terminateLater` loop can hold the
+main actor until the reply (`MainRunLoop`, #493).
+
+It passes when the helper's `Lease` log shows the restore as
+`returned to automatic control (the client released the lease).`,
+not `(the holding connection died)`, and the quit completes within about two seconds, well under it
+with a healthy helper. A quit that takes the full two seconds means the release went unanswered and
+the bound let it go. Watch it with:
+
+```bash
+log stream --level debug --style compact --predicate 'subsystem == "dev.aeolus.AeolusHelper" AND category == "Lease"'
+```
+
+Renewals are logged at debug level only. `LeaseLifecycleTests`, `AppCompositionLeaseTests` and
+`QuitOffTheMainActorTests` hold the order against a fake helper; nothing in the app takes a lease
+yet, so there is nothing to release on today's build.
+
+**A signal is not a quit.** `kill`, `launchctl` and a root `shutdown` send the app `SIGTERM`, which
+ends it without `applicationShouldTerminate(_:)`: no explicit release is sent, and the helper's
+connection-invalidation backstop ends the lease, logged `(the holding connection died)`. The app
+does not handle `SIGTERM`; handling it would be a design change for the architect.
 
 **5. Logout restores automatic control.** *Executes: during E3/E4 bring-up.* The orderly signal
 path. `SignalTeardownTests` covers the handler body end to end over the scripted plane; signal
 *delivery* is asserted at the source by `SignalTeardownTripwireTests` rather than tested,
-deliberately, because installing the real source would apply `SIG_IGN` to the test runner.
+deliberately, because installing the real source would apply `SIG_IGN` to the test runner. The app's
+half, on a signed Full build: on `NSWorkspace.willPowerOffNotification` it sends an explicit
+`releaseLease`, and the quit that follows finds nothing held. It passes on the same log evidence as
+row 4, with no "preventing logout" prompt (#153's checklist).
+
+The app also disables sudden and automatic termination while it is taking, holding or giving back a
+lease, and that is defence in depth, not what this row rests on: the sudden-termination counter
+starts at 1, the app's `Info.plist` sets neither `NSSupportsSuddenTermination` nor
+`NSSupportsAutomaticTermination`, and the App Nap activity it holds while it holds a lease already
+disables both. The counters also trail the driver by a main-actor turn, and are enabled again at a
+loss while the release after it may still be in flight (`LeaseProcessAssertions`).
 
 **6. Restart restores automatic control.** *Executes: during E3/E4 bring-up.* As row 5, plus row
 17's boot-start half.

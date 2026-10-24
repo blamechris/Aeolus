@@ -25,7 +25,7 @@ struct LeaseLifecycleTests {
     func quitReleasesBeforeDisconnect() async throws {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
-        let lifecycle = LeaseLifecycle(driver: scene.driver)
+        let lifecycle = LeaseLifecycle(driver: scene.driver, mainRunLoop: TestMainRunLoop(.atOnce))
 
         let answer = lifecycle.applicationShouldTerminate(reply: scene.recordReply)
         await scene.ledger.waitFor { $0.index(where: \.isTerminationReply) != nil }
@@ -53,7 +53,7 @@ struct LeaseLifecycleTests {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         await scene.helper.script(.release, .parked)
-        let lifecycle = LeaseLifecycle(driver: scene.driver)
+        let lifecycle = LeaseLifecycle(driver: scene.driver, mainRunLoop: TestMainRunLoop(.atOnce))
 
         lifecycle.applicationShouldTerminate(reply: scene.recordReply)
         await scene.ledger.waitFor { $0.releases == [held.lease.id] }
@@ -80,7 +80,7 @@ struct LeaseLifecycleTests {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
         await scene.helper.script(.release, .parked)
-        let lifecycle = LeaseLifecycle(driver: scene.driver)
+        let lifecycle = LeaseLifecycle(driver: scene.driver, mainRunLoop: TestMainRunLoop(.atOnce))
 
         // Close: the release is sent and parked; the close is let go at the bound.
         let closing = scene.call { await lifecycle.lastControlWindowClosed() }
@@ -117,7 +117,7 @@ struct LeaseLifecycleTests {
     func closingReleases() async throws {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
-        let lifecycle = LeaseLifecycle(driver: scene.driver)
+        let lifecycle = LeaseLifecycle(driver: scene.driver, mainRunLoop: TestMainRunLoop(.atOnce))
 
         await scene.run { await lifecycle.lastControlWindowClosed() }
 
@@ -133,7 +133,7 @@ struct LeaseLifecycleTests {
     func logoutReleases() async throws {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(LeaseScene.target([0: 3000])))
-        let lifecycle = LeaseLifecycle(driver: scene.driver)
+        let lifecycle = LeaseLifecycle(driver: scene.driver, mainRunLoop: TestMainRunLoop(.atOnce))
 
         await scene.run { await lifecycle.systemWillPowerOff() }
 
