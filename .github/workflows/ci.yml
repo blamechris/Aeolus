@@ -58,6 +58,12 @@ jobs:
       # refused shape is code that must not compile, so no test can hold it: this compiles each
       # one fully against the modules the step above built, on this runner's own toolchain, and
       # requires its refusal; a positive control must compile. Reads only.
+      #
+      # It holds a second boundary the same way (#491). `LeaseDriver.runningHeartbeat` is
+      # `internal`, for the suite alone, and the AeolusLeaseControl target is what keeps every
+      # other module from naming it. A test sees the accessor through `@testable`, so none can
+      # notice it widened to `package` or `public`, or the target folded back into AeolusUI; the
+      # probe imports the module plainly and requires the `internal` refusal.
       - name: Lending probes
         run: scripts/lending-probes/check.sh
 
@@ -73,6 +79,26 @@ jobs:
       # working in a Release build.
       - name: Test (release configuration)
         run: swift test -c release -Xswiftc -enable-testing
+
+      # The other half of the step above, and the only build here without testability. Debug
+      # builds with it by default, and the step above asks for it, so in every other build in this
+      # workflow a `@testable import` in production code compiles and reaches an `internal`
+      # declaration that exists for the suite alone (`LeaseDriver.runningHeartbeat`, #489, #491).
+      # Only a build without it refuses the import, and until this step the first such build was
+      # the maintainer's Full Release, on a tag. This builds every target that ships and no test
+      # target, which is where `@testable import` belongs, so one under Sources/ fails it.
+      #
+      # The failure names the wrong file. It reads `unable to resolve Swift module dependency to a
+      # compatible module: 'AeolusLeaseControl'` (the wording varies with the toolchain) at the
+      # first `import` of that module in the target, `LeaseLifecycle.swift:1:8`, not at the file
+      # that wrote `@testable`. Search Sources/ for `@testable`.
+      #
+      # What it does not build: Sources/Aeolus/main.swift, which only the Xcode app target
+      # compiles (Package.swift excludes it from AeolusUI). The one Xcode build CI runs is
+      # Monitor Debug, which accepts a `@testable import`; the Release configurations refuse it,
+      # and CI does not build them.
+      - name: Build (release, without testability)
+        run: swift build -c release
 
   monitor-app:
     name: Monitor app build
