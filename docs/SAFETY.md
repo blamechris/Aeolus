@@ -94,9 +94,13 @@ lease that has to be actively held.
 
 - A client requests control with a time-to-live — 30 seconds by default.
 - It renews on a heartbeat, every 10 seconds by default.
-- If the lease expires for **any** reason — the client crashed, was `kill -9`'d, the GUI
-  hung, the user logged out, a deadlock stalled the renewal — the helper restores every
+- If the lease expires for **any** reason — the client crashed, was `kill -9`'d or
+  force-quit, the user logged out, a deadlock stalled the renewal — the helper restores every
   affected fan to automatic.
+- **A lease proves the holder's process is renewing, not that its UI responds.** The app renews
+  off the main actor (`LeaseDriver`), so a frozen window keeps the user's speed until the app is
+  force-quit. That is deliberate: tying renewal to the main thread would let a busy, healthy UI
+  lose control, the failure #229 closed. This bullet listed "the GUI hung" until #479.
 
 **That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
 ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
@@ -1725,8 +1729,8 @@ control. Anything less and users are right not to trust the software.
 
 **The lease covers *client* death; reconciliation covers *helper* death.** Conflating the
 two processes is what let this section claim a signal handler was the answer. § 1's lease
-handles a crashed, killed, or hung app — `SIGKILL`, a kernel panic, a power loss on the
-*client* side — because the enforcer outlives it. When the helper is the one that dies, the
+handles a crashed or killed app, a hung one once it is force-quit — `SIGKILL`, a kernel
+panic, a power loss on the *client* side — because the enforcer outlives it. When the helper is the one that dies, the
 enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
 and the SMC keeps the last value written. Only a restart can notice.
 
@@ -2286,6 +2290,8 @@ Stated so the guarantees are not read as broader than they are:
 - A user who deliberately sets a low fixed speed within the permitted range, on a machine
   under sustained load, with the app running and healthy. The ceiling in §3 is the
   backstop; below it, the user's choice is the user's choice.
+- An app that has frozen while it holds a lease. It is alive, so its lease is too; force quit
+  ends it, and § 3 bounds the meantime.
 - Hardware faults — a failed fan, a blocked vent, a failing thermal sensor.
 - Bugs in the safety subsystem itself. Which is why it is tested first and reviewed
   hardest, and why the panic path in §7 is designed as it is — **designed, reachable, and
