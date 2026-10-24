@@ -125,12 +125,14 @@ struct AppCompositionLeaseTests {
 
         scene.post(NSWorkspace.didWakeNotification)
 
-        try #require(await becomes { await scene.lease.driver.state.isLost }, "the wake renewed")
+        // The ledger keeps every state, so a driver that moved on from `lost` still shows it.
+        try #require(
+            await becomes { await scene.lease.entries.lost != nil }, "the wake renewed at once")
         let reacquired = await becomes(turns: 2_000) {
             await scene.lease.entries.acquires.count > 1
         }
         #expect(!reacquired, "nothing asked for the fans again")
-        let loss = try #require(await scene.lease.driver.state.loss)
+        let loss = try #require(await scene.lease.entries.lost)
         #expect(loss.afterWake)
         #expect(loss.cause == .renewal(.refused(.leaseUnknown)))
         await scene.finish()
