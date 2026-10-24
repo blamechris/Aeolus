@@ -197,7 +197,7 @@ struct MainView: View {
                 ThermalEmergencyBanner(banner: banner)
             }
             HSplitView {
-                FanListView(viewModel: viewModel)
+                FanListView(viewModel: viewModel, composition: composition)
                 SensorListView(
                     viewModel: viewModel,
                     selectedKeys: preferencesController.preferences.selectedSensorKeys,

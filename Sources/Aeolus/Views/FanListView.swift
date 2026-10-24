@@ -1,14 +1,45 @@
 import SwiftUI
 
-/// The left pane: live fan readings — current, minimum, and maximum RPM per fan, and
-/// each fan's control state, rendered honestly (see `FanRowModel`), under one line saying
-/// whose report that control state is (`ControlSourceDisplay`).
+/// The left pane: the control for all fans, then live fan readings — current, minimum, and
+/// maximum RPM per fan, and each fan's control state, rendered honestly (see `FanRowModel`),
+/// under one line saying whose report that control state is (`ControlSourceDisplay`).
 ///
-/// Read-only. Binds to `PollingViewModel`'s already-published `fans`; this view starts
-/// and stops nothing itself — `MainView` owns the view model's lifecycle so the fan and
-/// sensor panes always observe the same refresh loop.
+/// ## The control for all fans (#153's PR 6b)
+///
+/// Auto, 50 %, 75 % and 100 %, for every fan at once, here in the main window and nowhere else:
+/// not in the menu bar panel and not in Settings. That keeps `AppWindow.isControlWindow` and the
+/// window-close default true as they stand: a lease taken here is released when the last main
+/// window closes, and no window event could release one taken from the panel. Per-fan control is
+/// PR 8.
+///
+/// - **Computed in `body` only**, from one read of `viewModel` and the root's lease state
+///   (`AllFansControlPresentation(polling:driver:)`), and never from a sink on one of
+///   `viewModel`'s properties. `leaseState` is observed, so a change of the driver's state with
+///   no new snapshot re-renders it.
+/// - **What is drawn as selected is the presentation's**, never the last click.
+/// - **A click calls `actions`**, which reads the screen again and asks the root. It selects
+///   nothing itself.
+///
+/// This view starts and stops nothing itself — `MainView` owns the view model's lifecycle, so
+/// the fan and sensor panes always observe the same refresh loop, and the control reads a view
+/// model `MainView` started.
 struct FanListView: View {
     @ObservedObject var viewModel: PollingViewModel
+    /// The root's, never one of the view's own (`AppComposition.leaseState`).
+    @ObservedObject private var leaseState: LeaseStateModel
+    /// The root's entry points, as the control calls them.
+    private let actions: AllFansControlActions
+
+    /// - Parameters:
+    ///   - viewModel: The window's view model, which `MainView` starts and stops.
+    ///   - composition: The app's one root: the control's lease state and its entry points are
+    ///     both read from it here, so the view cannot be given one root's state and another's
+    ///     actions.
+    init(viewModel: PollingViewModel, composition: AppComposition) {
+        self.viewModel = viewModel
+        _leaseState = ObservedObject(wrappedValue: composition.leaseState)
+        actions = AllFansControlActions(composition: composition)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,6 +52,12 @@ struct FanListView: View {
                     phase: viewModel.phase, lastUpdated: viewModel.lastUpdated))
 
             controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
+
+            AllFansControlView(
+                control: AllFansControlPresentation(
+                    polling: viewModel, driver: leaseState.current),
+                choose: { percent in actions.choose(percent, on: viewModel) },
+                chooseAutomatic: { actions.chooseAutomatic() })
 
             if viewModel.fans.isEmpty {
                 emptyState
