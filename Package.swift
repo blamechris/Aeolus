@@ -30,7 +30,7 @@ let package = Package(
         .executable(name: "AeolusHelper", targets: ["AeolusHelper"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0")
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [
         // Key enumeration, the type codec, and the IOKit connection.
