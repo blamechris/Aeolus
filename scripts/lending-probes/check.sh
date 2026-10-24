@@ -35,26 +35,65 @@
 #   boxed, copied, consumed or captured. Those refusals were observed on one toolchain. Each is a
 #   shape that must *not* compile, so no test can hold it: this compiles each one, fully (`-c`,
 #   never `-typecheck`, because the move checker runs in SIL), on every CI run's toolchain.
-# - **The lease-control boundary** (`refused-heartbeat-accessor.swift` and its
-#   `allowed-lease-driver-state.swift` control; #489, #491). `LeaseDriver.runningHeartbeat` is
-#   `internal`, for the test suite alone, and the `AeolusLeaseControl` target is what puts every
-#   other module out of its reach. That is an access-level refusal, not an ownership one, and
-#   nothing in the suite can hold it, because a test sees the accessor through `@testable`.
-#   Widening the accessor to `package` or `public`, or folding the target back into `AeolusUI`,
-#   leaves every test green; this goes red. The probe imports the module plainly, never
-#   `@testable`, which is the app's side of the boundary.
+# - **The lease-control boundary** (`refused-heartbeat-accessor.swift`,
+#   `refused-heartbeat-handle.swift` and their `allowed-lease-driver-state.swift` control; #489,
+#   #491). `LeaseDriver.runningHeartbeat` and the `HeartbeatHandle` it returns are `internal`, for
+#   the test suite alone, and the `AeolusLeaseControl` target is what puts every other module out
+#   of their reach. That is an access-level refusal, not an ownership one, and nothing in the
+#   suite can hold it, because a test sees them through `@testable`. Widening the accessor to
+#   `package` or `public`, or making the handle nameable, leaves every test green; the probes go
+#   red. The probes import the module plainly, never `@testable`, which is the app's side of the
+#   boundary. Folding the target back into `AeolusUI` is caught by the target guard below, not by
+#   a probe.
 #
 # A probe whose compile succeeds has stopped being refused, and the failure says what to read
 # first: its `// see:` line, or, for the lending shapes that carry none, ADR 0012's amendment.
 #
-# Reads only: it writes its objects to a temporary directory and touches nothing in the tree. It
-# asks SwiftPM for one target, `AeolusLeaseControl` (see below), which changes nothing after the
-# build. Run it after `swift build`, from anywhere in the repository.
+# Reads only, with one exception: it writes its objects to a temporary directory and touches
+# nothing in the tree, but before any probe it asks SwiftPM for every module the probes import
+# (`swift build --target`, see below), which rebuilds that target if its sources changed since the
+# build before this one and writes only to `.build`. Run it after `swift build`, from anywhere in
+# the repository.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 probes="${root}/scripts/lending-probes"
 cd "${root}"
+
+out="$(mktemp -d)"
+# The run has to say it finished. macOS's bash 3.2 exits 0, not 1, when `set -u` aborts a script
+# that has an EXIT trap, so a crash in this script would read as a pass; the trap turns every
+# exit that did not reach the end into a failure.
+finished=0
+trap 'rm -rf "${out}"; [ "${finished}" -eq 1 ] || exit 1' EXIT
+
+# Every module a probe imports, each of which must be a target of this package that builds.
+#
+# The probes compile against whatever `swiftmodule` is in the build directory, and SwiftPM never
+# deletes the outputs of a target removed from the manifest, while CI restores `.build` from a
+# cache. A module renamed, split or folded back into another would leave its old build here, and
+# every probe that imports it would pass against a module nothing builds any more: the lease-
+# control probe against `AeolusLeaseControl` folded back into `AeolusUI`, the ten lending probes
+# against `AeolusHelper`. So ask SwiftPM for each target first. It fails when the package has none,
+# and rebuilds only what changed since the build before this one.
+#
+# This stops at the first failure, and before any probe, because a probe's result against a module
+# that is not current means nothing: a run that went on would print `ok:` lines that are not true.
+# A probe that imports a module not listed here fails below, so this list cannot quietly fall
+# behind the probes.
+guarded="AeolusHelper AeolusLeaseControl"
+for target in ${guarded}; do
+    if swift build --target "${target}" > "${out}/target" 2>&1; then
+        echo "ok: ${target} is a target of this package, and builds"
+    else
+        echo "error: swift build --target ${target} failed. Either ${target} is no longer a target of"
+        echo "       this package, and the module left in the build directory is not current, or it"
+        echo "       does not build. No probe was run:"
+        cat "${out}/target"
+        echo "PROBES FAILED: 1 problem(s)"
+        exit 1
+    fi
+done
 
 bin="$(swift build --show-bin-path)"
 module="$(find "${bin}" -maxdepth 2 -name AeolusHelper.swiftmodule -print -quit)"
@@ -63,31 +102,27 @@ if [ -z "${module}" ]; then
     exit 1
 fi
 modules="$(dirname "${module}")"
-out="$(mktemp -d)"
-# The run has to say it finished. macOS's bash 3.2 exits 0, not 1, when `set -u` aborts a script
-# that has an EXIT trap, so a crash in this script would read as a pass; the trap turns every
-# exit that did not reach the end into a failure.
-finished=0
-trap 'rm -rf "${out}"; [ "${finished}" -eq 1 ] || exit 1' EXIT
 
 failures=0
 
 swiftc --version
 echo "modules: ${modules}"
 
-# The lease-control probe imports a module the build directory can still hold after the target is
-# gone: SwiftPM never deletes the outputs of a target removed from the manifest, and CI restores
-# `.build` from a cache. Folding `AeolusLeaseControl` back into `AeolusUI` would then leave the
-# old module here, and the probe would pass against it. So ask SwiftPM for the target: it fails
-# when the package no longer has one, and is a no-op when the build above already made it.
-if swift build --target AeolusLeaseControl > "${out}/target" 2>&1; then
-    echo "ok: AeolusLeaseControl is a target of this package, built now"
-else
-    echo "error: AeolusLeaseControl is not a target of this package that builds, so the module the"
-    echo "       lease-control probe imports may be a leftover of an earlier build:"
-    cat "${out}/target"
-    failures=$((failures + 1))
-fi
+# Whether every module probe $1 imports is one the guard above asked SwiftPM about.
+imports_only_guarded() {
+    local imported status=0
+    while IFS= read -r imported; do
+        case " ${guarded} " in
+            *" ${imported} "*) ;;
+            *)
+                echo "error: $(basename "$1") imports ${imported}, which the target guard above does not ask"
+                echo "       SwiftPM about: add it to \`guarded\`, so a stale build of it cannot let the probe pass"
+                status=1
+                ;;
+        esac
+    done < <(sed -n -E 's/^(@[A-Za-z_]+(\([^)]*\))? +)*import +([A-Za-z0-9_]+).*$/\3/p' "$1")
+    return "${status}"
+}
 
 compile() {
     swiftc -c -parse-as-library -swift-version 6 -diagnostic-style llvm -I "${modules}" "$1" \
@@ -194,6 +229,10 @@ control 1 "a note that says more than 'consumed here' is refused" \
 
 for probe in "${probes}"/allowed-*.swift; do
     allowed=$((allowed + 1))
+    if ! imports_only_guarded "${probe}"; then
+        failures=$((failures + 1))
+        continue
+    fi
     if compile "${probe}"; then
         echo "ok: $(basename "${probe}") compiles"
     else
@@ -210,6 +249,10 @@ for probe in "${probes}"/refused-*.swift; do
     line="$(sed -n 's|^// expect-line: ||p' "${probe}" | head -1)"
     if [ -z "${expect}" ] || ! [[ "${line}" =~ ^[0-9]+$ ]]; then
         echo "error: ${name} needs a // expect: diagnostic and a numeric // expect-line:"
+        failures=$((failures + 1))
+        continue
+    fi
+    if ! imports_only_guarded "${probe}"; then
         failures=$((failures + 1))
         continue
     fi
@@ -238,8 +281,8 @@ for probe in "${probes}"/refused-*.swift; do
 done
 
 # Coverage, not decoration: a glob that matched nothing would pass over no probe at all.
-if [ "${allowed}" -ne 2 ] || [ "${refused}" -ne 11 ]; then
-    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 2 and 11"
+if [ "${allowed}" -ne 2 ] || [ "${refused}" -ne 12 ]; then
+    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 2 and 12"
     failures=$((failures + 1))
 fi
 if [ "${controls}" -ne 17 ]; then
