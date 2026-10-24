@@ -9,7 +9,7 @@ import Foundation
 /// and the line beneath it (#154, #155).
 ///
 /// **Nothing renders this yet.** It is the logic and its tests. The control that draws it is
-/// #153's PR 6, and the contract that control must honour is at the end of this comment.
+/// #153's PR 6b, and the contract that control must honour is at the end of this comment.
 ///
 /// Pure, like `FanRowModel`: no I/O, no clock and no actor. It is a function of what the window
 /// already has, gathered by `Inputs`, and of one fan's row.
@@ -115,7 +115,7 @@ import Foundation
 /// older snapshot's claim, Custom included, and a sink keeps it until its property is next
 /// assigned. Only the contract's first line prevents that.
 ///
-/// ## The contract the control must honour (#153's PR 6)
+/// ## The contract the control must honour (#153's PR 6b)
 ///
 /// - **Compute presentations in a SwiftUI `body`, or on `polling.$revision` as `MenuBarViewModel`
 ///   does**, reading `Inputs(polling:driver:)` and `polling.fans` together there, or calling

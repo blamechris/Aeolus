@@ -242,16 +242,19 @@ enum SnapshotTestSupport {
         return source
     }
 
-    /// A source on `helper`, with a hand-wound age clock and an instant pacing clock.
+    /// A source on `helper`, with a hand-wound age clock and an instant pacing clock, reporting
+    /// every read to `observer` when there is one.
     @MainActor
     static func source(
         _ helper: FakeSnapshotHelper,
         clock: SnapshotTestClock = SnapshotTestClock(),
         pacing: any PollingClock = FakePollingClock(),
-        refreshInterval: TimeInterval = 1
+        refreshInterval: TimeInterval = 1,
+        observer: HelperSnapshotObserver? = nil
     ) -> HelperSnapshotSource {
         HelperSnapshotSource(
-            reader: helper, refreshInterval: { refreshInterval }, clock: clock, pacing: pacing)
+            reader: helper, refreshInterval: { refreshInterval }, clock: clock, pacing: pacing,
+            observer: observer)
     }
 
     /// A source on a helper that reports `.handshaken`, once the source has heard it.
@@ -260,10 +263,13 @@ enum SnapshotTestSupport {
         _ helper: FakeSnapshotHelper,
         clock: SnapshotTestClock = SnapshotTestClock(),
         pacing: any PollingClock = FakePollingClock(),
-        refreshInterval: TimeInterval = 1
+        refreshInterval: TimeInterval = 1,
+        observer: HelperSnapshotObserver? = nil
     ) async throws -> HelperSnapshotSource {
         helper.report(.handshaken)
-        let source = source(helper, clock: clock, pacing: pacing, refreshInterval: refreshInterval)
+        let source = source(
+            helper, clock: clock, pacing: pacing, refreshInterval: refreshInterval,
+            observer: observer)
         try #require(await settle { source.health == .handshaken })
         return source
     }

@@ -8,7 +8,14 @@ import SwiftUI
 /// monitoring. Adding a slider or a "set speed" action here would cross into E8a/E10b's
 /// scope, not merely arrive early.
 struct MenuBarContentView: View {
+    /// The kind of window this view is the root of: the `MenuBarExtra(.window)` panel, which is not
+    /// a control window.
+    static let window = AppWindow.menuBarPanel
+
     @ObservedObject var viewModel: MenuBarViewModel
+
+    /// Told when the panel opens and closes, as `window`.
+    let composition: AppComposition
 
     /// `Preferences.temperatureUnit`. Defaults to `.celsius`, preserving this view's
     /// existing rendering for every call site that does not pass one explicitly.
@@ -49,6 +56,7 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(minWidth: 240)
+        .reportsPresence(as: Self.window, to: composition)
     }
 
     /// The fan pane's line, in the dropdown: whose report the fans are — with a listed lease's
