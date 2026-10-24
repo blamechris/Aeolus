@@ -47,8 +47,9 @@
 # A probe whose compile succeeds has stopped being refused, and the failure says what to read
 # first: its `// see:` line, or, for the lending shapes that carry none, ADR 0012's amendment.
 #
-# Reads only: it writes its objects to a temporary directory and touches nothing in the tree.
-# Run it after `swift build`, from anywhere in the repository.
+# Reads only: it writes its objects to a temporary directory and touches nothing in the tree. It
+# asks SwiftPM for one target, `AeolusLeaseControl` (see below), which changes nothing after the
+# build. Run it after `swift build`, from anywhere in the repository.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -69,8 +70,24 @@ out="$(mktemp -d)"
 finished=0
 trap 'rm -rf "${out}"; [ "${finished}" -eq 1 ] || exit 1' EXIT
 
+failures=0
+
 swiftc --version
 echo "modules: ${modules}"
+
+# The lease-control probe imports a module the build directory can still hold after the target is
+# gone: SwiftPM never deletes the outputs of a target removed from the manifest, and CI restores
+# `.build` from a cache. Folding `AeolusLeaseControl` back into `AeolusUI` would then leave the
+# old module here, and the probe would pass against it. So ask SwiftPM for the target: it fails
+# when the package no longer has one, and is a no-op when the build above already made it.
+if swift build --target AeolusLeaseControl > "${out}/target" 2>&1; then
+    echo "ok: AeolusLeaseControl is a target of this package, built now"
+else
+    echo "error: AeolusLeaseControl is not a target of this package that builds, so the module the"
+    echo "       lease-control probe imports may be a leftover of an earlier build:"
+    cat "${out}/target"
+    failures=$((failures + 1))
+fi
 
 compile() {
     swiftc -c -parse-as-library -swift-version 6 -diagnostic-style llvm -I "${modules}" "$1" \
@@ -116,7 +133,6 @@ at_the_shape() {
     return 1
 }
 
-failures=0
 allowed=0
 refused=0
 
