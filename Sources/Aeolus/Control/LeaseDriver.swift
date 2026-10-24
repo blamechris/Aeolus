@@ -134,7 +134,8 @@ public actor LeaseDriver {
     private var heartbeat: Task<Void, Never>?
     private var healthWatch: Task<Void, Never>?
     /// The release in flight, of whichever lease: a user's, a quit's, or the one sent after a loss.
-    private var pendingRelease: (id: UInt64, task: Task<ReleaseOutcome, Never>)?
+    /// `lease` is `nil` for a release asked for while the lease was still being acquired.
+    private var pendingRelease: (id: UInt64, lease: Lease?, task: Task<ReleaseOutcome, Never>)?
     private var releases: UInt64 = 0
     /// What to acquire once the release in flight has answered: a change of fans, or a target
     /// asked for while releasing.
@@ -214,8 +215,10 @@ public actor LeaseDriver {
     /// (`LeaseLifecycle`).
     @discardableResult
     public func release() async -> ReleaseOutcome {
+        // The bound starts before the release is sent, so it cannot start late.
+        let deadline = clock.now.advanced(by: releaseBound)
         guard let task = requestRelease() else { return .nothingHeld }
-        return await Self.outcome(of: task, within: releaseBound, on: clock)
+        return await Self.outcome(of: task, until: deadline, bound: releaseBound, on: clock)
     }
 
     /// Releases, then tears the control connection down. The quit path: after it begins, nothing
@@ -519,7 +522,7 @@ extension LeaseDriver {
             }
             return await self.send(release: lease, as: id)
         }
-        pendingRelease = (id, task)
+        pendingRelease = (id, nil, task)
         return task
     }
 
@@ -528,7 +531,7 @@ extension LeaseDriver {
         releases &+= 1
         let id = releases
         let task = Task { await self.send(release: lease, as: id) }
-        pendingRelease = (id, task)
+        pendingRelease = (id, lease, task)
         return task
     }
 
@@ -563,13 +566,12 @@ extension LeaseDriver {
         Task { try? await self.control.releaseLease(id: lease.id) }
     }
 
-    /// Waits for `release`, or until `bound` has passed on `clock`, whichever is first.
+    /// Waits for `release`, or until `deadline` on `clock`, whichever is first.
     private static func outcome(
-        of release: Task<ReleaseOutcome, Never>, within bound: Duration,
-        on clock: any HeartbeatClock
+        of release: Task<ReleaseOutcome, Never>, until deadline: ContinuousClock.Instant,
+        bound: Duration, on clock: any HeartbeatClock
     ) async -> ReleaseOutcome {
-        let deadline = clock.now.advanced(by: bound)
-        return await withCheckedContinuation { continuation in
+        await withCheckedContinuation { continuation in
             let first = FirstAnswer(continuation)
             let timer = Task {
                 do { try await clock.sleep(until: deadline) } catch { return }
