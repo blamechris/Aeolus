@@ -62,11 +62,11 @@ public final class LeaseLifecycle {
     /// Logout: the lease is released, within the bound. The quit that follows finds nothing
     /// held and sends nothing more.
     public func systemWillPowerOff() async {
-        await driver.release()
+        await driver.releaseFans()
     }
 
     /// The last control window closed: the lease is released, within the bound.
     public func lastControlWindowClosed() async {
-        await driver.release()
+        await driver.releaseFans()
     }
 }

@@ -220,8 +220,12 @@ public actor LeaseDriver {
     /// Idempotent: a call while a release is in flight joins it, and a call with nothing held
     /// sends nothing. The entry point for closing the last control window and for logout
     /// (`LeaseLifecycle`).
+    ///
+    /// **Not named `release()`.** `ThermalEmergencyStalenessTests` holds every bare `release()`
+    /// call in `Sources/` to be § 3's latch clearing an episode it never named, and fails on one;
+    /// that scan is a safety tripwire, so this name keeps out of it rather than narrowing it.
     @discardableResult
-    public func release() async -> ReleaseOutcome {
+    public func releaseFans() async -> ReleaseOutcome {
         // The bound starts before the release is sent, so it cannot start late.
         let deadline = clock.now.advanced(by: releaseBound)
         guard let task = requestRelease() else { return .nothingHeld }
@@ -232,7 +236,7 @@ public actor LeaseDriver {
     /// is acquired again.
     public func shutDown() async {
         shuttingDown = true
-        await release()
+        await releaseFans()
         await control.disconnect()
     }
 

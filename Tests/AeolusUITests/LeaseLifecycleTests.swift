@@ -15,8 +15,8 @@ struct LeaseLifecycleTests {
     /// Quit sends `releaseLease`, then tears the connection down, then answers the quit. The app
     /// never relies on the helper's invalidation path alone.
     ///
-    /// **Mutation (no explicit release):** in `LeaseDriver.shutDown`, delete `await release()`.
-    /// Red on the release.
+    /// **Mutation (no explicit release):** in `LeaseDriver.shutDown`, delete
+    /// `await releaseFans()`. Red on the release.
     @Test("Quit sends releaseLease before the connection is torn down")
     func quitReleasesBeforeDisconnect() async throws {
         let scene = await LeaseScene()
@@ -114,7 +114,7 @@ struct LeaseLifecycleTests {
         await scene.driver.hold(try LeaseScene.target([0: 3000]))
         await scene.ledger.waitFor { !$0.acquires.isEmpty }
 
-        let releasing = Task { await scene.driver.release() }
+        let releasing = Task { await scene.driver.releaseFans() }
         await scene.waitForState { $0 == .releasing }
         await scene.helper.answerParked(.acquire)
         let outcome = await releasing.value
