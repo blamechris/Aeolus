@@ -87,9 +87,27 @@ import Foundation
 ///
 /// ## No client at all in a build with no helper
 ///
-/// `forBundle` builds a `HelperClient` only for a bundle that ships a helper
+/// `AppComposition` builds a `HelperClient` only for a bundle that ships a helper
 /// (`HelperEmbedding.embedded`). A `Monitor` build — and a damaged bundle — gets a source with
 /// no reader, whose `authority()` always says why nothing is tracked.
+///
+/// ## The lease driver sees every reply, on a ticket taken before the read
+///
+/// In a build with a helper the source is given a `HelperSnapshotObserver` over the app's lease
+/// driver. Each cycle takes the driver's ticket **before** the request's task exists, and hands
+/// every successful reply to the driver with it once the reply has been recorded. The source
+/// never owns the driver, and a source with no observer reads exactly as one did before there
+/// was a driver.
+///
+/// Every successful reply is judged, including one this source will not render: a reply that
+/// contradicts itself, or one whose request was sent in an earlier episode. The driver's judgement
+/// can only end a lease, never claim one, so a reply the display refuses can still be evidence
+/// that control ended, and giving the fans back is the direction `CLAUDE.md` rule 6 favours.
+///
+/// The ticket's await is the one suspension added to the cycle, and it sits before the episode is
+/// stamped and the request is sent, so the request is still stamped with the episode it went out
+/// in. Demand is checked again after it: a last consumer that left during the hop sends nothing.
+/// The freshness stamp is still taken when the reply arrives, before the judgement.
 @MainActor
 public final class HelperSnapshotSource {
 
@@ -132,6 +150,8 @@ public final class HelperSnapshotSource {
     }
 
     private let reading: Reading
+    /// The lease driver's view of each read, or `nil` when there is no driver.
+    private let observer: HelperSnapshotObserver?
     private let refreshInterval: @MainActor () -> TimeInterval
     private let now: @Sendable () -> ContinuousClock.Instant
     private let pacing: any PollingClock
@@ -159,7 +179,8 @@ public final class HelperSnapshotSource {
     /// `.readDirectly(why)`, and `start()`/`stop()` only count consumers.
     public convenience init(withoutHelper why: ControlNotTracked) {
         self.init(
-            reading: .none(why), refreshInterval: { PreferencesRefreshInterval.defaultValue },
+            reading: .none(why), observer: nil,
+            refreshInterval: { PreferencesRefreshInterval.defaultValue },
             clock: ContinuousClock(), pacing: SystemPollingClock())
     }
 
@@ -169,9 +190,19 @@ public final class HelperSnapshotSource {
         reader: any HelperSnapshotReading,
         refreshInterval: @escaping @MainActor () -> TimeInterval
     ) {
+        self.init(reader: reader, observer: nil, refreshInterval: refreshInterval)
+    }
+
+    /// A source reading `reader` whose every read is reported to `observer`: the app's lease
+    /// driver, in a build with a helper (`AppComposition`).
+    convenience init(
+        reader: any HelperSnapshotReading,
+        observer: HelperSnapshotObserver?,
+        refreshInterval: @escaping @MainActor () -> TimeInterval
+    ) {
         self.init(
             reader: reader, refreshInterval: refreshInterval, clock: ContinuousClock(),
-            pacing: SystemPollingClock())
+            pacing: SystemPollingClock(), observer: observer)
     }
 
     /// The same source with its clocks named, for the suite: `clock` measures a snapshot's age
@@ -181,20 +212,23 @@ public final class HelperSnapshotSource {
         reader: any HelperSnapshotReading,
         refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
-        pacing: any PollingClock
+        pacing: any PollingClock,
+        observer: HelperSnapshotObserver? = nil
     ) where C.Instant == ContinuousClock.Instant {
         self.init(
-            reading: .helper(reader), refreshInterval: refreshInterval, clock: clock,
-            pacing: pacing)
+            reading: .helper(reader), observer: observer, refreshInterval: refreshInterval,
+            clock: clock, pacing: pacing)
     }
 
     private init<C: Clock>(
         reading: Reading,
+        observer: HelperSnapshotObserver?,
         refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
         pacing: any PollingClock
     ) where C.Instant == ContinuousClock.Instant {
         self.reading = reading
+        self.observer = observer
         self.refreshInterval = refreshInterval
         self.now = { clock.now }
         self.pacing = pacing
@@ -318,6 +352,10 @@ public final class HelperSnapshotSource {
 
     private func run(_ reader: any HelperSnapshotReading) async {
         while demand > 0 {
+            // The driver's ticket, taken before the request's task exists (#479): a ticket taken
+            // after the send would be younger than the read it vouches for.
+            let judgement = await observer?.readWillBeSent()
+            guard demand > 0 else { break }
             let sentIn = episode
             // Unstructured, so that it inherits no cancellation from this loop.
             let request = Task { try await reader.snapshot() }
@@ -325,6 +363,9 @@ public final class HelperSnapshotSource {
             let result = await request.result
             outstanding = nil
             record(result, sentIn: sentIn)
+            if let judgement, case .success(let snapshot) = result {
+                await judgement(snapshot)
+            }
 
             guard demand > 0 else { break }
             let pacing = pacing
