@@ -171,7 +171,7 @@ struct LeaseDriverHeartbeatGuardTests {
 
         scene.clock.advance(to: scene.at(.seconds(10)))
         // The beat has finished when this returns, whatever it did.
-        await scene.run { await beat.value }
+        await scene.run { await beat.finished() }
 
         #expect(await scene.entries.renewals.isEmpty, "a renewal went out for a released lease")
         await scene.finish()

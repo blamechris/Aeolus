@@ -209,12 +209,38 @@ public actor LeaseDriver {
     /// Where the lease stands now.
     public var state: LeaseDriverState { current }
 
-    /// The heartbeat running now, for a suite that has to know when a beat has finished.
+    /// A heartbeat that can be waited for, and nothing else.
     ///
-    /// `internal`, for the suite alone, as `HelperClient.deadlinesRunning` is: a test about a
-    /// renewal that must **not** be sent has no event to wait for, and waiting for the beat itself
-    /// is the only end it has.
-    var runningHeartbeat: Task<Void, Never>? { heartbeat }
+    /// **It holds no `Task`.** The beat's `Task` would hand its holder `cancel()`, and a cancelled
+    /// beat sends no renewal and reports no loss: the helper lets the lease go at its TTL while
+    /// the driver goes on drawing `held` (`CLAUDE.md` rule 6, #486). So the handle keeps only a
+    /// closure that waits for the beat, and no change to its access levels can hand the cancel
+    /// back. Only this file can make one.
+    struct HeartbeatHandle: Sendable {
+        private let wait: @Sendable () async -> Void
+
+        fileprivate init(_ beat: Task<Void, Never>) {
+            wait = { await beat.value }
+        }
+
+        /// Returns once the beat has finished, whatever it did.
+        ///
+        /// **Not cancellable.** It waits on the beat's `Task.value`, which does not end when the
+        /// waiting task is cancelled, so a time limit cannot end a test stuck here. Call it from
+        /// a task of its own (`LeaseScene.run`), never directly from a test.
+        func finished() async { await wait() }
+    }
+
+    /// The heartbeat running now, as a handle that can only be waited for, for a suite that has
+    /// to know when a beat has finished.
+    ///
+    /// `internal`, for the suite alone: a test about a renewal that must **not** be sent has no
+    /// event to wait for, and waiting for the beat itself is the only end it has. Unlike
+    /// `HelperClient.deadlinesRunning`, which is a count, it reaches a task the driver owns, so it
+    /// hands out a wait rather than the task. **Nothing in `Sources/` names it or its handle**
+    /// outside this file, and nothing here names it but this declaration:
+    /// `LeaseDriverSuiteSeamTests` fails when anything else does.
+    var runningHeartbeat: HeartbeatHandle? { heartbeat.map(HeartbeatHandle.init) }
 
     /// The same, as a stream that starts with the value now.
     nonisolated public func stateUpdates() -> AsyncStream<LeaseDriverState> {
