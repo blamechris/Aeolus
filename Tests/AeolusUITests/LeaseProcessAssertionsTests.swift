@@ -63,17 +63,18 @@ struct LeaseProcessAssertionsTests {
         let (states, feed) = AsyncStream.makeStream(of: LeaseDriverState.self)
         let assertions = LeaseProcessAssertions(process: process, states: states)
 
-        let sequence = [try from.state, try to.state, LeaseDriverState.idle]
-        for state in sequence {
+        for kind in [from, to, StateKind.idle] {
+            let state = try kind.state
             feed.yield(state)
-            let blocks = LeaseProcessAssertions.blocksTermination(state)
-            let depth = blocks ? 1 : 0
-            let activities = state.isHeld ? 1 : 0
+            // The suite's own answer, never `blocksTermination` itself, so a change to that
+            // function cannot move what this test expects with it.
+            let depth = kind.blocksTermination ? 1 : 0
+            let activities = kind == .held ? 1 : 0
             try #require(
                 await becomes {
                     process.suddenDisabled == depth && process.automaticDisabled == depth
                         && process.openActivities == activities
-                }, "\(from) → \(to), at \(state): \(process.calls)")
+                }, "\(from) → \(to), at \(kind): \(process.calls)")
         }
         feed.finish()
 
@@ -179,6 +180,15 @@ struct LeaseProcessAssertionsTests {
 /// One driver state of each kind, for the transition table.
 enum StateKind: CaseIterable, Sendable {
     case idle, acquiring, held, releasing, released, lost, refused
+
+    /// Whether this kind must keep the process from being ended without warning: the suite's own
+    /// answer, written out rather than read from `LeaseProcessAssertions`.
+    var blocksTermination: Bool {
+        switch self {
+        case .acquiring, .held, .releasing: return true
+        case .idle, .released, .lost, .refused: return false
+        }
+    }
 
     var state: LeaseDriverState {
         get throws {
