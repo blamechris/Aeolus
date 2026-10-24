@@ -165,11 +165,13 @@ struct LeaseDriverHeartbeatGuardTests {
         scene.clock.ignoreCancellation()
         try await scene.take(LeaseScene.target([0: 3000]))
         await scene.clock.untilParked { $0.contains(scene.at(.seconds(10))) }
+        let beat = try #require(await scene.driver.runningHeartbeat)
         await scene.driver.selectAutomatic()
         await scene.waitForState { $0.isReleased }
 
         scene.clock.advance(to: scene.at(.seconds(10)))
-        await scene.settle()
+        // The beat has finished when this returns, whatever it did.
+        await scene.run { await beat.value }
 
         #expect(await scene.entries.renewals.isEmpty, "a renewal went out for a released lease")
         await scene.finish()

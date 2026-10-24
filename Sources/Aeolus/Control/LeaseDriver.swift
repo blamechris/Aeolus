@@ -209,6 +209,13 @@ public actor LeaseDriver {
     /// Where the lease stands now.
     public var state: LeaseDriverState { current }
 
+    /// The heartbeat running now, for a suite that has to know when a beat has finished.
+    ///
+    /// `internal`, for the suite alone, as `HelperClient.deadlinesRunning` is: a test about a renewal
+    /// that must **not** be sent has no event to wait for, and waiting for the beat itself is the
+    /// only end it has.
+    var runningHeartbeat: Task<Void, Never>? { heartbeat }
+
     /// The same, as a stream that starts with the value now.
     nonisolated public func stateUpdates() -> AsyncStream<LeaseDriverState> {
         AsyncStream { continuation in
