@@ -160,14 +160,17 @@ struct QuitOffTheMainActorTests {
 
     /// The quit's reply is handed to the run loop from a thread that is not the main thread: the
     /// shutdown before it runs on a detached task, not on the main actor (#495, from #493's
-    /// review). A deterministic form of the mutation below's check: the test above waits on a
-    /// held main actor and a five-second bound, and this reads which thread the hand-over came
-    /// from, so it spends no budget and cannot fail on a stalled runner.
+    /// review).
     ///
-    /// **Mutation (M4, "the shutdown on the main actor"):** in
+    /// The same mutation as the first test's, with no budget. That test waits on a held main
+    /// actor under a five-second bound of real time, so it can fail on a stalled runner, and in
+    /// the safe direction only. This one reads which thread `perform` was called on, and the first
+    /// stays as the end-to-end proof.
+    ///
+    /// **Mutation (R3, "the shutdown on the main actor"):** in
     /// `LeaseLifecycle.applicationShouldTerminate`, start the shutdown with `Task {` instead of
     /// `Task.detached {`. Its continuation after `shutDown()` resumes on the main actor, so the
-    /// hand-over comes from the main thread. Red at the requirement that it came off it.
+    /// hand-over comes from the main thread. Red at the expectation that it did not.
     @Test("A quit hands its reply to the run loop from off the main thread")
     func theQuitHandsTheReplyOverFromOffTheMainThread() async throws {
         let scene = await LeaseScene()

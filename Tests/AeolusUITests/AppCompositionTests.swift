@@ -215,8 +215,9 @@ struct AppCompositionTests {
         #expect(adaptor is NSApplicationDelegateAdaptor<AeolusAppDelegate>)
     }
 
-    /// The delegate hands the quit to its root and passes AppKit's reply through, from the run loop
-    /// and after the teardown.
+    /// The delegate hands the quit to its root and passes AppKit's reply through, from the run loop.
+    /// The teardown is in the ledger when the reply is handed over; the order the quit keeps is
+    /// pinned by `AppCompositionLeaseTests.quitRepliesAfterTheTeardown`, which parks the release.
     ///
     /// **Mutation (E1, "the delegate bypasses the root"):** in
     /// `AeolusAppDelegate.applicationShouldTerminate(replyingTo:)`, return `.terminateNow`. Red at
@@ -233,13 +234,14 @@ struct AppCompositionTests {
         try #require(
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
+        // Read before the test delivers anything, so it is the quit's order and not the test's.
+        #expect(
+            await scene.lease.entries.index(of: .disconnect) != nil,
+            "the connection was not torn down when the reply was handed over")
         scene.runLoop.runParked()
         await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
 
-        let entries = await scene.lease.entries
-        #expect(entries.terminationReplies == [true])
-        let disconnected = try #require(entries.index(of: .disconnect))
-        #expect(disconnected < (entries.index(of: .terminationReplied(true)) ?? -1))
+        #expect(await scene.lease.entries.terminationReplies == [true])
         await scene.finish()
     }
 

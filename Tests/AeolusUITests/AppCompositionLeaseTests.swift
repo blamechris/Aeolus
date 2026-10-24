@@ -35,9 +35,17 @@ struct AppCompositionLeaseTests {
     /// reply to the main run loop. Nothing replies while the release is still waiting for the
     /// helper, and the reply is delivered only when the run loop runs it.
     ///
+    /// The order is read from the run loop's own count of hand-overs, which this test does not
+    /// control: `performed` is 0 while the release is parked, and the teardown is in the ledger by
+    /// the time it is 1. Delivery is the test's choice (`runParked()`), so an order measured between
+    /// the teardown and the delivered reply would measure the test.
+    ///
     /// **Mutation (X19, "an early reply"):** in `AppComposition.applicationShouldTerminate`, reply
     /// through `Task { reply(true) }` and give the lifecycle a reply that does nothing. Red at
     /// `!early`.
+    /// **Mutation (M3, "an early hand-over"):** in `LeaseLifecycle.applicationShouldTerminate`, call
+    /// `mainRunLoop.perform { reply(true) }` above `await driver.shutDown()`. Red at
+    /// `performed == 0`: the reply was handed to the run loop while the release was still parked.
     /// **Mutation (R1, "the reply through the main actor"):** in
     /// `LeaseLifecycle.applicationShouldTerminate`, deliver the reply with
     /// `Task { @MainActor in reply(true) }` instead of `mainRunLoop.perform`. Red at the
@@ -55,12 +63,20 @@ struct AppCompositionLeaseTests {
             !(await scene.lease.entries.terminationReplies.isEmpty)
         }
         #expect(!early, "a reply went out while the release was still waiting")
+        // `early` cannot see a hand-over: the run loop is parked, so nothing is delivered whatever
+        // was handed over. The count can.
+        #expect(
+            scene.runLoop.performed == 0,
+            "the reply was handed to the run loop while the release was still waiting")
 
         await scene.lease.helper.answerParked(.release)
         try #require(
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
-        #expect(await scene.lease.entries.index(of: .disconnect) != nil, "torn down before it")
+        // Before the test delivers anything: the teardown is already in the ledger at the hand-over.
+        #expect(
+            await scene.lease.entries.index(of: .disconnect) != nil,
+            "the connection was not torn down when the reply was handed over")
         scene.runLoop.runParked()
         await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
 
@@ -68,9 +84,7 @@ struct AppCompositionLeaseTests {
         #expect(entries.terminationReplies == [true])
         let released = try #require(entries.index(of: .release(held.lease.id)))
         let disconnected = try #require(entries.index(of: .disconnect))
-        let replied = try #require(entries.index(of: .terminationReplied(true)))
         #expect(released < disconnected, "released before the connection was torn down")
-        #expect(disconnected < replied, "replied only after the teardown")
         #expect(entries.filter { $0.event == .disconnect }.count == 1, "one teardown")
         await scene.finish()
     }
