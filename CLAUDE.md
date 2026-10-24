@@ -25,6 +25,7 @@ firmware.
 | `FanKit` | Models, curve engine, profiles, sensor catalog | Pure, with two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity. No IOKit. Keep it exhaustively testable. |
 | `AeolusXPC` | The `@objc` protocol and DTOs | This *is* the privilege boundary. |
 | `AeolusXPCClient` | The connection-owning actor every client talks through | The only `NSXPCConnection` outside the helper. Never runs as root, holds no fan state, never re-acquires a lease. One pinning policy ships; a second is a safety review. |
+| `AeolusLeaseControl` | The app's lease driver: `LeaseDriver` and the state types it reports in | Never runs as root. Acquires only on a deliberate `take`, never on its own after a loss or a wake. Making it `@MainActor` is a safety review: no step of a renewal may pass through the main actor. A target of its own so the compiler keeps `runningHeartbeat` and `HeartbeatHandle` in the suite: no code here other than their declarations may name them, and `@testable import AeolusLeaseControl` belongs in `Tests/` alone (Debug accepts it anywhere; CI's `swift build -c release` refuses it in the SwiftPM targets, but not in `Sources/Aeolus/main.swift`, which only the Xcode app target compiles and CI builds in Monitor Debug alone). Not a product. |
 | `AeolusHelper` | Root daemon | The only writer. Highest review bar in the repo. |
 | `fanctl` | CLI client | Read commands work with no helper and no signing. |
 | `AeolusUI` / `Aeolus` | SwiftUI views / app bundle | A view of helper state, never an owner of it. |

@@ -242,10 +242,31 @@ public actor LeaseDriver {
     /// **The module boundary keeps it in the suite (#489).** This file is in `AeolusLeaseControl`,
     /// so `AeolusUI`, the app and every other module are refused at compile time: `internal` does
     /// not cross a module. Only a deliberate `@testable import AeolusLeaseControl` reaches it,
-    /// which `AeolusUITests` does and a release build refuses. The compiler holds that line for
-    /// everything outside this target and nothing inside it, so the files in `AeolusLeaseControl`
-    /// are reviewed together, and a file added to it must not name `runningHeartbeat` or
-    /// `HeartbeatHandle`.
+    /// which `AeolusUITests` does.
+    ///
+    /// **A production `@testable import` is refused by a Release build, and CI runs one (#491).**
+    /// A Debug build, which builds with testability, accepts it anywhere and reaches the
+    /// accessor. The `Build (release, without testability)` step of CI's workflow
+    /// (`swift build -c release`) refuses it in every SwiftPM target, so it fails the pull
+    /// request. It does not see `Sources/Aeolus/main.swift`, which only the Xcode app target
+    /// compiles and CI builds in Monitor Debug alone.
+    ///
+    /// What the failure says depends on the build system. SwiftPM's native one names the file
+    /// that wrote the import: `<offending file>:1:18: error: module 'AeolusLeaseControl' was not
+    /// compiled for testing [#ModuleNotTestable]`. Swift 6.4's default build system says
+    /// `unable to resolve Swift module dependency to a compatible module: 'AeolusLeaseControl'`
+    /// at the first file in path order that imports the module, which is not always the offender
+    /// (`LeaseLifecycle.swift`, for one that sorts after it). Either way, search `Sources/` for
+    /// `@testable`.
+    ///
+    /// The compiler keeps the accessor from every module that imports this one plainly. It holds
+    /// nothing inside this target, so the files in `AeolusLeaseControl` are reviewed together: no
+    /// code in this target other than their declarations names `runningHeartbeat` or
+    /// `HeartbeatHandle`. What the compiler does hold, `scripts/lending-probes/check.sh` checks on
+    /// every CI run: `refused-heartbeat-accessor.swift` and `refused-heartbeat-handle.swift` fail
+    /// if the accessor or the handle is widened to `package` or `public`, and the script's own
+    /// check that SwiftPM still has the target fails if the target is folded back into
+    /// `AeolusUI`.
     ///
     /// Reflection: `Mirror(reflecting:)` on the driver reads `heartbeat` itself, from any module;
     /// no access level stops that, and no accidental edit takes that route.
