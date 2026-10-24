@@ -114,9 +114,11 @@ let package = Package(
         // state.
         //
         // `LeaseLifecycle`, the `@MainActor` adapter the app's quit, logout and window events
-        // reach, stays in `AeolusUI`. The compiler holds the accessor out of every module but
-        // this one, so the files here are reviewed together: no code in this target other than
-        // the declaration names `runningHeartbeat` or `HeartbeatHandle`.
+        // reach, stays in `AeolusUI`. A plain `import` of this module is refused the accessor by
+        // the compiler; a `@testable import` is not (see the doc on
+        // `LeaseDriver.runningHeartbeat`), and nothing inside this target is held by the
+        // compiler, so the files here are reviewed together: no code in this target other than
+        // their declarations names `runningHeartbeat` or `HeartbeatHandle`.
         //
         // Not a library product: nothing outside this package names it. The Xcode app target
         // links it through the `AeolusUI` product, which carries every target `AeolusUI` depends

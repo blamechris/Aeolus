@@ -57,13 +57,16 @@ jobs:
       # refuses to let a borrowed restorer be stored, boxed, copied, consumed or captured. Each
       # refused shape is code that must not compile, so no test can hold it: this compiles each
       # one fully against the modules the step above built, on this runner's own toolchain, and
-      # requires its refusal; a positive control must compile. Reads only.
+      # requires its refusal; a positive control must compile. It writes nothing but `.build`.
       #
       # It holds a second boundary the same way (#491). `LeaseDriver.runningHeartbeat` is
       # `internal`, for the suite alone, and the AeolusLeaseControl target is what keeps every
-      # other module from naming it. A test sees the accessor through `@testable`, so none can
-      # notice it widened to `package` or `public`, or the target folded back into AeolusUI; the
-      # probe imports the module plainly and requires the `internal` refusal.
+      # other module from naming it or the `HeartbeatHandle` it returns. A test sees both through
+      # `@testable`, so none can notice either widened to `package` or `public`; two probes
+      # import the module plainly and require the `internal` refusal of each. The script also asks
+      # SwiftPM for every module the probes import and stops if one is gone, because a module
+      # folded away would otherwise leave its old build in a cached `.build` for the probes to
+      # pass against.
       - name: Lending probes
         run: scripts/lending-probes/check.sh
 
@@ -85,13 +88,17 @@ jobs:
       # workflow a `@testable import` in production code compiles and reaches an `internal`
       # declaration that exists for the suite alone (`LeaseDriver.runningHeartbeat`, #489, #491).
       # Only a build without it refuses the import, and until this step the first such build was
-      # the maintainer's Full Release, on a tag. This builds every target that ships and no test
-      # target, which is where `@testable import` belongs, so one under Sources/ fails it.
+      # the maintainer's Full Release, on a tag. This builds every SwiftPM target that ships and
+      # no test target, which is where `@testable import` belongs, so one in any of them fails it.
       #
-      # The failure names the wrong file. It reads `unable to resolve Swift module dependency to a
-      # compatible module: 'AeolusLeaseControl'` (the wording varies with the toolchain) at the
-      # first `import` of that module in the target, `LeaseLifecycle.swift:1:8`, not at the file
-      # that wrote `@testable`. Search Sources/ for `@testable`.
+      # What the failure says depends on the build system. SwiftPM's native one, which this
+      # runner's Swift 6.3.3 uses, names the file that wrote the import:
+      #     <offending file>:1:18: error: module 'AeolusLeaseControl' was not compiled for
+      #     testing [#ModuleNotTestable]
+      # Swift 6.4's default build system says `unable to resolve Swift module dependency to a
+      # compatible module: 'AeolusLeaseControl'` instead, at the first file in path order that
+      # imports the module, which is not always the offender (today, `LeaseLifecycle.swift`, for
+      # an offender that sorts after it). Either way, search Sources/ for `@testable`.
       #
       # What it does not build: Sources/Aeolus/main.swift, which only the Xcode app target
       # compiles (Package.swift excludes it from AeolusUI). The one Xcode build CI runs is
