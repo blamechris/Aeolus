@@ -78,7 +78,8 @@ struct FanControlStatusTests {
     ///
     /// **Mutation (ED):** make `LeaseEventText.fault` return
     /// `HelperAuthoredText.sanitised(fault.errorDescription ?? fault.wireCode)`. Run: red at the
-    /// `.leaseExpired` argument.
+    /// "returned to automatic" expectation for `.leaseExpired`, and at the detail's shape for
+    /// every argument.
     @Test(
         "A refusal says it was refused, by the helper's own code, and claims no fan state",
         arguments: Fixtures.FaultTag.allCases)

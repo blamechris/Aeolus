@@ -39,13 +39,15 @@ import Foundation
 /// 6. Otherwise **enabled**.
 ///
 /// Rules 3 and 4 are machine-wide, and no fan's availability states either: the helper's ladder
-/// leaves both out, so a fan beside either reads `.available` (`AvailabilityRestatement.swift`'s
-/// header). That is why they are rules of their own here and not part of rule 5.
+/// leaves both out, so a fan nothing else refuses reads `.available` beside either
+/// (`AvailabilityRestatement.swift`'s header). That is why they are rules of their own here and not
+/// part of rule 5.
 ///
 /// ## The selection is a function of state
 ///
-/// Never of the user's last intent: no input here records a click, so a click cannot select a
-/// segment. The segment moves when the driver or the snapshot does.
+/// Never of the user's last intent. The inputs are the driver's state and the snapshot on screen,
+/// so a click moves the segment only by moving the driver, and only as far as the driver has got:
+/// `.applying` until the helper answers, and Custom once a snapshot shows the lease holding.
 ///
 /// - **`.custom(target)`** only when the driver is `.held` with phase `.confirmed(target)`, a
 ///   licensed snapshot is on screen, and that snapshot's
@@ -67,13 +69,15 @@ import Foundation
 ///
 /// What the driver is doing about this fan, or the last thing that happened to the lease.
 ///
-/// - **`lost` and `refused` are past events**, worded "ended" and "refused", never as a state now.
-///   A lease is one per machine and `LeaseLoss` names no fans, so every fan carries the line.
+/// - **`lost` and `refused` are past events**, worded as what happened ("ended", "could not be
+///   shown to have begun", "refused"), never as a state now. A lease is one per machine and
+///   `LeaseLoss` names no fans, so every fan carries the line.
 /// - **The emergency is named only from a flag that is set**: the one in
 ///   `LeaseLoss.Cause.snapshot(_:isThermalEmergencyActive:)`. The flag clears when § 3's latch
 ///   releases (#476 NB3), so a lease gone with the flag clear says only that control ended. A
-///   helper refusal is shown by its own wire code, `thermalEmergencyActive` included, because that
-///   code is the helper naming it.
+///   helper refusal is shown by its own wire code, `thermalEmergencyActive` included: that code is
+///   the helper naming it, and it sends it only while § 3's latch is set (`LeaseAuthority`'s grant
+///   and `LeaseApplier`'s apply).
 /// - **Every helper-authored string goes through `HelperAuthoredText.sanitised(_:)`**: a holder, a
 ///   fault's detail and code, a reason's wire value, and `HelperFailure.other`.
 ///
@@ -129,7 +133,8 @@ struct FanControlPresentation: Equatable {
     }
 
     enum Selection: Equatable {
-        /// The helper reports the fan cleared to automatic, and the driver holds nothing over it.
+        /// The helper reports the fan cleared to automatic, and the driver is neither holding,
+        /// acquiring nor releasing it.
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
@@ -455,9 +460,8 @@ private enum LeaseEventText {
     /// A fault by its wire code, with any free text it carries cleaned.
     ///
     /// Not `errorDescription`: that text says `.leaseExpired` means "the fans have returned to
-    /// automatic control", which is a snapshot's to show, and it does not remove U+2028 or
-    /// U+2029 (#483). **Exhaustive, with no `default:`**, so a fault added to the vocabulary is a
-    /// compile error here until it is rendered.
+    /// automatic control", which is a snapshot's to show. **Exhaustive, with no `default:`**, so a
+    /// fault added to the vocabulary is a compile error here until it is rendered.
     private static func fault(_ fault: AeolusXPCFault) -> String {
         switch fault {
         case .manualControlUnavailable(let reason):

@@ -191,7 +191,8 @@ struct FanControlSelectionTests {
     /// first `apply`. Only the driver says it is wanted.
     ///
     /// **Mutation (A2):** delete `claim`'s `.acquiring(let fans) where fans.contains(index)` arm.
-    /// **Mutation (A3):** delete its `.releasing` arm. Run, each: red at its expectation.
+    /// **Mutation (A3):** make its `.releasing` arm return `automaticOrUnknown(licence)`. Run,
+    /// each: red at its expectation.
     @Test("A fan the driver holds, is asking for or is releasing never reads Automatic")
     func aFanTheDriverWantsIsNeverAutomatic() throws {
         let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0), Fixtures.clearedFan(1)])

@@ -24,6 +24,8 @@ struct FanControlAffordanceTests {
 
     /// **Mutation (H):** delete `affordance`'s `.notTracked(.noHelperInThisBuild)` arm. Run: red
     /// at the affordance for every argument; the fan falls to rule 2 and reads disabled.
+    /// **Mutation (HS):** delete `init(reading:given:)`'s early return for `.hidden`. Run: red at
+    /// the selection and the status, for the driver states that have one.
     @Test(
         "A build with no helper hides the control, in the pane's and the footer's words",
         arguments: Fixtures.DriverTag.allCases)
@@ -66,8 +68,12 @@ struct FanControlAffordanceTests {
     /// Every input that can say "not tracked" must say "tracked". `PollingViewModel` never
     /// publishes these mixtures; a caller that read its inputs in two turns could.
     ///
-    /// **Mutation (L1):** make `Licence`'s first arm `case (.notTracked(let why), .notTracked, _)`,
-    /// so the machine's source counts only when the fan agrees. Run: red at the first expectation.
+    /// **Mutation (L1):** add a first arm to `Licence.init` that licenses any reported fan with a
+    /// snapshot on screen, `case (_, .reported(let state, _), .some(let snapshot))`, whatever the
+    /// machine's source says. Run: red at the machine's expectation. **Mutation (L2):** add a first
+    /// arm that licenses a fan its row says is not tracked, from the snapshot's first fan,
+    /// `case (.helperSnapshot(let lease), .notTracked, .some(let snapshot))`. Run: red at the
+    /// fan's expectation.
     @Test("A claim needs the machine, the fan and the screen to agree that a snapshot is tracked")
     func everySourceMustSayTracked() throws {
         let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0)])
@@ -219,9 +225,10 @@ struct FanControlAffordanceTests {
     // MARK: - 5. The helper refuses the fan
 
     /// **Mutation (UA):** delete `affordance`'s refusal `if`. Run: red for every argument.
-    /// **Mutation (UA2):** guard it with `case .unavailable(let r) = …, r.clearance != .silent`,
-    /// so a silent reason, today's `.writePathNotBuilt` among them, is enabled. Run: red for every
-    /// silent reason.
+    /// **Mutation (UA2):** add `case .reported(let s, _) = reading.control,
+    /// s.manualControlAvailability.clearance != .silent` to its condition, so a silent reason,
+    /// today's `.writePathNotBuilt` among them, is enabled. Run: red for every silent reason, and
+    /// in `todayEveryFanIsDisabled`.
     @Test(
         "A fan the helper refuses is disabled, in its row's words",
         arguments: FanRowModelTests.Tag.allCases)
