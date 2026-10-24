@@ -237,9 +237,9 @@ public actor LeaseDriver {
     /// `internal`, for the suite alone: a test about a renewal that must **not** be sent has no
     /// event to wait for, and waiting for the beat itself is the only end it has. Unlike
     /// `HelperClient.deadlinesRunning`, which is a count, it reaches a task the driver owns, so it
-    /// hands out a wait rather than the task. **Nothing in `Sources/` names it or its handle**
-    /// outside this file, and nothing here names it but this declaration:
-    /// `LeaseDriverSuiteSeamTests` fails when anything else does.
+    /// hands out a wait rather than the task. **Nothing in `Sources/` names it or its handle but
+    /// these two declarations:** `LeaseDriverSuiteSeamTests` fails when anything else does, in
+    /// this file or another.
     var runningHeartbeat: HeartbeatHandle? { heartbeat.map(HeartbeatHandle.init) }
 
     /// The same, as a stream that starts with the value now.
