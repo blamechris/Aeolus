@@ -92,6 +92,9 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
     private(set) var calls: [Call] = []
     private(set) var suddenDisabled = 0
     private(set) var automaticDisabled = 0
+    /// The deepest each counter, and the activities, ever went: more than one is a second disable
+    /// or a second activity while the first was still in force.
+    private(set) var deepest = (sudden: 0, automatic: 0, activities: 0)
     private var activities: [ObjectIdentifier: Activity] = [:]
 
     /// Activities begun and not yet ended.
@@ -100,6 +103,7 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
     func disableSuddenTermination() {
         calls.append(.disableSudden)
         suddenDisabled += 1
+        deepest.sudden = max(deepest.sudden, suddenDisabled)
     }
 
     func enableSuddenTermination() {
@@ -111,6 +115,7 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
     func disableAutomaticTermination(_ reason: String) {
         calls.append(.disableAutomatic(reason))
         automaticDisabled += 1
+        deepest.automatic = max(deepest.automatic, automaticDisabled)
     }
 
     func enableAutomaticTermination(_ reason: String) {
@@ -127,6 +132,7 @@ final class FakeProcessLifetime: ProcessLifetimeControlling {
         calls.append(.beginActivity(options.rawValue, reason))
         let activity = Activity()
         activities[ObjectIdentifier(activity)] = activity
+        deepest.activities = max(deepest.activities, activities.count)
         return activity
     }
 

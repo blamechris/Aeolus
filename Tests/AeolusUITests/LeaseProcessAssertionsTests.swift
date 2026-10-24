@@ -50,6 +50,39 @@ struct LeaseProcessAssertionsTests {
         }
     }
 
+    /// Every transition from one kind of state to another, the same kind included, fed straight to
+    /// the assertions: after each state the counters are exactly what that state needs, never
+    /// deeper than one, and back to nothing at the end.
+    ///
+    /// P1, P2 and P3 are each red here too, for every pair that crosses the edge they break.
+    @Test(
+        "Every transition leaves the counters balanced",
+        arguments: StateKind.allCases, StateKind.allCases)
+    func everyTransitionIsBalanced(_ from: StateKind, _ to: StateKind) async throws {
+        let process = FakeProcessLifetime()
+        let (states, feed) = AsyncStream.makeStream(of: LeaseDriverState.self)
+        let assertions = LeaseProcessAssertions(process: process, states: states)
+
+        let sequence = [try from.state, try to.state, LeaseDriverState.idle]
+        for state in sequence {
+            feed.yield(state)
+            let blocks = LeaseProcessAssertions.blocksTermination(state)
+            let depth = blocks ? 1 : 0
+            let activities = state.isHeld ? 1 : 0
+            try #require(
+                await becomes {
+                    process.suddenDisabled == depth && process.automaticDisabled == depth
+                        && process.openActivities == activities
+                }, "\(from) → \(to), at \(state): \(process.calls)")
+        }
+        feed.finish()
+
+        #expect(process.deepest.sudden <= 1)
+        #expect(process.deepest.automatic <= 1)
+        #expect(process.deepest.activities <= 1)
+        withExtendedLifetime(assertions) {}
+    }
+
     /// Acquiring disables both; held begins the activity; releasing ends it and keeps termination
     /// blocked; released enables both. Each exactly once.
     ///
@@ -140,5 +173,31 @@ struct LeaseProcessAssertionsTests {
         #expect(process.suddenDisabled == 0)
         #expect(process.openActivities == 0)
         await scene.finish()
+    }
+}
+
+/// One driver state of each kind, for the transition table.
+enum StateKind: CaseIterable, Sendable {
+    case idle, acquiring, held, releasing, released, lost, refused
+
+    var state: LeaseDriverState {
+        get throws {
+            let lease = Lease(
+                holderDescription: "Aeolus.app", expiresAt: Date(timeIntervalSince1970: 0),
+                timeToLive: 30, isSelfRenewing: false)
+            switch self {
+            case .idle: return .idle
+            case .acquiring: return .acquiring(fans: [0])
+            case .held:
+                let target = try LeaseScene.target([0: 3000])
+                return .held(HeldLease(lease: lease, fans: [0], phase: .confirmed(target)))
+            case .releasing: return .releasing
+            case .released: return .released
+            case .lost:
+                return .lost(LeaseLoss(lease: lease, cause: .heartbeatFailed, afterWake: false))
+            case .refused:
+                return .refused(.manualControlUnavailable(reason: .leaseHeldByAnotherClient))
+            }
+        }
     }
 }
