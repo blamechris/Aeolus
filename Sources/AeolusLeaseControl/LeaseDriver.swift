@@ -237,9 +237,18 @@ public actor LeaseDriver {
     /// `internal`, for the suite alone: a test about a renewal that must **not** be sent has no
     /// event to wait for, and waiting for the beat itself is the only end it has. Unlike
     /// `HelperClient.deadlinesRunning`, which is a count, it reaches a task the driver owns, so it
-    /// hands out a wait rather than the task. **Nothing in `Sources/` names it or its handle but
-    /// these two declarations:** `LeaseDriverSuiteSeamTests` fails when anything else does, in
-    /// this file or another.
+    /// hands out a wait rather than the task.
+    ///
+    /// **The module boundary keeps it in the suite (#489).** This file is in `AeolusLeaseControl`,
+    /// so `AeolusUI`, the app and every other module are refused at compile time: `internal` does
+    /// not cross a module. Only a deliberate `@testable import AeolusLeaseControl` reaches it,
+    /// which `AeolusUITests` does and a release build refuses. The compiler holds that line for
+    /// everything outside this target and nothing inside it, so the files in `AeolusLeaseControl`
+    /// are reviewed together, and a file added to it must not name `runningHeartbeat` or
+    /// `HeartbeatHandle`.
+    ///
+    /// Reflection: `Mirror(reflecting:)` on the driver reads `heartbeat` itself, from any module;
+    /// no access level stops that, and no accidental edit takes that route.
     var runningHeartbeat: HeartbeatHandle? { heartbeat.map(HeartbeatHandle.init) }
 
     /// The same, as a stream that starts with the value now.
