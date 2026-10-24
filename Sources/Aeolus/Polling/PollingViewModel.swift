@@ -137,8 +137,9 @@ public final class PollingViewModel: ObservableObject {
     private var rendered: (snapshot: SystemSnapshot, receivedAt: Date)?
 
     /// The snapshot whose claims are on screen, or `nil` when none are: what
-    /// `FanControlPresentation` judges a lease against. Assigned last in `render`, after every
-    /// other property, so a sink on another property sees the previous snapshot here.
+    /// `FanControlPresentation` judges a lease against. `render` assigns it after `fans`,
+    /// `thermalEmergency` and `controlSource`, so a sink on any of those sees the previous
+    /// snapshot here.
     ///
     /// Get-only and computed, so it is a plain `KeyPath` and nothing outside this type can write
     /// the snapshot on screen; not `private(set) var`, whose key path a dynamic cast can still make

@@ -103,10 +103,11 @@ import Foundation
 /// sink on any one of them can pair one snapshot's rows with another's lease. Read them where every
 /// change has landed.
 ///
-/// A read taken part-way through is caught here as well: `renderedSnapshot` is assigned last, so
-/// the licence holds only when the lease, the emergency and this fan's state are all the ones
-/// `renderedSnapshot` carries. A read that pairs two snapshots is therefore disabled and claims
-/// nothing, rather than showing Custom over a lease the newer snapshot has dropped.
+/// A read taken part-way through is caught here as well. `render` assigns `renderedSnapshot` after
+/// every input this reads, so the licence holds only when the lease, the emergency and this fan's
+/// state are all the ones `renderedSnapshot` carries. A read that pairs two snapshots is therefore
+/// disabled and selects nothing, rather than showing Custom over a lease the newer snapshot has
+/// dropped.
 ///
 /// ## The contract the control must honour (#153's PR 6)
 ///
@@ -281,8 +282,8 @@ extension FanControlPresentation {
 
         /// Whether every input the presentation reads from a snapshot is the one `snapshot`
         /// carries: the generation check. `PollingViewModel.render` assigns `renderedSnapshot`
-        /// last, so a read taken part-way through a render pairs the newer rows, lease or
-        /// emergency with the older snapshot, and fails here.
+        /// after the rows, the lease and the emergency, so a read taken part-way through a render
+        /// pairs the newer of those with the older snapshot, and fails here.
         private static func isOneSnapshot(
             _ snapshot: SystemSnapshot, lease: Lease?, state: FanState,
             emergency: ThermalEmergencyState
