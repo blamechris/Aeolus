@@ -11,13 +11,11 @@ import Foundation
 /// not as two views sharing one running poll. This type therefore owns its own
 /// `PollingViewModel` (composition, not injection of a shared singleton): the menu bar's
 /// refresh loop starts and stops with the menu bar item's own lifecycle, independently of
-/// whether the main window is even open. The cost is a second 1 Hz `SensorProvider` poll
-/// running alongside the window's; the alternative — threading one `PollingViewModel`
-/// instance through both `#62`'s and `#63`'s independently-developed view trees — is
-/// exactly the coupling "independent consumers" was written to avoid. Both readers are
-/// read-only, so nothing about running two is unsafe, only slightly redundant, and
-/// nothing here prevents a later refactor to share one instance if that redundancy turns
-/// out to matter.
+/// whether the main window is even open. What the two **do** share is the app's one
+/// `HelperSnapshotSource` (#156): while the helper answers, neither reads the SMC and there
+/// is one snapshot stream, not two. Only on the direct-read fallback does each run its own
+/// 1 Hz `SensorProvider` poll; both readers are read-only, so running two is redundant
+/// rather than unsafe.
 ///
 /// ## Why this reacts to `phase`, not to `fans`/`sensors` directly
 ///
@@ -36,10 +34,9 @@ public final class MenuBarViewModel: ObservableObject {
     @Published public private(set) var readouts: [ResolvedMenuBarReadout] = []
     @Published public private(set) var phase: PollingPhase = .notStarted
     @Published public private(set) var lastUpdated: Date?
-    /// Mirrors `PollingViewModel.isThermalEmergencyActive` — see that property's
-    /// documentation for why it is hardcoded `false` under `Monitor` and carried through
-    /// regardless.
-    @Published public private(set) var isThermalEmergencyActive = false
+    /// Mirrors `PollingViewModel.thermalEmergency`: on, off, or unknown — never a
+    /// hardcoded `false`.
+    @Published public private(set) var thermalEmergency: ThermalEmergencyState = .unknown
 
     private let polling: PollingViewModel
     /// `nil` until either an explicit selection was supplied at `init` or
@@ -51,22 +48,20 @@ public final class MenuBarViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     /// - Parameters:
-    ///   - polling: Defaults to a real `SMCSensorProvider`-backed instance with the real
+    ///   - polling: The menu bar's own view model. `AeolusApp` builds it with the real
     ///     catalog (`CatalogSensorLabelSource.loadDefault()`) wired in as its label
     ///     source — matching `#62`'s `MainView` exactly, and not `PollingViewModel`'s own
     ///     `NoSensorLabels()` default: `MenuBarReadoutSelection.defaultSelection`
     ///     specifically prefers catalog-labelled sensors, so a menu bar that never saw a
-    ///     label would never demonstrate what that preference is for, and would fall back
-    ///     to the kind-`.unknown`-filtered pool documented on that type far more often
-    ///     than a real catalog-equipped run needs to. A test injects a `PollingViewModel`
-    ///     built from a fake `SensorProvider`/`PollingClock`, exactly like
-    ///     `PollingViewModel`'s own tests do.
+    ///     label would never demonstrate what that preference is for — and with the app's
+    ///     one `HelperSnapshotSource`, which is why there is no default here. A test
+    ///     injects a `PollingViewModel` built from a fake `SensorProvider`/`PollingClock`,
+    ///     exactly like `PollingViewModel`'s own tests do.
     ///   - selection: An explicit readout selection — e.g. one `#64` previously persisted
     ///     and is restoring. `nil` (the default) means "compute a sensible default from
     ///     the first successful poll," per `MenuBarReadoutSelection`.
     public init(
-        polling: PollingViewModel = PollingViewModel(
-            labelSource: CatalogSensorLabelSource.loadDefault()),
+        polling: PollingViewModel,
         selection: [MenuBarReadout]? = nil
     ) {
         self.polling = polling
@@ -115,7 +110,7 @@ public final class MenuBarViewModel: ObservableObject {
 
     /// Runs on every `PollingViewModel.phase` transition — success, failure, or the
     /// transient `.polling` state alike — so `phase`/`lastUpdated`/
-    /// `isThermalEmergencyActive` here always mirror `polling`'s exactly, and `readouts`
+    /// `thermalEmergency` here always mirror `polling`'s exactly, and `readouts`
     /// is recomputed from whatever `polling.fans`/`.sensors` currently hold. A failed tick
     /// leaves those two untouched (`PollingViewModel.tick()`'s own contract), so this
     /// naturally keeps showing the last known good values alongside the honest `.failed`
@@ -123,7 +118,7 @@ public final class MenuBarViewModel: ObservableObject {
     private func handle(phase: PollingPhase) {
         self.phase = phase
         self.lastUpdated = polling.lastUpdated
-        self.isThermalEmergencyActive = polling.isThermalEmergencyActive
+        self.thermalEmergency = polling.thermalEmergency
 
         let fans = polling.fans
         let sensors = polling.sensors

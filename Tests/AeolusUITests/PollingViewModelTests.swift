@@ -33,7 +33,7 @@ actor FlakyAfterFirstTickProvider: SensorProvider {
     }
 }
 
-@Suite("PollingViewModel — refresh loop and honesty flags", .serialized)
+@Suite("PollingViewModel — refresh loop and the direct-read path", .serialized)
 @MainActor
 struct PollingViewModelTests {
 
@@ -52,18 +52,19 @@ struct PollingViewModelTests {
     @Test("Before start(), the view model publishes nothing and claims no data")
     func initialStateIsHonestlyEmpty() {
         let viewModel = PollingViewModel(
-            provider: Self.provider(), clock: FakePollingClock())
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         #expect(viewModel.phase == .notStarted)
         #expect(viewModel.fans.isEmpty)
         #expect(viewModel.sensors.isEmpty)
         #expect(viewModel.lastUpdated == nil)
-        #expect(viewModel.isThermalEmergencyActive == false)
+        #expect(viewModel.thermalEmergency == .unknown)
+        #expect(viewModel.controlSource == .notTracked(.nothingReadYet))
     }
 
     @Test("A successful tick publishes fans, sensors, and a fresh lastUpdated")
     func successfulTickPublishesData() async {
         let viewModel = PollingViewModel(
-            provider: Self.provider(), clock: FakePollingClock())
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         await viewModel.tick()
 
         #expect(viewModel.phase == .ready)
@@ -75,7 +76,8 @@ struct PollingViewModelTests {
     @Test("A failed tick never erases the previous tick's fans or sensors")
     func failedTickPreservesLastKnownGoodData() async {
         let flaky = FlakyAfterFirstTickProvider(inner: Self.provider(), failAfterCalls: 1)
-        let viewModel = PollingViewModel(provider: flaky, clock: FakePollingClock())
+        let viewModel = PollingViewModel(
+            provider: flaky, clock: FakePollingClock(), snapshots: .noHelper())
 
         await viewModel.tick()
         #expect(viewModel.phase == .ready)
@@ -93,21 +95,20 @@ struct PollingViewModelTests {
         #expect(viewModel.lastUpdated == updatedAfterFirstTick)
     }
 
-    @Test(
-        "isThermalEmergencyActive is hardcoded false: no helper exists under Monitor to report one"
-    )
-    func thermalEmergencyFlagStaysFalseAcrossTicks() async {
+    @Test("With no helper the thermal emergency stays unknown across ticks, never a made-up false")
+    func thermalEmergencyStaysUnknownAcrossTicks() async {
         let viewModel = PollingViewModel(
-            provider: Self.provider(), clock: FakePollingClock())
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         await viewModel.tick()
         await viewModel.tick()
-        #expect(viewModel.isThermalEmergencyActive == false)
+        #expect(viewModel.thermalEmergency == .unknown)
     }
 
     @Test("start() runs ticks until the clock cancels it, and stop() then leaves loopTask cleared")
     func loopRunsUntilClockCancels() async {
         let clock = FakePollingClock(cancelAfterSleeps: 3)
-        let viewModel = PollingViewModel(provider: Self.provider(), clock: clock)
+        let viewModel = PollingViewModel(
+            provider: Self.provider(), clock: clock, snapshots: .noHelper())
 
         viewModel.start()
         await viewModel.waitUntilLoopFinishes()
@@ -124,7 +125,8 @@ struct PollingViewModelTests {
     @Test("A second start() call while already running does not start a competing loop")
     func secondStartWhileRunningIsANoOp() async {
         let clock = FakePollingClock(cancelAfterSleeps: 2)
-        let viewModel = PollingViewModel(provider: Self.provider(), clock: clock)
+        let viewModel = PollingViewModel(
+            provider: Self.provider(), clock: clock, snapshots: .noHelper())
 
         viewModel.start()
         viewModel.start()  // must be a no-op — a second loop would double every sleep count
@@ -136,7 +138,8 @@ struct PollingViewModelTests {
 
     @Test("stop() before start() is a harmless no-op")
     func stopBeforeStartIsHarmless() {
-        let viewModel = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let viewModel = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         viewModel.stop()
         #expect(viewModel.phase == .notStarted)
     }
@@ -147,7 +150,7 @@ struct PollingViewModelTests {
     func nonPositiveIntervalIsClamped() async {
         let clock = FakePollingClock(cancelAfterSleeps: 1)
         let viewModel = PollingViewModel(
-            provider: Self.provider(), clock: clock, refreshInterval: 0)
+            provider: Self.provider(), clock: clock, refreshInterval: 0, snapshots: .noHelper())
 
         viewModel.start()
         await viewModel.waitUntilLoopFinishes()

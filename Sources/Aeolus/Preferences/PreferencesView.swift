@@ -10,7 +10,9 @@ import SwiftUI
 /// fan/sensor data to populate the sensor-selection and menu-bar-contents lists, and
 /// coupling it to either of those other two instances would tie three independently
 /// developed view trees together for a cost (one more 1 Hz poll while this window is
-/// open) that is small and already paid twice over elsewhere in this app.
+/// open) that is small and already paid twice over elsewhere in this app. It shares the
+/// app's one `HelperSnapshotSource` with the other two, so while the helper answers it adds
+/// no SMC reads and no second snapshot stream at all.
 struct PreferencesView: View {
     @ObservedObject var preferencesController: PreferencesController
     @ObservedObject var launchAtLoginController: LaunchAtLoginController
@@ -33,7 +35,8 @@ struct PreferencesView: View {
     init(
         preferencesController: PreferencesController,
         launchAtLoginController: LaunchAtLoginController,
-        menuBarViewModel: MenuBarViewModel
+        menuBarViewModel: MenuBarViewModel,
+        snapshots: HelperSnapshotSource
     ) {
         self.preferencesController = preferencesController
         self.launchAtLoginController = launchAtLoginController
@@ -41,7 +44,8 @@ struct PreferencesView: View {
         _pollingViewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
-                refreshInterval: preferencesController.preferences.refreshInterval))
+                refreshInterval: preferencesController.preferences.refreshInterval,
+                snapshots: snapshots))
     }
 
     var body: some View {

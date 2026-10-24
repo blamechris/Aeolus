@@ -16,9 +16,8 @@ struct MenuBarContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.isThermalEmergencyActive {
-                Label("Thermal emergency active", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+            if let banner = ThermalEmergencyDisplay.banner(for: viewModel.thermalEmergency) {
+                thermalEmergencyLine(banner)
             }
 
             if viewModel.readouts.isEmpty {
@@ -43,6 +42,21 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(minWidth: 240)
+    }
+
+    /// The same three answers the main window draws, in the dropdown's few words: an
+    /// emergency in red, unknown in grey, and nothing when the helper reports none.
+    @ViewBuilder
+    private func thermalEmergencyLine(_ banner: ThermalEmergencyDisplay.Banner) -> some View {
+        switch banner.severity {
+        case .emergency:
+            Label(banner.compactText, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        case .unknown:
+            Label(banner.compactText, systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// Shown when nothing is currently selected — either no fan/sensor has been chosen
@@ -120,7 +134,7 @@ private struct MenuBarReadoutRow: View {
 
             Spacer()
 
-            if let state = readout.fanControlState, state.isReclaimedBySystem {
+            if readout.fanControl?.reportsReclamation == true {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .help("System reclaimed control of this fan")

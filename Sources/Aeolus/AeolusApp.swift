@@ -21,6 +21,12 @@ public struct AeolusApp: App {
     @StateObject private var launchAtLoginController: LaunchAtLoginController
     @StateObject private var menuBarViewModel: MenuBarViewModel
 
+    /// The app's one reader of helper snapshots, shared by every `PollingViewModel` — the
+    /// window's, the menu bar's and the Settings window's. A plain constant rather than a
+    /// `StateObject`: nothing renders the source itself, and `init()` runs once per process.
+    /// In a build with no helper it holds no client at all (`HelperSnapshotSource.forBundle`).
+    private let snapshots: HelperSnapshotSource
+
     public init() {
         // `preferencesController` must exist before the other two `StateObject`s: both
         // read its already-loaded `Preferences` value once, at construction, to seed the
@@ -30,19 +36,23 @@ public struct AeolusApp: App {
         // `PollingViewModel`'s and `MenuBarViewModel`'s own hardcoded defaults.
         let preferencesController = PreferencesController()
         _preferencesController = StateObject(wrappedValue: preferencesController)
+        let snapshots = HelperSnapshotSource.forRunningApp(
+            refreshInterval: preferencesController.preferences.refreshInterval)
+        self.snapshots = snapshots
         _launchAtLoginController = StateObject(
             wrappedValue: LaunchAtLoginController(preferences: preferencesController))
         _menuBarViewModel = StateObject(
             wrappedValue: MenuBarViewModel(
                 polling: PollingViewModel(
                     labelSource: CatalogSensorLabelSource.loadDefault(),
-                    refreshInterval: preferencesController.preferences.refreshInterval),
+                    refreshInterval: preferencesController.preferences.refreshInterval,
+                    snapshots: snapshots),
                 selection: preferencesController.preferences.menuBarReadouts))
     }
 
     public var body: some Scene {
         WindowGroup {
-            MainView(preferencesController: preferencesController)
+            MainView(preferencesController: preferencesController, snapshots: snapshots)
         }
 
         // `MenuBarExtra` with multiple simultaneous readouts (`MenuBarLabelView`) and a
@@ -82,13 +92,15 @@ public struct AeolusApp: App {
             PreferencesView(
                 preferencesController: preferencesController,
                 launchAtLoginController: launchAtLoginController,
-                menuBarViewModel: menuBarViewModel)
+                menuBarViewModel: menuBarViewModel,
+                snapshots: snapshots)
         }
     }
 }
 
 /// The two-pane main window: fans on the left, sensors on the right — both bound to the
-/// same `PollingViewModel`, so they always reflect the same refresh tick.
+/// same `PollingViewModel`, so they always reflect the same refresh tick, and that view
+/// model reads the app's one `HelperSnapshotSource`.
 ///
 /// This view owns the view model's lifecycle: `start()` on appear, `stop()` on disappear
 /// per that method's own documentation, so no SMC traffic continues once the window is
@@ -113,22 +125,22 @@ struct MainView: View {
     /// note on why a preference changed later needs this window reopened to take effect
     /// on the refresh cadence specifically (`selectedSensorKeys`/`temperatureUnit`, by
     /// contrast, are read fresh on every `body` evaluation below and apply immediately).
-    init(preferencesController: PreferencesController) {
+    init(preferencesController: PreferencesController, snapshots: HelperSnapshotSource) {
         self.preferencesController = preferencesController
         _viewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
-                refreshInterval: preferencesController.preferences.refreshInterval))
+                refreshInterval: preferencesController.preferences.refreshInterval,
+                snapshots: snapshots))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Hardcoded false under Monitor today — see
-            // `PollingViewModel.isThermalEmergencyActive`'s documentation — but the
-            // rendering path exists unconditionally so a real emergency never needs a
-            // first-ever UI change to be shown honestly.
-            if viewModel.isThermalEmergencyActive {
-                ThermalEmergencyBanner()
+            // On, off or unknown — the last whenever no fresh helper snapshot speaks, which is
+            // always under Monitor. See `ThermalEmergencyDisplay` for why unknown is a line of
+            // its own rather than no banner.
+            if let banner = ThermalEmergencyDisplay.banner(for: viewModel.thermalEmergency) {
+                ThermalEmergencyBanner(banner: banner)
             }
             HSplitView {
                 FanListView(viewModel: viewModel)

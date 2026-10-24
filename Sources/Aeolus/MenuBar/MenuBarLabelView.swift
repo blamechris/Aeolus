@@ -49,15 +49,14 @@ struct MenuBarLabelView: View {
 
     /// Honest about reclamation and thermal state rather than a fixed icon — see
     /// `CLAUDE.md` rule 6: this must never look identical to the normal state while the
-    /// system has actually taken a fan back or declared an emergency. Both conditions are
-    /// hardcoded false/absent under `Monitor` today (see `PollingViewModel`'s
-    /// documentation), so this always resolves to `"fan"` in this build; the branches
-    /// exist so nothing has to change here once a real answer is possible.
+    /// helper reports a fan taken back or an emergency. Neither is ever reported under
+    /// `Monitor`, which has no helper, so this resolves to `"fan"` in that build. The plain
+    /// icon claims nothing: an unknown emergency state is spelled out in the dropdown.
     private var iconName: String {
-        if viewModel.isThermalEmergencyActive {
+        if viewModel.thermalEmergency == .active {
             return "exclamationmark.triangle.fill"
         }
-        if viewModel.readouts.contains(where: { $0.fanControlState?.isReclaimedBySystem == true }) {
+        if viewModel.readouts.contains(where: { $0.fanControl?.reportsReclamation == true }) {
             return "exclamationmark.triangle"
         }
         return "fan"

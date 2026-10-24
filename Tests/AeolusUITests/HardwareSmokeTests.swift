@@ -22,15 +22,15 @@ import Testing
 struct HardwareSmokeTests {
 
     @Test(
-        "FanPoller reads real fans with no helper and no privileges, honesty flags hardcoded safe"
+        "FanPoller reads real fans with no helper and no privileges, and claims no control"
     )
     func fanPollerReadsRealFans() async throws {
-        let fans = try await FanPoller.poll(provider: SMCSensorProvider())
+        let fans = try await FanPoller.poll(
+            provider: SMCSensorProvider(), untracked: .noHelperInThisBuild)
 
         #expect(!fans.isEmpty)
         for fan in fans {
-            #expect(fan.mode == .automatic)
-            #expect(fan.isReclaimedBySystem == false)
+            #expect(fan.control == .notTracked(.noHelperInThisBuild))
             #expect(fan.actual.key == "F\(fan.index)Ac")
             #expect(fan.minimum.key == "F\(fan.index)Mn")
             #expect(fan.maximum.key == "F\(fan.index)Mx")
@@ -64,7 +64,8 @@ struct HardwareSmokeTests {
     @Test("PollingViewModel ticks against real hardware without hitting readAll() on a refresh")
     func viewModelTicksAgainstRealHardwareUsingSubsetReadsAfterDiscovery() async throws {
         let provider = SMCSensorProvider()
-        let viewModel = PollingViewModel(provider: provider)
+        let viewModel = PollingViewModel(
+            provider: provider, snapshots: .noHelper())
 
         await viewModel.tick()
         #expect(viewModel.phase == .ready)
