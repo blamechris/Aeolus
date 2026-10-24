@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// The lease is renewed every `timeToLive / 3`, from the instant before it was asked for,
 /// including while an `apply` is outstanding; and a renewal that fails ends it for good.

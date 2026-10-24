@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// What the driver asks for and sends: the request itself, one `apply` at a time with the latest
 /// target queued, Auto as a release sent at once, and a change of fans as release, acquire, apply.

@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// A wake replaces the heartbeat. The beat it replaced cannot change the state once
 /// `systemDidWake()` has returned, and a renewal answer that beat already had is not counted:

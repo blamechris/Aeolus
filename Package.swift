@@ -96,6 +96,30 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
+        // The app's lease driver: the actor that takes, renews, releases and reports the loss of
+        // the fans' manual-control lease, and the types it speaks in. Pure client logic over
+        // `AeolusXPCClient`'s verbs — no AppKit, no SwiftUI, no state of the helper's own.
+        //
+        // It is a target of its own so the compiler, rather than a text scan, keeps
+        // `LeaseDriver.runningHeartbeat` in the test suite (#489). That accessor is `internal`,
+        // for `@testable import` alone, and inside one module no access level can say "the suite
+        // and nothing else": `AeolusUI` sat in the same module as the driver, so every file in it
+        // could name the accessor too. Behind a module boundary `internal` is invisible to
+        // `AeolusUI`, and the one test target that does `@testable import AeolusLeaseControl` is
+        // the only other thing that sees it. Nothing here is widened to get that: everything
+        // `AeolusUI` uses of the driver was already `public`.
+        //
+        // Keep `AeolusUI`'s own wiring (`LeaseLifecycle`, the app delegate) out of it. A file
+        // added here is reviewed with the other five as one unit, and must not name
+        // `runningHeartbeat`. It depends on exactly what those files import. Not a product: no
+        // package outside this one links it, and the Xcode app target reaches it through
+        // `AeolusUI`. See `LeaseDriver.runningHeartbeat`.
+        .target(
+            name: "AeolusLeaseControl",
+            dependencies: ["AeolusXPC", "AeolusXPCClient", "FanKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+
         // The root launchd daemon. Sole owner of every SMC write.
         .executableTarget(
             name: "AeolusHelper",
@@ -125,7 +149,9 @@ let package = Package(
         // SwiftUI views and view models for Aeolus.app.
         .target(
             name: "AeolusUI",
-            dependencies: ["SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
+            dependencies: [
+                "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient", "AeolusLeaseControl",
+            ],
             path: "Sources/Aeolus",
             // The app's entry point belongs to the Xcode bundle target, not to this
             // library — a library may not contain top-level code.
@@ -216,7 +242,10 @@ let package = Package(
         // AeolusXPCService.machServiceName rather than against a second copy of the string.
         .testTarget(
             name: "AeolusUITests",
-            dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
+            dependencies: [
+                "AeolusUI", "AeolusLeaseControl", "SMCCore", "FanKit", "AeolusXPC",
+                "AeolusXPCClient",
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 

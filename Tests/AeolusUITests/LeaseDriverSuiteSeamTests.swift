@@ -42,7 +42,7 @@ struct LeaseDriverSuiteSeamTests {
     }
 
     /// The file the seam is declared in, relative to `Sources/`.
-    private static let declaringFile = "Aeolus/Control/LeaseDriver.swift"
+    private static let declaringFile = "AeolusLeaseControl/LeaseDriver.swift"
 
     /// Every mention `Sources/` may hold, by file and identifier. `HeartbeatHandle` appears three
     /// times: its declaration, the accessor's type, and the `map` that makes one.

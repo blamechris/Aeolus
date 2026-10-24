@@ -3,7 +3,7 @@ import AeolusXPCClient
 import FanKit
 import Foundation
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// Everything that happened in a lease-driver scene, in the order it reached the ledger, each at
 /// the hand-wound clock's instant.

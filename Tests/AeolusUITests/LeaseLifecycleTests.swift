@@ -4,6 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// Quit, logout and closing the last control window give the fans back explicitly, within a

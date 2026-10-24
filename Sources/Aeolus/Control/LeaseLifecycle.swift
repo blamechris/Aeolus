@@ -1,3 +1,4 @@
+import AeolusLeaseControl
 import Foundation
 
 /// Where the app's lifecycle gives the fans back: quit, logout, and closing the last control

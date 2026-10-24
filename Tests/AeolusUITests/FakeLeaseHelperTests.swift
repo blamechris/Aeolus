@@ -4,7 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
-@testable import AeolusUI
+@testable import AeolusLeaseControl
 
 /// The fake helper's own fidelity, where the driver's suite leans on it: `disconnect()` publishes
 /// `.idle` as `HelperClient.disconnect()` does, and answers every call still waiting, delayed ones
