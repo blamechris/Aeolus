@@ -100,9 +100,10 @@ lease that has to be actively held.
 - **A lease proves the holder's process is renewing, not that its UI responds.** The app renews
   off the main actor (`LeaseDriver`), so a frozen window keeps the user's speed until the app is
   force-quit. That is deliberate: tying renewal to the main thread would let a busy, healthy UI
-  lose control, the failure #229 closed. This bullet listed "the GUI hung" until #479.
+  lose control, the failure #229 closed. The bullet above listed "the GUI hung" until #479.
 
-**That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
+**The expiry bullet above ended "and clears the Apple Silicon force key" until #104, and it was
+wrong.** An
 ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
 write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
 hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it — another
@@ -1730,9 +1731,10 @@ control. Anything less and users are right not to trust the software.
 **The lease covers *client* death; reconciliation covers *helper* death.** Conflating the
 two processes is what let this section claim a signal handler was the answer. § 1's lease
 handles a crashed or killed app, a hung one once it is force-quit — `SIGKILL`, a kernel
-panic, a power loss on the *client* side — because the enforcer outlives it. When the helper is the one that dies, the
-enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
-and the SMC keeps the last value written. Only a restart can notice.
+panic, a power loss on the *client* side — because the enforcer outlives it. When the
+helper is the one that dies, the enforcer is the casualty: the TTL is not counted by
+anything, the watchdog is not watching, and the SMC keeps the last value written. Only a
+restart can notice.
 
 *Tested by:* `StartupReconciliationTests` drives the composed helper over scripted firmware —
 a fan starting in manual is restored exactly once, a failed mode read and a failed
