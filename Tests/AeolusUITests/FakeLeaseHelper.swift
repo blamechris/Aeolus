@@ -27,7 +27,7 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     enum Answer: Sendable {
         /// Answered at once, by the lease table.
         case now
-        /// Answered when the clock reaches the call's instant plus this.
+        /// Answered when the clock reaches the instant the call arrived, plus this.
         case after(Duration)
         /// Answered when the test calls `answerParked(_:)`, or by `disconnect()`.
         case parked
@@ -98,8 +98,9 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     // MARK: - The control connection
 
     func acquireLease(_ request: LeaseRequest) async throws -> Lease {
-        await ledger.record(.acquire(request), at: clock.now)
-        try await settle(.acquire)
+        let arrived = clock.now
+        await ledger.record(.acquire(request), at: arrived)
+        try await settle(.acquire, arrivedAt: arrived)
         let lease = Lease(
             holderDescription: request.holderDescription,
             expiresAt: Date(timeIntervalSince1970: 1_000_000 + request.timeToLive),
@@ -110,9 +111,10 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     }
 
     func renewLease(id: UUID) async throws -> Lease {
-        await ledger.record(.renew(id), at: clock.now)
+        let arrived = clock.now
+        await ledger.record(.renew(id), at: arrived)
         do {
-            try await settle(.renew)
+            try await settle(.renew, arrivedAt: arrived)
         } catch let fault as AeolusXPCFault {
             leases[id] = nil
             throw fault
@@ -123,19 +125,21 @@ actor FakeLeaseHelper: HelperLeaseControlling {
     }
 
     func releaseLease(id: UUID) async throws {
-        await ledger.record(.release(id), at: clock.now)
-        try await settle(.release)
+        let arrived = clock.now
+        await ledger.record(.release(id), at: arrived)
+        try await settle(.release, arrivedAt: arrived)
         guard leases.removeValue(forKey: id) != nil else { throw AeolusXPCFault.leaseUnknown }
         await ledger.record(.releaseAnswered(id), at: clock.now)
     }
 
     func apply(_ settings: [FanSetting], leaseID: UUID) async throws {
-        await ledger.record(.apply(settings, lease: leaseID), at: clock.now)
+        let arrived = clock.now
+        await ledger.record(.apply(settings, lease: leaseID), at: arrived)
         applying += 1
         mostApplying = max(mostApplying, applying)
         defer { applying -= 1 }
         do {
-            try await settle(.apply)
+            try await settle(.apply, arrivedAt: arrived)
             guard leases[leaseID] != nil else { throw AeolusXPCFault.leaseUnknown }
         } catch {
             await ledger.record(
@@ -164,7 +168,10 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 
     // MARK: - Answers
 
-    private func settle(_ verb: Verb) async throws {
+    /// Answers a call as scripted. A delay is measured from the instant the call was logged, which
+    /// is the instant a test saw it arrive: reading the clock again here could read it after the
+    /// test had already moved it on, and push the answer past the instant the test meant.
+    private func settle(_ verb: Verb, arrivedAt arrived: ContinuousClock.Instant) async throws {
         let answer: Answer
         if var queued = scripts[verb], !queued.isEmpty {
             answer = queued.removeFirst()
@@ -176,7 +183,7 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         case .now:
             return
         case .after(let duration):
-            try await clock.sleep(until: clock.now.advanced(by: duration))
+            try await clock.sleep(until: arrived.advanced(by: duration))
         case .parked:
             try await park(verb)
         case .refuse(let fault):
