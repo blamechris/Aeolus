@@ -106,11 +106,13 @@ import Foundation
 /// The licence also requires the lease, the emergency and this fan's state to be the ones
 /// `renderedSnapshot` carries. `render` assigns `renderedSnapshot` after the rows, the emergency
 /// and the lease, so a read that pairs a newer one of those with the older snapshot, where the two
-/// differ, is disabled and selects nothing. The check cannot see a read that holds only the older
-/// snapshot's values: a sink on `$fans`, which runs before anything has changed, or a sink on
-/// `$controlSource` when this fan's row did not change. Such a read shows the older snapshot's
-/// claim, Custom included, and a sink keeps it until its property next changes. Only the
-/// contract's first line prevents that.
+/// differ, is disabled and claims neither Custom nor Automatic.
+/// The check cannot see a read that holds only the older snapshot's values for what it compares.
+/// A sink on `$fans` runs before any of them has changed. A sink on `$sensors` or
+/// `$thermalEmergency` passes when this fan's row did not change, and one on `$controlSource` when
+/// neither the row nor the emergency did: the lease has not moved yet. Such a read shows the
+/// older snapshot's claim, Custom included, and a sink keeps it until its property is next
+/// assigned. Only the contract's first line prevents that.
 ///
 /// ## The contract the control must honour (#153's PR 6)
 ///
@@ -120,7 +122,7 @@ import Foundation
 ///   of `polling`.
 /// - **Recompute whenever the driver's state changes as well** (`LeaseDriver.stateUpdates()`):
 ///   `revision` moves only with `polling`, so a control computed on it alone keeps showing Custom
-///   after the driver has lost the lease, until the next snapshot renders.
+///   after the driver has lost the lease, until `polling` next moves `revision`.
 /// - Read only from a started view model. After `stop()`, nothing withdraws the snapshot on screen.
 /// - `.hidden`: no control at all. State its reason once, where the control would be (#154).
 /// - `.disabled(reason)`: show the reason's summary, its advice and its wire value where present.
