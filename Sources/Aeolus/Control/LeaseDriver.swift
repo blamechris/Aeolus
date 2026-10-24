@@ -590,9 +590,16 @@ extension LeaseDriver {
     /// after a loss, is likewise not counted, so `held` is never drawn again for control the user
     /// gave back or the helper ended.
     ///
-    /// **No lease-id check of its own.** A beat that has not been stopped belongs to the lease
-    /// held: every end of a lease stops its beat (`endLease()`), and so does a wake
-    /// (`startHeartbeat`). The `case .held` below is only how `held` is reached.
+    /// **No lease-id check of its own, so the cancellation is load-bearing.** What keeps an old
+    /// lease's answer off a new one is `endLease()`'s `heartbeat?.cancel()`. Every end of a lease
+    /// cancels its beat, and `beat`'s `guard !Task.isCancelled` after the renewal stops the
+    /// cancelled beat before its answer reaches here. A wake cancels the beat it replaces the
+    /// same way (`startHeartbeat`). `everyEndStopsTheHeartbeat` pins the cancel on all five ends,
+    /// and `staleRenewalUnderAnOldLease` and `staleRenewalAfterAGrantOverOtherFans` pin the guard.
+    /// Without either, an old lease's renewal answered after a new grant replaces the new lease
+    /// in `held`, and the new lease's beat, finding it no longer held, stops renewing it. An id
+    /// check here would sit behind both, and no test could see it act unless one of them were
+    /// deleted. The `case .held` below is only how `held` is reached.
     private func renewalAccepted(_ renewed: Lease, for leaseID: UUID) -> Bool {
         guard case .held(let held) = current else { return false }
         guard renewed.id == leaseID else {
