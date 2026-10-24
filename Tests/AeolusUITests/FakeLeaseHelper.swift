@@ -37,6 +37,9 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         case fail(HelperClientError)
     }
 
+    private typealias Parked = CheckedContinuation<Void, any Error>
+    private typealias HealthWaiter = CheckedContinuation<HelperConnectionHealth?, Never>
+
     enum Verb: Sendable, Hashable {
         case acquire, renew, release, apply
     }
@@ -46,13 +49,12 @@ actor FakeLeaseHelper: HelperLeaseControlling {
 
     private var scripts: [Verb: [Answer]] = [:]
     private var leases: [UUID: Lease] = [:]
-    private var parkedCalls: [UInt64: (verb: Verb, continuation: CheckedContinuation<Void, any Error>)] =
-        [:]
+    private var parkedCalls: [UInt64: (verb: Verb, continuation: Parked)] = [:]
     private var issued: UInt64 = 0
     private var applying = 0
     private var mostApplying = 0
     private var pushedHealth: [HelperConnectionHealth] = []
-    private var healthWaiters: [UInt64: CheckedContinuation<HelperConnectionHealth?, Never>] = [:]
+    private var healthWaiters: [UInt64: HealthWaiter] = [:]
     private var subscribed: Set<UUID> = []
 
     init(clock: HandWoundClock, ledger: LeaseLedger) {
@@ -163,7 +165,9 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         leases.removeAll()
         let calls = parkedCalls.values
         parkedCalls.removeAll()
-        for call in calls { call.continuation.resume(throwing: HelperClientError.connectionAbandoned) }
+        for call in calls {
+            call.continuation.resume(throwing: HelperClientError.connectionAbandoned)
+        }
     }
 
     // MARK: - Answers
@@ -197,8 +201,7 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         issued &+= 1
         let id = issued
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Void, any Error>) in
+            try await withCheckedThrowingContinuation { (continuation: Parked) in
                 if Task.isCancelled {
                     continuation.resume(throwing: CancellationError())
                 } else {
@@ -221,8 +224,7 @@ actor FakeLeaseHelper: HelperLeaseControlling {
         issued &+= 1
         let id = issued
         return await withTaskCancellationHandler {
-            await withCheckedContinuation {
-                (continuation: CheckedContinuation<HelperConnectionHealth?, Never>) in
+            await withCheckedContinuation { (continuation: HealthWaiter) in
                 if Task.isCancelled {
                     continuation.resume(returning: nil)
                 } else {

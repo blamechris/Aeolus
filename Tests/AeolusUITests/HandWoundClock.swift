@@ -18,6 +18,7 @@ import os
 final class HandWoundClock: HeartbeatClock, Sendable {
 
     private typealias Wake = CheckedContinuation<Void, any Error>
+    private typealias Wakeups = [CheckedContinuation<Void, Never>]
 
     private struct Sleeper: Sendable {
         let deadline: ContinuousClock.Instant
@@ -38,7 +39,7 @@ final class HandWoundClock: HeartbeatClock, Sendable {
         var deadlines: [ContinuousClock.Instant] { sleepers.values.map(\.deadline).sorted() }
 
         /// Removes and returns every watcher whose condition now holds.
-        mutating func satisfiedWatchers() -> [CheckedContinuation<Void, Never>] {
+        mutating func satisfiedWatchers() -> Wakeups {
             let parked = deadlines
             let ready = watchers.filter { $0.value.satisfied(parked) }
             for key in ready.keys { watchers[key] = nil }
@@ -59,7 +60,7 @@ final class HandWoundClock: HeartbeatClock, Sendable {
 
     /// Moves the hands to `instant`, never backwards, and ends every sleep it reaches.
     func advance(to instant: ContinuousClock.Instant) {
-        let (due, watchers) = state.withLock { state -> ([Sleeper], [CheckedContinuation<Void, Never>]) in
+        let (due, watchers) = state.withLock { state -> ([Sleeper], Wakeups) in
             if instant > state.now { state.now = instant }
             let now = state.now
             let due = state.sleepers.filter { $0.value.deadline <= now }
@@ -82,8 +83,7 @@ final class HandWoundClock: HeartbeatClock, Sendable {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: Wake) in
                 enum Now { case cancelled, due, parked }
-                let (now, watchers) = state.withLock {
-                    state -> (Now, [CheckedContinuation<Void, Never>]) in
+                let (now, watchers) = state.withLock { state -> (Now, Wakeups) in
                     if Task.isCancelled { return (.cancelled, []) }
                     if deadline <= state.now { return (.due, []) }
                     state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
@@ -97,8 +97,7 @@ final class HandWoundClock: HeartbeatClock, Sendable {
                 }
             }
         } onCancel: {
-            let (parked, watchers) = state.withLock {
-                state -> (Sleeper?, [CheckedContinuation<Void, Never>]) in
+            let (parked, watchers) = state.withLock { state -> (Sleeper?, Wakeups) in
                 let parked = state.sleepers.removeValue(forKey: id)
                 return (parked, state.satisfiedWatchers())
             }

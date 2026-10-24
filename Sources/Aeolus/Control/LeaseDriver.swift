@@ -110,6 +110,14 @@ public actor LeaseDriver {
         var judgedFrom: UInt64?
     }
 
+    /// A release in flight: which one, of which lease, and its task.
+    private struct PendingRelease {
+        let id: UInt64
+        /// `nil` for a release asked for while the lease was still being acquired.
+        let lease: Lease?
+        let task: Task<ReleaseOutcome, Never>
+    }
+
     /// An acquisition in flight.
     private struct Acquisition {
         let id: UInt64
@@ -134,8 +142,7 @@ public actor LeaseDriver {
     private var heartbeat: Task<Void, Never>?
     private var healthWatch: Task<Void, Never>?
     /// The release in flight, of whichever lease: a user's, a quit's, or the one sent after a loss.
-    /// `lease` is `nil` for a release asked for while the lease was still being acquired.
-    private var pendingRelease: (id: UInt64, lease: Lease?, task: Task<ReleaseOutcome, Never>)?
+    private var pendingRelease: PendingRelease?
     private var releases: UInt64 = 0
     /// What to acquire once the release in flight has answered: a change of fans, or a target
     /// asked for while releasing.
@@ -522,7 +529,7 @@ extension LeaseDriver {
             }
             return await self.send(release: lease, as: id)
         }
-        pendingRelease = (id, nil, task)
+        pendingRelease = PendingRelease(id: id, lease: nil, task: task)
         return task
     }
 
@@ -531,7 +538,7 @@ extension LeaseDriver {
         releases &+= 1
         let id = releases
         let task = Task { await self.send(release: lease, as: id) }
-        pendingRelease = (id, lease, task)
+        pendingRelease = PendingRelease(id: id, lease: lease, task: task)
         return task
     }
 

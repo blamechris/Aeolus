@@ -17,7 +17,9 @@ struct LeaseDriverApplyTests {
     /// "persist across quit" is the helper's to offer, and the app does not ask for it.
     ///
     /// **Mutation (self-renewing):** in `LeaseDriver.acquire`, pass `isSelfRenewing: true`. Red.
-    @Test("The request is Aeolus.app's, over the target's fans, at the default TTL, never self-renewing")
+    @Test(
+        "The request is Aeolus.app's, at the default TTL, and never self-renewing"
+    )
     func theRequest() async throws {
         let scene = await LeaseScene()
         await scene.driver.hold(try LeaseScene.target([1: 4000, 0: 3000]))
@@ -79,7 +81,11 @@ struct LeaseDriverApplyTests {
         await scene.ledger.waitFor { entries in
             entries.applies.count >= 3
                 || entries.states.contains { state in
-                    if case .held(let held) = state { held.phase == .confirmed(latest) } else { false }
+                    if case .held(let held) = state {
+                        held.phase == .confirmed(latest)
+                    } else {
+                        false
+                    }
                 }
         }
 
@@ -151,8 +157,11 @@ struct LeaseDriverApplyTests {
         let entries = await scene.entries
         let released = try #require(entries.index(of: .releaseAnswered(held.lease.id)))
         let acquired = try #require(
-            entries.index { if case .acquire(let request) = $0 { request.fanIndices == [0, 1] } else { false } })
-        let applied = try #require(entries.index(of: .apply(wider.settings, lease: entries.lastGrant)))
+            entries.index {
+                if case .acquire(let request) = $0 { request.fanIndices == [0, 1] } else { false }
+            })
+        let applied = try #require(
+            entries.index(of: .apply(wider.settings, lease: entries.lastGrant)))
         #expect(released < acquired && acquired < applied)
         await scene.finish()
     }

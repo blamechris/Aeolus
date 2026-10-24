@@ -52,7 +52,8 @@ struct LeaseDriverLossTests {
             readWith: ticket)
 
         let loss = try #require(await scene.driver.state.loss)
-        #expect(loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: true))
+        #expect(
+            loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: true))
         await scene.finish()
     }
 
@@ -69,7 +70,8 @@ struct LeaseDriverLossTests {
             readWith: ticket)
 
         let loss = try #require(await scene.driver.state.loss)
-        #expect(loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: false))
+        #expect(
+            loss.cause == .snapshot(.leaseNotListed(listed: nil), isThermalEmergencyActive: false))
         await scene.finish()
     }
 
@@ -80,14 +82,17 @@ struct LeaseDriverLossTests {
         let scene = await LeaseScene()
         try await scene.hold(LeaseScene.target([0: 3000]))
         let other = Lease(
-            holderDescription: "fanctl\u{202E}\nnot really", expiresAt: Date(timeIntervalSince1970: 0))
+            holderDescription: "fanctl\u{202E}\nnot really",
+            expiresAt: Date(timeIntervalSince1970: 0))
         let ticket = await scene.driver.beginSnapshotRead()
 
         await scene.driver.observe(
             Self.snapshot([Self.fan(0, target: 3000)], listing: other), readWith: ticket)
 
         let loss = try #require(await scene.driver.state.loss)
-        #expect(loss.cause == .snapshot(.leaseNotListed(listed: other), isThermalEmergencyActive: false))
+        #expect(
+            loss.cause == .snapshot(.leaseNotListed(listed: other), isThermalEmergencyActive: false)
+        )
         if case .snapshot(.leaseNotListed(let listed?), _) = loss.cause {
             #expect(listed.holderDescription == "fanctl\u{202E}\nnot really")
         }
@@ -110,7 +115,9 @@ struct LeaseDriverLossTests {
         let early = await scene.driver.beginSnapshotRead()
         let lease = try #require(await scene.helper.heldLeases.values.first)
         await scene.helper.answerParked(.apply)
-        await scene.waitForState { if case .held(let held) = $0 { held.isConfirmed } else { false } }
+        await scene.waitForState {
+            if case .held(let held) = $0 { held.isConfirmed } else { false }
+        }
 
         let notYetHeld = Self.snapshot([Self.fan(0, target: nil)], listing: lease)
         await scene.driver.observe(notYetHeld, readWith: early)
@@ -194,7 +201,8 @@ struct LeaseDriverLossTests {
     @Test("A refused apply is lost, and the lease is released")
     func aRefusedApplyIsLost() async throws {
         let scene = await LeaseScene()
-        await scene.helper.script(.apply, .refuse(.manualControlUnavailable(reason: .supervisorBlind)))
+        await scene.helper.script(
+            .apply, .refuse(.manualControlUnavailable(reason: .supervisorBlind)))
 
         await scene.driver.hold(try LeaseScene.target([0: 3000]))
         await scene.waitForState { $0.isLost }

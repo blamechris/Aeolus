@@ -55,7 +55,9 @@ struct LeaseDriverRenewalTests {
         let grantAt = scene.at(.seconds(5))
         await scene.clock.untilParked(at: grantAt)
         scene.clock.advance(to: grantAt)
-        await scene.waitForState { if case .held(let held) = $0 { held.isConfirmed } else { false } }
+        await scene.waitForState {
+            if case .held(let held) = $0 { held.isConfirmed } else { false }
+        }
         await scene.clock.untilParked { !$0.isEmpty }
 
         let entries = await scene.entries
@@ -108,7 +110,9 @@ struct LeaseDriverRenewalTests {
         #expect(await scene.driver.state.isHeld)
 
         scene.clock.advance(to: scene.at(.seconds(57)))
-        await scene.waitForState { if case .held(let held) = $0 { held.isConfirmed } else { false } }
+        await scene.waitForState {
+            if case .held(let held) = $0 { held.isConfirmed } else { false }
+        }
         await scene.finish()
     }
 
