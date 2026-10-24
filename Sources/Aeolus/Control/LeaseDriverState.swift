@@ -8,8 +8,9 @@ import Foundation
 /// ## Only `held` says the app holds the fans
 ///
 /// Every other case says it does not, or cannot show that it does. `lost` is never drawn as
-/// `held`, and nothing moves from `lost` back to `held` except a new user action, which goes
-/// through `acquiring` like any other (`CLAUDE.md` rules 2 and 6).
+/// `held`, and nothing moves from `lost` back to `held` except a new user action,
+/// `LeaseDriver.take(_:)`, which goes through `acquiring` like any other (`CLAUDE.md` rules 2 and
+/// 6). `LeaseDriver.adjust(_:)` never leaves `lost`.
 ///
 /// ## Text from another client is carried verbatim
 ///
@@ -56,8 +57,9 @@ public enum LeaseDriverState: Sendable, Hashable {
 /// A lease the helper granted and the driver still holds.
 public struct HeldLease: Sendable, Hashable {
 
-    /// The lease as the helper returned it, unchanged. `expiresAt` is display-grade; nothing
-    /// enforces it.
+    /// The lease as the helper last returned it, unchanged: the grant, then each renewal's
+    /// answer, so `expiresAt` is the helper's latest word. It is display-grade all the same;
+    /// nothing enforces it.
     public let lease: Lease
 
     /// The fans the grant covers.
@@ -89,6 +91,11 @@ public struct HeldLease: Sendable, Hashable {
     func with(_ phase: Phase) -> HeldLease {
         HeldLease(lease: lease, fans: fans, phase: phase)
     }
+
+    /// The same grant and phase, with the lease as the helper last renewed it.
+    func with(lease renewed: Lease) -> HeldLease {
+        HeldLease(lease: renewed, fans: fans, phase: phase)
+    }
 }
 
 /// Why control ended, as the driver saw it.
@@ -109,7 +116,8 @@ public struct LeaseLoss: Sendable, Hashable {
     public enum Cause: Sendable, Hashable {
 
         /// `acquireLease` failed without the helper saying no. Whether it granted a lease cannot be
-        /// known here; the driver tore the connection down, which ends any lease on it.
+        /// known here; the driver tore the connection down, which ends any lease on it. For
+        /// `HelperClientError.clientCannotVerifyHelper` it is known that nothing was sent at all.
         case acquireUnanswered(HelperFailure)
 
         /// A renewal was refused or went unanswered. Never retried.
@@ -119,11 +127,16 @@ public struct LeaseLoss: Sendable, Hashable {
         /// commanded a fan, so nothing is said about the fans except what a snapshot shows.
         case apply(HelperFailure)
 
-        /// A snapshot read after the lease's first `apply` was accepted shows it no longer proves
-        /// control. `isThermalEmergencyActive` is that snapshot's flag, kept beside the loss
-        /// because § 3 revokes every lease when it fires: a snapshot taken during an emergency
-        /// usually lists **no** lease and answers `.leaseNotListed(listed: nil)`, not
-        /// `.thermalEmergency`, so the flag is the only place the emergency is named.
+        /// A snapshot shows the lease no longer proves control: one asked for after the grant
+        /// answered, for the lease itself, or after the first `apply` was accepted, for its fans.
+        /// `isThermalEmergencyActive` is that snapshot's flag, kept beside the loss because § 3
+        /// revokes every lease when it fires: a snapshot taken during an emergency usually lists
+        /// **no** lease and answers `.leaseNotListed(listed: nil)`, not `.thermalEmergency`, so
+        /// for a loss a snapshot found, the flag is the only place the emergency is named.
+        ///
+        /// A loss a renewal found first reads `.renewal(.refused(.leaseUnknown))` and names none,
+        /// even when § 3 revoked the lease; the renderer names the emergency only from a live
+        /// snapshot whose flag is set.
         ///
         /// **When the flag is clear, nothing here says why the lease went.** § 3's latch releases,
         /// and the flag clears, once a reading falls a hysteresis margin below the ceiling, so a
@@ -158,6 +171,12 @@ public enum HelperFailure: Sendable, Hashable {
     /// Anything else, by its description.
     case other(String)
 
+    /// Whether the helper answered, and said no.
+    var isRefusal: Bool {
+        if case .refused = self { return true }
+        return false
+    }
+
     init(_ error: any Error) {
         if let fault = error as? AeolusXPCFault {
             self = .refused(fault)
@@ -181,7 +200,8 @@ public enum ReleaseOutcome: Sendable, Hashable {
     /// The release was refused or went unanswered. The lease is not held by the driver either way.
     case failed(HelperFailure)
 
-    /// The helper had not answered within the bound. The release was sent, and the caller is let
-    /// go; a quit then tears the connection down, which ends the lease on its own.
+    /// The bound passed before the release answered. It may still be in flight, or, if asked for
+    /// while acquiring, not sent yet; on quit the teardown that follows ends any lease on the
+    /// connection.
     case notAnswered(within: Duration)
 }

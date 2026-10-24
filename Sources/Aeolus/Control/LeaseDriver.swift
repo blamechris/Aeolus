@@ -11,7 +11,7 @@ import Foundation
 ///
 /// ## States
 ///
-///     idle ──hold──▶ acquiring ──granted──▶ held(applying ⇄ confirmed)
+///     idle ──take──▶ acquiring ──granted──▶ held(applying ⇄ confirmed)
 ///                      │                      │                 │
 ///                      │ refusal              │ release, Auto   │ renewal, apply,
 ///                      ▼                      ▼                 │ snapshot, health
@@ -20,27 +20,46 @@ import Foundation
 ///                                             ▼
 ///                                         released
 ///
-/// `refused`, `lost` and `released` wait for the user: `hold(_:)` from any of them starts a new
-/// acquisition, and nothing else does.
+/// ## Two ways to ask for a speed, and the UI must use the right one
+///
+/// - **`take(_:)`** is a deliberate user action: a click on a speed, or a fan put into Custom. It
+///   is the only call that starts an acquisition, from `idle`, `released`, `refused` or `lost`.
+/// - **`adjust(_:)`** is everything else: a slider moving, a stepper, a value typed while the
+///   lease is held. It refines the target of a lease that is acquiring or held, over the same
+///   fans, and is **ignored** in every other state. It never acquires.
+///
+/// The split is what keeps a loss final. A slider wired to `take` would, on the first tick after
+/// § 3 revoked the lease, ask for the fans again and apply the speed the user was dragging, and the
+/// user would never see that control had ended; from `refused`, every tick would be another
+/// acquire, an unpaced retry of a refusal (ADR 0010).
 ///
 /// ## Renewal
 ///
-/// Every `timeToLive / 3` of the TTL asked for, which is the TTL the helper grants (it stores the
-/// request's), so two missed beats are tolerated before the helper lets go (`docs/SAFETY.md` § 1).
-/// The schedule starts at the instant taken **before `acquireLease` is sent**, which cannot be
-/// later than the grant the helper's TTL starts from, and each renewal is stamped before it is
-/// sent, so a slow answer never makes the next one late. The heartbeat starts when the grant
-/// arrives, before the first `apply` is sent, and runs **during** it: an `apply` may take 57 s for
-/// one fan, and the helper's thirty seconds started at the grant. `renewLease` is not sequenced at
-/// the helper, so a renewal is not queued behind the `apply`.
+/// Every third of the shorter of the TTL asked for and the TTL the helper granted, so two missed
+/// beats are tolerated before the helper lets go (`docs/SAFETY.md` § 1), and a helper that
+/// granted less than was asked is still renewed in time. A granted TTL outside
+/// `AeolusXPCValidation.leaseTTLRange` is not believed, so a malformed grant can never make the
+/// heartbeat spin. The schedule starts at the instant taken **before `acquireLease` is sent**,
+/// which cannot be later than the grant the helper's TTL starts from, and each renewal is stamped
+/// before it is sent, so a slow answer never makes the next one late. The heartbeat starts when
+/// the grant arrives, before the first `apply` is sent, and runs **during** it: an `apply` may
+/// take 57 s for one fan, and the helper's thirty seconds started at the grant. `renewLease` is
+/// not sequenced at the helper, so a renewal is not queued behind the `apply`.
+///
+/// No step of a renewal passes through the main actor, deliberately: a hung UI keeps the lease
+/// and a busy one never loses it. Making this type `@MainActor`, or hopping to it in `beat()`,
+/// reverses `docs/SAFETY.md` § 1 and is a safety review.
 ///
 /// ## Loss is final
 ///
-/// Each of these ends the lease as `lost`: a renewal refused or unanswered; an `apply` refused or
-/// unanswered; the control connection leaving `.handshaken`; and a snapshot for which
-/// `SystemSnapshot.controlLoss(leaseID:covering:)` is non-nil. After `lost` the driver sends one
-/// release for the lease, because giving fans back is never wrong and it cannot tell from here
-/// whether the helper still has them, and then it never renews and never acquires on its own.
+/// Each of these ends the lease as `lost` (`LeaseLoss.Cause`): an acquire that failed without the
+/// helper saying no; a renewal refused or unanswered; an `apply` refused or unanswered; the
+/// control connection leaving `.handshaken`; a snapshot for which
+/// `SystemSnapshot.controlLoss(leaseID:covering:)` is non-nil; and a heartbeat whose wait failed.
+/// After `lost` the driver sends one release for the lease, because it cannot tell from here
+/// whether the helper still has it, and a release of a lease the helper no longer holds is
+/// refused (`.leaseUnknown`, `.leaseExpired`, `.leaseNotHeldByThisConnection`) and changes
+/// nothing. Then it never renews and never acquires on its own.
 ///
 /// **Wake** is the same: `systemDidWake()` brings the next renewal forward so a lease that did not
 /// survive the sleep is reported at once, and it never asks for the fans again. `docs/SAFETY.md`
@@ -49,9 +68,12 @@ import Foundation
 /// ## One `apply` in flight, latest wins
 ///
 /// A new target over the same fans is a re-`apply` under the same lease. While one is in flight a
-/// newer target replaces any queued one and nothing is sent concurrently: level 6 admits one
-/// `apply` at a time and refuses a second rather than queueing it. A change to **which** fans are
-/// held is a release, then an acquire, then an apply.
+/// newer target replaces any queued one, and nothing is sent until it answers. `apply` is
+/// sequenced, so a second one sent on this connection would wait at the helper behind the first,
+/// up to its whole deadline, and arrive with a target the user has already moved past; every
+/// sequenced message behind it, such as a change of fans' acquire, would wait too. Level 6 also
+/// admits one at a time, but through XPC it never sees two under one lease. A change to **which**
+/// fans are held is a release, then an acquire, then an apply.
 ///
 /// ## Auto is a release
 ///
@@ -66,15 +88,22 @@ import Foundation
 /// helper answers. `shutDown()` releases first and only then tears the connection down, so a quit
 /// never relies on the helper's invalidation path alone.
 ///
-/// ## A snapshot is judged only after what it could show
+/// ## A snapshot is judged only on what it could show
 ///
 /// Snapshots come from the read connection, and nothing between two connections is ordered. One
-/// requested before the grant, or before the first `apply` was answered, can arrive after it and
-/// show the fans not yet held, and judging it would end a lease that was fine, for good. So a
-/// reader takes a `SnapshotTicket` from `beginSnapshotRead()` immediately before it sends
-/// `snapshot`, and `observe(_:readWith:)` judges only snapshots whose ticket was taken after this
-/// lease's first `apply` was answered. The driver mints the ticket, so a caller cannot forge one;
-/// it can still take one at the wrong moment, which only the wiring can get right.
+/// requested before the grant was answered can arrive after it without the lease, and one
+/// requested before the first `apply` was answered can arrive after it with the fans not yet held;
+/// judging either would end, for good, a lease that was fine. So a reader takes a `SnapshotTicket`
+/// from `beginSnapshotRead()` immediately before it sends `snapshot`, and `observe(_:readWith:)`
+/// acts on what the ticket's moment can prove:
+///
+/// - **From the grant's answer:** that the lease is not listed, or that § 3's emergency holds
+///   while it is. `controlLoss` decides those before it looks at a fan, so a revocation during a
+///   57 s first `apply` is shown at the next snapshot rather than at the next renewal.
+/// - **From the first accepted `apply`:** everything else, which is about the fans.
+///
+/// The driver mints the ticket, so a caller cannot forge one; it can still take one at the wrong
+/// moment, which only the wiring can get right.
 ///
 /// ## It never cancels a sequenced verb (#419)
 ///
@@ -87,11 +116,11 @@ public actor LeaseDriver {
 
     /// How long a release waits for the helper's answer before its caller is let go.
     ///
-    /// **Two seconds, stated rather than measured.** It bounds how long a quit or a logout waits,
-    /// and losing nothing past it is what makes it safe to keep short: the release was already
-    /// sent, and the quit that follows tears the connection down, which the helper treats as a
-    /// release in its own right. Shorter than `HelperClientDeadlines.gatedVerb`, so it is this
-    /// bound, not the client's, that lets a quit go.
+    /// **Two seconds, stated rather than measured.** It bounds how long a quit, a logout or a
+    /// window close waits. Past it the release is still in flight, and the lease ends on the
+    /// helper's answer or, at the latest, at its TTL, since nothing renews it any more; on a quit
+    /// the teardown that follows ends it at once. Shorter than `HelperClientDeadlines.gatedVerb`,
+    /// so it is this bound, not the client's, that lets a quit go.
     public static let releaseBound: Duration = .seconds(2)
 
     /// What the app calls itself in a lease: `Aeolus.app` and its `CFBundleShortVersionString`.
@@ -102,12 +131,15 @@ public actor LeaseDriver {
 
     /// The grant the driver holds: the lease, its fans, and the schedule it is renewed on.
     private struct Grant {
-        let lease: Lease
+        var lease: Lease
         let fans: [Int]
         let interval: Duration
+        /// The ticket epoch from which a snapshot is evidence about this lease itself: set when
+        /// the grant arrives.
+        let leaseJudgedFrom: UInt64
         /// The ticket epoch from which a snapshot is evidence about this lease's fans: set when the
         /// first `apply` under it is answered with success, `nil` until then.
-        var judgedFrom: UInt64?
+        var fansJudgedFrom: UInt64?
     }
 
     /// A release in flight: which one, of which lease, and its task.
@@ -144,9 +176,11 @@ public actor LeaseDriver {
     /// The release in flight, of whichever lease: a user's, a quit's, or the one sent after a loss.
     private var pendingRelease: PendingRelease?
     private var releases: UInt64 = 0
-    /// What to acquire once the release in flight has answered: a change of fans, or a target
-    /// asked for while releasing.
+    /// What to acquire once the release in flight has answered: a change of fans, or a `take`
+    /// while releasing.
     private var wanted: LeaseTarget?
+    /// Counts the moments a snapshot's ticket is compared against. Never reset, so a ticket taken
+    /// under one lease can never be read as taken under the next.
     private var epoch: UInt64 = 0
     private var wokeSinceRenewal = false
     private var shuttingDown = false
@@ -187,12 +221,14 @@ public actor LeaseDriver {
 
     // MARK: - What a user does
 
-    /// Holds `target`'s fans at its speeds: a new user action.
+    /// Takes control of `target`'s fans at its speeds: a deliberate user action, and the only
+    /// call that starts an acquisition.
     ///
-    /// From `idle`, `released`, `refused` or `lost` it starts a new acquisition. While held over
-    /// the same fans it is a re-`apply`; over other fans, a release, then an acquire, then an
-    /// apply. Ignored once `shutDown()` has begun.
-    public func hold(_ target: LeaseTarget) {
+    /// From `idle`, `released`, `refused` or `lost` it acquires. While acquiring it replaces the
+    /// target the grant will be applied with. While held over the same fans it is a re-`apply`;
+    /// over other fans, a release, then an acquire, then an apply. While releasing it is
+    /// acquired once the release has answered. Ignored once `shutDown()` has begun.
+    public func take(_ target: LeaseTarget) {
         guard !shuttingDown else { return }
         switch current {
         case .idle, .released, .refused, .lost:
@@ -207,6 +243,25 @@ public actor LeaseDriver {
             _ = beginRelease(of: held.lease)
         case .releasing:
             wanted = target
+        }
+    }
+
+    /// Moves the speed of a lease that is acquiring or held, over the same fans. **Never
+    /// acquires:** in `idle`, `released`, `refused` and `lost`, and over other fans, it does
+    /// nothing. While releasing it refines only a `take` already waiting on that release.
+    public func adjust(_ target: LeaseTarget) {
+        guard !shuttingDown else { return }
+        switch current {
+        case .acquiring:
+            guard acquisition?.target.fans == target.fans else { return }
+            acquisition?.target = target
+        case .held(let held) where held.fans == target.fans:
+            requestApply(target, in: held)
+        case .releasing:
+            guard wanted?.fans == target.fans else { return }
+            wanted = target
+        case .held, .idle, .released, .refused, .lost:
+            return
         }
     }
 
@@ -226,7 +281,7 @@ public actor LeaseDriver {
     /// that scan is a safety tripwire, so this name keeps out of it rather than narrowing it.
     @discardableResult
     public func releaseFans() async -> ReleaseOutcome {
-        // The bound starts before the release is sent, so it cannot start late.
+        // The bound is measured from this call.
         let deadline = clock.now.advanced(by: releaseBound)
         guard let task = requestRelease() else { return .nothingHeld }
         return await Self.outcome(of: task, until: deadline, bound: releaseBound, on: clock)
@@ -242,11 +297,16 @@ public actor LeaseDriver {
 
     /// The Mac woke. If a lease is held, the next renewal is sent now, so a lease that did not
     /// survive the sleep is reported as lost at once. **Never asks for the fans again.**
-    public func systemDidWake() {
+    ///
+    /// Returns once the heartbeat it replaced has finished: a renewal that beat had in flight is
+    /// cancelled, and its cancellation is not a loss.
+    public func systemDidWake() async {
         guard case .held(let held) = current, let grant else { return }
         wokeSinceRenewal = true
+        let replaced = heartbeat
         let due = clock.now.advanced(by: .zero - grant.interval)
         startHeartbeat(for: held.lease.id, every: grant.interval, from: due)
+        await replaced?.value
     }
 
     // MARK: - Snapshots from the read connection
@@ -261,15 +321,22 @@ public actor LeaseDriver {
         SnapshotTicket(epoch: epoch)
     }
 
-    /// Judges `snapshot` against the lease held, if the ticket shows it was asked for after the
-    /// lease's first `apply` was answered. A loss ends the lease (`lost`), with the snapshot's
-    /// emergency flag kept beside it.
+    /// Judges `snapshot` against the lease held, on what the ticket's moment can prove: the lease
+    /// itself from its grant's answer, its fans from its first accepted `apply`. A loss ends the
+    /// lease (`lost`), with the snapshot's emergency flag kept beside it.
     public func observe(_ snapshot: SystemSnapshot, readWith ticket: SnapshotTicket) {
         guard case .held(let held) = current, let grant, grant.lease.id == held.lease.id,
-            let judgedFrom = grant.judgedFrom, ticket.epoch >= judgedFrom
+            ticket.epoch >= grant.leaseJudgedFrom
         else { return }
         guard let loss = snapshot.controlLoss(leaseID: held.lease.id, covering: grant.fans) else {
             return
+        }
+        switch loss {
+        case .leaseNotListed, .thermalEmergency:
+            break
+        case .fanNotReported, .reclaimedBySystem, .fanNotHeld:
+            guard let fansJudgedFrom = grant.fansJudgedFrom, ticket.epoch >= fansJudgedFrom
+            else { return }
         }
         lose(
             held.lease.id,
@@ -320,7 +387,10 @@ extension LeaseDriver {
         acquisition id: UInt64
     ) -> Lease? {
         guard let pending = acquisition, pending.id == id else {
-            giveBack(lease)
+            // Unreachable as written: an acquisition starts only with none in flight, so the one
+            // answering is always the one recorded. Kept so a change that broke that would give
+            // the grant back, tracked like any other release, rather than leave it unrenewed.
+            startRelease(of: lease)
             return nil
         }
         acquisition = nil
@@ -330,8 +400,10 @@ extension LeaseDriver {
             _ = beginRelease(of: lease)
             return nil
         }
-        let interval = Duration.seconds(request.timeToLive) / 3
-        grant = Grant(lease: lease, fans: request.fanIndices, interval: interval)
+        let interval = Self.heartbeatInterval(asked: request.timeToLive, granted: lease.timeToLive)
+        epoch &+= 1
+        grant = Grant(
+            lease: lease, fans: request.fanIndices, interval: interval, leaseJudgedFrom: epoch)
         wokeSinceRenewal = false
         transition(
             to: .held(
@@ -344,13 +416,21 @@ extension LeaseDriver {
         return nil
     }
 
+    /// A third of the shorter TTL. A granted TTL outside the range the helper validates is not
+    /// believed, so a malformed grant cannot make the heartbeat spin.
+    private static func heartbeatInterval(
+        asked: TimeInterval, granted: TimeInterval
+    ) -> Duration {
+        let believed = AeolusXPCValidation.leaseTTLRange.contains(granted) ? granted : asked
+        return Duration.seconds(min(asked, believed)) / 3
+    }
+
     private func acquireFailed(_ failure: HelperFailure, acquisition id: UInt64) async {
-        if case .refused = failure {
-        } else {
-            // No answer the driver could read, so whether a lease was granted is unknown. Tearing
-            // the connection down ends any lease on it.
-            await control.disconnect()
-        }
+        // A refusal is the helper's answer, on a connection that is working. Anything else is no
+        // answer the driver could read, so whether a lease was granted is unknown, and tearing the
+        // connection down ends any lease on it. For `clientCannotVerifyHelper` it is known that
+        // nothing was sent, and the teardown finds no connection to end.
+        if !failure.isRefusal { await control.disconnect() }
         guard let pending = acquisition, pending.id == id else { return }
         acquisition = nil
         if pending.releaseOnArrival { return }
@@ -402,9 +482,9 @@ extension LeaseDriver {
     /// Records an accepted `apply`, and returns the target queued behind it, if any.
     private func applyAccepted(_ target: LeaseTarget, under leaseID: UUID) -> LeaseTarget? {
         guard case .held(let held) = current, held.lease.id == leaseID else { return nil }
-        if grant?.judgedFrom == nil {
+        if grant?.fansJudgedFrom == nil {
             epoch &+= 1
-            grant?.judgedFrom = epoch
+            grant?.fansJudgedFrom = epoch
         }
         if case .applying(_, let queued?) = held.phase {
             transition(to: .held(held.with(.applying(queued, queued: nil))))
@@ -441,15 +521,40 @@ extension LeaseDriver {
             guard !Task.isCancelled, isHeld(leaseID) else { return }
             // Stamped before it is sent: a slow answer must not make the next one late.
             renewedAt = clock.now
+            let renewed: Lease
             do {
-                _ = try await control.renewLease(id: leaseID)
+                renewed = try await control.renewLease(id: leaseID)
             } catch {
+                // A beat that was stopped, by a release, a loss or a wake, was cancelled: its
+                // renewal's failure says nothing about the lease.
                 if !Task.isCancelled { lose(leaseID, .renewal(HelperFailure(error))) }
                 return
             }
-            guard !Task.isCancelled, isHeld(leaseID) else { return }
-            wokeSinceRenewal = false
+            guard renewalAccepted(renewed, for: leaseID) else { return }
         }
+    }
+
+    /// Records a renewal's answer, and says whether the beat goes on.
+    ///
+    /// **The lease held is the one the helper renewed**, so `HeldLease.lease.expiresAt` is the
+    /// helper's latest word rather than the grant's. An answer that names another lease is no
+    /// proof this one is alive, and ends it.
+    ///
+    /// An answer for a lease no longer held changes nothing: a renewal can be answered after a
+    /// release, and drawing `held` again then would claim control the user gave back. A beat that
+    /// a wake replaced may still be answered here for the lease it renewed; that answer is the
+    /// helper's word about the lease held, so it counts, and the replaced beat ends at its next
+    /// sleep, which its cancellation makes throw.
+    private func renewalAccepted(_ renewed: Lease, for leaseID: UUID) -> Bool {
+        guard case .held(let held) = current, held.lease.id == leaseID else { return false }
+        guard renewed.id == leaseID else {
+            lose(leaseID, .renewal(.other("the helper renewed a different lease")))
+            return false
+        }
+        grant?.lease = renewed
+        wokeSinceRenewal = false
+        transition(to: .held(held.with(lease: renewed)))
+        return true
     }
 
     private func startHealthWatch(for leaseID: UUID) {
@@ -458,13 +563,13 @@ extension LeaseDriver {
         healthWatch = Task { await self.watch(updates, for: leaseID) }
     }
 
+    /// The control connection's health, for as long as `leaseID` is held. No check of its own
+    /// that the lease is still held: `endLease()` cancels this watch, which ends the stream, and
+    /// `lose(_:_:)` ignores a lease that is not the one held.
     private func watch(_ updates: AsyncStream<HelperConnectionHealth>, for leaseID: UUID) async {
-        for await health in updates {
-            guard !Task.isCancelled, isHeld(leaseID) else { return }
-            if health != .handshaken {
-                lose(leaseID, .connection(health))
-                return
-            }
+        for await health in updates where health != .handshaken {
+            lose(leaseID, .connection(health))
+            return
         }
     }
 
@@ -483,6 +588,8 @@ extension LeaseDriver {
         startRelease(of: held.lease)
     }
 
+    /// Stops everything that belongs to the held lease: its heartbeat, its health watch, and its
+    /// grant.
     private func endLease() {
         heartbeat?.cancel()
         heartbeat = nil
@@ -570,11 +677,6 @@ extension LeaseDriver {
             wanted = nil
             transition(to: .released)
         }
-    }
-
-    /// A grant nobody is waiting for: given straight back, with no change of state.
-    private func giveBack(_ lease: Lease) {
-        Task { try? await self.control.releaseLease(id: lease.id) }
     }
 
     /// Waits for `release`, or until `deadline` on `clock`, whichever is first.
