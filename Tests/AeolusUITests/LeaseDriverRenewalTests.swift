@@ -169,7 +169,7 @@ struct LeaseDriverRenewalTests {
         #expect(scene.clock.parked == [scene.at(.seconds(10))])
         await scene.driver.systemDidWake()
         // The beat due at ten seconds is gone at once: the wake replaced it.
-        #expect(!scene.clock.parked.contains(scene.at(.seconds(10))), "the wake did nothing")
+        try #require(!scene.clock.parked.contains(scene.at(.seconds(10))), "the wake did nothing")
         await scene.ledger.waitFor { $0.lost != nil || $0.acquires.count > 1 }
 
         let entries = await scene.entries

@@ -166,7 +166,10 @@ struct LeaseDriverHeartbeatGuardTests {
         await scene.helper.renewAnotherLease()
         let next = scene.at(.seconds(20))
         scene.clock.advance(to: next)
-        await scene.waitForState { $0.isLost }
+        // Lost, or the beat re-armed past twenty seconds, as one that believed the answer would.
+        await firstOf(
+            { await scene.waitForState { $0.isLost } },
+            { await scene.clock.untilParked { $0.contains { $0 > next } } })
         #expect(
             await scene.driver.state.loss?.cause
                 == .renewal(.other("the helper renewed a different lease")))
