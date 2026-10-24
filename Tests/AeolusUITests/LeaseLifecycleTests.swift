@@ -45,9 +45,8 @@ struct LeaseLifecycleTests {
     /// and the teardown that follows answers the release.
     ///
     /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value`
-    /// instead
-    /// of the bounded outcome. The quit is never answered, and the test is red on its time limit
-    /// at the wait for that answer.
+    /// instead of the bounded outcome. The quit is never answered, and the test is red on its
+    /// time limit at the wait for that answer.
     @Test("Quit is answered within the bound when the release gets no reply")
     func quitIsBounded() async throws {
         let scene = await LeaseScene()

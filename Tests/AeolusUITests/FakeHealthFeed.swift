@@ -9,10 +9,10 @@ import os
 /// ends the moment its consumer is cancelled, synchronously, or when its consumer lets go of the
 /// stream, so `live` says whether the driver still watches.
 ///
-/// **Stricter than `HelperClient` in one way:** a value pushed after a subscription ended reaches
-/// nobody, where a real `AsyncStream` may still deliver a value it buffered before the cancel.
-/// The driver's correctness never rests on that: `LeaseDriver.lose(_:_:)` ignores a lease that is
-/// not the one held.
+/// **Stricter than `HelperClient` in one way:** ending a subscription drops any value still
+/// queued for it, where a real `AsyncStream` may still deliver a value it buffered before the
+/// cancel. The driver's correctness never rests on that: `LeaseDriver.lose(_:_:)` ignores a lease
+/// that is not the one held.
 final class HealthFeed: Sendable {
 
     private typealias Waiter = CheckedContinuation<HelperConnectionHealth?, Never>
