@@ -29,7 +29,7 @@ struct LeaseProcessAssertionsTests {
     ///
     /// **Mutation (P1, "not disabled while acquiring"):** in
     /// `LeaseProcessAssertions.blocksTermination`, move `.acquiring` to the `false` arm. Red here
-    /// at `.acquiring`, and at `takeHoldRelease`'s first requirement.
+    /// at `.acquiring`, and at the first requirement of `takeHoldRelease` and of the refusal test.
     @Test("Termination is blocked while acquiring, held or releasing, and only then")
     func whichStatesBlockTermination() throws {
         let lease = Lease(
@@ -55,7 +55,7 @@ struct LeaseProcessAssertionsTests {
     ///
     /// **Mutation (P2, "sudden termination left disabled after release"):** in
     /// `LeaseProcessAssertions.apply`, delete `process.enableSuddenTermination()`. Red at the last
-    /// requirement and at `suddenDisabled == 0`.
+    /// requirement here, and at the last requirement of the loss and refusal tests.
     @Test("Taking, holding and releasing the lease, each edge balanced")
     func takeHoldRelease() async throws {
         let scene = await CompositionScene(releaseBound: .seconds(1_000))
@@ -97,7 +97,7 @@ struct LeaseProcessAssertionsTests {
     ///
     /// **Mutation (P3, "the activity is held after loss"):** in `LeaseProcessAssertions.apply`,
     /// end the activity only for `.releasing`, not whenever the state leaves `held`. Red at the
-    /// requirement and at `openActivities == 0`.
+    /// requirement.
     @Test("A lost lease ends the activity and unblocks termination")
     func aLossGivesEverythingBack() async throws {
         let scene = await CompositionScene()

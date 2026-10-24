@@ -25,7 +25,7 @@ struct AppCompositionLeaseTests {
     ///
     /// **Mutation (Q1, ".terminateNow while a release is pending"):** in
     /// `LeaseLifecycle.TerminationAnswer.terminateReply`, return `.terminateNow` for `.later`. Red
-    /// here, and at `quitRepliesOnceAfterTheRelease`'s first expectation.
+    /// here, and at every `== .terminateLater` in the two quit tests below.
     @Test("A pending release is answered terminateLater")
     func laterIsTerminateLater() {
         #expect(LeaseLifecycle.TerminationAnswer.later.terminateReply == .terminateLater)
@@ -35,7 +35,8 @@ struct AppCompositionLeaseTests {
     /// once. A second quit while the first is waiting changes nothing.
     ///
     /// **Mutation (Q2, "a second reply"):** in `AppComposition.applicationShouldTerminate`, delete
-    /// `guard !quitting else { … }`. Red at `replies.count == 1` after the second quit.
+    /// `guard !quitting else { … }`. Red at `!extra` and `replies == [true]`, here and in the
+    /// no-driver test.
     @Test("Quit replies once, after the release and the teardown")
     func quitRepliesOnceAfterTheRelease() async throws {
         let scene = await CompositionScene()
@@ -44,7 +45,7 @@ struct AppCompositionLeaseTests {
 
         #expect(scene.root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
         #expect(scene.root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        try #require(await becomes { counter.replies.count == 1 }, "the quit was answered")
+        try #require(await becomes { !counter.replies.isEmpty }, "the quit was answered")
         let extra = await becomes(turns: 2_000) { counter.replies.count > 1 }
 
         #expect(!extra)
@@ -72,7 +73,7 @@ struct AppCompositionLeaseTests {
         let counter = ReplyCounter()
 
         #expect(root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
-        try #require(await becomes { counter.replies.count == 1 }, "the quit was answered")
+        try #require(await becomes { !counter.replies.isEmpty }, "the quit was answered")
         #expect(root.applicationShouldTerminate(reply: counter.reply) == .terminateLater)
         let extra = await becomes(turns: 2_000) { counter.replies.count > 1 }
 

@@ -29,7 +29,7 @@ struct HelperSnapshotSourceObserverTests {
     ///
     /// **Mutation (T1):** in `HelperSnapshotSource.run`, move
     /// `let judgement = await observer?.readWillBeSent()` (and the demand check after it) below
-    /// `outstanding = request`. Red at `requestsSeenAtTicket`.
+    /// `outstanding = request`. Red at `requestsSeenAtTicket`, here and in the next test.
     @Test("The ticket is taken before the request is sent")
     func theTicketIsTakenBeforeTheRequest() async throws {
         let helper = FakeSnapshotHelper()
@@ -54,7 +54,7 @@ struct HelperSnapshotSourceObserverTests {
     /// out. A failed one is not: there is no snapshot to judge.
     ///
     /// **Mutation (T2):** in `HelperSnapshotSource.run`, delete `await judgement(snapshot)`. Red
-    /// at `judged == [answered]`.
+    /// at `judged == [answered]`, and in every test here that needs a reply judged.
     @Test("A successful reply is judged before the next request, and a failed one is not")
     func aReplyIsJudged() async throws {
         let helper = FakeSnapshotHelper()
