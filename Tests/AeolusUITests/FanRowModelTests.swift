@@ -3,65 +3,235 @@ import Testing
 
 @testable import AeolusUI
 
-@Suite("FanRowModel — control state renders honestly, especially when reclaimed")
+@Suite("FanRowModel — control state renders honestly: not tracked, cleared, refused, reclaimed")
 struct FanRowModelTests {
 
-    private static func reading(
-        mode: FanControlMode = .automatic,
-        isReclaimedBySystem: Bool = false
-    ) -> FanPollingReading {
+    typealias Reason = ManualControlAvailability.Reason
+    typealias Support = SnapshotTestSupport
+
+    private static func reading(_ control: FanControlSource) -> FanPollingReading {
         FanPollingReading(
             index: 0,
             displayName: "Fan 0",
             actual: .value(key: "F0Ac", 1712),
             minimum: .value(key: "F0Mn", 1200),
             maximum: .value(key: "F0Mx", 5312),
-            mode: mode,
-            isReclaimedBySystem: isReclaimedBySystem)
+            control: control)
+    }
+
+    private static func row(
+        mode: FanControlMode = .automatic,
+        availability: ManualControlAvailability = .unavailable(.writePathNotBuilt),
+        reclaimed: Bool = false,
+        thermalEmergency: Bool = false
+    ) -> FanRowModel {
+        FanRowModel(
+            reading: reading(
+                .reported(
+                    Support.fan(
+                        mode: mode, availability: availability, reclaimed: reclaimed,
+                        target: mode == .automatic || reclaimed || thermalEmergency ? nil : 3000),
+                    thermalEmergency: thermalEmergency)))
     }
 
     @Test("The raw keys for actual/minimum/maximum are always carried into the row")
     func rawKeysAreCarriedThrough() {
-        let row = FanRowModel(reading: Self.reading())
+        let row = FanRowModel(reading: Self.reading(.notTracked(.noHelperInThisBuild)))
 
         #expect(row.actual.key == "F0Ac")
         #expect(row.minimum.key == "F0Mn")
         #expect(row.maximum.key == "F0Mx")
     }
 
-    @Test(
-        "An automatic, non-reclaimed fan is labelled plainly as Automatic",
-        arguments: [
-            (FanControlMode.automatic, "Automatic"),
-            (FanControlMode.manualFixed, "Manual — fixed speed"),
-            (FanControlMode.manualCurve, "Manual — curve"),
-        ]
-    )
-    func nonReclaimedFanShowsItsMode(_ pair: (FanControlMode, String)) {
-        let (mode, expectedLabel) = pair
-        let row = FanRowModel(reading: Self.reading(mode: mode, isReclaimedBySystem: false))
+    @Test("A fan nothing reports on says Mode not tracked, refuses nothing and is not reclaimed")
+    func anUntrackedFanSaysSo() {
+        let row = FanRowModel(reading: Self.reading(.notTracked(.snapshotStale)))
 
-        #expect(row.controlStateLabel == expectedLabel)
+        #expect(row.controlStateLabel == "Mode not tracked")
+        #expect(row.refusal == nil)
         #expect(!row.isReclaimedBySystem)
     }
 
+    @Test("A fan the helper reports cleared to automatic says Automatic")
+    func aClearedFanSaysAutomatic() {
+        #expect(
+            Self.row(mode: .automatic, availability: .available).controlStateLabel == "Automatic")
+        #expect(Self.row(mode: .automatic).controlStateLabel == "Automatic")
+    }
+
+    /// The reasons a fan reading automatic is not cleared: every one `clearance` does not call
+    /// silent. Derived from `Tag`, which is exhaustive over `Reason`.
+    static let notClearing = Tag.allCases.map(\.reason).filter {
+        ManualControlAvailability.unavailable($0).clearance != .silent
+    }
+
+    /// **Mutation:** in `FanRowModel.controlStateLabel(for:)`, replace
+    /// `state.isClearedToAutomatic` with `state.mode == .automatic`. Run: red for every
+    /// argument — the pending reasons the brief names, and the durable ones beside them.
     @Test(
-        """
-        A reclaimed fan never renders its requested mode as though it were still in effect \
-        — the reclamation is named in the label itself
-        """
-    )
-    func reclaimedFanNamesTheReclamationHonestly() {
-        let row = FanRowModel(
-            reading: Self.reading(mode: .manualFixed, isReclaimedBySystem: true))
+        "Automatic comes only from isClearedToAutomatic, never from the mode alone",
+        arguments: notClearing)
+    func automaticNeedsClearance(_ reason: Reason) {
+        let row = Self.row(mode: .automatic, availability: .unavailable(reason))
+
+        #expect(row.controlStateLabel == "Not confirmed as automatic")
+        #expect(row.controlStateLabel != "Automatic")
+    }
+
+    @Test(
+        "A manual fan the helper reports is labelled with its mode",
+        arguments: [
+            (FanControlMode.manualFixed, "Manual — fixed speed"),
+            (FanControlMode.manualCurve, "Manual — curve"),
+        ])
+    func aManualFanShowsItsMode(_ pair: (FanControlMode, String)) {
+        #expect(Self.row(mode: pair.0).controlStateLabel == pair.1)
+    }
+
+    /// Every availability a fan can carry: `.available` and each reason, from `Tag`.
+    static let everyAvailability: [ManualControlAvailability] =
+        [.available] + Tag.allCases.map { .unavailable($0.reason) }
+
+    /// The emergency flag is set and the fan reads manual: that, and nothing more, is what the
+    /// row may say. It must not read as a user's chosen speed, and it must not claim anything
+    /// is protecting the fan — `docs/SAFETY.md` § 3 acts only on fans Aeolus took off automatic,
+    /// so not on a fan another program holds (`.foreignManualControl`), and on a helper that
+    /// cannot write (`.writePathNotBuilt`) on none at all.
+    ///
+    /// **Mutation (T1):** delete the `thermalEmergency` branch of `controlStateLabel(for:)`.
+    /// **Mutation (P2):** return "Under thermal protection" from it. Run, each: red for every
+    /// argument.
+    @Test(
+        "A manual fan during an emergency says exactly that, whatever holds it",
+        arguments: everyAvailability)
+    func aManualFanDuringAnEmergencySaysOnlyWhatIsTrue(
+        _ availability: ManualControlAvailability
+    ) {
+        for mode in [FanControlMode.manualFixed, .manualCurve] {
+            let row = Self.row(mode: mode, availability: availability, thermalEmergency: true)
+
+            #expect(row.controlStateLabel == "Manual during a thermal emergency", "\(mode)")
+            #expect(!row.controlStateLabel.lowercased().contains("protect"), "\(mode)")
+            #expect(row.controlStateLabel != "Manual — fixed speed", "\(mode)")
+        }
+    }
+
+    /// The emergency label is for a fan that reads manual. An automatic fan the helper has not
+    /// cleared keeps saying so during an emergency too.
+    ///
+    /// **Mutation (TH3):** drop `state.mode != .automatic` from the emergency rule. Run: red for
+    /// every argument.
+    @Test(
+        "During an emergency, an automatic fan not yet cleared still says Not confirmed",
+        arguments: notClearing)
+    func anUnclearedAutomaticFanDuringAnEmergencyIsNotConfirmed(_ reason: Reason) {
+        let row = Self.row(
+            mode: .automatic, availability: .unavailable(reason), thermalEmergency: true)
+
+        #expect(row.controlStateLabel == "Not confirmed as automatic")
+    }
+
+    @Test("A fan cleared to automatic during an emergency still says Automatic")
+    func aClearedFanDuringAnEmergencyIsAutomatic() {
+        #expect(Self.row(mode: .automatic, thermalEmergency: true).controlStateLabel == "Automatic")
+    }
+
+    @Test(
+        "A reclaimed fan says so, whatever its mode reads",
+        arguments: [FanControlMode.automatic, .manualFixed, .manualCurve])
+    func aReclaimedFanSaysSo(_ mode: FanControlMode) {
+        let row = Self.row(mode: mode, availability: .available, reclaimed: true)
 
         #expect(row.isReclaimedBySystem)
-        #expect(row.controlStateLabel.contains("Reclaimed by system"))
-        #expect(row.controlStateLabel.contains("Manual — fixed speed"))
-        // Never just "Manual — fixed speed" on its own: that alone would claim a control
-        // state nothing is currently honouring. CLAUDE.md rule 6.
-        #expect(row.controlStateLabel != "Manual — fixed speed")
+        #expect(row.controlStateLabel == "Reclaimed by system")
     }
+
+    // MARK: - Every reason renders its own text
+
+    /// One tag per `Reason`, with **no `default:`** in either switch, so a reason added to the
+    /// vocabulary does not compile here until it has a tag — and every tag is rendered below.
+    /// The same witness `FanKitTests`' `ManualControlAvailabilityClearanceTests` keeps, which
+    /// this target cannot import.
+    enum Tag: CaseIterable {
+        case writePathNotBuilt, boundsImplausible, reclaimedBySystem, leaseHeldByAnotherClient
+        case selfRenewalNotBuilt, releaseInProgress, handbackUnconfirmed
+        case restoreToAutomaticUnconfirmed, restoreToAutomaticFailed, systemSleeping
+        case noThermalTelemetry, supervisorBlind, foreignManualControl, unknown
+
+        init(_ reason: Reason) {
+            switch reason {
+            case .writePathNotBuilt: self = .writePathNotBuilt
+            case .boundsImplausible: self = .boundsImplausible
+            case .reclaimedBySystem: self = .reclaimedBySystem
+            case .leaseHeldByAnotherClient: self = .leaseHeldByAnotherClient
+            case .selfRenewalNotBuilt: self = .selfRenewalNotBuilt
+            case .releaseInProgress: self = .releaseInProgress
+            case .handbackUnconfirmed: self = .handbackUnconfirmed
+            case .restoreToAutomaticUnconfirmed: self = .restoreToAutomaticUnconfirmed
+            case .restoreToAutomaticFailed: self = .restoreToAutomaticFailed
+            case .systemSleeping: self = .systemSleeping
+            case .noThermalTelemetry: self = .noThermalTelemetry
+            case .supervisorBlind: self = .supervisorBlind
+            case .foreignManualControl: self = .foreignManualControl
+            case .unknown: self = .unknown
+            }
+        }
+
+        var reason: Reason {
+            switch self {
+            case .writePathNotBuilt: return .writePathNotBuilt
+            case .boundsImplausible: return .boundsImplausible
+            case .reclaimedBySystem: return .reclaimedBySystem
+            case .leaseHeldByAnotherClient: return .leaseHeldByAnotherClient
+            case .selfRenewalNotBuilt: return .selfRenewalNotBuilt
+            case .releaseInProgress: return .releaseInProgress
+            case .handbackUnconfirmed: return .handbackUnconfirmed
+            case .restoreToAutomaticUnconfirmed: return .restoreToAutomaticUnconfirmed
+            case .restoreToAutomaticFailed: return .restoreToAutomaticFailed
+            case .systemSleeping: return .systemSleeping
+            case .noThermalTelemetry: return .noThermalTelemetry
+            case .supervisorBlind: return .supervisorBlind
+            case .foreignManualControl: return .foreignManualControl
+            case .unknown: return .unknown("fromTheFuture")
+            }
+        }
+    }
+
+    @Test("The tags map every reason both ways")
+    func theTagsMapEveryReasonBothWays() {
+        for tag in Tag.allCases {
+            #expect(Tag(tag.reason) == tag, "\(tag)")
+        }
+    }
+
+    /// **Mutation:** in `FanRowModel.refusal(for:)`, return `Refusal(summary: "Manual control
+    /// is unavailable.", …)` — one sentence for every reason. Run: red for every argument.
+    @Test("A refused fan shows its reason's own summary and advice", arguments: Tag.allCases)
+    func everyReasonRendersItsText(_ tag: Tag) throws {
+        let reason = tag.reason
+        let row = Self.row(mode: .automatic, availability: .unavailable(reason))
+        let refusal = try #require(row.refusal, "\(tag) rendered no refusal")
+
+        #expect(refusal.summary == reason.userFacingSummary)
+        #expect(refusal.advice == reason.recoveryAdvice)
+        #expect(refusal.wireValue == reason.wireValue)
+        #expect(!refusal.summary.isEmpty)
+    }
+
+    @Test("A fan the helper offers refuses nothing")
+    func anAvailableFanRefusesNothing() {
+        #expect(Self.row(availability: .available).refusal == nil)
+    }
+
+    @Test("An unknown reason's wire value is the helper's text, and is cleaned")
+    func anUnknownReasonIsCleaned() throws {
+        let row = Self.row(availability: .unavailable(.unknown("future\u{202E}Reason\nforged")))
+        let refusal = try #require(row.refusal)
+
+        #expect(refusal.wireValue == "futureReasonforged")
+    }
+
+    // MARK: - Observations
 
     @Test("A reading below the declared minimum still renders as an available actual value")
     func belowMinimumActualStillRendersAsAvailable() {
@@ -70,7 +240,8 @@ struct FanRowModelTests {
             displayName: "Fan 0",
             actual: .value(key: "F0Ac", 1343.07),
             minimum: .value(key: "F0Mn", 1350),
-            maximum: .value(key: "F0Mx", 5312))
+            maximum: .value(key: "F0Mx", 5312),
+            control: .notTracked(.noHelperInThisBuild))
         let row = FanRowModel(reading: fan)
 
         #expect(row.actual.isAvailable)
@@ -84,7 +255,8 @@ struct FanRowModelTests {
             displayName: "Fan 2",
             actual: .unavailable(key: "F2Ac", reason: "F2Ac is not present on this machine"),
             minimum: .value(key: "F2Mn", 1200),
-            maximum: .value(key: "F2Mx", 5312))
+            maximum: .value(key: "F2Mx", 5312),
+            control: .notTracked(.noHelperInThisBuild))
         let row = FanRowModel(reading: fan)
 
         #expect(!row.actual.isAvailable)

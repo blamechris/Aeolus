@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// One fan's row in `FanListView`: name, control state, and the actual/minimum/maximum
-/// RPM readings — each with its raw SMC key shown alongside it, per `CLAUDE.md`.
+/// One fan's row in `FanListView`: name, control state, the helper's refusal if it
+/// refuses, and the actual/minimum/maximum RPM readings — each with its raw SMC key shown
+/// alongside it, per `CLAUDE.md`.
 ///
 /// Read-only. No slider, no target-speed field, no curve control — see issue #62's
-/// "no control affordance" constraint.
+/// "no control affordance" constraint. Controls arrive in later PRs of #153, greyed with the
+/// refusal this row already shows.
 struct FanRowView: View {
     let row: FanRowModel
 
@@ -15,6 +17,9 @@ struct FanRowView: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 controlStateLabel
+            }
+            if let refusal = row.refusal {
+                refusalLine(refusal)
             }
             keyedValueRow(label: "Actual", display: row.actual)
             HStack(spacing: 16) {
@@ -27,8 +32,8 @@ struct FanRowView: View {
 
     /// Reclamation always renders as a visible warning, never folded quietly into the
     /// same styling as a normal automatic/manual state — see `FanRowModel
-    /// .controlStateLabel`'s documentation for why the label text itself already says
-    /// what was reclaimed.
+    /// .controlStateLabel(for:)`'s documentation for why "Reclaimed by system" outranks
+    /// whatever the mode reads.
     private var controlStateLabel: some View {
         Group {
             if row.isReclaimedBySystem {
@@ -41,6 +46,21 @@ struct FanRowView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The reason's own summary, its wire value beside it the way a raw key sits beside a
+    /// label, and its recovery advice on hover.
+    private func refusalLine(_ refusal: FanRowModel.Refusal) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(refusal.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("(\(refusal.wireValue))")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
+        .help(refusal.advice)
     }
 
     private func keyedValueRow(label: String, display: KeyedValueDisplay) -> some View {

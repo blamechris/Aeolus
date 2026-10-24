@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The left pane: live fan readings — current, minimum, and maximum RPM per fan, and
-/// each fan's control state, rendered honestly (see `FanRowModel`).
+/// each fan's control state, rendered honestly (see `FanRowModel`), under one line saying
+/// whose report that control state is (`ControlSourceDisplay`).
 ///
 /// Read-only. Binds to `PollingViewModel`'s already-published `fans`; this view starts
 /// and stops nothing itself — `MainView` owns the view model's lifecycle so the fan and
@@ -19,6 +20,8 @@ struct FanListView: View {
                 status: PollingStatusDisplay.text(
                     phase: viewModel.phase, lastUpdated: viewModel.lastUpdated))
 
+            controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
+
             if viewModel.fans.isEmpty {
                 emptyState
             } else {
@@ -34,6 +37,22 @@ struct FanListView: View {
             }
         }
         .frame(minWidth: 320)
+    }
+
+    private func controlSourceLine(_ text: ControlSourceDisplay.Text) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(text.headline)
+                .font(.caption.weight(.semibold))
+            if let detail = text.detail {
+                Text(detail)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
+        .padding(.bottom, 4)
     }
 
     private var emptyState: some View {

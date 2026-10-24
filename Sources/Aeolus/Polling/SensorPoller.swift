@@ -52,7 +52,7 @@ enum SensorPoller {
     /// A key that fails this tick (transient read failure, or a key that genuinely
     /// disappeared) is represented as `.unavailable` on its `SensorPollingReading`, never
     /// dropped from the list and never fabricated as `0` — the same contract
-    /// `FanPoller.poll(provider:)` gives per-fan values.
+    /// `FanPoller.poll(provider:untracked:)` gives per-fan values.
     static func refresh(
         discovered: [DiscoveredSensor],
         provider: some SensorProvider,

@@ -1,22 +1,36 @@
 import SwiftUI
 
-/// Rendered only when `PollingViewModel.isThermalEmergencyActive` reports `true`.
+/// The window's thermal emergency line: `ThermalEmergencyDisplay`'s banner, drawn.
 ///
-/// That flag is hardcoded `false` under `Monitor` today — see its documentation on
-/// `PollingViewModel` for why — but the rendering path exists now regardless, so a real
-/// helper-reported emergency does not require the first-ever UI change to surface it
-/// honestly. Never gated behind a setting: `CLAUDE.md` requires this state, when
-/// reported, always render.
+/// An emergency is the red bar, rendered whenever the helper's snapshot sets
+/// `isThermalEmergencyActive` and never gated behind a setting. *Unknown* is a quiet line of
+/// its own, so it can never be mistaken for either "no emergency" or an emergency. No
+/// emergency draws nothing — the caller passes no banner.
 struct ThermalEmergencyBanner: View {
+    let banner: ThermalEmergencyDisplay.Banner
+
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text("Thermal emergency — the system has taken control of every fan.")
-                .font(.subheadline.weight(.semibold))
-            Spacer()
+        switch banner.severity {
+        case .emergency:
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(banner.text)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .padding(8)
+            .background(Color.red.opacity(0.85))
+            .foregroundStyle(.white)
+        case .unknown:
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.circle")
+                Text(banner.text)
+                    .font(.caption)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+            .padding(.vertical, 4)
         }
-        .padding(8)
-        .background(Color.red.opacity(0.85))
-        .foregroundStyle(.white)
     }
 }

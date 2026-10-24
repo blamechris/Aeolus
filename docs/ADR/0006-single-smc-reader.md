@@ -198,6 +198,14 @@ build*, that is still a claim about the hardware which a stray helper — or ano
 from `F<n>Md` marked community-confidence. Filed with the app-side client work rather than fixed
 here.
 
+*Note, 2026-10-24 (#478, for #156):* the app-side client resolves this. `FanPollingReading` no
+longer has a `mode`; its `control` is `.notTracked(why)` on every direct read, rendered "Mode not
+tracked", or `.reported(FanState, …)` from a snapshot within its bound on a handshaken connection,
+and only while the handshaken episode its request was sent in is still current. #178's gap remains
+on the snapshot path: a helper that cannot write reports an unread `F<n>Md` as automatic beside a
+silent availability, so that fan still reads "Automatic". This note records the fix; the ADR's
+status is unchanged.
+
 ## Amendment — a discovery walk's outcome, and a walk that does not end (#205)
 
 Recorded here because the rulings it extends — #198's D21, D22 and D25 — live only in that PR

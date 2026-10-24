@@ -683,7 +683,7 @@ abandoned handback, both say `.restoreToAutomaticFailed`; one that reads automat
 the set is never folded into the accountable one).
 
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
-app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
+app renders at the user's refresh interval, and a `.fault` line in the log. That is the whole of it: a root daemon
 cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
 signal at all — the machine getting loud is the physical one, and the next `fanctl`
 invocation reports.
