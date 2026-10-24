@@ -77,8 +77,9 @@ struct QuitOffTheMainActorTests {
         // At most forty turns; each returns at once if the mode has nothing queued, so the block,
         // queued before the loop, runs on the first. Each turn runs the main run loop, nested in
         // this job, in its default mode, which is one of its common modes. That is why this cannot
-        // pin the wake-up or the modes: a loop that spins in short turns wakes itself, and the
-        // default mode is the one every spelling of `perform` reaches. The next test pins both.
+        // pin the wake-up or the modes: a loop that spins in short turns wakes itself, and a block
+        // queued for the default mode alone reaches it as well as one queued for the common modes.
+        // The next test pins both.
         for _ in 0..<40 where !ran.withLock({ $0 }) {
             _ = CFRunLoopRunInMode(CFRunLoopMode.defaultMode, 0.05, true)
         }
@@ -135,7 +136,8 @@ struct QuitOffTheMainActorTests {
         // there ends that loop: the process exits 0 with a truncated log (#495's trap).
         let state = OSAllocatedUnfairLock(initialState: NestedRun())
         Thread.detachNewThread {
-            // Bounded: if the observer never fires, it is queued anyway and the elapsed bound fails.
+            // Bounded: if the observer never fires, it is queued anyway and the elapsed bound
+            // fails.
             _ = asleep.wait(timeout: .now() + 5)
             MainRunLoop().perform {
                 let stop = state.withLock { run -> Bool in
@@ -199,8 +201,8 @@ struct QuitOffTheMainActorTests {
     }
 }
 
-/// What the main-thread-run's block has seen: whether it ran, and whether the run it was queued
-/// for is still in progress.
+/// What the wake-up test's block records: whether it ran, and whether the nested run it was
+/// queued for is still in progress.
 private struct NestedRun: Sendable {
     var ran = false
     var nested = true
@@ -212,7 +214,7 @@ private final class ThreadRecordingRunLoop: MainRunLoopPerforming {
 
     private let handOvers = OSAllocatedUnfairLock(initialState: [Bool]())
 
-    /// For each block handed to `perform`, in order: whether `perform` was called on the main thread.
+    /// For each block handed to `perform`, in order: whether `perform` ran on the main thread.
     var fromMainThread: [Bool] { handOvers.withLock { $0 } }
 
     func perform(_ block: @escaping @MainActor @Sendable () -> Void) {

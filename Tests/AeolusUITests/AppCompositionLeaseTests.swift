@@ -37,14 +37,14 @@ struct AppCompositionLeaseTests {
     ///
     /// The order is read from the run loop's own count of hand-overs, which this test does not
     /// control: `performed` is 0 while the release is parked, and the teardown is in the ledger by
-    /// the time it is 1. Delivery is the test's choice (`runParked()`), so an order measured between
-    /// the teardown and the delivered reply would measure the test.
+    /// the time it is 1. Delivery is the test's choice (`runParked()`), so an order measured
+    /// between the teardown and the delivered reply would measure the test.
     ///
     /// **Mutation (X19, "an early reply"):** in `AppComposition.applicationShouldTerminate`, reply
     /// through `Task { reply(true) }` and give the lifecycle a reply that does nothing. Red at
     /// `!early`.
-    /// **Mutation (M3, "an early hand-over"):** in `LeaseLifecycle.applicationShouldTerminate`, call
-    /// `mainRunLoop.perform { reply(true) }` above `await driver.shutDown()`. Red at
+    /// **Mutation (M3, "an early hand-over"):** in `LeaseLifecycle.applicationShouldTerminate`,
+    /// call `mainRunLoop.perform { reply(true) }` above `await driver.shutDown()`. Red at
     /// `performed == 0`: the reply was handed to the run loop while the release was still parked.
     /// **Mutation (R1, "the reply through the main actor"):** in
     /// `LeaseLifecycle.applicationShouldTerminate`, deliver the reply with
@@ -73,7 +73,7 @@ struct AppCompositionLeaseTests {
         try #require(
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
-        // Before the test delivers anything: the teardown is already in the ledger at the hand-over.
+        // Before the test delivers anything: the teardown is in the ledger at the hand-over.
         #expect(
             await scene.lease.entries.index(of: .disconnect) != nil,
             "the connection was not torn down when the reply was handed over")
