@@ -30,8 +30,10 @@ struct FakeLeaseHelperTests {
         _ = try await scene.helper.acquireLease(Self.request)
         await scene.helper.disconnect()
         await scene.helper.disconnect()
-        // A value pushed after the disconnects, so every read below has something to return.
+        // Two values pushed after the disconnects, so each read below has something to return
+        // whatever the disconnects published.
         await scene.helper.pushHealth(.interrupted)
+        await scene.helper.pushHealth(.unresponsive)
 
         #expect(await health.next() == .idle, "a disconnect with a connection publishes idle")
         #expect(await health.next() == .interrupted, "and nothing else did")
