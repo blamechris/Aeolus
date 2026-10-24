@@ -97,23 +97,24 @@ let package = Package(
         ),
 
         // The app's lease driver: the actor that takes, renews, releases and reports the loss of
-        // the fans' manual-control lease, and the types it speaks in. Pure client logic over
-        // `AeolusXPCClient`'s verbs — no AppKit, no SwiftUI, no state of the helper's own.
+        // the fans' manual-control lease, and the types it speaks in. It is client logic over
+        // `AeolusXPCClient`'s verbs, with no AppKit or SwiftUI in it, and it depends on exactly
+        // what its files import.
         //
-        // It is a target of its own so the compiler, rather than a text scan, keeps
-        // `LeaseDriver.runningHeartbeat` in the test suite (#489). That accessor is `internal`,
+        // It is a target of its own so that the compiler, rather than a text scan, keeps
+        // `LeaseDriver.runningHeartbeat` in the test suite (#489). That accessor is `internal`
         // for `@testable import` alone, and inside one module no access level can say "the suite
-        // and nothing else": `AeolusUI` sat in the same module as the driver, so every file in it
-        // could name the accessor too. Behind a module boundary `internal` is invisible to
-        // `AeolusUI`, and the one test target that does `@testable import AeolusLeaseControl` is
-        // the only other thing that sees it. Nothing here is widened to get that: everything
-        // `AeolusUI` uses of the driver was already `public`.
+        // and nothing else": while the driver sat in `AeolusUI`, every file there could name it.
+        // Across a module boundary `internal` does not reach, so a file in `AeolusUI` that names
+        // it is refused. Nothing was widened to get that: all the driver API `AeolusUI` uses was
+        // already `public`.
         //
-        // Keep `AeolusUI`'s own wiring (`LeaseLifecycle`, the app delegate) out of it. A file
-        // added here is reviewed with the other five as one unit, and must not name
-        // `runningHeartbeat`. It depends on exactly what those files import. Not a product: no
-        // package outside this one links it, and the Xcode app target reaches it through
-        // `AeolusUI`. See `LeaseDriver.runningHeartbeat`.
+        // `LeaseLifecycle`, the `@MainActor` adapter the app's quit, logout and window events
+        // reach, stays in `AeolusUI`. The files here are reviewed together, and a file added to
+        // this target must not name `runningHeartbeat`.
+        //
+        // Not a library product: nothing outside this package links it, and the Xcode app target
+        // reaches it through `AeolusUI` without naming it in `project.yml`.
         .target(
             name: "AeolusLeaseControl",
             dependencies: ["AeolusXPC", "AeolusXPCClient", "FanKit"],
