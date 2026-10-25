@@ -91,7 +91,9 @@ struct AllFansControlRootTests {
 
         try #require(
             await Support.eventually { await scene.lease.entries.releases == [held.lease.id] })
-        await scene.lease.waitForState { $0.isReleased }
+        try #require(
+            await Support.eventually { await scene.lease.driver.state.isReleased },
+            "the release was answered")
         await scene.finish()
     }
 
@@ -316,14 +318,15 @@ struct AllFansControlRootTests {
 
     // MARK: - Fail closed at the click
 
-    /// Drawn enabled, then a snapshot in which fan 1 is refused renders before the click. The click
-    /// reads the screen again and sends nothing.
+    /// Drawn enabled, then a snapshot in which one fan is refused renders before the click: fan 0,
+    /// then fan 1. The click reads the screen again and sends nothing.
     ///
     /// **Mutation (M10, "the click trusts the drawing"):** delete the
     /// `allSatisfy { ... == .enabled }` guard in `AllFansControlPresentation.target`. Run: red at
-    /// `!sent`: the click acquires both fans, one of them a fan the helper refuses.
-    @Test("A fan disabled between drawing and the click sends nothing")
-    func aFanDisabledBeforeTheClickSendsNothing() async throws {
+    /// `!sent` for both: the click acquires both fans, one of them a fan the helper refuses.
+    /// **Mutation (O10c):** have the guard skip the first fan. Run: red at `!sent` for fan 0.
+    @Test("A fan disabled between drawing and the click sends nothing", arguments: [0, 1])
+    func aFanDisabledBeforeTheClickSendsNothing(_ which: Int) async throws {
         let scene = await CompositionScene()
         let window = try await ControlWindow.showing(
             Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)]))
@@ -331,7 +334,10 @@ struct AllFansControlRootTests {
         #expect(drawn.percentsAreEnabled)
 
         try await window.show(
-            Support.snapshot(fans: [Fans.offered(0), Fans.refused(1, .foreignManualControl)]))
+            Support.snapshot(
+                fans: [0, 1].map {
+                    $0 == which ? Fans.refused($0, .foreignManualControl) : Fans.offered($0)
+                }))
         AllFansControlActions(composition: scene.root).choose(.fifty, on: window.polling)
 
         let sent = await Support.eventually(turns: 2_000) {
@@ -424,7 +430,9 @@ struct AllFansControlRootTests {
         await scene.lease.settle()
 
         await scene.lease.helper.answerParked(.release)
-        await scene.lease.waitForState { $0.isReleased }
+        try #require(
+            await Support.eventually { await scene.lease.driver.state.isReleased },
+            "the release was answered")
         let reacquired = await Support.eventually(turns: 2_000) {
             await scene.lease.entries.acquires.count > 1
         }

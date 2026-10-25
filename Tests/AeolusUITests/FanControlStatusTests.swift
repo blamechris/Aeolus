@@ -94,8 +94,11 @@ struct FanControlStatusTests {
         #expect(line.text == "The helper refused the request for control.")
         let detail = try #require(line.detail)
         switch fault {
-        case .manualControlUnavailable(let reason):
-            #expect(detail == reason.pastTenseSummary + " (manualControlUnavailable: detail)")
+        case .manualControlUnavailable:
+            #expect(
+                detail
+                    == "The helper refused manual control for a reason this build does not "
+                    + "recognise. (manualControlUnavailable: detail)")
         case .unknown:
             #expect(detail == "detail: detail")
         default:
@@ -178,7 +181,8 @@ struct FanControlStatusTests {
         let violation = HelperClientError.protocolViolation(detail: sent)
         let violationText = HelperAuthoredText.sanitised(
             try #require(violation.errorDescription))
-        let summary = ManualControlAvailability.Reason.unknown(sent).pastTenseSummary
+        let summary =
+            "The helper refused manual control for a reason this build does not recognise."
 
         return [
             (.refused(.malformedPayload(detail: sent)), "malformedPayload: \(piece)"),

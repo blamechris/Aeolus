@@ -161,6 +161,10 @@ final class AppComposition {
     /// (`LeaseDriver.take(_:)`). Returns at once; the driver's work runs on a task of its own, so
     /// cancelling the caller cancels nothing the driver sends (#419). Does nothing in a build with
     /// no helper.
+    ///
+    /// Each entry point starts a separate unstructured `Task`. Two calls reach the driver in the
+    /// order they were made because the main actor runs its jobs first in, first out, not because
+    /// the language promises it; a user's clicks are many run-loop turns apart.
     func take(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
         Task { await driver.take(target) }

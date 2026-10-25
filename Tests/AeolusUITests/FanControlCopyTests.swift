@@ -43,6 +43,102 @@ struct FanControlCopyTests {
         #expect(sentence != reason.userFacingSummary, "\(reason)")
     }
 
+    /// Every reason's sentence, word for word, so a sentence swapped for another reason's, or
+    /// replaced, is a red (#497's review, test gap 4). One row per tag, and the tag's switch has no
+    /// `default:`, so a reason added later does not compile here until it has a row.
+    ///
+    /// **Mutations (O7a, O7b):** give `.reclaimedBySystem` `.foreignManualControl`'s sentence; make
+    /// `.foreignManualControl`'s "x.". Run, each: red at its own argument.
+    @Test(
+        "Every refused reason's sentence, word for word", arguments: FanRowModelTests.Tag.allCases)
+    func everySentenceWordForWord(_ tag: FanRowModelTests.Tag) {
+        let expected: String
+        switch tag {
+        case .writePathNotBuilt:
+            expected =
+                "The helper's build had no path to write to the SMC, so manual control was not "
+                + "available for any fan."
+        case .boundsImplausible:
+            expected =
+                "A fan's firmware speed bounds did not pass a plausibility check, so there was no "
+                + "safe range to control it within."
+        case .reclaimedBySystem:
+            expected = "The system had taken a fan back from manual control."
+        case .leaseHeldByAnotherClient:
+            expected =
+                "Another Aeolus client held the manual-control lease that taking a fan required."
+        case .selfRenewalNotBuilt:
+            expected =
+                "A self-renewing lease was requested, and the helper's build did not implement one."
+        case .releaseInProgress:
+            expected =
+                "A fan was mid-handback: a previous lease had ended and the write that returns it "
+                + "to automatic control had not completed, or a restore of every fan at once was "
+                + "running (`fanctl reset --all`, `fanctl auto`, or the handback before the Mac "
+                + "sleeps)."
+        case .handbackUnconfirmed:
+            expected =
+                "Aeolus had asked for a fan back and stopped waiting before an answer arrived, so "
+                + "it did not know what mode the fan was in."
+        case .restoreToAutomaticUnconfirmed:
+            expected =
+                "Aeolus had issued a restore-to-automatic write for a fan and had not confirmed the "
+                + "fan back under automatic control; whether the write was accepted was not known."
+        case .restoreToAutomaticFailed:
+            expected =
+                "Aeolus had tried to hand a fan back to automatic control and the firmware never "
+                + "took the write, so Aeolus did not know what mode the fan was in."
+        case .systemSleeping:
+            expected =
+                "The machine was going to sleep (or Aeolus believed it was), and every fan had "
+                + "been handed back to automatic control for the duration."
+        case .noThermalTelemetry:
+            expected =
+                "Aeolus could not read a critical temperature, so it could not safely watch a fan "
+                + "under manual control."
+        case .supervisorBlind:
+            expected =
+                "Aeolus could not confirm a fan's own control state: a read of it failed, or "
+                + "start-up could not confirm it back under automatic control."
+        case .foreignManualControl:
+            expected = "Something other than Aeolus had put a fan under manual control."
+        case .unknown:
+            expected =
+                "The helper refused manual control for a reason this build does not recognise."
+        }
+        #expect(tag.reason.pastTenseSummary == expected)
+    }
+
+    /// A release the helper did not confirm is a loss, said as one (#497's review, C1).
+    ///
+    /// **Mutation (RU, "a release unconfirmed says nothing"):** in `LeaseEventText.cause`, render
+    /// `.releaseUnconfirmed` as `"Control ended."`. Run: red at every detail.
+    @Test("An unconfirmed release says the helper did not confirm it, and how")
+    func anUnconfirmedReleaseSaysSo() throws {
+        let description = try #require(HelperClientError.helperRestarted.errorDescription)
+        let cases: [(HelperFailure, String)] = [
+            (
+                .refused(.leaseExpired),
+                "The helper did not confirm the release: the request was refused: leaseExpired"
+            ),
+            (
+                .failed(.helperRestarted),
+                "The helper did not confirm the release: the request went unanswered. "
+                    + HelperAuthoredText.sanitised(description)
+            ),
+            (
+                .other("the disk is full"),
+                "The helper did not confirm the release: the request failed: the disk is full"
+            ),
+        ]
+        for (failure, detail) in cases {
+            let line = try FanControlStatusTests.line(
+                for: FanControlStatusTests.loss(.releaseUnconfirmed(failure)))
+            #expect(line.text == "Control ended.", "\(failure)")
+            #expect(line.detail == detail, "\(failure)")
+        }
+    }
+
     /// Today's reason, word for word: what a refused take would say on a helper with no write
     /// plane.
     @Test("A refused take on today's helper says what the helper's build lacked")
