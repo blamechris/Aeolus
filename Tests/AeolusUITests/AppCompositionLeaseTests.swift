@@ -37,12 +37,11 @@ struct AppCompositionLeaseTests {
     ///
     /// What this test pins is the first half of that order, from the run loop's own count of
     /// hand-overs, which the test does not control: `performed` is 0 while the release is parked,
-    /// so nothing is handed over before the helper answers. The second half, the teardown before
-    /// the hand-over, is only sampled here: the ledger is read after a poll has seen `performed`
-    /// reach 1, and the quit's task can finish its teardown in between, so a hand-over between the
-    /// release and the teardown passes. `LeaseLifecycleTests.quitIsBounded` is what catches that
-    /// one. Delivery is the test's choice (`runParked()`), so an order measured
-    /// between the teardown and the delivered reply would measure the test.
+    /// so nothing is handed over before the helper answers (the bound cannot pass: this clock is
+    /// the test's). The second half, the teardown before the hand-over, is only sampled here: the
+    /// ledger is read after a poll has seen `performed` reach 1, and the quit's task can finish
+    /// its teardown in between, so a hand-over between the release and the teardown can pass.
+    /// `LeaseLifecycleTests.quitIsBounded` is what catches that one.
     ///
     /// **Mutation (X19, "an early reply"):** in `AppComposition.applicationShouldTerminate`, reply
     /// through `Task { reply(true) }` and give the lifecycle a reply that does nothing. Red at
@@ -78,7 +77,8 @@ struct AppCompositionLeaseTests {
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
         // Before the test delivers anything, but after the poll above: a sample, not a pin (see
-        // the doc comment).
+        // the doc comment). Delivery is the test's choice (`runParked()`), so a read after it
+        // would measure the test.
         #expect(
             await scene.lease.entries.index(of: .disconnect) != nil,
             "the connection was not torn down by the time the hand-over was seen")

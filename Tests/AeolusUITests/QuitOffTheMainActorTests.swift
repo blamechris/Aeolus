@@ -51,7 +51,7 @@ struct QuitOffTheMainActorTests {
             "the reply was handed to the main run loop")
         // Read before the test delivers anything, so it is the quit's own order that is looked at
         // and not the order the test chose for the delivery. It is a sample taken after the
-        // hand-over was seen, so a teardown that runs just after the hand-over passes it too. The
+        // hand-over was seen, so a teardown that runs just after the hand-over can pass it too. The
         // order is held elsewhere: nothing is handed over before the release is answered
         // (`AppCompositionLeaseTests.quitRepliesOnlyAfterTheRelease`), and a hand-over before the
         // teardown is caught by `LeaseLifecycleTests.quitIsBounded`.

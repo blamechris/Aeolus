@@ -63,9 +63,10 @@ struct CompositionScene {
     }
 }
 
-/// The main run loop, for the suite: every `perform` is counted, and its block either runs at once
-/// on the main actor (`.atOnce`) or waits for `runParked()` (`.parked`), so a test can look at what
-/// had happened by the time the reply was handed over, before it is delivered.
+/// The main run loop, for the suite: every `perform` is counted, and its block is either queued as
+/// a main-actor task as it is handed over (`.atOnce`; it runs soon after, not inside `perform`) or
+/// waits for `runParked()` (`.parked`), so a test can look at what had happened by the time the
+/// reply was handed over, before it is delivered.
 final class TestMainRunLoop: MainRunLoopPerforming {
 
     enum Mode: Sendable {
