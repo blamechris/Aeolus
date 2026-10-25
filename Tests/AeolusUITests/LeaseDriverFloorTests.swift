@@ -168,8 +168,9 @@ struct LeaseDriverFloorTests {
     }
 
     /// A heartbeat whose wait fails ends the lease as `lost(.heartbeatFailed)`, through the same
-    /// `lose(_:_:)` as every other loss of a held lease, and it sets a floor too. The wait fails at
-    /// the grant here, so the first `apply` is still at the helper and the floor waits for it.
+    /// `lose(_:_:)` as every other loss of a held lease, and it sets a floor too. The wait fails as
+    /// the grant arrives. Whether the first `apply` has answered by then is not ordered here: the
+    /// floor is set at the loss or when that `apply` answers, and the test waits for it either way.
     @Test("A failed heartbeat sets a floor once the apply has answered")
     func aFailedHeartbeatSetsAFloor() async throws {
         let clock = HandWoundClock()

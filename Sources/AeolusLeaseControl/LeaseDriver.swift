@@ -559,7 +559,7 @@ extension LeaseDriver {
                     phase: .applying(pending.target, queued: nil))))
         startHeartbeat(for: lease.id, every: interval, from: requestedAt)
         startHealthWatch(for: lease.id)
-        Task { await self.runApplies(pending.target, under: lease.id) }
+        scheduleApplies(pending.target, under: lease.id)
         return nil
     }
 
@@ -607,18 +607,33 @@ extension LeaseDriver {
         case .confirmed(let confirmed):
             guard target != confirmed else { return }
             transition(to: .held(held.with(.applying(target, queued: nil))))
-            Task { await self.runApplies(target, under: held.lease.id) }
+            scheduleApplies(target, under: held.lease.id)
         }
+    }
+
+    /// Starts `runApplies` on a task of its own, its first `apply` counted unanswered **now**, in
+    /// the turn that decided to send it, not when the task starts. Between the two the actor can
+    /// run other jobs, a snapshot judged lost (`observe(_:readWith:)`) among them; a stop counted
+    /// only at the task's start would set its floor and then send the `apply` (#498's S2). Both
+    /// places that schedule an `apply`, the grant and a confirmed lease's re-`apply`, come here.
+    ///
+    /// **No test orders that gap.** Default actors run equal-priority jobs in the order enqueued,
+    /// and every loss from the driver's own tasks suspends first, so only a higher-priority job
+    /// enqueued during the scheduling turn overtakes the task, which a suite cannot place there.
+    private func scheduleApplies(_ first: LeaseTarget, under leaseID: UUID) {
+        appliesUnanswered += 1
+        Task { await self.runApplies(first, under: leaseID) }
     }
 
     /// The one `apply` in flight under `leaseID`, then whatever was queued behind it.
     ///
-    /// Each answer is counted before anything acts on it, so a loss the answer causes, and the
-    /// floor that loss sets, see this `apply` answered.
+    /// **Every `apply` is counted once before it is sent, and uncounted once when it answers.** The
+    /// first by `scheduleApplies`; a queued one in the turn that takes it from the queue. Each
+    /// answer is uncounted before anything acts on it, so a loss it causes, and that loss's floor,
+    /// see it answered. The loop sends before it can return, so no count is left behind.
     private func runApplies(_ first: LeaseTarget, under leaseID: UUID) async {
         var sending = first
         while true {
-            appliesUnanswered += 1
             let failure: (any Error)?
             do {
                 try await control.apply(sending.settings, leaseID: leaseID)
@@ -632,6 +647,7 @@ extension LeaseDriver {
                 return
             }
             guard let next = applyAccepted(sending, under: leaseID) else { return }
+            appliesUnanswered += 1
             sending = next
         }
     }
