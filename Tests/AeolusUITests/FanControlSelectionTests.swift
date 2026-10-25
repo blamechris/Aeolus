@@ -174,8 +174,8 @@ struct FanControlSelectionTests {
 
     /// The reasons a fan reading automatic is not cleared, from `FanRowModelTests`' exhaustive tag.
     ///
-    /// **Mutation (A1):** in `automaticBeforeAnyLease`, use `state.mode == .automatic`. Run: red for
-    /// every argument.
+    /// **Mutation (A1):** in `automaticBeforeAnyLease`, use `state.mode == .automatic`. Run: red
+    /// for every argument.
     @Test(
         "Automatic needs the helper to have cleared the fan, not only its mode",
         arguments: FanRowModelTests.notClearing)
