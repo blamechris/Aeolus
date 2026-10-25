@@ -190,7 +190,10 @@ struct LeaseDriverPerFanTests {
         await scene.finish()
     }
 
-    @Test("releaseFan on a fan the held lease does not cover does nothing")
+    /// The behaviour, whichever check carries it: `releaseFan`'s in-Custom guard is redundant
+    /// today, because the rest would be the held target unchanged and `take(_:)` of that is a
+    /// no-op. Either way the lease is left as it is.
+    @Test("releaseFan on a fan the held lease does not cover leaves the lease as it is")
     func releaseFanOfAnUncoveredFan() async throws {
         let scene = await LeaseScene()
         try #require(await scene.take(try LeaseScene.target([0: 3000])) != nil)

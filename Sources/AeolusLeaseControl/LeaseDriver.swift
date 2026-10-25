@@ -309,8 +309,8 @@ public actor LeaseDriver {
 
     /// The same, as a stream that starts with the value now: one element for each change of the
     /// state, and one when the evidence changes with the state unchanged, as it does when the last
-    /// unanswered `apply` answers after the driver stopped acting. What a renderer that claims
-    /// Automatic follows; `stateUpdates()` is for consumers that need the state alone.
+    /// unanswered `apply` answers in any state (D5), `acquiring` and `held` included. What a
+    /// renderer that claims Automatic follows; `stateUpdates()` is for the state alone.
     nonisolated public func reportUpdates() -> AsyncStream<LeaseDriverReport> {
         LeaseDriverPublisher.stream(of: self) { driver, observer, token in
             driver.publisher.addReportObserver(observer, as: token, startingWith: driver.report)
@@ -476,7 +476,9 @@ extension LeaseDriver {
 
     /// Moves the speed of fan `index` when it is in Custom: `adjust(_:)` of what is Custom now with
     /// the fan's speed replaced. **Never acquires, and never changes which fans are held:** for a
-    /// fan not in Custom, or with nothing in Custom, it does nothing.
+    /// fan not in Custom, or with nothing in Custom, it does nothing. The in-Custom check is
+    /// redundant today, a cheap refusal at the verb: `adjust`'s fan-set guards refuse a target
+    /// over other fans in every state that has one.
     public func adjustFan(_ index: Int, to speed: FanTargetRPM) {
         guard let custom, custom.speeds[index] != nil else { return }
         adjust(custom.setting(index, to: speed))
@@ -484,7 +486,9 @@ extension LeaseDriver {
 
     /// Puts fan `index` back on Auto when it is in Custom: `take(_:)` of the rest, or Auto
     /// (`selectAutomatic()`) when it was the last fan in Custom. For a fan not in Custom, or with
-    /// nothing in Custom, it does nothing.
+    /// nothing in Custom, it does nothing. The in-Custom check is redundant today, a cheap refusal
+    /// at the verb: without it the rest is what is Custom unchanged, and `take(_:)` of that is a
+    /// no-op.
     public func releaseFan(_ index: Int) {
         guard let custom, custom.speeds[index] != nil else { return }
         if let rest = custom.removing(index) {
