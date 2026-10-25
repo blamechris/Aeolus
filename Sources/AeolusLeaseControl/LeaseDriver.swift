@@ -160,51 +160,6 @@ import Foundation
 /// sequenced, are ever cancelled.
 public actor LeaseDriver {
 
-    /// How long a release waits for the helper's answer before its caller is let go.
-    ///
-    /// **Two seconds, stated rather than measured.** It bounds how long a quit, a logout or a
-    /// window close waits. Past it the release is still in flight, and the lease ends on the
-    /// helper's answer or, at the latest, at its TTL, since nothing renews it any more; on a quit
-    /// the teardown that follows ends it at once. Shorter than `HelperClientDeadlines.gatedVerb`,
-    /// so it is this bound, not the client's, that lets a quit go.
-    public static let releaseBound: Duration = .seconds(2)
-
-    /// What the app calls itself in a lease: `Aeolus.app` and its `CFBundleShortVersionString`.
-    public static func holderDescription(shortVersion: String?) -> String {
-        guard let shortVersion, !shortVersion.isEmpty else { return "Aeolus.app" }
-        return "Aeolus.app \(shortVersion)"
-    }
-
-    /// The grant the driver holds: the lease, its fans, and the schedule it is renewed on.
-    private struct Grant {
-        var lease: Lease
-        let fans: [Int]
-        let interval: Duration
-        /// The ticket epoch from which a snapshot is evidence about this lease itself: set when
-        /// the grant arrives.
-        let leaseJudgedFrom: UInt64
-        /// The ticket epoch from which a snapshot is evidence about this lease's fans: set when the
-        /// first `apply` under it is answered with success, `nil` until then.
-        var fansJudgedFrom: UInt64?
-    }
-
-    /// A release in flight: which one, of which lease, and its task.
-    private struct PendingRelease {
-        let id: UInt64
-        /// `nil` for a release asked for while the lease was still being acquired.
-        let lease: Lease?
-        let task: Task<ReleaseOutcome, Never>
-    }
-
-    /// An acquisition in flight.
-    private struct Acquisition {
-        let id: UInt64
-        /// The latest target asked for while the request is in flight.
-        var target: LeaseTarget
-        /// Whether a release was asked for while the request was in flight.
-        var releaseOnArrival = false
-    }
-
     private let control: any HelperLeaseControlling
     private let clock: any HeartbeatClock
     private let holder: String
@@ -562,15 +517,6 @@ extension LeaseDriver {
         return nil
     }
 
-    /// A third of the shorter TTL. A granted TTL outside the range the helper validates is not
-    /// believed, so a malformed grant cannot make the heartbeat spin.
-    private static func heartbeatInterval(
-        asked: TimeInterval, granted: TimeInterval
-    ) -> Duration {
-        let believed = AeolusXPCValidation.leaseTTLRange.contains(granted) ? granted : asked
-        return Duration.seconds(min(asked, believed)) / 3
-    }
-
     private func acquireFailed(_ failure: HelperFailure, acquisition id: UInt64) async {
         // A refusal is the helper's answer, on a connection that is working. Anything else is no
         // answer the driver could read, so whether a lease was granted is unknown, and tearing the
@@ -896,25 +842,6 @@ extension LeaseDriver {
         }
     }
 
-    /// Waits for `release`, or until `deadline` on `clock`, whichever is first.
-    private static func outcome(
-        of release: Task<ReleaseOutcome, Never>, until deadline: ContinuousClock.Instant,
-        bound: Duration, on clock: any HeartbeatClock
-    ) async -> ReleaseOutcome {
-        await withCheckedContinuation { continuation in
-            let first = FirstAnswer(continuation)
-            let timer = Task {
-                do { try await clock.sleep(until: deadline) } catch { return }
-                await first.resume(returning: .notAnswered(within: bound))
-            }
-            Task {
-                let outcome = await release.value
-                timer.cancel()
-                await first.resume(returning: outcome)
-            }
-        }
-    }
-
 }
 
 // MARK: - Publishing
@@ -980,19 +907,5 @@ extension LeaseDriver {
 
     private func unsubscribeReports(_ token: UUID) {
         reportObservers[token] = nil
-    }
-}
-
-/// Resumes a continuation once, with whichever answer reaches it first.
-private actor FirstAnswer {
-    private var continuation: CheckedContinuation<ReleaseOutcome, Never>?
-
-    init(_ continuation: CheckedContinuation<ReleaseOutcome, Never>) {
-        self.continuation = continuation
-    }
-
-    func resume(returning outcome: ReleaseOutcome) {
-        continuation?.resume(returning: outcome)
-        continuation = nil
     }
 }
