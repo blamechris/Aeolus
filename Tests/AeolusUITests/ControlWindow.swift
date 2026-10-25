@@ -37,7 +37,7 @@ final class ControlWindow {
         let helper = FakeSnapshotHelper()
         let source = try await SnapshotTestSupport.freshSource(helper, answering: snapshot)
         let window = ControlWindow(helper: helper, source: source)
-        await window.polling.tick()
+        await SnapshotTestSupport.tickEnds(window.polling)
         try #require(window.polling.renderedSnapshot == snapshot, "the window shows the snapshot")
         return window
     }
@@ -47,7 +47,7 @@ final class ControlWindow {
         await helper.reply(with: snapshot)
         answered += 1
         try await helper.waitForRequests(answered + 1)
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
         try #require(polling.renderedSnapshot == snapshot, "the window shows the new snapshot")
     }
 

@@ -67,7 +67,7 @@ struct PollingViewModelTests {
     func successfulTickPublishesData() async {
         let viewModel = PollingViewModel(
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
 
         #expect(viewModel.phase == .ready)
         #expect(viewModel.fans.first?.actual.value == 1712)
@@ -81,14 +81,14 @@ struct PollingViewModelTests {
         let viewModel = PollingViewModel(
             provider: flaky, clock: FakePollingClock(), snapshots: .noHelper())
 
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .ready)
         let fansAfterFirstTick = viewModel.fans
         let sensorsAfterFirstTick = viewModel.sensors
         let updatedAfterFirstTick = viewModel.lastUpdated
         #expect(!fansAfterFirstTick.isEmpty)
 
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .failed(.noSMC))
         // Nothing about the previously-published data changed — a transient failure is
         // not the same as "nothing to show."
@@ -101,8 +101,8 @@ struct PollingViewModelTests {
     func thermalEmergencyStaysUnknownAcrossTicks() async {
         let viewModel = PollingViewModel(
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
-        await viewModel.tick()
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.thermalEmergency == .unknown)
     }
 

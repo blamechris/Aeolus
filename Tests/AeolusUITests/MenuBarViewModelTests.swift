@@ -42,7 +42,7 @@ struct MenuBarViewModelTests {
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.currentSelection.isEmpty)
@@ -57,7 +57,7 @@ struct MenuBarViewModelTests {
         let explicit = [MenuBarReadout(key: "Tp09", source: .sensor)]
         let viewModel = MenuBarViewModel(polling: polling, selection: explicit)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.currentSelection == explicit)
         #expect(viewModel.readouts.map(\.key) == ["Tp09"])
@@ -68,7 +68,7 @@ struct MenuBarViewModelTests {
         let polling = PollingViewModel(
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         viewModel.setSelection([MenuBarReadout(key: "Tp09", source: .sensor)])
 
@@ -83,8 +83,8 @@ struct MenuBarViewModelTests {
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling, selection: [])
 
-        await polling.tick()
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.currentSelection.isEmpty)
         #expect(viewModel.readouts.isEmpty)
@@ -96,7 +96,7 @@ struct MenuBarViewModelTests {
             provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.phase == polling.phase)
         #expect(viewModel.lastUpdated == polling.lastUpdated)
@@ -110,7 +110,7 @@ struct MenuBarViewModelTests {
         let viewModel = MenuBarViewModel(
             polling: polling, selection: [MenuBarReadout(key: "F9Ac", source: .fan)])
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.readouts.count == 1)
         #expect(viewModel.readouts.first?.key == "F9Ac")
@@ -141,7 +141,7 @@ struct MenuBarViewModelTests {
             provider: provider, clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         let keys = viewModel.readouts.map(\.key)
         #expect(keys.contains("F0Ac"))
