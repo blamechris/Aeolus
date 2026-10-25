@@ -8,11 +8,13 @@ import SwiftUI
 ///
 /// This target is a *view* of helper state, not an owner of it. It edits configuration
 /// and renders snapshots, and it never writes to the SMC: every write is the helper's,
-/// under a lease, clamped helper-side. The app can now hold that lease (`LeaseDriver`,
-/// built by `AppComposition` in a build with a helper), though nothing in it takes one yet.
-/// What the fans are doing is still the helper's snapshot to say, never a value the app
-/// keeps. Quitting, logging out and closing the last control window each give back a held
-/// lease explicitly, with the helper's connection-invalidation path as the backstop
+/// under a lease, clamped helper-side. The app asks for that lease when the user clicks a
+/// percentage in the main window's control for all fans (`FanListView`, through
+/// `AppComposition`'s `LeaseDriver` in a build with a helper), and the helper refuses it until
+/// the write plane exists (#9). What the fans are doing is still the helper's snapshot to say,
+/// never a value the app keeps: the control draws a speed as held only once a snapshot shows
+/// it. Quitting, logging out and closing the last control window each give back a held lease
+/// explicitly, with the helper's connection-invalidation path as the backstop
 /// (`LeaseLifecycle`).
 ///
 /// Built two ways:
@@ -32,8 +34,9 @@ public struct AeolusApp: App {
 
     /// The app's one composition root (`AppComposition.running`): the snapshot source, and in
     /// a build with a helper the lease driver and every event that reaches it. A plain
-    /// constant rather than a `StateObject`: nothing renders it, and `init()` runs once per
-    /// process.
+    /// constant rather than a `StateObject`: nothing renders the root itself, only its
+    /// `leaseState`, which `FanListView` observes as an object of its own, and `init()` runs
+    /// once per process.
     private let composition: AppComposition
 
     /// The app's one reader of helper snapshots, shared by every `PollingViewModel` — the

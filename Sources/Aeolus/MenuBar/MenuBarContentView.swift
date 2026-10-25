@@ -4,9 +4,10 @@ import SwiftUI
 /// The menu bar item's dropdown: every selected readout in full, plus honest status text
 /// and a way to quit.
 ///
-/// No control affordance anywhere — like `#62`'s main window, this epic is read-only
-/// monitoring. Adding a slider or a "set speed" action here would cross into E8a/E10b's
-/// scope, not merely arrive early.
+/// No control affordance here. The app's one control, Auto and 50 / 75 / 100 % for all fans, is in
+/// the main window (`FanListView`, #153's PR 6b) and nowhere else: a lease taken from this panel
+/// would be released by no window event, because the panel is not a control window
+/// (`AppWindow.isControlWindow`). Adding a control here means revisiting that default first.
 struct MenuBarContentView: View {
     /// The kind of window this view is the root of: the `MenuBarExtra(.window)` panel, which is not
     /// a control window.

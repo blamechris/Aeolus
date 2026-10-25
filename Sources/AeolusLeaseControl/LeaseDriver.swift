@@ -6,10 +6,12 @@ import Foundation
 /// The app's one lease on the fans: it asks for them, keeps proving it is alive, gives them back,
 /// and says so when it can no longer show it holds them (`CLAUDE.md` rules 2 and 6, #155).
 ///
-/// **Built by `AppComposition`, and nothing takes a lease through it yet.** A build with a helper
-/// constructs one, over the app's control connection, and wires quit, logout, wake, fast user
-/// switching and the last control window to it. Nothing calls `take(_:)` or `adjust(_:)` until the
-/// first control (#153's PR 6b), so the shipping app acquires no lease.
+/// **Built by `AppComposition`, and taken through it on a click.** A build with a helper constructs
+/// one, over the app's control connection, and wires quit, logout, wake, fast user switching and
+/// the last control window to it. The main window's control for all fans calls `take(_:)` for a
+/// percentage and `selectAutomatic()` for Auto (#153's PR 6b); nothing calls `adjust(_:)` until
+/// PR 8's slider. Until the write plane exists (#9) the helper refuses every grant, so the
+/// shipping app is refused any lease it asks for.
 ///
 /// ## States
 ///

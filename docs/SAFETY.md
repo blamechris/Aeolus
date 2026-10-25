@@ -169,8 +169,9 @@ exactly which verbs are sequenced and what the remaining cost is.
 **The app no longer reads and holds on one connection.** It holds its lease on a control
 connection of its own, a second `HelperClient` separate from the read connection it renders
 snapshots from (`AppComposition`, #153), so no `snapshot` is queued behind the app's own `apply`.
-Nothing in the app takes a lease yet; the control that will is #153's PR 6b. The helper-side fix
-above is unchanged by this, and still covers a client that reads and holds on one connection.
+The app takes a lease when the user clicks a percentage in the main window's control for all fans
+(#153's PR 6b), and the helper refuses it until the write plane exists. The helper-side fix above
+is unchanged by this, and still covers a client that reads and holds on one connection.
 
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
@@ -940,8 +941,9 @@ than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
 **The app ships three defaults that are the maintainer's to change, and none of them is the
-maintainer's decision.** Each is #153's default, recorded here so it is not read as one. Nothing in
-the app takes a lease yet, so none of them acts on today's build.
+maintainer's decision.** Each is #153's default, recorded here so it is not read as one. The app
+takes a lease only on a click, and today's helper refuses every lease, so none of them acts on
+today's build.
 
 **Wake never re-acquires.** On `NSWorkspace.didWakeNotification` the app's lease driver sends its
 next renewal at once, so a lease that did not survive the sleep is reported as lost then, and it
@@ -2182,8 +2184,8 @@ log stream --level debug --style compact --predicate 'subsystem == "dev.aeolus.A
 ```
 
 Renewals are logged at debug level only. `LeaseLifecycleTests`, `AppCompositionLeaseTests` and
-`QuitOffTheMainActorTests` hold the order against a fake helper; nothing in the app takes a lease
-yet, so there is nothing to release on today's build.
+`QuitOffTheMainActorTests` hold the order against a fake helper. The app takes a lease only on a
+click, and today's helper refuses every lease, so there is nothing to release on today's build.
 
 **A signal is not a quit.** `kill`, `launchctl` and a root `shutdown` send the app `SIGTERM`, which
 ends it without `applicationShouldTerminate(_:)`: no explicit release is sent, and the helper's

@@ -18,8 +18,9 @@ import Foundation
 ///   `sessionDidResignActive()`.
 /// - **The last control window closing** calls `lastControlWindowClosed()`.
 ///
-/// Nothing here takes a lease. Until a control calls `LeaseDriver.take(_:)`, each of these finds
-/// nothing held and sends nothing.
+/// Nothing here takes a lease. The main window's control does, on a click, through
+/// `AppComposition.take(_:)`; each event here gives back what it took, and with nothing held finds
+/// nothing to release and sends nothing.
 ///
 /// ## Quit releases explicitly, and only then tears the connection down
 ///
