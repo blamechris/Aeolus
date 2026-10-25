@@ -88,6 +88,12 @@ struct LeaseDriverPublisher {
         reportObservers[token] = nil
     }
 
+    // MARK: - Streams
+
+    /// Registers an observer as a token, and yields it the value now, on the driver's actor.
+    typealias Registration<Element: Sendable> =
+        @Sendable (isolated LeaseDriver, AsyncStream<Element>.Continuation, UUID) -> Void
+
     /// A stream of `driver`'s, whose observer `add` registers on the driver's actor and `remove`
     /// takes away there once the stream has terminated.
     ///
@@ -99,10 +105,7 @@ struct LeaseDriverPublisher {
     /// The termination handler holds the driver weakly. The driver holds the observer, and the
     /// observer holds this handler, so a strong reference would be a cycle.
     static func stream<Element: Sendable>(
-        of driver: LeaseDriver,
-        add: @escaping @Sendable (
-            isolated LeaseDriver, AsyncStream<Element>.Continuation, UUID
-        ) -> Void,
+        of driver: LeaseDriver, add: @escaping Registration<Element>,
         remove: @escaping @Sendable (isolated LeaseDriver, UUID) -> Void
     ) -> AsyncStream<Element> {
         // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
