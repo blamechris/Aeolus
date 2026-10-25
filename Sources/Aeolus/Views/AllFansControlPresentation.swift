@@ -63,6 +63,12 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 ///
 /// Identical lines are said once. A line or a reason that only some fans give is named by those
 /// fans; one every fan gives is said with no names.
+///
+/// Each fan gives its `status`, then its `awaitingApply`. **The wait is said once, after the
+/// event, with no names** (#505): the evidence it follows is the driver's, one value for the
+/// machine, and the states it is given beside (`released`, `lost`, `refused`) give every fan the
+/// same line whatever its index. A fan whose control is hidden gives neither, so the wait is
+/// named by the fans that give it only in a mix no build produces, as any other line is.
 struct AllFansControlPresentation: Equatable {
 
     let affordance: Affordance
@@ -70,7 +76,8 @@ struct AllFansControlPresentation: Equatable {
     /// Whether any fan's `canRelease` is true. Read from the presentations' `canRelease` alone,
     /// never from `affordance`.
     let offersRelease: Bool
-    /// The status lines of every fan, each said once.
+    /// The status lines of every fan, each said once: each fan's `status`, then its
+    /// `awaitingApply`.
     let statusLines: [Attributed<FanControlPresentation.StatusLine>]
 
     enum Affordance: Equatable {
@@ -109,7 +116,11 @@ struct AllFansControlPresentation: Equatable {
         selection = Self.selection(fans, snapshot)
         offersRelease = fans.contains { $0.presentation.canRelease }
         statusLines = Self.attributed(
-            fans.compactMap { fan in fan.presentation.status.map { (fan.reading, $0) } },
+            fans.flatMap { fan in
+                [fan.presentation.status, fan.presentation.awaitingApply].compactMap { line in
+                    line.map { (fan.reading, $0) }
+                }
+            },
             among: fans.count)
     }
 

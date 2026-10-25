@@ -117,6 +117,14 @@ import Foundation
 ///   it, including one where the helper still lists the lease after a release it did not confirm,
 ///   so it never says the app holds none. It says nothing about the fans, which each row reports
 ///   from the helper and the selection claims, and never "automatic".
+/// - **A second line, `awaitingApply`, says why Auto is not shown selected while an `apply` is
+///   unanswered** (#505). It is given only beside `released`, `lost` and `refused`, the states in
+///   which the driver has stopped acting, and only while their evidence is `.noRead`: the driver
+///   stopped with an `apply` it sent unanswered, and no read is evidence until the last such
+///   `apply` has answered (`LeaseDriverReport.AutomaticEvidence.noRead`). It says what Aeolus is
+///   waiting for and what the control does meanwhile. Not what the fans are doing, not
+///   "automatic", not when the wait ends, and not "the last" speed change: the one unanswered can
+///   be an earlier lease's, and there can be several. See `StatusLine.awaitingApply`.
 /// - **The emergency is named only from a flag that is set**: the one in
 ///   `LeaseLoss.Cause.snapshot(_:isThermalEmergencyActive:)`. The flag clears when § 3's latch
 ///   releases (#476 NB3), so a lease gone with the flag clear says only that control ended. A
@@ -172,7 +180,8 @@ import Foundation
 ///   `.applying` at the segment its target names; `.checking` with no segment, because no licensed
 ///   snapshot is on screen whose bounds could name the percentage a held target is, and the row's
 ///   displayed bounds are not what the helper clamps to (#497's review, S2).
-/// - Show `status` beneath the control, and draw `lost` and `refused` as what happened.
+/// - Show `status` beneath the control, then `awaitingApply`, and draw `lost` and `refused` as
+///   what happened.
 /// - **A control that speaks for several fans claims no more than each of them does.** It is
 ///   enabled only if every fan's affordance is enabled. A segment is selected only if every fan's
 ///   selection is that segment: Auto when every fan is `.automatic`; a percentage when each fan is
@@ -187,6 +196,10 @@ struct FanControlPresentation: Equatable {
     let canRelease: Bool
     /// `nil` when there is nothing to say beneath the control.
     let status: StatusLine?
+    /// Why Auto is not shown selected: `StatusLine.awaitingApply` while the driver has stopped
+    /// acting with an `apply` it sent unanswered (evidence `.noRead`), and `nil` otherwise. Said
+    /// after `status`, never in place of it.
+    let awaitingApply: StatusLine?
 
     enum Affordance: Equatable {
         /// No control is drawn, for this reason.
@@ -251,22 +264,25 @@ struct FanControlPresentation: Equatable {
         let canRelease = Self.canRelease(reading.index, inputs.driver)
         if case .hidden = affordance {
             self.init(
-                affordance: affordance, selection: .unknown, canRelease: canRelease, status: nil)
+                affordance: affordance, selection: .unknown, canRelease: canRelease, status: nil,
+                awaitingApply: nil)
             return
         }
         let claim = Self.claim(about: reading.index, licence, inputs)
         self.init(
             affordance: affordance, selection: claim.selection, canRelease: canRelease,
-            status: claim.status)
+            status: claim.status, awaitingApply: claim.awaitingApply)
     }
 
     private init(
-        affordance: Affordance, selection: Selection, canRelease: Bool, status: StatusLine?
+        affordance: Affordance, selection: Selection, canRelease: Bool, status: StatusLine?,
+        awaitingApply: StatusLine?
     ) {
         self.affordance = affordance
         self.selection = selection
         self.canRelease = canRelease
         self.status = status
+        self.awaitingApply = awaitingApply
     }
 
     /// Whether the driver is acquiring or holding a lease over fan `index`. Exhaustive, with no
@@ -448,33 +464,65 @@ extension FanControlPresentation.Reason {
 
 extension FanControlPresentation {
 
-    private typealias Claim = (selection: Selection, status: StatusLine?)
+    private typealias Claim = (
+        selection: Selection, status: StatusLine?, awaitingApply: StatusLine?
+    )
 
     private static func claim(
         about index: Int, _ licence: Licence, _ inputs: Inputs
     ) -> Claim {
         switch inputs.driver {
         case .held(let held) where held.fans.contains(index):
-            return heldClaim(about: index, held, licence)
+            let claim = heldClaim(about: index, held, licence)
+            return (claim.selection, claim.status, nil)
         case .acquiring(let fans) where fans.contains(index):
-            return (.unknown, StatusLine(text: "Asking the helper for control.", detail: nil))
+            return (.unknown, StatusLine(text: "Asking the helper for control.", detail: nil), nil)
         case .releasing:
             let line = StatusLine(
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
-            return (.unknown, line)
+            return (.unknown, line, nil)
         case .acquiring, .held:
             // A lease over other fans: never Automatic beside it.
-            return (.unknown, nil)
+            return (.unknown, nil, nil)
         // ADR 0015 D1's first condition: the driver holds nothing and is not acquiring or
-        // releasing. The other three are `automaticClaim`'s.
+        // releasing. The other three are `automaticClaim`'s. `idle` has never acted, so it has
+        // sent no `apply` to wait for.
         case .idle:
-            return (automaticClaim(licence, inputs), nil)
+            return (automaticClaim(licence, inputs), nil, nil)
         case .released:
-            return (automaticClaim(licence, inputs), LeaseEventText.released)
+            return stopped(LeaseEventText.released, licence, inputs)
         case .lost(let loss):
-            return (automaticClaim(licence, inputs), LeaseEventText.lost(loss))
+            return stopped(LeaseEventText.lost(loss), licence, inputs)
         case .refused(let fault):
-            return (automaticClaim(licence, inputs), LeaseEventText.refused(fault))
+            return stopped(LeaseEventText.refused(fault), licence, inputs)
+        }
+    }
+
+    /// A driver that has stopped acting: `released`, `lost` or `refused`, the three arms above
+    /// that call this, so "stopped acting" is decided by `claim`'s one switch. The selection is
+    /// `automaticClaim`'s, the status is the event, and `awaitingApply` follows the evidence.
+    private static func stopped(
+        _ event: StatusLine, _ licence: Licence, _ inputs: Inputs
+    ) -> Claim {
+        (automaticClaim(licence, inputs), event, awaitingApply(inputs.automaticEvidence))
+    }
+
+    /// `StatusLine.awaitingApply` while no read is evidence, beside a driver that has stopped
+    /// acting. Exhaustive, with no `default:`, so evidence added later has to be decided here.
+    ///
+    /// Beside a stopped driver, `.noRead` means an `apply` it sent is unanswered: the driver
+    /// publishes it on a stop only with an `apply` unanswered, and replaces it with `readFrom` when
+    /// the last one answers (`LeaseDriverReport.AutomaticEvidence.noRead`;
+    /// `LeaseDriverApplyCountTests`). Beside any other state the evidence is only kept, and an
+    /// `apply` may have answered since, so only `stopped` asks this.
+    private static func awaitingApply(
+        _ evidence: LeaseDriverReport.AutomaticEvidence
+    ) -> StatusLine? {
+        switch evidence {
+        case .noRead:
+            return .awaitingApply
+        case .anyRead, .readFrom:
+            return nil
         }
     }
 
@@ -498,7 +546,7 @@ extension FanControlPresentation {
 
     private static func heldClaim(
         about index: Int, _ held: HeldLease, _ licence: Licence
-    ) -> Claim {
+    ) -> (selection: Selection, status: StatusLine?) {
         let noSpeed = StatusLine(
             text: "Not confirmed: no speed for this fan has been accepted.", detail: nil)
         switch held.phase {
@@ -554,6 +602,30 @@ extension FanControlPresentation {
     private static func rpm(_ value: Double) -> String {
         ReadingFormatting.number(value) + " RPM"
     }
+}
+
+extension FanControlPresentation.StatusLine {
+
+    /// Why Auto is not shown selected while the driver has stopped acting with an `apply` it sent
+    /// unanswered (#505). Given only beside `released`, `lost` and `refused` with evidence
+    /// `.noRead`, and gone with it. Each word holds while it is shown:
+    ///
+    /// - **"Waiting for the helper to answer"**: an `apply` is a request to the helper, and the
+    ///   driver awaits its reply. The wait ends at the answer or at the client's deadline, after
+    ///   which the `apply` counts as answered (ADR 0015's assumptions), and the line goes either
+    ///   way. It says neither which will end it nor when.
+    /// - **"a speed change"**: an `apply`, in the words `LeaseEventText` uses for one. "A", not "the
+    ///   last": the one unanswered can be an earlier lease's, and there can be several.
+    /// - **"Aeolus sent"**: this driver's. A relaunch starts `idle`, which waits for nothing.
+    /// - **"Auto is not shown as selected"**: `.noRead` admits no read, so `automaticClaim` answers
+    ///   `.unknown` for every fan, and the all-fans control selects Auto only when every fan reads
+    ///   `.automatic`. "Auto" is the segment's title, and "shown" makes it the control's, not the
+    ///   fans': the line says nothing about what the fans are doing, which each row reports.
+    /// - **"while Aeolus waits"**: the same wait, so the line promises nothing after it. A read
+    ///   after the wait still has to list no lease and show each fan cleared (ADR 0015 D1).
+    static let awaitingApply = Self(
+        text: "Waiting for the helper to answer a speed change Aeolus sent.",
+        detail: "Auto is not shown as selected while Aeolus waits.")
 }
 
 // MARK: - Past events
