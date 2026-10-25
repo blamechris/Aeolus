@@ -4,9 +4,9 @@ import Foundation
 //
 // **Nothing here reads or sets the driver's state**, which is why it can live outside
 // `LeaseDriver.swift` with nothing there widened. The driver hands over every value it sends,
-// once `transition(to:)` has set the state and minted the floor. `current`, the evidence, the
-// ticket epoch and `transition(to:)` stay `private` to the driver, and `SnapshotTicket`'s epoch
-// stays `fileprivate`.
+// once `transition(to:)` has set the state and minted any floor it sets. `current`, the
+// evidence, the ticket epoch and `transition(to:)` stay `private` to the driver, and
+// `SnapshotTicket`'s epoch stays `fileprivate`.
 
 /// Every observer of one `LeaseDriver`, and the publishing of its states and reports to them.
 ///
@@ -49,7 +49,7 @@ struct LeaseDriverPublisher {
     // MARK: - Publishing
 
     /// A change of state: `report.state` to every state observer, then `report` to every report
-    /// observer. `report` is the one the driver made for the state, with its floor already in it.
+    /// observer. `report` is the one the driver made for the state, with any floor it sets in it.
     func publishStateChange(_ report: LeaseDriverReport) {
         for observer in stateObservers.values { observer.yield(report.state) }
         for observer in reportObservers.values { observer.yield(report) }

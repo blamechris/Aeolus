@@ -169,7 +169,7 @@ public actor LeaseDriver {
     /// Which reads may show a fan automatic, as last published with `current`.
     private var evidence: LeaseDriverReport.AutomaticEvidence = .anyRead
     /// Who follows `stateUpdates()` and `reportUpdates()`. Published to only by `transition(to:)`
-    /// and `applyAnswered()`, each after the floor is minted, and only on this actor.
+    /// and `applyAnswered()`, each after any floor its state sets is minted, only on this actor.
     private var publisher = LeaseDriverPublisher()
     /// How many `apply` calls have been sent and not answered, under any lease. An `apply` is left
     /// to answer when its lease ends (#419), so this can be non-zero in any state.
