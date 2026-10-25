@@ -101,6 +101,19 @@ struct LeaseScene: Sendable {
         await ledger.waitFor { Array($0.dropFirst(mark)).states.contains(where: matches) }
     }
 
+    /// The first report published after `mark` whose state satisfies `matches`, once the ledger
+    /// has one.
+    ///
+    /// **It waits on the reports themselves.** States and reports reach the ledger through two
+    /// forwarding tasks, and nothing orders one against the other, so a wait for a state is no
+    /// promise that the report published with it has landed too.
+    func firstReport(
+        since mark: Int, where matches: @escaping @Sendable (LeaseDriverState) -> Bool
+    ) async -> LeaseDriverReport? {
+        await ledger.waitFor { Array($0.dropFirst(mark)).reports.contains { matches($0.state) } }
+        return Array(await ledger.entries.dropFirst(mark)).reports.first { matches($0.state) }
+    }
+
     /// The ledger now.
     var entries: [LeaseLedger.Entry] {
         get async { await ledger.entries }

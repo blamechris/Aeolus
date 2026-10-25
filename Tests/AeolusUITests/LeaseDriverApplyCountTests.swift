@@ -17,11 +17,10 @@ struct LeaseDriverApplyCountTests {
         if case .readFrom = evidence { true } else { false }
     }
 
-    /// The first report published after `mark` with the driver `released`.
+    /// The first report published after `mark` with the driver `released`, waited for on the
+    /// reports (`LeaseScene.firstReport(since:where:)`), never on the states.
     static func released(_ scene: LeaseScene, since mark: Int) async throws -> LeaseDriverReport {
-        await scene.waitForState(since: mark) { $0.isReleased }
-        return try #require(
-            Array(await scene.entries.dropFirst(mark)).reports.first { $0.state == .released })
+        try #require(await scene.firstReport(since: mark) { $0.isReleased })
     }
 
     /// Waits until the ledger shows a floor published after `mark`.

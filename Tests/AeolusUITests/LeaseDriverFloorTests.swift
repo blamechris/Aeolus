@@ -25,10 +25,7 @@ struct LeaseDriverFloorTests {
     static func published(
         _ scene: LeaseScene, since mark: Int, ending path: FloorPath
     ) async -> LeaseDriverReport? {
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(mark)).reports.contains { path.ends(in: $0.state) }
-        }
-        return Array(await scene.entries.dropFirst(mark)).reports.first { path.ends(in: $0.state) }
+        await scene.firstReport(since: mark) { path.ends(in: $0) }
     }
 
     /// **Mutation (F1, "no floor"):** in `LeaseDriver.transition(to:)`, delete the assignment to
@@ -91,9 +88,10 @@ struct LeaseDriverFloorTests {
 
         let mark = await scene.mark()
         await scene.driver.selectAutomatic()
+        let released = try #require(await scene.firstReport(since: mark) { $0.isReleased })
+        // The state too, so that it is in the ledger before `answered` below: the check that no
+        // state is published again counts states after that mark.
         await scene.waitForState(since: mark) { $0.isReleased }
-        let released = try #require(
-            Array(await scene.entries.dropFirst(mark)).reports.first { $0.state == .released })
         #expect(released.automaticEvidence == .noRead, "\(released)")
         let during = await scene.driver.beginSnapshotRead()
 
@@ -127,9 +125,7 @@ struct LeaseDriverFloorTests {
 
         let mark = await scene.mark()
         await scene.helper.pushHealth(.unresponsive)
-        await scene.waitForState(since: mark) { $0.isLost }
-        let lost = try #require(
-            Array(await scene.entries.dropFirst(mark)).reports.first { $0.state.isLost })
+        let lost = try #require(await scene.firstReport(since: mark) { $0.isLost })
         #expect(lost.automaticEvidence == .noRead, "\(lost)")
 
         await scene.helper.answerParked(.apply)
