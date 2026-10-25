@@ -38,7 +38,9 @@ struct HelperSnapshotSourceHandshakeTests {
     ///
     /// **Mutation (HS1):** delete the `retireFailureFromBeforeTheHandshake()` call in
     /// `HelperSnapshotSource.observe(_:)`. Run: red at the window's `authority`, read-count,
-    /// `phase` and `controlSource` expectations, for every argument.
+    /// `phase` and `controlSource` expectations and at `readsSinceTheHandshake`, for every
+    /// argument, in 3 of 3 runs. The tick in the window then makes three provider reads. The
+    /// same expectations are red on `d11fef9`, before the fix.
     @Test(
         "After a failed request, a reconnect's handshake waits for its reply and reads nothing",
         arguments: HealthTag.departures.filter { $0 != .idle })
@@ -100,7 +102,7 @@ struct HelperSnapshotSourceHandshakeTests {
     /// has never moved, so this is the case a rule about departures cannot reach.
     ///
     /// **Mutation (HS1)**, as above. Run: red at the window's `authority`, read-count and
-    /// `controlSource` expectations.
+    /// `controlSource` expectations, in 3 of 3 runs.
     @Test("After a failed first request, the first handshake waits for its reply and reads nothing")
     func theFirstHandshakeAfterAFailureReadsNothing() async throws {
         let helper = FakeSnapshotHelper()
@@ -147,10 +149,10 @@ struct HelperSnapshotSourceHandshakeTests {
     /// one before it.
     ///
     /// **Mutation (HS2):** in `observe(_:)`, advance the episode on arriving at `.handshaken`
-    /// too, the fix the issue warned against. Run: red at the `.readDirectly` expectation, the
-    /// read count and `controlSource`, here, and at the first good reply in
-    /// `aFailureBeforeTheHandshakeLicensesNoReadAfterIt` and in
-    /// `theFirstReplyOfAConnectionIsRendered`.
+    /// too, the fix the issue warned against. Run, 3 of 3: red here at the `.readDirectly`
+    /// expectation, the read count and `controlSource`; and at the first good reply in each of
+    /// the other three tests in this suite and in `theFirstReplyOfAConnectionIsRendered`.
+    /// **HS1** is red here too, at the `.awaitHelper` expectation before the failure.
     @Test("A request that fails after the new handshake still reads directly")
     func aFailureAfterTheHandshakeStillReadsDirectly() async throws {
         let helper = FakeSnapshotHelper()
