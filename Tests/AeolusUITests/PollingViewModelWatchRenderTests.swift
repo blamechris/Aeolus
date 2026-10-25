@@ -29,7 +29,7 @@ struct PollingViewModelWatchRenderTests {
         let watch: GatedPollingClock
     }
 
-    private static func fixture(
+    static func fixture(
         on source: HelperSnapshotSource,
         provider: some SensorProvider = Support.directProvider()
     ) -> Fixture {
@@ -43,7 +43,7 @@ struct PollingViewModelWatchRenderTests {
 
     /// One step of the watch: wait (bounded) for it to be parked, let it go, and wait (bounded)
     /// for its next sleep — which it takes only after the step is done.
-    private static func step(_ watch: GatedPollingClock) async {
+    static func step(_ watch: GatedPollingClock) async {
         let before = await watch.sleptSeconds.count
         _ = await Support.eventually { await watch.parkedCount >= 1 }
         await watch.release()
@@ -186,7 +186,7 @@ struct PollingViewModelWatchRenderTests {
     /// snapshot. A render then would be overwritten by the read — readings with no claims,
     /// under a `controlSource` that still names the snapshot. The watch waits a step instead.
     ///
-    /// **Mutation (RG1):** delete `guard !isReadingDirectly` from `reassessAuthority()`. Run:
+    /// **Mutation (RG1):** delete `guard directRead == nil` from `reassessAuthority()`. Run:
     /// red at the expectations after the read finishes.
     @Test("The watch never renders into a direct read in progress, and renders after it")
     func theWatchNeverRendersIntoADirectRead() async throws {
