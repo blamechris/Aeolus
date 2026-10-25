@@ -154,7 +154,7 @@ final class AppComposition {
             snapshots = source
             leaseState = LeaseStateModel(
                 following: driver.reportUpdates(),
-                whenTheDriverStopsActing: { [weak source] in source?.readSoon() })
+                askForARead: { [weak source] in source?.readSoon() })
             lease = LeaseWiring(
                 driver: driver,
                 lifecycle: lifecycle,

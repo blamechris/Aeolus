@@ -1,5 +1,6 @@
 import AeolusLeaseControl
 import Combine
+import Foundation
 
 /// The lease driver's reports on the main actor, for views to read in `body` (#153's PR 6b): its
 /// state, and which reads may show a fan automatic beside it (ADR 0015 D2).
@@ -22,15 +23,23 @@ import Combine
 /// `KeyPath`: no other file can write the report views are shown, by a dynamic cast or otherwise
 /// (SR-5218, as `PollingViewModel.renderedSnapshot`).
 ///
-/// ## The read it asks for when the driver stops acting
+/// ## The reads it asks for
 ///
-/// Automatic is claimed only from a snapshot read after the driver's floor, and the source's next
-/// ordinary read can be a minute away. So each report that carries a new floor runs
-/// `whenTheDriverStopsActing`, after the report is stored: `AppComposition` passes the source's
-/// `readSoon()`. It runs once per floor, never for a report whose evidence is unchanged. A floor
-/// also comes without a stop: when a release answers ahead of an acquisition, and when the last
-/// unanswered `apply` answers beside a held lease (ADR 0015 D5). Each asks for the read the same
-/// way, for the fans that lease does not cover.
+/// The source's next ordinary read can be a minute away, so this runs `askForARead`, after the
+/// report is stored, for two kinds of report: `AppComposition` passes the source's `readSoon()`.
+/// A report that is both runs it once.
+///
+/// - **A new floor.** Automatic is claimed only from a snapshot read after the driver's floor. It
+///   runs once per floor, never for a report whose evidence is unchanged. A floor also comes
+///   without a stop: when a release answers ahead of an acquisition, and when the last unanswered
+///   `apply` answers beside a held lease (ADR 0015 D5), for the fans that lease does not cover.
+/// - **A new grant**: the first report that is `held` under a lease identifier this model has not
+///   seen held before. After a change of which fans are held, the floor's read is asked for as the
+///   driver enters `acquiring`, before the grant; a snapshot served then lists no lease, and D5
+///   refuses it. Without this, a fan the new lease does not cover would read nothing until the
+///   next ordinary read. **Once per grant**: a renewal, an `apply` sent or answered, a target
+///   queued and an evidence change are each a report that is `held` under the same identifier, and
+///   none of them asks. Only `LeaseDriver.granted` puts a new identifier in `held`.
 ///
 /// ## Whether the user's own Auto came before the state (#157)
 ///
@@ -47,7 +56,9 @@ import Combine
 final class LeaseStateModel: ObservableObject {
 
     private var stored: LeaseDriverReport = .idle
-    private let whenTheDriverStopsActing: @MainActor () -> Void
+    private let askForARead: @MainActor () -> Void
+    /// The lease the last grant read was asked for: the newest identifier seen `held`.
+    private var readAskedForGrant: UUID?
 
     /// Whether the user's last request through the root was Auto, with no `take` or `adjust`
     /// since.
@@ -78,16 +89,16 @@ final class LeaseStateModel: ObservableObject {
 
     /// A build with no driver: `.idle`, and nothing ever changes it.
     init() {
-        whenTheDriverStopsActing = {}
+        askForARead = {}
     }
 
-    /// Follows `reports` from its first value, until this model goes, and runs
-    /// `whenTheDriverStopsActing` for each report that carries a new floor.
+    /// Follows `reports` from its first value, until this model goes, and runs `askForARead` for
+    /// each report that carries a new floor or a new grant (see "The reads it asks for").
     init(
         following reports: AsyncStream<LeaseDriverReport>,
-        whenTheDriverStopsActing: @escaping @MainActor () -> Void
+        askForARead: @escaping @MainActor () -> Void
     ) {
-        self.whenTheDriverStopsActing = whenTheDriverStopsActing
+        self.askForARead = askForARead
         Task { [weak self] in
             for await report in reports {
                 // Ends with this model: the driver's stream does not finish on its own.
@@ -121,10 +132,18 @@ final class LeaseStateModel: ObservableObject {
         let newFloor =
             report.automaticEvidence != stored.automaticEvidence
             && Self.isFloor(report.automaticEvidence)
+        let newGrant = isNewGrant(report.state)
         objectWillChange.send()
         if report.state != stored.state { stateFollowsAutomatic = lastAskedForAutomatic }
         stored = report
-        if newFloor { whenTheDriverStopsActing() }
+        if newFloor || newGrant { askForARead() }
+    }
+
+    /// Whether `state` is `held` under a lease identifier not seen held before, recording it if so.
+    private func isNewGrant(_ state: LeaseDriverState) -> Bool {
+        guard case .held(let held) = state, held.lease.id != readAskedForGrant else { return false }
+        readAskedForGrant = held.lease.id
+        return true
     }
 
     /// Whether `evidence` names a floor a read can reach. Exhaustive, with no `default:`.

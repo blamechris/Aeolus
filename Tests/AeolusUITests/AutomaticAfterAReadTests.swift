@@ -78,20 +78,22 @@ struct AutomaticAfterAReadTests {
     ///
     /// 1. Before the grant, a read shows no lease and the fans cleared, and `.idle` reads it as
     ///    Automatic.
-    /// 2. The lease is taken, and Auto releases it. The snapshot on screen is still that first
-    ///    one: no lease, the fans cleared, and only its ticket says it is from before. Nothing is
-    ///    selected.
-    /// 3. The root asks for a read at once, not in 60 s. Its reply shows the same, and the control
-    ///    reads Automatic.
+    /// 2. The lease is taken, and the root asks for a read at the grant (`LeaseStateModel`, "The
+    ///    reads it asks for"), which stays unanswered. Auto releases the lease. The snapshot on
+    ///    screen is still that first one: no lease, the fans cleared, and only its ticket says it
+    ///    is from before. Nothing is selected.
+    /// 3. The grant's read, sent before the Auto, is answered with the same: it is not evidence
+    ///    either. The root asked for a read at the stop while that one was in flight, so the next
+    ///    is sent at once, not in 60 s. Its reply shows the same, and the control reads Automatic.
     /// 4. The connection goes, and the snapshot and its ticket go with it.
     ///
     /// **Mutation (F9):** red at step 3's Automatic. **Mutation (F10, "no nudge"):** in
-    /// `AppComposition.init`, pass `whenTheDriverStopsActing: {}`. Run: red at step 3's
-    /// `requestsReach(2)`. **Mutation (F5a, "a stale ticket"):** in `PollingViewModel.render`,
-    /// keep the ticket already on screen, `rendered?.ticket ?? ticket`. Run: red at step 3's
-    /// ticket and Automatic. **Mutation (F5b, "a withdrawal keeps it"):** in
-    /// `withdrawControlClaims`, keep `rendered` set (the ticket cannot be kept apart from it).
-    /// Run: red at step 4's `renderedReadTicket == nil`. **Mutation (F6):** red at step 2.
+    /// `AppComposition.init`, pass `askForARead: {}`. Run: red at step 2's grant read.
+    /// **Mutation (F5a, "a stale ticket"):** in `PollingViewModel.render`, keep the ticket already
+    /// on screen, `rendered?.ticket ?? ticket`. Run: red at step 3's ticket and Automatic.
+    /// **Mutation (F5b, "a withdrawal keeps it"):** in `withdrawControlClaims`, keep `rendered`
+    /// set (the ticket cannot be kept apart from it). Run: red at step 4's
+    /// `renderedReadTicket == nil`. **Mutation (F6):** red at step 2.
     @Test("The user's Auto reads Automatic after one more read, and never from the read before")
     func theUsersAutoReadsAutomaticFromTheNextRead() async throws {
         let (scene, polling) = try await Self.rootAt60Seconds()
@@ -107,8 +109,10 @@ struct AutomaticAfterAReadTests {
         let first = try #require(polling.renderedReadTicket, "the read's ticket is on screen")
         #expect(control().selection == .automatic)
 
-        // 2. The lease, then Auto.
+        // 2. The lease, its grant's read sent and left unanswered, then Auto.
         try await scene.lease.take(LeaseScene.target([0: 3000, 1: 3000]))
+        let grantRead = await Support.requestsReach(2, on: scene.reader)
+        try #require(grantRead, "the root asked for a read at the grant")
         let mark = await scene.lease.mark()
         scene.root.selectAutomatic()
         await scene.lease.waitForState(since: mark) { $0.isReleased }
@@ -119,11 +123,17 @@ struct AutomaticAfterAReadTests {
         #expect(polling.renderedReadTicket == first, "still the snapshot from before")
         #expect(control().selection == .none, "a read from before the grant is not evidence")
 
-        // 3. The read the root asked for.
-        let sent = await Support.requestsReach(2, on: scene.reader)
-        try #require(sent, "the root waited out the 60 s pause after Auto")
+        // 3. The grant's read, ticketed before the Auto, then the read the root asked for after.
         await scene.reader.reply(with: Self.cleared)
         try #require(await Support.settle { Self.ticket(source).map { $0 != first } ?? false })
+        await Support.tickEnds(polling)
+        let grantsTicket = polling.renderedReadTicket
+        #expect(control().selection == .none, "a read sent before the Auto is not evidence")
+        let sent = await Support.requestsReach(3, on: scene.reader)
+        try #require(sent, "the root waited out the 60 s pause after Auto")
+        await scene.reader.reply(with: Self.cleared)
+        try #require(
+            await Support.settle { Self.ticket(source).map { $0 != grantsTicket } ?? false })
         await Support.tickEnds(polling)
         let evidence = scene.root.leaseState.current.automaticEvidence
         #expect(evidence.admits(polling.renderedReadTicket), "the new read's ticket is on screen")
@@ -163,13 +173,17 @@ struct AutomaticAfterAReadTests {
         await scene.lease.helper.script(.apply, .parked)
         await scene.lease.driver.take(try LeaseScene.target([0: 3000, 1: 3000]))
         await scene.lease.ledger.waitFor { !$0.applies.isEmpty }
+        let lease = try #require(await scene.lease.helper.heldLeases.values.first)
+        try await Self.answerTheGrantsRead(
+            scene, asRequest: 2,
+            with: Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)], activeLease: lease))
 
         let mark = await scene.lease.mark()
         try await scene.click { scene.root.selectAutomatic() }
         await scene.lease.waitForState(since: mark) { $0.isReleased }
         try #require(await Support.settle { scene.root.leaseState.current.state == .released })
         #expect(scene.root.leaseState.current.automaticEvidence == .noRead)
-        let early = await Support.eventually(turns: 2_000) { await scene.reader.requests >= 2 }
+        let early = await Support.eventually(turns: 2_000) { await scene.reader.requests >= 3 }
         #expect(!early, "a read was asked for while no read could be evidence")
         await Support.tickEnds(polling)
         #expect(control().selection == .none)
@@ -183,7 +197,7 @@ struct AutomaticAfterAReadTests {
         try #require(
             await Support.settle { Self.isFloor(scene.root.leaseState.current.automaticEvidence) },
             "the root published the floor the apply's answer minted")
-        let sent = await Support.requestsReach(2, on: scene.reader)
+        let sent = await Support.requestsReach(3, on: scene.reader)
         try #require(sent, "the root waited out the 60 s pause after the apply answered")
         await scene.reader.reply(with: Self.cleared)
         let evidence = scene.root.leaseState.current.automaticEvidence
@@ -231,6 +245,26 @@ struct AutomaticAfterAReadTests {
         await watch.release()
         await Support.tearDown(source, helper)
         await scene.finish()
+    }
+
+    /// The read the root asks for when a lease is granted (`LeaseStateModel`, "The reads it asks
+    /// for"): waits for it to be sent, as the reader's request `number`, and answers it with
+    /// `snapshot`, which must list the granted lease, or the driver judges the lease lost from it.
+    static func answerTheGrantsRead(
+        _ scene: CompositionScene, asRequest number: Int, with snapshot: SystemSnapshot
+    ) async throws {
+        let sent = await Support.requestsReach(number, on: scene.reader)
+        try #require(sent, "the root asked for a read at the grant")
+        await scene.reader.reply(with: snapshot)
+        let source = scene.root.snapshots
+        try #require(
+            await Support.settle {
+                if case .fresh(let shown, _, _) = source.authority() {
+                    shown == snapshot
+                } else {
+                    false
+                }
+            }, "the source holds the grant's read")
     }
 
     static func isFloor(_ evidence: LeaseDriverReport.AutomaticEvidence) -> Bool {

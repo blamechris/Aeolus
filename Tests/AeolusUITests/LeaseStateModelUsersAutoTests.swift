@@ -34,7 +34,7 @@ struct LeaseStateModelUsersAutoTests {
     @Test("True from the first state after the user's Auto, until the next take")
     func followsTheUsersAutoUntilTheNextTake() async throws {
         let (stream, feed) = AsyncStream.makeStream(of: LeaseDriverReport.self)
-        let model = LeaseStateModel(following: stream, whenTheDriverStopsActing: {})
+        let model = LeaseStateModel(following: stream, askForARead: {})
         let counts = LeaseStateModelTests.Counts()
         let sink = model.objectWillChange.sink { counts.publishes += 1 }
         defer { sink.cancel() }
@@ -88,7 +88,7 @@ struct LeaseStateModelUsersAutoTests {
     @Test("A loss after the user's Auto still follows it; the banner reads the state")
     func aLossAfterAutoFollowsIt() async throws {
         let (stream, feed) = AsyncStream.makeStream(of: LeaseDriverReport.self)
-        let model = LeaseStateModel(following: stream, whenTheDriverStopsActing: {})
+        let model = LeaseStateModel(following: stream, askForARead: {})
         let lost = LeaseDriverState.lost(
             LeaseLoss(
                 lease: FanControlFixtures.ours, cause: .releaseUnconfirmed(.other("no answer")),

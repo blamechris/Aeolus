@@ -62,7 +62,9 @@ struct MonitoringModeBannerTests {
     }
 
     /// The root's own source at a 60 s interval, a window's view model over it showing a cleared
-    /// snapshot with its read's ticket, and the lease taken through the root.
+    /// snapshot with its read's ticket, and the lease taken through the root. The read the root
+    /// asks for at the grant is answered with a snapshot showing the lease holding both fans, and
+    /// is not rendered.
     static func heldThroughTheRoot() async throws -> (CompositionScene, PollingViewModel) {
         let (scene, polling) = try await Reads.rootAt60Seconds()
         await scene.reader.reply(with: Reads.cleared)
@@ -72,6 +74,11 @@ struct MonitoringModeBannerTests {
         let mark = await scene.lease.mark()
         try await scene.click { scene.root.take(target) }
         try await reaches(scene, since: mark, confirmed(target))
+        let lease = try #require(await scene.lease.helper.heldLeases.values.first)
+        try await Reads.answerTheGrantsRead(
+            scene, asRequest: 2,
+            with: Support.snapshot(
+                fans: [Fans.held(0, at: 3000), Fans.held(1, at: 3000)], activeLease: lease))
         return (scene, polling)
     }
 
@@ -84,7 +91,8 @@ struct MonitoringModeBannerTests {
         try #require(
             await Support.settle { Reads.isFloor(scene.root.leaseState.current.automaticEvidence) },
             "the root published the floor")
-        let sent = await Support.requestsReach(2, on: scene.reader)
+        // The first request was answered before the grant, the second is the grant's.
+        let sent = await Support.requestsReach(3, on: scene.reader)
         try #require(sent, "the root asked for a read after the stop")
         await scene.reader.reply(with: Reads.cleared)
         let evidence = scene.root.leaseState.current.automaticEvidence
