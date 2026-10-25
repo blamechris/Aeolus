@@ -50,11 +50,11 @@ import Foundation
 ///
 /// SwiftUI cancels a `.task` when its view goes away, and a `.task(id:)` each time its id
 /// changes, so a view that owned a driver await would cancel calls the driver means to finish. So
-/// the driver is held only inside `private` members here, and no entry point is `async`: each is
-/// synchronous and starts its own unstructured `Task`, which a caller's cancellation does not
-/// reach. That much the compiler holds: a view's action is synchronous, and could not call an
-/// `async` entry point without a task of its own. That a member added later stays synchronous is
-/// documented here and not enforced.
+/// the driver is held only inside `private` members here, and no entry point is `async`: each one
+/// that reaches the driver is synchronous and starts its own unstructured `Task`, which a caller's
+/// cancellation does not reach. That much the compiler holds: a view's action is synchronous,
+/// and could not call an `async` entry point without a task of its own. That a member added later
+/// stays synchronous is documented here and not enforced.
 ///
 /// `DriverCall.finished()`, through the suite's `latestDriverCall`, is awaitable from anywhere in
 /// this module, but it holds no `Task`, so it cancels nothing; awaiting it reaches no driver verb.
@@ -225,9 +225,9 @@ final class AppComposition {
     /// `nil` if none has: **a seam for the suite**, which nothing in the app reads.
     ///
     /// **Why (#500).** In release-config runs, the pre-PR shape (a click, then `settle()`) was red
-    /// at `!reacquired`; bare clicks with no `settle()` were green in 10 of 10. Why the `settle()`
-    /// shape is the red one was not established. A test that must know a click has reached the
-    /// driver waits on this (`CompositionScene.click(_:)`). Always `nil` with no helper.
+    /// at `!reacquired`. Why was not established (`CompositionScene.click(_:)` has the counts). A
+    /// test that must know a click has reached the driver waits on this. Always `nil` with no
+    /// helper.
     var latestDriverCall: DriverCall? { latestCall }
 
     private func started(_ task: Task<Void, Never>) {

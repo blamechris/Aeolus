@@ -59,13 +59,14 @@ struct CompositionScene {
     /// Runs `click`, which must start exactly one call on the driver through the root's entry
     /// points, and returns once the driver has run that call (`AppComposition.latestDriverCall`).
     ///
-    /// **What was observed (#500).** In release-config runs of `AeolusUITests`, the pre-PR shape
-    /// of `autoWhileReleasingCancelsAQueuedTake` (a click, then `settle()`) was red at
-    /// `!reacquired`: 7 of 10 before #500, and 5 of 10 in the review's runs. Bare clicks with no
-    /// `settle()` were green in 10 of 10. Why the `settle()` shape is the red one was not
-    /// established. The review's factorial over the whole suite, in release, found that this wait
-    /// and the reads of the driver's state after each click cover for each other: with either
-    /// kept, 0 of 12 runs were red; with both dropped, 1 of 10, a small sample.
+    /// **What was observed (#500).** In release-config runs, the pre-PR shape of
+    /// `autoWhileReleasingCancelsAQueuedTake` (a click, then `settle()`) was red at `!reacquired`:
+    /// 7 of 10 runs of `AeolusUITests` before #500, and 5 of 10 in #502's review. With no
+    /// `settle()`, bare clicks were green in 10 of 10 runs of `AllFansControlRoot` alone; over
+    /// `AeolusUITests`, with this wait and the post-click reads both dropped, 1 of 10 runs was red
+    /// at the same line. With only one of the two dropped, 0 of 12 runs of `AeolusUITests` were
+    /// red, whichever it was. Why the `settle()` shape is the red one was not established, and
+    /// these counts are too few to say whether the wait or the reads protect anything.
     ///
     /// The wait is on the ledger, through `LeaseScene.run`, so a call that never finishes is a red
     /// at the suite's time limit rather than a `swift test` that never exits.

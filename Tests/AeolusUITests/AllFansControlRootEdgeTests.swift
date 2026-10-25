@@ -80,7 +80,8 @@ extension AllFansControlRootTests {
     /// `#expect` read after it, with the bare click followed by `await scene.lease.settle()`. It
     /// removes the wait, the post-click reads and the click helper together, so it is not evidence
     /// for the wait alone. Run, release config with testability, whole `AeolusUITests`: red at
-    /// `!reacquired` in 8 of 10 runs. A race, so a rate; the fixed test was green in 12 of 12.
+    /// `!reacquired` in 8 of 10 runs (5 of 10 in #502's review). Intermittent, so a rate; the fixed
+    /// test was green in 12 of 12.
     @Test("Auto while releasing cancels a take queued behind the release")
     func autoWhileReleasingCancelsAQueuedTake() async throws {
         let scene = await CompositionScene()
@@ -143,8 +144,8 @@ extension AllFansControlRootTests {
 
     // MARK: - The suite's seam
 
-    /// `DriverCall` keeps only its ordinal and a closure that waits on the call's task, never the
-    /// task itself, so nothing that holds the handle can cancel the call (#419).
+    /// `DriverCall` stores no `Task` of its own and exposes no way to cancel one, so nothing that
+    /// holds the handle can cancel the call (#419).
     ///
     /// **Mutation (M500d, "the handle keeps the task"):** add `private let task: Task<Void, Never>`
     /// to `AppComposition.DriverCall`, set in its init. Run, debug: red at the labels and at
@@ -156,7 +157,9 @@ extension AllFansControlRootTests {
         let call = try #require(scene.root.latestDriverCall)
 
         let children = Mirror(reflecting: call).children
-        #expect(children.map(\.label) == ["ordinal", "wait"])
+        #expect(
+            children.map(\.label) == ["ordinal", "wait"],
+            "DriverCall's stored properties changed: confirm none is a Task")
         let holdsATask = children.contains { $0.value is Task<Void, Never> }
         #expect(!holdsATask, "the handle stores no Task")
         await scene.finish()
