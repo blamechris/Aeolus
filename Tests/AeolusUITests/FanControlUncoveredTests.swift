@@ -280,6 +280,31 @@ struct FanControlUncoveredTests {
                 ])
     }
 
+    /// A held lease none of whose fans is on screen, a mix no healthy helper serves beside its own
+    /// grant: every fan shown is outside the lease and reads Automatic under D5, so without a
+    /// guard the control would select Auto while the app holds fans (#515's panel, claim N2).
+    ///
+    /// **Mutation (F5g, "no guard"):** in `AllFansControlPresentation`'s selection, delete
+    /// `, !besideAHeldLease`. Run: red at `.none`.
+    @Test("Beside a held lease whose fans are off screen, the all-fans control selects no Auto")
+    func noAllFansAutoBesideAHeldLease() async throws {
+        let floor = try await SnapshotTickets.aroundAFloor()
+        let driver = Fixtures.held(
+            Fixtures.ours, fans: [1], .confirmed(try Fixtures.target([1: 3000])))
+        let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: Fixtures.ours)
+        let screen = Fixtures.screen(
+            snapshot, driver: driver, evidence: floor.evidence, readWith: floor.after)
+        let fans = AllFansControlPresentationTests.fans(screen)
+
+        #expect(fans.map(\.presentation.selection) == [.automatic], "fan 0 reads Automatic (D5)")
+        #expect(Control(fans: fans, snapshot: snapshot).selection == .none)
+        let idle = Support.snapshot(fans: [Fixtures.clearedFan(0)])
+        let control = Control(
+            fans: AllFansControlPresentationTests.fans(Fixtures.screen(idle, driver: .idle)),
+            snapshot: idle)
+        #expect(control.selection == .automatic, "the guard refuses only beside a held lease")
+    }
+
     // MARK: - With a real driver
 
     /// Both fans held; fan 1 back on Auto releases the lease and acquires one over fan 0. The

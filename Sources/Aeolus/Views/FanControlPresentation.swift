@@ -213,6 +213,11 @@ struct FanControlPresentation: Equatable {
     /// acting, or for a fan a held lease does not cover, with an `apply` it sent unanswered
     /// (evidence `.noRead`), and `nil` otherwise. Said after `status`, never in place of it.
     let awaitingApply: StatusLine?
+    /// Whether the driver holds a lease, over this fan or another (`LeaseDriverState.isHeld`),
+    /// read from the same inputs as everything else here. Not a claim about this fan: it is what
+    /// a control for several fans needs to refuse Auto beside a held lease whose fans are not on
+    /// screen (`AllFansControlPresentation`'s selection).
+    let driverHoldsALease: Bool
 
     enum Affordance: Equatable {
         /// No control is drawn, for this reason.
@@ -276,27 +281,29 @@ struct FanControlPresentation: Equatable {
         let licence = Licence(reading: reading, inputs: inputs)
         let affordance = Self.affordance(reading, licence, inputs)
         let canRelease = Self.canRelease(reading.index, inputs.driver)
+        let holds = inputs.driver.isHeld
         if case .hidden = affordance {
             self.init(
                 affordance: affordance, selection: .unknown, canRelease: canRelease, status: nil,
-                awaitingApply: nil)
+                awaitingApply: nil, driverHoldsALease: holds)
             return
         }
         let claim = Self.claim(about: reading.index, licence, inputs)
         self.init(
             affordance: affordance, selection: claim.selection, canRelease: canRelease,
-            status: claim.status, awaitingApply: claim.awaitingApply)
+            status: claim.status, awaitingApply: claim.awaitingApply, driverHoldsALease: holds)
     }
 
     private init(
         affordance: Affordance, selection: Selection, canRelease: Bool, status: StatusLine?,
-        awaitingApply: StatusLine?
+        awaitingApply: StatusLine?, driverHoldsALease: Bool
     ) {
         self.affordance = affordance
         self.selection = selection
         self.canRelease = canRelease
         self.status = status
         self.awaitingApply = awaitingApply
+        self.driverHoldsALease = driverHoldsALease
     }
 
     /// Whether the driver is acquiring or holding a lease over fan `index`, or releasing. While
