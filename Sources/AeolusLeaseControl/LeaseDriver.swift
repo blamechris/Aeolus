@@ -168,8 +168,9 @@ public actor LeaseDriver {
     private var current: LeaseDriverState = .idle
     /// Which reads may show a fan automatic, as last published with `current`.
     private var evidence: LeaseDriverReport.AutomaticEvidence = .anyRead
-    private var observers: [UUID: AsyncStream<LeaseDriverState>.Continuation] = [:]
-    private var reportObservers: [UUID: AsyncStream<LeaseDriverReport>.Continuation] = [:]
+    /// Who follows `stateUpdates()` and `reportUpdates()`. Published to only by `transition(to:)`
+    /// and `applyAnswered()`, each after the floor is minted, and only on this actor.
+    private var publisher = LeaseDriverPublisher()
     /// How many `apply` calls have been sent and not answered, under any lease. An `apply` is left
     /// to answer when its lease ends (#419), so this can be non-zero in any state.
     private var appliesUnanswered = 0
@@ -279,13 +280,10 @@ public actor LeaseDriver {
 
     /// The same, as a stream that starts with the value now.
     nonisolated public func stateUpdates() -> AsyncStream<LeaseDriverState> {
-        AsyncStream { continuation in
-            let token = UUID()
-            continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                Task { await self.unsubscribe(token) }
-            }
-            Task { await self.subscribe(continuation, as: token) }
+        LeaseDriverPublisher.stream(of: self) { driver, observer, token in
+            driver.publisher.addStateObserver(observer, as: token, startingWith: driver.current)
+        } remove: { driver, token in
+            driver.publisher.removeStateObserver(token)
         }
     }
 
@@ -299,13 +297,10 @@ public actor LeaseDriver {
     /// unanswered `apply` answers after the driver stopped acting. What a renderer that claims
     /// Automatic follows; `stateUpdates()` is for consumers that need the state alone.
     nonisolated public func reportUpdates() -> AsyncStream<LeaseDriverReport> {
-        AsyncStream { continuation in
-            let token = UUID()
-            continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                Task { await self.unsubscribeReports(token) }
-            }
-            Task { await self.subscribeReports(continuation, as: token) }
+        LeaseDriverPublisher.stream(of: self) { driver, observer, token in
+            driver.publisher.addReportObserver(observer, as: token, startingWith: driver.report)
+        } remove: { driver, token in
+            driver.publisher.removeReportObserver(token)
         }
     }
 
@@ -605,7 +600,7 @@ extension LeaseDriver {
         guard appliesUnanswered == 0, case .noRead = evidence, Self.hasStoppedActing(current)
         else { return }
         evidence = .readFrom(mintFloor())
-        publishReport()
+        publisher.publishEvidenceChange(report)
     }
 
     /// Records an accepted `apply`, and returns the target queued behind it, if any.
@@ -859,8 +854,7 @@ extension LeaseDriver {
             // fans automatic". `applyAnswered()` mints the floor when the last one answers.
             evidence = appliesUnanswered == 0 ? .readFrom(mintFloor()) : .noRead
         }
-        for continuation in observers.values { continuation.yield(state) }
-        publishReport()
+        publisher.publishStateChange(report)
     }
 
     /// Whether the driver has stopped acting in `state`: it holds nothing and is not acquiring or
@@ -880,32 +874,5 @@ extension LeaseDriver {
     private func mintFloor() -> SnapshotTicket {
         epoch &+= 1
         return SnapshotTicket(epoch: epoch)
-    }
-
-    private func publishReport() {
-        let report = report
-        for continuation in reportObservers.values { continuation.yield(report) }
-    }
-
-    private func subscribe(
-        _ continuation: AsyncStream<LeaseDriverState>.Continuation, as token: UUID
-    ) {
-        observers[token] = continuation
-        continuation.yield(current)
-    }
-
-    private func unsubscribe(_ token: UUID) {
-        observers[token] = nil
-    }
-
-    private func subscribeReports(
-        _ continuation: AsyncStream<LeaseDriverReport>.Continuation, as token: UUID
-    ) {
-        reportObservers[token] = continuation
-        continuation.yield(report)
-    }
-
-    private func unsubscribeReports(_ token: UUID) {
-        reportObservers[token] = nil
     }
 }
