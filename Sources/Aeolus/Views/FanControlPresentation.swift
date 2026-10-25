@@ -197,8 +197,8 @@ struct FanControlPresentation: Equatable {
     }
 
     enum Selection: Equatable {
-        /// The driver is `.idle`, and the licensed snapshot on screen lists no lease and reports the
-        /// fan cleared to automatic (ADR 0015 D3).
+        /// The driver is `.idle`, and the licensed snapshot on screen lists no lease and reports
+        /// the fan cleared to automatic (ADR 0015 D3).
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
