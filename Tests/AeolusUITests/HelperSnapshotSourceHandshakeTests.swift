@@ -183,6 +183,35 @@ struct HelperSnapshotSourceHandshakeTests {
         await Support.tearDown(source, helper)
     }
 
+    /// Only a failure is retired. A reply came through a handshake of its own, so it is this
+    /// handshake's answer even when it is recorded before the source hears `.handshaken`.
+    /// `HelperClient` publishes `.handshaken` before it sends the `snapshot`, so the source
+    /// normally hears the handshake first; this pins the rule for the other order rather than
+    /// leaning on that one.
+    ///
+    /// **Mutation (HS3):** delete the `guard case .failed` line in
+    /// `retireFailureFromBeforeTheHandshake()`, so every answer is retired. Run: red at
+    /// `freshSnapshot == reply`.
+    @Test("A reply recorded before its handshake is heard is not retired by it")
+    func aReplyIsNeverRetired() async throws {
+        let helper = FakeSnapshotHelper()
+        let pacing = GatedPollingClock()
+        let source = Support.source(helper, pacing: pacing)  // `.idle`, as at launch
+
+        source.start()
+        try await helper.waitForRequests(1)
+        let reply = Support.snapshot()
+        await helper.reply(with: reply)
+        try await pacing.waitForSleeps(1)
+        #expect(source.authority() == .awaitHelper(.helperConnection(.idle)))
+
+        try await Support.report(.handshaken, to: source, from: helper)
+        #expect(Support.freshSnapshot(source) == reply)
+
+        await pacing.release()
+        await Support.tearDown(source, helper)
+    }
+
     // MARK: - The sequence
 
     /// Starts `source`, answers its first request, and returns with the pause after it parked.
