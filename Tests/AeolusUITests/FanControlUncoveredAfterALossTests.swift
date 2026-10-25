@@ -11,11 +11,13 @@ import Testing
 ///
 /// After a loss the floor is minted when the loss is found, before the lost lease's release
 /// answers. So a read ticketed between the two is admitted by the evidence beside the next held
-/// lease: the floor alone does not date that read after fan 1's handback. What refuses it is the
-/// lease the read can list. The driver asks for the next grant only once the release has answered
-/// (`LeaseDriverGuardTests.aTakeAfterALossWaitsForTheRelease`, the ordering this test depends on),
-/// so a read served before that grant lists the lost lease or no lease, and D5 refuses both. A read
-/// listing the new lease shows fan 1 Automatic only when the helper reports it cleared.
+/// lease: the floor bounds the `apply`s, not the handback. What bounds the handback is the lease
+/// the read lists (ADR 0015 D5, *Identity*). On this path the driver asks for the next grant only
+/// once the release has answered (`LeaseDriverGuardTests.aTakeAfterALossWaitsForTheRelease`, the
+/// ordering this test depends on), so a read served before that grant lists the lost lease or no
+/// lease, and D5 refuses both. A read listing the new lease shows fan 1 Automatic only when the
+/// helper reports it cleared, and a handback still in flight reads `.releaseInProgress` there
+/// (*Clearance*).
 @Suite(
     "FanControlPresentation — D5 through a loss, with a real driver",
     .timeLimit(.minutes(1)))

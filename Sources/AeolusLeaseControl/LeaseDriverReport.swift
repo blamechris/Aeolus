@@ -48,7 +48,8 @@ public struct LeaseDriverReport: Sendable, Hashable {
         /// The driver has never acted (`idle`): any licensed snapshot may be evidence. D1's "idle
         /// sets no floor". A new process starts here, whatever an earlier one held. Kept through
         /// a first acquisition and the lease it grants, until the driver first lets go: no fan
-        /// outside that lease was ever under one of this driver's leases (D5).
+        /// outside that lease was ever under one of this driver's leases (D5). An earlier
+        /// process's leases are ADR 0015's relaunch assumption, for D5 as for D1.
         case anyRead
 
         /// Only a snapshot whose read was ticketed with this ticket or a later one: read after the

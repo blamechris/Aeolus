@@ -592,7 +592,9 @@ extension FanControlPresentation {
     ///
     /// - The snapshot is licensed, so it is the one on screen and speaks for this fan.
     /// - Its read is admitted by the driver's evidence: one floor, at the driver's latest let-go
-    ///   and after every `apply` then unanswered had answered, bounds every fan outside the lease.
+    ///   and after every `apply` then unanswered had answered. It bounds the `apply`s, not the
+    ///   handback, which after a loss can still be in flight: the listing below bounds that (ADR
+    ///   0015 D5, *Identity* and *Clearance*).
     /// - It lists exactly the held lease, compared by identifier, reports no emergency, and reports
     ///   this fan, which the lease does not cover, cleared:
     ///   `SystemSnapshot.showsAutomatic(_:besideLease:covering:)`, beside D4's predicate.

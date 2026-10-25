@@ -127,10 +127,15 @@ import Foundation
 ///
 /// **The floor marks the driver's last let-go, not only its last stop (D5).** A release that
 /// answers ahead of an acquisition, a change of which fans are held, sets one in
-/// `releaseAnswered` before the acquisition starts, published with `acquiring`. So a fan outside
-/// a held lease was never under one of this driver's leases since the floor, or the driver let it
-/// go at or before the floor. A snapshot listing the held lease was served after its grant, and
-/// `acquire(_:after:)` sends the request only once the release in flight has answered.
+/// `releaseAnswered` before the acquisition starts, published with `acquiring`. It bounds the
+/// `apply`s, not the handback: a read it admits was sent after every `apply` sent under an earlier
+/// lease had answered, but after a loss the floor is minted when the loss is judged, before the
+/// lost lease's release answers, and an acquire that went unanswered sends no release at all.
+/// `acquire(_:after:)` does not close that: on those paths there is no release to wait for, or a
+/// failed one. The listing bounds the handback: a snapshot that lists the held lease read its
+/// lease view after the grant, the helper grants only into an empty table, and each teardown
+/// begins its fans' handbacks before it can suspend, so a handback still in flight is in that
+/// view, as `.releaseInProgress` (ADR 0015 D5, *Identity* and *Clearance*).
 ///
 /// **The floor waits for every `apply` to answer (#498's S2).** An `apply` in flight under a lease
 /// whose release has answered can still land one target write after the restore: never a mode

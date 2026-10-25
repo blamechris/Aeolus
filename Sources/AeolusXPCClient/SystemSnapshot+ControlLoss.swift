@@ -147,8 +147,9 @@ extension SystemSnapshot {
     /// **The lease is compared by identifier, never by holder.** A lease the helper lists is the
     /// caller's only if its identifier is, and that lease was granted over exactly `covered`, so no
     /// write under it reaches a fan outside them (D5's identity argument). Any other listing, none
-    /// included, says nothing about such a fan. During § 3's emergency the lease is still listed
-    /// until it is revoked, and § 3, not Apple's management, decides what the fans do.
+    /// included, says nothing about such a fan. The emergency is refused because `controlLoss`
+    /// answers `.thermalEmergency` for it, and nothing is claimed beside a lease the same snapshot
+    /// shows lost. It is not a statement about what drives these fans (ADR 0015 D5).
     ///
     /// **A fan in `covered` is refused**, whatever it reports: a fan under a live lease whose
     /// `apply` has not landed reads cleared, because the helper cannot state
