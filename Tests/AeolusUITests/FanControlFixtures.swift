@@ -47,29 +47,48 @@ enum FanControlFixtures {
         let rows: [FanPollingReading]
     }
 
-    /// What `PollingViewModel` puts on screen for `snapshot`: the rows `SnapshotReadings` makes of
-    /// it, and the inputs it publishes beside them. `FanControlInputsTests` holds this to the view
+    /// What `PollingViewModel` puts on screen for `snapshot`, read with `ticket`: the rows
+    /// `SnapshotReadings` makes of it, and the inputs it publishes beside them, beside `driver` and
+    /// the `evidence` the driver published with it. `FanControlInputsTests` holds this to the view
     /// model itself.
-    static func screen(_ snapshot: SystemSnapshot, driver: LeaseDriverState) -> Screen {
+    ///
+    /// `evidence` defaults to `.anyRead`, an idle driver's, which admits any read: the most a
+    /// screen can grant, so a suite about another condition is not masked by this one. A suite
+    /// about the read's timing names both.
+    static func screen(
+        _ snapshot: SystemSnapshot, driver: LeaseDriverState,
+        evidence: LeaseDriverReport.AutomaticEvidence = .anyRead,
+        readWith ticket: LeaseDriver.SnapshotTicket? = nil
+    ) -> Screen {
         Screen(
             inputs: Presentation.Inputs(
                 controlSource: .helperSnapshot(activeLease: snapshot.activeLease),
                 thermalEmergency: snapshot.isThermalEmergencyActive ? .active : .inactive,
-                renderedSnapshot: snapshot, driver: driver),
+                renderedSnapshot: snapshot, renderedReadTicket: ticket, driver: driver,
+                automaticEvidence: evidence),
             rows: SnapshotReadings.fans(in: snapshot))
     }
 
     /// What it shows once a snapshot's claims are withdrawn, or before there were any: the rows of
-    /// `snapshot` with every claim taken away for `why`, and nothing on screen to judge.
+    /// `snapshot` with every claim taken away for `why`, and nothing on screen to judge, so no
+    /// ticket either.
     static func withdrawn(
         _ why: ControlNotTracked, driver: LeaseDriverState,
+        evidence: LeaseDriverReport.AutomaticEvidence = .anyRead,
         from snapshot: SystemSnapshot = Support.snapshot(fans: [heldFan(0)])
     ) -> Screen {
         Screen(
             inputs: Presentation.Inputs(
                 controlSource: .notTracked(why), thermalEmergency: .unknown, renderedSnapshot: nil,
-                driver: driver),
+                renderedReadTicket: nil, driver: driver, automaticEvidence: evidence),
             rows: SnapshotReadings.fans(in: snapshot).map { $0.untracked(why) })
+    }
+
+    /// A report as the driver publishes one, for a suite that hands the presentation a report.
+    static func report(
+        _ state: LeaseDriverState, _ evidence: LeaseDriverReport.AutomaticEvidence = .anyRead
+    ) -> LeaseDriverReport {
+        LeaseDriverReport(state: state, automaticEvidence: evidence)
     }
 
     /// The presentation of fan `index` on `screen`.

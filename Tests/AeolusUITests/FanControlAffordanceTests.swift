@@ -82,7 +82,8 @@ struct FanControlAffordanceTests {
 
         let machineNotTracked = FanControlPresentation.Inputs(
             controlSource: .notTracked(.snapshotStale), thermalEmergency: .inactive,
-            renderedSnapshot: snapshot, driver: .idle)
+            renderedSnapshot: snapshot, renderedReadTicket: nil,
+            driver: .idle, automaticEvidence: .anyRead)
         #expect(
             FanControlPresentation(reading: row, given: machineNotTracked).affordance
                 == .disabled(.notTracked(.snapshotStale)))
@@ -94,7 +95,8 @@ struct FanControlAffordanceTests {
 
         let nothingOnScreen = FanControlPresentation.Inputs(
             controlSource: .helperSnapshot(activeLease: nil), thermalEmergency: .inactive,
-            renderedSnapshot: nil, driver: .idle)
+            renderedSnapshot: nil, renderedReadTicket: nil,
+            driver: .idle, automaticEvidence: .anyRead)
         let blank = FanControlPresentation(reading: row, given: nothingOnScreen)
         #expect(blank.affordance == .disabled(.nothingOnScreen))
         #expect(Fixtures.reason(blank.affordance)?.summary == "No helper snapshot is on screen.")
@@ -156,7 +158,8 @@ struct FanControlAffordanceTests {
         let screen = Fixtures.screen(snapshot, driver: .idle)
         let inputs = FanControlPresentation.Inputs(
             controlSource: screen.inputs.controlSource, thermalEmergency: tag.state,
-            renderedSnapshot: snapshot, driver: .idle)
+            renderedSnapshot: snapshot, renderedReadTicket: nil,
+            driver: .idle, automaticEvidence: .anyRead)
         let row = try #require(screen.rows.first)
 
         let expected: FanControlPresentation.Affordance

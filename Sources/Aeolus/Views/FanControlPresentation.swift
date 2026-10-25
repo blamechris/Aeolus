@@ -74,24 +74,30 @@ import Foundation
 ///   snapshot from before the sleep loses its licence at wake, and `PollingViewModel`'s authority
 ///   watch takes it off screen at its next step. Until that step it is still the snapshot on
 ///   screen, as every other claim in the window is.
-/// - **`.automatic`** only while the driver is `.idle`, and the licensed snapshot on screen lists
-///   **no lease** and reports the fan `isClearedToAutomatic` (ADR 0015 D3, the interim until #498
-///   lands D2).
-///   - **Never after the app has acted:** not under `.released`, `.lost` or `.refused`. Automatic's
-///     evidence is an absence, no lease and the fan cleared, and that looks the same in a snapshot
-///     read before the grant and in one read after the release. Only the read's timing can tell
-///     them apart, and the presentation is not given it yet (#498). Not even an answered release
-///     proves it: the helper's `releaseLease` removes the lease and then awaits a restore that
-///     does not throw, so its reply means "accepted", not "done" (ADR 0015's context).
-///   - **No lease listed:** a fan under a live lease whose `apply` has not landed reads available
-///     and automatic, because the helper cannot state `.leaseHeldByAnotherClient` per fan. That
-///     holds for the app's own lease and for another client's.
-///   - Nor while the driver holds the fan, acquires it or releases, nor for a fan beside a lease
-///     the driver holds or is acquiring over other fans.
+/// - **`.automatic`** only when all four of ADR 0015 D1's conditions hold
+///   (`automaticClaim(_:_:)`, the one function that decides it):
+///   1. **The driver holds nothing and is not acquiring or releasing:** it is `.idle`,
+///      `.released`, `.lost` or `.refused`. Never while it holds the fan, acquires it or
+///      releases, nor for a fan beside a lease it holds or is acquiring over other fans.
+///   2. **The snapshot on screen was read after the driver last stopped acting:** its read's ticket
+///      (`PollingViewModel.renderedReadTicket`) is admitted by the evidence the driver published
+///      with its state (`LeaseDriverReport.AutomaticEvidence`). Automatic's evidence is an
+///      absence, no lease and the fan cleared, and that looks the same in a snapshot read before
+///      the grant and in one read after the release, so only the read's timing tells them apart.
+///      Not even an answered release proves it: the helper's `releaseLease` removes the lease and
+///      then awaits a restore that does not throw, so its reply means "accepted", not "done" (ADR
+///      0015's context). `.idle` sets no floor; a read with no ticket passes no floor; and while an
+///      `apply` sent before the driver stopped is unanswered, no read is evidence (#498's S2).
+///   3. **That snapshot lists no lease**, and 4. **reports the fan `isClearedToAutomatic`**: one
+///      predicate, `SystemSnapshot.showsAutomatic(_:)`, the one `fanctl auto`'s safe state asks
+///      (ADR 0015 D4). A fan under a live lease whose `apply` has not landed reads available and
+///      automatic, because the helper cannot state `.leaseHeldByAnotherClient` per fan; that holds
+///      for the app's own lease and for another client's, and for a lease the helper still holds
+///      after a release it did not confirm.
 ///
-///   So once the app has held a lease, the control never reads Auto selected; each fan's row still
-///   shows the helper's reported mode. #498 restores it from a snapshot read after the driver
-///   stopped acting.
+///   It needs a licensed snapshot: none on screen, or one between snapshots, claims nothing. A new
+///   process starts `.idle`, so it claims Automatic from clearance and the listed lease alone; the
+///   no-lease condition is what refuses it while the helper still lists an earlier process's lease.
 /// - **`.unknown`** otherwise.
 ///
 /// ## The status line
@@ -107,8 +113,10 @@ import Foundation
 ///   lease is one per machine and `LeaseLoss` names no fans, so every fan carries the line. A
 ///   refused reason is said in the past tense (`pastTenseSummary`), with the wire code after it as
 ///   a detail, never ahead of it.
-/// - **`released` says what the app is doing**: it holds no lease and renews none. It says
-///   nothing about the fans, which each row reports from the helper, and never "automatic".
+/// - **`released` says what the app is doing**: it renews no lease. That is true on every path into
+///   it, including one where the helper still lists the lease after a release it did not confirm,
+///   so it never says the app holds none. It says nothing about the fans, which each row reports
+///   from the helper and the selection claims, and never "automatic".
 /// - **The emergency is named only from a flag that is set**: the one in
 ///   `LeaseLoss.Cause.snapshot(_:isThermalEmergencyActive:)`. The flag clears when § 3's latch
 ///   releases (#476 NB3), so a lease gone with the flag clear says only that control ended. A
@@ -148,9 +156,10 @@ import Foundation
 ///   for this file and for the suite, which pins each rule one fan at a time, and nothing else in
 ///   the app pairs a row with inputs by hand. That is documented here, not enforced by an access
 ///   level.
-/// - **Recompute whenever the driver's state changes as well** (`LeaseDriver.stateUpdates()`):
-///   `revision` moves only with `polling`, so a control computed on it alone keeps showing Custom
-///   after the driver has lost the lease, until `polling` next moves `revision`.
+/// - **Recompute whenever the driver's report changes as well** (`LeaseDriver.reportUpdates()`,
+///   through `LeaseStateModel`): `revision` moves only with `polling`, so a control computed on it
+///   alone keeps showing Custom after the driver has lost the lease, until `polling` next moves
+///   `revision`. Pass the report whole, never a state beside a floor read at another time.
 /// - Read only from a started view model. After `stop()`, nothing withdraws the snapshot on screen.
 /// - `.hidden`: no control at all. State its reason once, where the control would be (#154).
 /// - `.disabled(reason)`: show the reason's summary, its advice and its wire value where present.
@@ -199,8 +208,9 @@ struct FanControlPresentation: Equatable {
     }
 
     enum Selection: Equatable {
-        /// The driver is `.idle`, and the licensed snapshot on screen lists no lease and reports
-        /// the fan cleared to automatic (ADR 0015 D3).
+        /// The driver holds nothing and is not acquiring or releasing, and the licensed snapshot on
+        /// screen was read after it last stopped acting, lists no lease and reports the fan
+        /// cleared to automatic (ADR 0015 D1).
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
@@ -226,7 +236,13 @@ struct FanControlPresentation: Equatable {
         let thermalEmergency: ThermalEmergencyState
         /// The snapshot whose claims are on screen: `PollingViewModel.renderedSnapshot`.
         let renderedSnapshot: SystemSnapshot?
+        /// The lease driver's ticket for the read that brought it:
+        /// `PollingViewModel.renderedReadTicket`.
+        let renderedReadTicket: LeaseDriver.SnapshotTicket?
         let driver: LeaseDriverState
+        /// Which reads may show a fan automatic, as the driver published it with `driver`: one
+        /// `LeaseDriverReport`, never two values read apart.
+        let automaticEvidence: LeaseDriverReport.AutomaticEvidence
     }
 
     init(reading: FanPollingReading, given inputs: Inputs) {
@@ -238,7 +254,7 @@ struct FanControlPresentation: Equatable {
                 affordance: affordance, selection: .unknown, canRelease: canRelease, status: nil)
             return
         }
-        let claim = Self.claim(about: reading.index, licence, inputs.driver)
+        let claim = Self.claim(about: reading.index, licence, inputs)
         self.init(
             affordance: affordance, selection: claim.selection, canRelease: canRelease,
             status: claim.status)
@@ -269,12 +285,14 @@ struct FanControlPresentation: Equatable {
 
 extension FanControlPresentation.Inputs {
 
-    /// What `polling` has on screen now, beside the driver's state.
+    /// What `polling` has on screen now, beside the driver's report.
     @MainActor
-    init(polling: PollingViewModel, driver: LeaseDriverState) {
+    init(polling: PollingViewModel, driver report: LeaseDriverReport) {
         self.init(
             controlSource: polling.controlSource, thermalEmergency: polling.thermalEmergency,
-            renderedSnapshot: polling.renderedSnapshot, driver: driver)
+            renderedSnapshot: polling.renderedSnapshot,
+            renderedReadTicket: polling.renderedReadTicket, driver: report.state,
+            automaticEvidence: report.automaticEvidence)
     }
 }
 
@@ -289,7 +307,7 @@ extension FanControlPresentation {
     /// `FanControlPresentation.everyFan(of:)` would be counted as one.
     @MainActor
     static func onScreen(
-        in polling: PollingViewModel, driver: LeaseDriverState
+        in polling: PollingViewModel, driver: LeaseDriverReport
     ) -> [(reading: FanPollingReading, presentation: FanControlPresentation)] {
         let inputs = Inputs(polling: polling, driver: driver)
         return polling.fans.map { ($0, FanControlPresentation(reading: $0, given: inputs)) }
@@ -433,9 +451,9 @@ extension FanControlPresentation {
     private typealias Claim = (selection: Selection, status: StatusLine?)
 
     private static func claim(
-        about index: Int, _ licence: Licence, _ driver: LeaseDriverState
+        about index: Int, _ licence: Licence, _ inputs: Inputs
     ) -> Claim {
-        switch driver {
+        switch inputs.driver {
         case .held(let held) where held.fans.contains(index):
             return heldClaim(about: index, held, licence)
         case .acquiring(let fans) where fans.contains(index):
@@ -444,28 +462,36 @@ extension FanControlPresentation {
             let line = StatusLine(
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
             return (.unknown, line)
-        // ADR 0015 D3, until #498: once the app has acted, nothing on screen can show the fans are
-        // back, so `.released`, `.lost` and `.refused` never claim Automatic.
-        case .lost(let loss):
-            return (.unknown, LeaseEventText.lost(loss))
-        case .refused(let fault):
-            return (.unknown, LeaseEventText.refused(fault))
-        case .released:
-            return (.unknown, LeaseEventText.released)
-        case .idle:
-            return (automaticBeforeAnyLease(licence), nil)
         case .acquiring, .held:
             // A lease over other fans: never Automatic beside it.
             return (.unknown, nil)
+        // ADR 0015 D1's first condition: the driver holds nothing and is not acquiring or
+        // releasing. The other three are `automaticClaim`'s.
+        case .idle:
+            return (automaticClaim(licence, inputs), nil)
+        case .released:
+            return (automaticClaim(licence, inputs), LeaseEventText.released)
+        case .lost(let loss):
+            return (automaticClaim(licence, inputs), LeaseEventText.lost(loss))
+        case .refused(let fault):
+            return (automaticClaim(licence, inputs), LeaseEventText.refused(fault))
         }
     }
 
-    /// Automatic while the driver is `.idle`: the licensed snapshot lists no lease, and reports
-    /// the fan cleared (ADR 0015 D3). Both conditions are needed: a fan under a live lease whose
-    /// `apply` has not landed reads cleared too.
-    private static func automaticBeforeAnyLease(_ licence: Licence) -> Selection {
-        guard case .licensed(_, let state, let activeLease) = licence, activeLease == nil,
-            state.isClearedToAutomatic
+    /// Automatic, for a driver that holds nothing and is not acquiring or releasing: ADR 0015
+    /// D1's other three conditions, and the only place the selection says Automatic.
+    ///
+    /// - The snapshot is licensed, so it is the one on screen and speaks for this fan.
+    /// - Its read began after the driver last stopped acting: the driver's evidence admits the
+    ///   ticket on screen. A snapshot that shows no lease and the fan cleared can predate the
+    ///   grant; only its read's timing says it does not.
+    /// - It lists no lease and reports the fan cleared, `SystemSnapshot.showsAutomatic(_:)`, the
+    ///   predicate `fanctl`'s safe state asks of every fan. The fan's state is the snapshot's own:
+    ///   the licence holds it to the entry `renderedSnapshot` carries.
+    private static func automaticClaim(_ licence: Licence, _ inputs: Inputs) -> Selection {
+        guard case .licensed(let snapshot, let state, _) = licence,
+            inputs.automaticEvidence.admits(inputs.renderedReadTicket),
+            snapshot.showsAutomatic([state])
         else { return .unknown }
         return .automatic
     }
@@ -556,11 +582,13 @@ private enum LeaseEventText {
         StatusLine(text: "The helper refused the request for control.", detail: Self.fault(fault))
     }
 
-    /// `.released`: the driver holds nothing and has nothing in flight. It says what the app is
-    /// doing, nothing about the fans: what they are doing is each row's, from the helper's
-    /// snapshot. Never "automatic" (ADR 0015 D3).
+    /// `.released`: the driver renews no lease. That is all that holds on every path into it: the
+    /// helper can still list the lease after a release it did not confirm, and an `apply` sent
+    /// before it can still be unanswered (#498's S1 and S2). It says what the app is doing,
+    /// nothing about the fans: what they are doing is each row's, from the helper's snapshot, and
+    /// the selection's to claim. Never "automatic".
     static let released = StatusLine(
-        text: "Aeolus is holding no lease and renewing none.",
+        text: "Aeolus is renewing no lease.",
         detail: "Each fan's row shows what the helper reports.")
 
     private static func cause(_ cause: LeaseLoss.Cause) -> String {

@@ -410,7 +410,7 @@ struct AllFansControlRootTests {
         await scene.lease.waitForState(matches)
         let root = scene.root
         try #require(
-            await Support.settle { matches(root.leaseState.current) },
+            await Support.settle { matches(root.leaseState.current.state) },
             "the root published it: \(root.leaseState.current)")
     }
 }

@@ -174,8 +174,8 @@ struct FanControlSelectionTests {
 
     /// The reasons a fan reading automatic is not cleared, from `FanRowModelTests`' exhaustive tag.
     ///
-    /// **Mutation (A1):** in `automaticBeforeAnyLease`, use `state.mode == .automatic`. Run: red
-    /// for every argument.
+    /// **Mutation (A1):** in `SystemSnapshot.showsAutomatic(_:)`, use `$0.mode == .automatic`. Run:
+    /// red for every argument, and in `SafeStateTests`.
     @Test(
         "Automatic needs the helper to have cleared the fan, not only its mode",
         arguments: FanRowModelTests.notClearing)
@@ -186,49 +186,64 @@ struct FanControlSelectionTests {
         #expect(try Fixtures.present(0, on: screen).selection == .unknown)
     }
 
-    /// Only `.idle` reads Automatic over a cleared fan with no lease listed (ADR 0015 D3). Under
-    /// `.released`, `.lost` and `.refused` the app has acted, and a snapshot that shows no lease
-    /// and the fan cleared looks the same whether it was read before the grant or after the
-    /// release; even an answered release does not show the fans are back (ADR 0015's context).
+    /// ADR 0015 D1's first condition, with every other met: a cleared fan, no lease listed, and a
+    /// read the driver's evidence admits. Only a driver that holds nothing and is not acquiring or
+    /// releasing reads Automatic: `.idle`, from any read, and `.released`, `.lost` and `.refused`,
+    /// from a read past the floor.
     ///
-    /// **Mutations (I1, I2):** return `automaticBeforeAnyLease(licence)` for `.released`, or for
-    /// `.refused`. Run, each: red for its argument.
+    /// **Mutation (A5, "condition 1 dropped"):** in `claim`, return `automaticClaim(licence,
+    /// inputs)` for `.releasing`, and for `.acquiring` and `.held` over other fans. Run: red for
+    /// those arguments. (A2 to A4 below hold the arms over this fan.)
     @Test(
-        "A cleared fan with no lease listed reads Automatic only while nothing has been held",
+        "A cleared fan, no lease listed, a read past the floor: Automatic only when nothing is held",
         arguments: Fixtures.DriverTag.allCases)
-    func aClearedFanReadsAutomaticOnlyWhileIdle(_ tag: Fixtures.DriverTag) throws {
+    func aClearedFanReadsAutomaticOnlyWhenNothingIsHeld(_ tag: Fixtures.DriverTag) async throws {
+        let floor = try await SnapshotTickets.aroundAFloor()
+        let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0), Fixtures.clearedFan(1)])
+        let evidence = tag == .idle ? .anyRead : floor.evidence
+        // Fan 1, which a lease the driver holds or asks for (over fan 0) does not cover.
         let screen = Fixtures.screen(
-            Support.snapshot(fans: [Fixtures.clearedFan(0)]), driver: try tag.state())
+            snapshot, driver: try tag.state(), evidence: evidence, readWith: floor.after)
         let expected: FanControlPresentation.Selection
         switch tag {
-        case .idle: expected = .automatic
-        case .acquiring, .held, .releasing, .released, .lost, .refused: expected = .unknown
+        case .idle, .released, .lost, .refused: expected = .automatic
+        case .acquiring, .held, .releasing: expected = .unknown
         }
 
-        #expect(try Fixtures.present(0, on: screen).selection == expected)
+        #expect(try Fixtures.present(1, on: screen).selection == expected, "\(tag)")
     }
 
-    /// After a loss the fans read cleared to automatic on screen, and that is still not Automatic.
-    /// The helper can hold the fans after the app's loss, until its connection-invalidation
-    /// backstop or the lease's TTL ends the lease, and the snapshot on screen can predate the grant
-    /// or the `apply`: a lease lost while its first `apply` was in flight shows exactly this
-    /// screen, with the helper free to finish the `apply`. So a loss claims neither Automatic nor
-    /// Custom, and the line says only that control ended.
+    /// After a loss the fans read cleared to automatic on screen. The snapshot on screen from
+    /// before the loss is not evidence: it can predate the grant or the `apply`, and a lease lost
+    /// while its first `apply` was in flight shows exactly this screen, with the helper free to
+    /// finish the `apply`. A read after the loss, with no lease listed, is: the helper has let the
+    /// lease go and, the floor having waited for every `apply`, writes under none (#498). The line
+    /// says control ended either way.
     ///
-    /// **Mutation (C1a, "a loss reads the snapshot"):** in `claim`, return
-    /// `automaticBeforeAnyLease(licence)` for `.lost`. Run: red at the selection, for every cause.
+    /// **Mutation (C1a, "a loss reads the snapshot"):** delete the evidence check from
+    /// `automaticClaim`. Run: red at the read from before the loss, for every cause (F6).
     @Test(
-        "A lost lease never reads Automatic, even over fans the snapshot shows cleared",
+        "A lost lease reads Automatic only from a read after the loss",
         arguments: Fixtures.CauseTag.allCases)
-    func aLostLeaseIsNeverAutomatic(_ tag: Fixtures.CauseTag) throws {
+    func aLostLeaseReadsAutomaticOnlyFromALaterRead(_ tag: Fixtures.CauseTag) async throws {
+        let floor = try await SnapshotTickets.aroundAFloor()
+        let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: nil)
         for cause in tag.causes {
             let loss = LeaseDriverState.lost(
                 LeaseLoss(lease: Fixtures.ours, cause: cause, afterWake: false))
-            let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: nil)
-            let presentation = try Fixtures.present(0, on: Fixtures.screen(cleared, driver: loss))
+            let early = try Fixtures.present(
+                0,
+                on: Fixtures.screen(
+                    cleared, driver: loss, evidence: floor.evidence, readWith: floor.before))
+            let late = try Fixtures.present(
+                0,
+                on: Fixtures.screen(
+                    cleared, driver: loss, evidence: floor.evidence, readWith: floor.after))
 
-            #expect(presentation.selection == .unknown, "\(cause)")
-            #expect(presentation.status?.text != nil, "\(cause): the line says control ended")
+            #expect(early.selection == .unknown, "\(cause)")
+            #expect(late.selection == .automatic, "\(cause)")
+            #expect(early.status?.text != nil, "\(cause): the line says control ended")
+            #expect(late.status == early.status, "\(cause): and says it beside Automatic too")
         }
     }
 
@@ -243,7 +258,7 @@ struct FanControlSelectionTests {
     /// first `apply`. Only the driver says it is wanted.
     ///
     /// **Mutation (A2):** delete `claim`'s `.acquiring(let fans) where fans.contains(index)` arm.
-    /// **Mutation (A3):** make its `.releasing` arm return `automaticBeforeAnyLease(licence)`.
+    /// **Mutation (A3):** make its `.releasing` arm return `automaticClaim(licence, inputs)`.
     /// **Mutation (A4):** delete its `.held(let held) where held.fans.contains(index)` arm, so a
     /// held fan is judged as if nothing held it. Run, each: red at its expectation.
     @Test("A fan the driver holds, is asking for or is releasing never reads Automatic")
@@ -266,7 +281,8 @@ struct FanControlSelectionTests {
             case .confirmed: expected = .unknown
             }
             #expect(try selection(0, held) == expected, "\(tag)")
-            // Nor a fan beside a lease the driver holds over others (ADR 0015 D3's table).
+            // Nor a fan beside a lease the driver holds over others (ADR 0015 D1's first
+            // condition).
             #expect(try selection(1, held) == .unknown, "\(tag)")
         }
         #expect(try selection(1, .acquiring(fans: [0])) == .unknown)

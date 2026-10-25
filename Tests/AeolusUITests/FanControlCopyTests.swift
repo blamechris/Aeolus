@@ -237,7 +237,8 @@ struct FanControlCopyTests {
         let mixed = Fixtures.Screen(
             inputs: FanControlPresentation.Inputs(
                 controlSource: .helperSnapshot(activeLease: lease), thermalEmergency: emergency,
-                renderedSnapshot: older, driver: driver),
+                renderedSnapshot: older, renderedReadTicket: nil,
+                driver: driver, automaticEvidence: .anyRead),
             rows: rows)
         let presentation = try Fixtures.present(0, on: mixed)
 

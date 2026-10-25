@@ -51,8 +51,12 @@ final class ControlWindow {
         try #require(polling.renderedSnapshot == snapshot, "the window shows the new snapshot")
     }
 
-    /// What the control draws now, against `driver`.
-    func control(_ driver: LeaseDriverState) -> AllFansControlPresentation {
+    /// What the control draws now, against the driver's report.
+    ///
+    /// This window's source has no observer, so its snapshots carry no ticket, and a floor the
+    /// driver set admits none of them: past a release it draws no Automatic, whatever the snapshot
+    /// shows. `AutomaticAfterAReadTests` drives the root's own source for that.
+    func control(_ driver: LeaseDriverReport) -> AllFansControlPresentation {
         AllFansControlPresentation(polling: polling, driver: driver)
     }
 

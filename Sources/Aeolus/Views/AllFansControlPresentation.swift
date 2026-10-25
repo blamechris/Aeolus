@@ -128,11 +128,11 @@ struct AllFansControlPresentation: Equatable {
 
 extension AllFansControlPresentation {
 
-    /// What `polling` has on screen now, beside `driver`, from **one** main-actor read: the
-    /// presentations through `onScreen(in:driver:)` and the snapshot they were judged against,
+    /// What `polling` has on screen now, beside the driver's report, from **one** main-actor read:
+    /// the presentations through `onScreen(in:driver:)` and the snapshot they were judged against,
     /// with no suspension between the two.
     @MainActor
-    init(polling: PollingViewModel, driver: LeaseDriverState) {
+    init(polling: PollingViewModel, driver: LeaseDriverReport) {
         self.init(
             fans: FanControlPresentation.onScreen(in: polling, driver: driver),
             snapshot: polling.renderedSnapshot)

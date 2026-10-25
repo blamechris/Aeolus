@@ -270,7 +270,9 @@ final class ReadRecorder: Sendable {
             }
             let seen = await helper.requests
             state.withLock { $0.requestsSeenAtTicket.append(seen) }
-            return { [self] snapshot in state.withLock { $0.judged.append(snapshot) } }
+            return HelperSnapshotObserver.Read(
+                ticket: await SnapshotTickets.any(),
+                judgement: { [self] snapshot in state.withLock { $0.judged.append(snapshot) } })
         }
     }
 }
@@ -299,14 +301,16 @@ actor ObserverGate {
     nonisolated var atTicket: HelperSnapshotObserver {
         HelperSnapshotObserver {
             await self.pass()
-            return { _ in }
+            return HelperSnapshotObserver.Read(
+                ticket: await SnapshotTickets.any(), judgement: { _ in })
         }
     }
 
     /// An observer whose judgement waits at the gate.
     nonisolated var atJudgement: HelperSnapshotObserver {
         HelperSnapshotObserver {
-            { _ in await self.pass() }
+            HelperSnapshotObserver.Read(
+                ticket: await SnapshotTickets.any(), judgement: { _ in await self.pass() })
         }
     }
 }

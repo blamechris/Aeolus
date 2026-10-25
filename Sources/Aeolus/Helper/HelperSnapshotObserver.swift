@@ -16,16 +16,20 @@ import Foundation
 /// `HelperSnapshotSource` calls `readWillBeSent` before it creates the request's task, and never
 /// after: a ticket taken after the send would be younger than the read it vouches for.
 ///
-/// ## The ticket never leaves this value
+/// ## The ticket stays beside the reply it was taken for
 ///
-/// `readWillBeSent` returns the judgement with the ticket already inside it, so the source holds
-/// no ticket and cannot pair one read's ticket with another read's reply.
+/// `readWillBeSent` returns the ticket and the judgement together, with the same ticket already
+/// inside the judgement, so the driver judges each reply with its own read's ticket. The source
+/// keeps the ticket beside that reply and publishes them together (`HelperSnapshotSource`'s
+/// `Authority.fresh`), so the presentation can ask whether the snapshot on screen was read after
+/// the driver last stopped acting (ADR 0015 D2). A ticket only orders reads against the driver's
+/// moments: it can take, adjust and release nothing.
 ///
 /// ## The source does not own the driver
 ///
-/// This is a pair of closures over the driver, not the driver. The source keeps no reference to
-/// anything that can take, adjust or release a lease, and a source built with no observer, as in
-/// a build with no helper, reads exactly as it did before there was one.
+/// This is a closure over the driver, not the driver. The source keeps no reference to anything
+/// that can take, adjust or release a lease, and a source built with no observer, as in a build
+/// with no helper, reads exactly as it did before there was one, with no ticket beside any reply.
 ///
 /// ## Every successful reply is judged
 ///
@@ -47,14 +51,22 @@ struct HelperSnapshotObserver: Sendable {
     /// What to do with a successful reply to the read the ticket was taken for.
     typealias Judgement = @Sendable (SystemSnapshot) async -> Void
 
-    /// Called immediately before `snapshot` is sent. Returns the judgement for its reply.
-    let readWillBeSent: @Sendable () async -> Judgement
+    /// One read, as the driver saw it begin: its ticket, and the judgement of its reply.
+    struct Read: Sendable {
+        let ticket: LeaseDriver.SnapshotTicket
+        let judgement: Judgement
+    }
+
+    /// Called immediately before `snapshot` is sent.
+    let readWillBeSent: @Sendable () async -> Read
 
     /// The lease driver's: `beginSnapshotRead()` before the read, `observe(_:readWith:)` after.
     static func judging(with driver: LeaseDriver) -> HelperSnapshotObserver {
         HelperSnapshotObserver {
             let ticket = await driver.beginSnapshotRead()
-            return { snapshot in await driver.observe(snapshot, readWith: ticket) }
+            return Read(
+                ticket: ticket,
+                judgement: { snapshot in await driver.observe(snapshot, readWith: ticket) })
         }
     }
 }

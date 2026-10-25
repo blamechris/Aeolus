@@ -15,7 +15,7 @@ import Foundation
 ///   may take its whole deadline, 57 s for one fan, and a `snapshot` sequenced behind it on one
 ///   connection would freeze the display for that long (`HelperLeaseControlling`).
 /// - **One `LeaseLifecycle`**, the one place each lifecycle event reaches the driver.
-/// - **One `LeaseStateModel`**, the driver's state on the main actor, for views to read.
+/// - **One `LeaseStateModel`**, the driver's reports on the main actor, for views to read.
 /// - The `PreferencesController` every window reads. The source reads its refresh interval, and
 ///   `running` builds both, so `AeolusApp` and `AeolusAppDelegate` share one of each.
 ///
@@ -84,7 +84,7 @@ final class AppComposition {
     /// Where this root listens for power, wake and session events.
     let workspaceNotifications: NotificationCenter
 
-    /// The driver's state on the main actor, for views to read in `body`: the driver's, followed
+    /// The driver's reports on the main actor, for views to read in `body`: the driver's, followed
     /// from a task of its own, in a build with a helper; `.idle` for good in one without.
     let leaseState: LeaseStateModel
 
@@ -140,10 +140,15 @@ final class AppComposition {
             let connections = connect()
             let driver = makeDriver(connections.control)
             let lifecycle = LeaseLifecycle(driver: driver, mainRunLoop: mainRunLoop)
-            snapshots = HelperSnapshotSource(
+            let source = HelperSnapshotSource(
                 reader: connections.read, observer: .judging(with: driver),
                 refreshInterval: refreshInterval)
-            leaseState = LeaseStateModel(following: driver.stateUpdates())
+            snapshots = source
+            // A read soon after each floor, so the user's own Auto reads selected within about
+            // one round trip (ADR 0015 D2).
+            leaseState = LeaseStateModel(
+                following: driver.reportUpdates(),
+                whenTheDriverStopsActing: { [weak source] in source?.readSoon() })
             lease = LeaseWiring(
                 driver: driver,
                 lifecycle: lifecycle,

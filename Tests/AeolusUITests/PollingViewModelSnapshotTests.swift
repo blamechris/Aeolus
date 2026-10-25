@@ -234,7 +234,7 @@ struct PollingViewModelSnapshotTests {
         let capturedAt = Date(timeIntervalSince1970: 1_000_000)
         let source = try await Support.freshSource(
             helper, answering: Support.snapshot(capturedAt: capturedAt))
-        guard case .fresh(_, let receivedAt) = source.authority() else {
+        guard case .fresh(_, let receivedAt, _) = source.authority() else {
             Issue.record("no fresh snapshot")
             return
         }

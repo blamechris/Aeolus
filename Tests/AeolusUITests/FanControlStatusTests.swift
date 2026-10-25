@@ -317,7 +317,7 @@ struct FanControlStatusTests {
         #expect(
             try Fixtures.present(0, on: screen(.released)).status
                 == StatusLine(
-                    text: "Aeolus is holding no lease and renewing none.",
+                    text: "Aeolus is renewing no lease.",
                     detail: "Each fan's row shows what the helper reports."))
     }
 }

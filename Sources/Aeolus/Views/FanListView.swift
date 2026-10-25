@@ -14,7 +14,7 @@ import SwiftUI
 ///
 /// - **Computed in `body` only**, from one read of `viewModel` and the root's lease state
 ///   (`AllFansControlPresentation(polling:driver:)`), and never from a sink on one of
-///   `viewModel`'s properties. `leaseState` is observed, so a change of the driver's state with
+///   `viewModel`'s properties. `leaseState` is observed, so a change of the driver's report with
 ///   no new snapshot re-renders it.
 /// - **What is drawn as selected is the presentation's**, never the last click.
 /// - **A click calls `actions`**, which reads the screen again and asks the root. It selects
