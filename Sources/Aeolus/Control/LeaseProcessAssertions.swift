@@ -88,7 +88,8 @@ final class LeaseProcessAssertions {
         self.process = process
         Task { [weak self] in
             for await state in states {
-                // Ends with this type: the driver's stream does not finish on its own.
+                // Ends at the first state after this type is gone: the driver's stream does not
+                // finish on its own.
                 guard let self else { return }
                 self.apply(state)
             }
