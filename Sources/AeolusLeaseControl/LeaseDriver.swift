@@ -14,10 +14,10 @@ import Foundation
 /// `selectAutomatic()` for each fan's row (#154), which reaches them through `AppComposition`:
 /// Custom, and a speed typed while the fan's control cannot release, take it; the stepper, and a
 /// speed typed while it can, adjust it; Auto releases it, or is `selectAutomatic()` when the report
-/// on screen names no fan in Custom but this one. From the app, `adjust(_:)` is reached only
-/// through `adjustFan(_:to:)`: the root's own `adjust(_:)` has no caller. Until the write plane
-/// exists (#9) the helper refuses every grant, so the shipping app is refused any lease it asks
-/// for.
+/// on screen says which fans are in Custom and names none but this one. From the app, `adjust(_:)`
+/// is reached only through `adjustFan(_:to:)`: the root's own `adjust(_:)` has no caller. Until
+/// the write plane exists (#9) the helper refuses every grant, so the shipping app is refused any
+/// lease it asks for.
 ///
 /// ## States
 ///

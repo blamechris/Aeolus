@@ -60,8 +60,8 @@ final class LeaseStateModel: ObservableObject {
     /// The lease the last grant read was asked for: the newest identifier seen `held`.
     private var readAskedForGrant: UUID?
 
-    /// Whether the user's last request through the root was Auto, with no `take` or `adjust`
-    /// since.
+    /// Whether the user's last request through the root was recorded as Auto, with no request for
+    /// control recorded since.
     private var lastAskedForAutomatic = false
     /// Whether the driver's state in `stored` was entered while `lastAskedForAutomatic` held.
     private var stateFollowsAutomatic = false
@@ -74,7 +74,7 @@ final class LeaseStateModel: ObservableObject {
     /// a report that moves only the evidence (an `apply` answering after the stop) keeps the
     /// answer the state had.
     ///
-    /// - `false` until the user asks for Auto, and from each `take` or `adjust` until the next
+    /// - `false` until the user asks for Auto, and from each request for control until the next
     ///   Auto.
     /// - `false` for the state the driver is already in when Auto is asked for: that state was
     ///   entered before the request. A second Auto with nothing asked for between changes nothing.
@@ -108,18 +108,22 @@ final class LeaseStateModel: ObservableObject {
         }
     }
 
-    /// The user asked for Auto: the Auto segment, or the release offer, through
-    /// `AppComposition.selectAutomatic()`.
+    /// The user asked for Auto, as the root records it: `AppComposition.selectAutomatic()`, for the
+    /// control for all fans' Auto and its release offer, and `AppComposition.releaseFan(_:)` when
+    /// a row's Auto is on the only fan the report names in Custom, or no fan is in Custom.
     ///
     /// Changes nothing on screen. `enteredAfterTheUsersAuto` is `true` only once a state is entered
     /// with this set, and while it is, the last request was already Auto, so a second one leaves it
-    /// as it is. After a `take` or an `adjust` it is already `false`.
+    /// as it is. After a request for control it is already `false`.
     func userAskedForAutomatic() {
         lastAskedForAutomatic = true
     }
 
-    /// The user asked for manual control: `AppComposition.take(_:)` or `adjust(_:)`. The state on
-    /// screen was entered before this request, so it no longer follows the user's Auto.
+    /// The user asked for manual control, or for something the root does not record as Auto:
+    /// `AppComposition.take(_:)`, `takeFan(_:at:)`, `adjustFan(_:to:)` and `adjust(_:)`, which has
+    /// no caller, and `releaseFan(_:)` when other fans are in Custom or the report cannot say which
+    /// are. The state on screen was entered before this request, so it no longer follows the
+    /// user's Auto.
     func userAskedForControl() {
         lastAskedForAutomatic = false
         guard stateFollowsAutomatic else { return }
