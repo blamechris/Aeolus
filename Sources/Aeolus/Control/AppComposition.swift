@@ -152,8 +152,6 @@ final class AppComposition {
                 reader: connections.read, observer: .judging(with: driver),
                 refreshInterval: refreshInterval)
             snapshots = source
-            // A read soon after each floor, so the user's own Auto reads selected within about
-            // one round trip (ADR 0015 D2).
             leaseState = LeaseStateModel(
                 following: driver.reportUpdates(),
                 whenTheDriverStopsActing: { [weak source] in source?.readSoon() })

@@ -217,8 +217,9 @@ struct FanControlSelectionTests {
     /// before the loss is not evidence: it can predate the grant or the `apply`, and a lease lost
     /// while its first `apply` was in flight shows exactly this screen, with the helper free to
     /// finish the `apply`. A read after the loss, with no lease listed, is: the helper has let the
-    /// lease go and, the floor having waited for every `apply`, writes under none (#498). The line
-    /// says control ended either way.
+    /// lease go, and the floor waited for every `apply`. That it then writes under none is one of
+    /// ADR 0015's assumptions, not something the snapshot shows. The line says control ended
+    /// either way.
     ///
     /// **Mutation (C1a, "a loss reads the snapshot"):** delete the evidence check from
     /// `automaticClaim`. Run: red at the read from before the loss, for every cause (F6).

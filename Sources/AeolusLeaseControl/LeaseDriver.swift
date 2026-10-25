@@ -120,14 +120,13 @@ import Foundation
 /// the state, as one `LeaseDriverReport`, so a renderer never pairs a state with an older floor.
 /// `idle` sets none: the driver has never acted.
 ///
-/// **The floor waits for every `apply` to answer (#498's S2).** The helper does not guarantee that
-/// an `apply` still in flight under a released lease writes nothing after the release has
-/// answered: `LeaseApplier.step` asks the lease (`EngagementDriver.requireEntitlement`) and only
-/// then awaits the target write, and `PlaneWriteLedger.admitCommand()` refuses a target command
-/// only once the plane is sealed for exit. So when the driver stops acting with an `apply`
-/// unanswered, the evidence is `noRead`, and the floor is minted only when the last `apply` has
-/// answered, then published as a new report with the same state. A read sent after that answer
-/// is, on ADR 0015's assumption about two connections, served after that `apply` finished.
+/// **The floor waits for every `apply` to answer (#498's S2).** An `apply` in flight under a lease
+/// whose release has answered can still land one target write after the restore: never a mode
+/// write, which the step ticket refuses, but `F<n>Tg` on a fan already at `Md=0`, which ADR 0014
+/// calls reported harmless on Apple Silicon and untested on Intel. That is a hardware claim nobody
+/// has observed, so a stop with an `apply` unanswered publishes `noRead`, and the floor is minted
+/// when the last `apply` has answered, as a new report with the same state. A read sent after that
+/// answer is, on ADR 0015's assumption about two connections, served after that `apply` finished.
 ///
 /// **Minting cannot change what `observe(_:readWith:)` decides.** Each mint advances the epoch by
 /// one, and a ticket is the epoch when it was taken, so a ticket is at or past a mint exactly when

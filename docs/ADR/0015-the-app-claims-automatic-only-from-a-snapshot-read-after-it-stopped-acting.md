@@ -34,6 +34,9 @@ or releasing; a licensed snapshot is on screen whose read began after the driver
 `released`, `lost` or `refused`; that snapshot lists no lease; and it reports the fan
 `isClearedToAutomatic`. `idle` sets no read-timing floor.
 
+*As built (#498):* the read must also begin after every `apply` the driver sent has answered.
+While one is unanswered, no snapshot is evidence (D2's "the floor waits for every `apply`").
+
 **D2 — The mechanism.** The driver mints the floor, from #479's ticket epoch, inside
 `transition(to:)`, the one place every state change passes through. The states that set it are
 chosen by an exhaustive switch. The floor is published atomically with the state
@@ -49,14 +52,21 @@ rather than an optional floor, because of the case below:
 
 **The floor waits for every `apply` to answer.** Auto during an `apply` releases at once and
 leaves the `apply` to answer (#419), so the driver can be `released` with that `apply` still at
-the helper. The helper does not guarantee that such an `apply` writes nothing after the release
-has answered: `LeaseApplier.step` asks the lease (`EngagementDriver.requireEntitlement`) and only
-then awaits the target write, and `PlaneWriteLedger.admitCommand()` refuses a target command only
-once the plane is sealed for exit. What the ticket-and-seal contract does guarantee is narrower,
-that no engagement step is admitted after a restore was requested (`admitStep`), and the shipping
-plane writes nothing at all. So the app does not rest on it: a stop with an `apply` unanswered
-publishes `noRead`, and the floor is minted when the last `apply` answers, as a new report with
-the state unchanged.
+the helper.
+
+On the write plane, such an `apply` can land one write after the release's restore. It is never
+a mode write: an engagement step admitted after a restore was requested is refused by the step
+ticket (`PlaneWriteLedger.admitStep`). It can be a target write. `LeaseApplier.step` asks the
+lease (`EngagementDriver.requireEntitlement`) and then awaits the target write, and
+`PlaneWriteLedger.admitCommand()` refuses a target command only once the plane is sealed for exit.
+That write is `F<n>Tg` on a fan already at `Md=0`. ADR 0014's ticket-and-seal amendment calls it
+"reported harmless on Apple Silicon, and untested on Intel" (its "Commands" bullet).
+
+This is not a helper defect: every ordinary restore accepts it by design. It is a hardware claim
+nobody has observed. So the app does not rest on it: a stop with an `apply` unanswered publishes
+`noRead`, and the floor is minted when the last `apply` answers, as a new report with the state
+unchanged. The `apply` is counted from the turn that schedules it, not from when its task
+starts.
 
 `LeaseStateModel` follows `reportUpdates()`; `stateUpdates()` stays, for consumers that need the
 state alone. Each new floor asks the source to read soon (`HelperSnapshotSource.readSoon()`): an
@@ -101,15 +111,27 @@ soundly with tickets.
 
 Rejected: the reply does not report the handback's outcome.
 
+### Trust the helper's lease-gated write: mint the floor when the driver stops, whatever is in flight
+
+Rejected for now. An `apply` in flight under a released lease cannot move a fan's mode, but it can
+still land a target write after the restore, and that write is harmless only by a hardware claim
+nobody has observed: ADR 0014 calls it reported harmless on Apple Silicon and untested on Intel.
+Waiting for every `apply` to answer costs at most an `apply`'s deadline of Auto shown unselected,
+and it fails closed.
+
 ## Assumptions
 
 - A read sent on one connection after the reply to a release on another is processed by the
   helper after the release completed. The same is assumed of a read sent after an `apply`'s
   answer.
 - A snapshot that lists no lease, read after every `apply` the app sent has answered, means the
-  helper writes under none of the app's leases. An `apply` the client stopped waiting for at its
-  deadline counts as answered: the cut-off discards the connection, and the helper releases a
-  connection's leases when it goes (`HelperClientDeadlines.applyDeadline`).
+  helper writes under none of the app's leases.
+- An `apply` the client stopped waiting for at its deadline counts as answered. The basis is the
+  same as for a release: the step ticket refuses any engagement after the restore, the seal
+  refuses everything once the exit begins, and ADR 0014 reports a later target write harmless.
+  The cut-off discards the connection, and the helper's `connectionDidInvalidate` ends its leases
+  and restores the fans the same way a release does. That ending is not itself proof that the
+  `apply` stopped writing.
 - There is at most one lease per machine.
 - **A relaunch starts `idle`.** A new process starts a new driver, which has never acted and sets
   no floor. While the helper still lists the old process's lease, the no-lease condition refuses
@@ -119,7 +141,8 @@ Rejected: the reply does not report the handback's outcome.
   when the connection goes.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
-helper's lease-gated write proves leaky; when the helper guarantees that no write lands under a
-lease once its release has answered, so the floor need not wait for applies; or when PR 8 needs
+helper's lease-gated write proves leaky; when a target write on an automatic fan is observed
+harmless on hardware, or `admitCommand` refuses after an ordinary restore, so the floor need not
+wait for applies; or when PR 8 needs
 Automatic for a fan the app's own held lease does not cover, which may relax the no-lease
 condition to "the listed lease is the driver's own and does not cover this fan".

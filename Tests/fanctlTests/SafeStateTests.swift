@@ -57,8 +57,9 @@ struct SafeStateTests {
     /// A lease is a claim on the fans, reported apart from them (`StatusCommand`). One that
     /// exists beside fans reading automatic is two facts, and neither cancels the other.
     ///
-    /// **Mutation:** drop `&& snapshot.activeLease == nil` from `SafeState.verdict(for:)`.
-    /// Run: red here.
+    /// **Mutation:** drop `activeLease == nil &&` from `SystemSnapshot.showsAutomatic(_:)`, which
+    /// `SafeState.verdict(for:)` asks (ADR 0015 D4). Run: red here, and in the app's
+    /// `FanControlAutomaticTests`.
     @Test("A lease beside fans that read automatic is not the safe state")
     func aLeaseIsNotTheSafeState() {
         let snapshot = Self.snapshot([Self.fan(0), Self.fan(1)], lease: Self.lease)
@@ -212,9 +213,9 @@ struct SafeStateTests {
 
     /// One cleared fan does not clear another.
     ///
-    /// **Mutation:** in `SafeState.verdict(for:)`, replace `allSatisfy(isCleared)` with
-    /// `contains(where: isCleared)`, or drop the `clearance` test from
-    /// `FanState.isClearedToAutomatic`, which `isCleared` delegates to. Run: red.
+    /// **Mutation:** in `SystemSnapshot.showsAutomatic(_:)`, which `SafeState.verdict(for:)` asks,
+    /// replace `allSatisfy(\.isClearedToAutomatic)` with `contains(where: \.isClearedToAutomatic)`,
+    /// or drop the `clearance` test from `FanState.isClearedToAutomatic`. Run: red.
     @Test("A fan the helper has not cleared keeps the rest from being the safe state")
     func oneUnclearedFanIsEnough() {
         let blind = Self.snapshot([

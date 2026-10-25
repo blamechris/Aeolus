@@ -51,9 +51,10 @@ public struct LeaseDriverReport: Sendable, Hashable {
 
         /// No snapshot yet: the driver stopped acting while an `apply` it sent was still
         /// unanswered, and no read is evidence until that `apply` has answered, when this becomes
-        /// `readFrom` a ticket minted then (#498's S2). The helper does not guarantee that an
-        /// `apply` in flight under a released lease writes nothing more after the release has
-        /// answered, so a read the helper may have served before that write is not evidence.
+        /// `readFrom` a ticket minted then (#498's S2). Such an `apply` can still land a target
+        /// write after the release's restore, on a fan already automatic. ADR 0014 calls that
+        /// reported harmless on Apple Silicon and untested on Intel: a hardware claim nobody has
+        /// observed, so a read the helper may have served before that write is not evidence.
         case noRead
 
         /// Whether a snapshot whose read was ticketed `ticket` may be evidence. `nil` is a read the
