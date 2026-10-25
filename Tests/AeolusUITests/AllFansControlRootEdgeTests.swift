@@ -58,6 +58,7 @@ extension AllFansControlRootTests {
         root.adjust(target)
         root.take(target)
 
+        #expect(root.latestDriverCall == nil, "no entry point started a call")
         let sent = await Support.eventually(turns: 2_000) { await !ledger.entries.isEmpty }
         #expect(!sent, "nothing reached a control connection")
         #expect(connected == 0)
@@ -70,6 +71,17 @@ extension AllFansControlRootTests {
     /// the lease enables the control, a click queues a `take` behind the release, and Auto, enabled
     /// with the control, cancels it. That is the user's latest choice, so the pin is that nothing
     /// is acquired once the release answers.
+    ///
+    /// Each click is waited for on the driver (`CompositionScene.click(_:)`) before the release
+    /// is answered, so the take and Auto both reach the driver while it is releasing, as the
+    /// clicks they stand for would.
+    ///
+    /// **Mutation (M500a, "the shape before #500"):** replace each `scene.click { … }`, and the
+    /// `#expect` read after it, with the bare click followed by `await scene.lease.settle()`. It
+    /// removes the wait, the post-click reads and the click helper together, so it is not evidence
+    /// for the wait alone. Run, release config with testability, whole `AeolusUITests`: red at
+    /// `!reacquired` in 8 of 10 runs (5 of 10 in #502's review). Intermittent, so a rate; the fixed
+    /// test was green in 12 of 12.
     @Test("Auto while releasing cancels a take queued behind the release")
     func autoWhileReleasingCancelsAQueuedTake() async throws {
         let scene = await CompositionScene()
@@ -87,10 +99,10 @@ extension AllFansControlRootTests {
         let control = window.control(scene.root.leaseState.current)
         #expect(control.affordance == .enabled)
         #expect(control.automaticIsEnabled)
-        actions.choose(.seventyFive, on: window.polling)
-        await scene.lease.settle()
-        actions.chooseAutomatic()
-        await scene.lease.settle()
+        try await scene.click { actions.choose(.seventyFive, on: window.polling) }
+        #expect(await scene.lease.driver.state == .releasing, "the release is still unanswered")
+        try await scene.click { actions.chooseAutomatic() }
+        #expect(await scene.lease.driver.state == .releasing)
 
         await scene.lease.helper.answerParked(.release)
         try #require(
@@ -120,13 +132,36 @@ extension AllFansControlRootTests {
             await Support.eventually { await scene.lease.entries.releases == [held.lease.id] })
         try await Self.published(on: scene) { $0 == .releasing }
 
-        actions.choose(.seventyFive, on: window.polling)
-        await scene.lease.settle()
+        try await scene.click { actions.choose(.seventyFive, on: window.polling) }
+        #expect(await scene.lease.driver.state == .releasing, "the release is still unanswered")
         await scene.lease.helper.answerParked(.release)
 
         try #require(
             await Support.eventually { await scene.lease.entries.acquires.count == 2 })
         await window.close()
+        await scene.finish()
+    }
+
+    // MARK: - The suite's seam
+
+    /// `DriverCall` stores no `Task` of its own and exposes no way to cancel one, so nothing that
+    /// holds the handle can cancel the call (#419).
+    ///
+    /// **Mutation (M500d, "the handle keeps the task"):** add `private let task: Task<Void, Never>`
+    /// to `AppComposition.DriverCall`, set in its init. Run, debug: red at the labels and at
+    /// `!holdsATask`, in 3 of 3 runs.
+    @Test("The root's driver-call handle stores no Task")
+    func theDriverCallHandleStoresNoTask() async throws {
+        let scene = await CompositionScene()
+        try await scene.click { scene.root.selectAutomatic() }
+        let call = try #require(scene.root.latestDriverCall)
+
+        let children = Mirror(reflecting: call).children
+        #expect(
+            children.map(\.label) == ["ordinal", "wait"],
+            "DriverCall's stored properties changed: confirm none is a Task")
+        let holdsATask = children.contains { $0.value is Task<Void, Never> }
+        #expect(!holdsATask, "the handle stores no Task")
         await scene.finish()
     }
 }

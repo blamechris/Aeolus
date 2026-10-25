@@ -56,6 +56,36 @@ struct CompositionScene {
         workspace.post(name: name, object: nil)
     }
 
+    /// Runs `click`, which must start exactly one call on the driver through the root's entry
+    /// points, and returns once the driver has run that call (`AppComposition.latestDriverCall`).
+    ///
+    /// **What was observed (#500).** In release-config runs, the pre-PR shape of
+    /// `autoWhileReleasingCancelsAQueuedTake` (a click, then `settle()`) was red at `!reacquired`:
+    /// 7 of 10 runs of `AeolusUITests` before #500, and 5 of 10 in #502's review. With no
+    /// `settle()`, bare clicks were green in 10 of 10 runs of `AllFansControlRoot` alone; over
+    /// `AeolusUITests`, with this wait and the post-click reads both dropped, 1 of 10 runs was red
+    /// at the same line. With only one of the two dropped, 0 of 12 runs of `AeolusUITests` were
+    /// red, whichever it was. Why the `settle()` shape is the red one was not established, and
+    /// these counts are too few to say whether the wait or the reads protect anything.
+    ///
+    /// The wait is on the ledger, through `LeaseScene.run`, so a call that never finishes is a red
+    /// at the suite's time limit rather than a `swift test` that never exits.
+    ///
+    /// **What no test here shows.** With `DriverCall.finished()` made to return at once
+    /// (M500b), `AeolusUITests` stayed green in 10 of 10 release-config runs, and in 10 of 10
+    /// more with the waits written out in the test. So the suite does not show that the wait on
+    /// the call is needed, only that this helper is enough where `settle()` was not (M500a, which
+    /// removes the wait, the post-click reads and this helper together). Why M500b survives was
+    /// not found. The wait is what makes the order certain: `finished()`
+    /// returns only after the task's one step, the driver's verb, has returned.
+    func click(_ click: () -> Void) async throws {
+        let before = root.latestDriverCall?.ordinal ?? 0
+        click()
+        let call = try #require(root.latestDriverCall, "the click started a call on the driver")
+        try #require(call.ordinal == before + 1, "the click started exactly one call")
+        await lease.run { await call.finished() }
+    }
+
     /// Ends everything the scene started, so nothing is left waiting on a fake.
     func finish() async {
         await reader.close()
