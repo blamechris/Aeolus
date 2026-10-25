@@ -129,6 +129,86 @@ struct LeaseDriverLetGoFloorTests {
         await scene.finish()
     }
 
+    // MARK: - Mint (b) on its other legs (#515's panel, completeness S2)
+
+    /// Lease A's `apply` is parked and Auto releases it, so `released` says `noRead`. A `takeFan`
+    /// then asks again, its acquire parked, and A's `apply` answers while the driver is
+    /// `acquiring`: the floor is minted there, as a report beside `acquiring`.
+    ///
+    /// **Mutation (mA, "(b) skips acquiring and releasing"):** in `applyAnswered()`, return
+    /// before minting while `current` is `.acquiring` or `.releasing`. Run: red at
+    /// `isFloor(report)` here and in `theLastApplyMintsWhileReleasing`.
+    @Test("The last apply's answer mints the floor while acquiring")
+    func theLastApplyMintsWhileAcquiring() async throws {
+        let scene = await LeaseScene()
+        await scene.helper.script(.apply, .parked)
+        await scene.driver.take(try LeaseScene.target([0: 3000]))
+        await scene.ledger.waitFor { $0.applies.count == 1 }
+        let stop = await scene.mark()
+        await scene.driver.selectAutomatic()
+        let stopped = try #require(await scene.firstReport(since: stop) { $0.isReleased })
+        try #require(stopped.automaticEvidence == .noRead, "\(stopped)")
+        await scene.helper.script(.acquire, .parked)
+        await scene.driver.takeFan(0, at: try LeaseDriverPerFanTests.speed(3000))
+        await scene.ledger.waitFor { $0.acquires.count == 2 }
+
+        let report = try await Self.answerTheParkedApply(in: scene)
+
+        #expect(report.state == .acquiring(fans: [0]), "\(report)")
+        await scene.finish()
+    }
+
+    /// Lease A's `apply` is parked and Auto releases it. Lease B is taken over both fans and its
+    /// own `apply` answered, so `noRead` is kept through `held`. Fan 1 back on Auto releases B,
+    /// the release parked, and A's `apply` answers while the driver is `releasing`.
+    ///
+    /// **Mutation (mA):** red at `isFloor(report)`.
+    @Test("The last apply's answer mints the floor while releasing")
+    func theLastApplyMintsWhileReleasing() async throws {
+        let scene = await LeaseScene()
+        await scene.helper.script(.apply, .parked)
+        let both = try LeaseScene.target([0: 3000, 1: 3000])
+        await scene.driver.take(both)
+        await scene.ledger.waitFor { $0.applies.count == 1 }
+        let stop = await scene.mark()
+        await scene.driver.selectAutomatic()
+        let stopped = try #require(await scene.firstReport(since: stop) { $0.isReleased })
+        try #require(stopped.automaticEvidence == .noRead, "\(stopped)")
+        try #require(await scene.take(both) != nil)
+        try #require(await scene.driver.report.automaticEvidence == .noRead, "A's is unanswered")
+        await scene.helper.script(.release, .parked)
+        await scene.driver.releaseFan(1)
+        await scene.ledger.waitFor { $0.releases.count == 2 }
+
+        let report = try await Self.answerTheParkedApply(in: scene)
+
+        #expect(report.state == .releasing, "\(report)")
+        await scene.finish()
+    }
+
+    /// Answers the one parked `apply` and returns the driver's report once it has handled the
+    /// answer, required to carry a floor that a read ticketed before the answer does not pass and
+    /// one after it does, and to have been published as an evidence-only report.
+    static func answerTheParkedApply(in scene: LeaseScene) async throws -> LeaseDriverReport {
+        let state = await scene.driver.state
+        let during = await scene.driver.beginSnapshotRead()
+        let answered = await scene.mark()
+        await scene.helper.answerParked(.apply)
+        await scene.ledger.waitFor { entries in
+            Array(entries.dropFirst(answered)).contains { $0.event.isApplyAnswer }
+        }
+        await scene.settle()
+        let report = await scene.driver.report
+        try #require(isFloor(report.automaticEvidence), "minted beside \(state): \(report)")
+        #expect(report.state == state, "the state did not move")
+        #expect(!report.automaticEvidence.admits(during))
+        #expect(report.automaticEvidence.admits(await scene.driver.beginSnapshotRead()))
+        await scene.ledger.waitFor { entries in
+            Array(entries.dropFirst(answered)).reports.contains { $0 == report }
+        }
+        return report
+    }
+
     // MARK: - The scenario
 
     struct ChangeOfSet {
