@@ -2,6 +2,7 @@ import AeolusLeaseControl
 import AeolusXPC
 import AeolusXPCClient
 import AppKit
+import FanKit
 import Foundation
 
 /// The app's one composition root: what this build talks to, and every event that reaches the
@@ -28,16 +29,18 @@ import Foundation
 /// exist only when the bundle ships a helper (`HelperEmbedding.embedded`). A `Monitor` build, and
 /// a damaged bundle, gets a source with no reader and none of the rest, and cannot reach the
 /// helper's mach name even by accident. Every entry point below then does what it would do with
-/// nothing held: a quit is answered `.terminateNow`, `take`, `adjust` and `selectAutomatic` do
-/// nothing, the lease state is `.idle` for good, and nothing else happens.
+/// nothing held: a quit is answered `.terminateNow`, every control entry point does nothing, the
+/// lease state is `.idle` for good, and nothing else happens.
 ///
 /// ## A click takes a lease; the helper decides whether it is granted
 ///
 /// The main window's control for all fans (`FanListView`, through `AllFansControlActions`) calls
-/// `take(_:)` for a percentage and `selectAutomatic()` for Auto, so the app asks for the fans when
-/// the user clicks one, and only then. `adjust(_:)` is here for the per-fan slider of #153's PR 8;
-/// nothing calls it yet. Quit, logout, wake, fast user switching and the last control window each
-/// reach the driver too.
+/// `take(_:)` for a percentage and `selectAutomatic()` for Auto. Each fan's row (through
+/// `FanRowControlActions`, #154) calls `takeFan(_:at:)` for Custom and for a speed typed while the
+/// fan is not held, `adjustFan(_:to:)` for its stepper and for a speed typed while it is, and
+/// `releaseFan(_:)` for its Auto. So the app asks for the fans when the user clicks, and only then.
+/// `adjust(_:)` has no caller in the app. Quit, logout, wake, fast user switching and the last
+/// control window each reach the driver too.
 ///
 /// Today's helper refuses every grant until the write plane exists (#9): its `acquireLease`
 /// refuses a plane that cannot write before it asks anything else, and its snapshot reports each
@@ -97,8 +100,8 @@ final class AppComposition {
     /// The control windows open now, by the identifier each reported.
     private var controlWindows: Set<UUID> = []
 
-    /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started, and how many they
-    /// have started (`latestDriverCall`).
+    /// The last call a control entry point started, and how many they have started
+    /// (`latestDriverCall`).
     private var latestCall: DriverCall?
     private var callsStarted = 0
 
@@ -185,8 +188,8 @@ final class AppComposition {
     }
 
     /// Moves the speed of a lease that is acquiring or held, over the same fans, and **never
-    /// acquires** (`LeaseDriver.adjust(_:)`): for a slider or a stepper, which #153's PR 8 adds.
-    /// Nothing calls it yet. Returns at once, as `take(_:)` does.
+    /// acquires** (`LeaseDriver.adjust(_:)`). Nothing in the app calls it: a row's stepper moves
+    /// one fan through `adjustFan(_:to:)`. Returns at once, as `take(_:)` does.
     func adjust(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
         leaseState.userAskedForControl()
@@ -201,6 +204,66 @@ final class AppComposition {
         guard let driver = lease?.driver else { return }
         leaseState.userAskedForAutomatic()
         let call = Task { await driver.selectAutomatic() }
+        started(call)
+    }
+
+    // MARK: - One fan at a time (#154)
+
+    /// Puts fan `index` in Custom at `speed`, every other fan in Custom keeping its speed
+    /// (`LeaseDriver.takeFan(_:at:)`): a deliberate user action, the Custom segment or a speed
+    /// typed while the fan is not held. The driver composes the target from what is Custom on its
+    /// own actor, never from what the window shows. Returns at once, as `take(_:)` does.
+    func takeFan(_ index: Int, at speed: FanTargetRPM) {
+        guard let driver = lease?.driver else { return }
+        leaseState.userAskedForControl()
+        let call = Task { await driver.takeFan(index, at: speed) }
+        started(call)
+    }
+
+    /// Moves fan `index`'s speed when it is in Custom, and **never acquires and never changes which
+    /// fans are held** (`LeaseDriver.adjustFan(_:to:)`): a row's stepper, and a speed typed while
+    /// the fan's control can release. Returns at once, as `take(_:)` does.
+    func adjustFan(_ index: Int, to speed: FanTargetRPM) {
+        guard let driver = lease?.driver else { return }
+        leaseState.userAskedForControl()
+        let call = Task { await driver.adjustFan(index, to: speed) }
+        started(call)
+    }
+
+    /// A row's Auto: fan `index` back to automatic control. Returns at once, as `take(_:)` does.
+    ///
+    /// Keyed on the fans the driver's report on screen names in Custom
+    /// (`FanRowControlPresentation.automaticRoute(forFan:in:)`, #154's ruling Q5, as corrected in
+    /// #515's first round):
+    ///
+    /// - **No fan but this one:** `selectAutomatic()`, a release, recorded as the user's Auto, so
+    ///   the banner may say "as you chose" once the release is answered and every fan reads
+    ///   Automatic. With nothing in Custom it is what Auto for all fans does then: nothing.
+    /// - **Other fans too, or no answer:** `releaseFan(_:)`, recorded as a request for control.
+    ///   With other fans still in Custom the driver releases and takes them again, which is not the
+    ///   user choosing Auto. While releasing the report does not say what is in Custom, so the
+    ///   record fails safe: it never claims a choice of Auto the user may not have made.
+    ///
+    /// **The report can be behind the driver.** Each click's task reaches the driver after this
+    /// returns, so two quick clicks can both be read against the same report. Both errors fail
+    /// safe. A report naming other fans when the driver holds only this one records a request for
+    /// control, and `releaseFan(_:)` still releases on the driver's actor. A report naming this fan
+    /// alone when the driver has since taken another records Auto, and `selectAutomatic()`
+    /// releases every fan, the one taken since included: the fans end on automatic control, and the
+    /// user's last click was Auto.
+    func releaseFan(_ index: Int) {
+        guard let driver = lease?.driver else { return }
+        let route = FanRowControlPresentation.automaticRoute(
+            forFan: index, in: leaseState.current.state)
+        let call: Task<Void, Never>
+        switch route {
+        case .selectAutomatic:
+            leaseState.userAskedForAutomatic()
+            call = Task { await driver.selectAutomatic() }
+        case .releaseFan:
+            leaseState.userAskedForControl()
+            call = Task { await driver.releaseFan(index) }
+        }
         started(call)
     }
 
@@ -228,8 +291,8 @@ final class AppComposition {
         func finished() async { await wait() }
     }
 
-    /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started on the driver, or
-    /// `nil` if none has: **a seam for the suite**, which nothing in the app reads.
+    /// The last call a control entry point started on the driver, or `nil` if none has: **a seam
+    /// for the suite**, which nothing in the app reads.
     ///
     /// **Why (#500).** In release-config runs, the pre-PR shape (a click, then `settle()`) was red
     /// at `!reacquired`. Why was not established (`CompositionScene.click(_:)` has the counts). A
