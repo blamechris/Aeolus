@@ -65,7 +65,7 @@ import Foundation
 /// departure, so a request that failed between a departure and the next handshake — or before
 /// the first handshake of all, while the helper was not yet approved — carries the episode that
 /// handshake belongs to. Left in place, it would license direct reads from the handshake until
-/// that handshake's own request was answered, beside a helper that is there and answering. So
+/// that handshake's own request was answered, beside a helper that has just answered `hello`. So
 /// hearing a handshake retires a failure recorded before it, and the source waits
 /// (`.awaitHelper(.awaitingSnapshot)`) for the answer the handshake's request brings. A failure
 /// recorded after the handshake reads directly, as any failure does. The episode is not moved
@@ -305,9 +305,14 @@ public final class HelperSnapshotSource {
     /// anything (#501). See this type's documentation.
     ///
     /// Only a failure goes. A reply recorded in this episode came through a handshake of its
-    /// own, because `HelperClient` answers `snapshot` only on a connection whose `hello`
-    /// succeeded. A contradiction is such a reply. A failure needs no handshake at all: a `hello`
-    /// that went unanswered, or a connection refused before it was made.
+    /// own, because `HelperClient.snapshot()` goes through `withHandshakenProxy`, which sends
+    /// nothing before a `hello` has succeeded on that connection. A contradiction is such a
+    /// reply. A failure needs no handshake at all: a `hello` that went unanswered, or a
+    /// connection refused before it was made.
+    ///
+    /// `HelperClient` publishes `.handshaken` before it sends the `snapshot`, so a failure of the
+    /// `snapshot` itself is expected after the handshake is heard. One recorded first would be
+    /// retired too, and the source would wait for the next answer rather than read directly.
     private func retireFailureFromBeforeTheHandshake() {
         guard case .failed = latest?.answer else { return }
         latest = nil
@@ -320,11 +325,11 @@ public final class HelperSnapshotSource {
     ///
     /// In this order: no helper to read; a connection that is not `.handshaken` (`.idle`
     /// waits, every other state reads directly); no answer in this episode, where a failure
-    /// from before the handshake is none (waits); a failed
-    /// or self-contradicting answer (reads directly); an answer older than `freshnessBound`
-    /// (waits — the connection is handshaken, so the next answer is due). Only past all of
-    /// them is a snapshot `.fresh`. The age is read here, on this object's own clock, against
-    /// the instant this object stamped when the reply arrived.
+    /// from before the handshake is none (waits); a failed or self-contradicting answer
+    /// (reads directly); an answer older than `freshnessBound` (waits — the connection is
+    /// handshaken, so the next answer is due). Only past all of them is a snapshot `.fresh`.
+    /// The age is read here, on this object's own clock, against the instant this object
+    /// stamped when the reply arrived.
     public func authority() -> Authority {
         if case .none(let why) = reading { return .readDirectly(why) }
         guard health == .handshaken else {
