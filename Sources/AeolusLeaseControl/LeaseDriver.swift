@@ -122,7 +122,7 @@ import Foundation
 ///
 /// **The floor waits for every `apply` to answer (#498's S2).** An `apply` in flight under a lease
 /// whose release has answered can still land one target write after the restore: never a mode
-/// write, which the step ticket refuses, but `F<n>Tg` on a fan already at `Md=0`, which ADR 0014
+/// write, which the step ticket refuses, but `F<n>Tg` on an automatic fan, which ADR 0014
 /// calls reported harmless on Apple Silicon and untested on Intel. That is a hardware claim nobody
 /// has observed, so a stop with an `apply` unanswered publishes `noRead`, and the floor is minted
 /// when the last `apply` has answered, as a new report with the same state. A read sent after that

@@ -147,8 +147,10 @@ struct AutomaticAfterAReadTests {
     /// unchanged, the root asks for a read at once, and its reply reads Automatic.
     ///
     /// **Mutation (M-G):** red at `!early`. **Mutation (M-B):** red at the floor's requirement,
-    /// the evidence-only report dropped. **Mutation (M-C):** red at `requestsReach(2)`, no read
-    /// asked for when only the evidence moved. **Mutation (S2m):** red at `.noRead`.
+    /// the evidence-only report dropped. **Mutation (M-C, a read asked at any change of state):**
+    /// red at `!early`, the stop asking for one, and at the new read's ticket. **Mutation (MC2, a
+    /// read asked only at a change of state carrying a floor):** red at `sent`, no read asked when
+    /// only the evidence moved. **Mutation (S2m):** red at `.noRead`.
     @Test("Auto during an apply reads Automatic once the apply has answered and a read follows")
     func autoDuringAnApplyReadsAutomaticAfterItAnswers() async throws {
         let (scene, polling) = try await Self.rootAt60Seconds()

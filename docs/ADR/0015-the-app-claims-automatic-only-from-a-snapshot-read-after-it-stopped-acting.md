@@ -59,20 +59,25 @@ a mode write: an engagement step admitted after a restore was requested is refus
 ticket (`PlaneWriteLedger.admitStep`). It can be a target write. `LeaseApplier.step` asks the
 lease (`EngagementDriver.requireEntitlement`) and then awaits the target write, and
 `PlaneWriteLedger.admitCommand()` refuses a target command only once the plane is sealed for exit.
-That write is `F<n>Tg` on a fan already at `Md=0`. ADR 0014's ticket-and-seal amendment calls it
+That write is `F<n>Tg` on an automatic fan. ADR 0014's ticket-and-seal amendment calls it
 "reported harmless on Apple Silicon, and untested on Intel" (its "Commands" bullet).
 
 This is not a helper defect: every ordinary restore accepts it by design. It is a hardware claim
-nobody has observed. So the app does not rest on it: a stop with an `apply` unanswered publishes
-`noRead`, and the floor is minted when the last `apply` answers, as a new report with the state
-unchanged. The `apply` is counted from the turn that schedules it, not from when its task
+nobody has observed. So the app does not take the claim on trust where it can wait instead: a stop
+with an `apply` unanswered publishes `noRead`, and the floor is minted when the last `apply`
+answers, as a new report with the state unchanged. That puts the evidence's read after the write,
+and it covers no more than that. If firmware honoured a `Tg` written to a fan it still reports
+automatic and cleared, no read would show it, and the claim would still be wrong; only the
+hardware can settle that. The `apply` is counted from the turn that schedules it, not from when its task
 starts.
 
 `LeaseStateModel` follows `reportUpdates()`; `stateUpdates()` stays, for consumers that need the
 state alone. Each new floor asks the source to read soon (`HelperSnapshotSource.readSoon()`): an
 ordinary pause is cut by the path a settled interval change takes, a request in flight is left
 alone and the pause after it skipped once, and a backoff and the interval's debounce are left as
-they were. So the user's own Auto reads selected within about one round trip.
+they were. So the user's own Auto reads selected within about one round trip, when no `apply` is
+unanswered and the read connection is not backing off: while an `apply` is unanswered nothing is
+evidence until it answers, up to its deadline, and a backoff's pause runs out first.
 
 **D3 — Until D2 lands**, `released`, `lost` and `refused` never read Automatic, and `idle`
 requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #498.)*
@@ -127,8 +132,9 @@ and it fails closed.
 - A snapshot that lists no lease, read after every `apply` the app sent has answered, means the
   helper writes under none of the app's leases.
 - An `apply` the client stopped waiting for at its deadline counts as answered. The basis is the
-  same as for a release: the step ticket refuses any engagement after the restore, the seal
-  refuses everything once the exit begins, and ADR 0014 reports a later target write harmless.
+  same as for a release: the step ticket refuses any engagement after the restore, and ADR 0014
+  reports a later target write harmless. The seal refuses every forward write once the exit
+  begins, but an ordinary deadline cut-off involves no exit, so the seal adds nothing there.
   The cut-off discards the connection, and the helper's `connectionDidInvalidate` ends its leases
   and restores the fans the same way a release does. That ending is not itself proof that the
   `apply` stopped writing.
