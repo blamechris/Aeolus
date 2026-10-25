@@ -29,6 +29,13 @@ struct LeaseDriverPerFanTests {
         }
     }
 
+    /// Waits until the driver holds some target confirmed, under a lease granted after `mark`: for
+    /// a test that compares the target afterwards, so a verb that composed the wrong one is red at
+    /// the comparison rather than at a time limit.
+    static func anyConfirmed(in scene: LeaseScene, since mark: Int) async {
+        await scene.waitForState(since: mark) { $0.heldLease?.isConfirmed ?? false }
+    }
+
     /// The index of each acquire, release answer and apply after `mark`, in the order the helper
     /// handled them.
     static func order(_ entries: [LeaseLedger.Entry]) -> [String] {
@@ -140,11 +147,15 @@ struct LeaseDriverPerFanTests {
     func releaseFanOfTwo() async throws {
         let scene = await LeaseScene()
         try #require(await scene.take(try LeaseScene.target([0: 3000, 1: 3200])) != nil)
+        // Parked, so nothing can move the state on between the verb and the read below.
+        await scene.helper.script(.release, .parked)
         let mark = await scene.mark()
 
         await scene.driver.releaseFan(1)
         // Set in the verb's own turn, so a verb that sent nothing is red here, not at a time limit.
         try #require(await scene.driver.state == .releasing, "the lease is released first")
+        await scene.ledger.waitFor { !$0.releases.isEmpty }
+        await scene.helper.answerParked(.release)
         let rest = try LeaseScene.target([0: 3000])
         await Self.confirmed(rest, in: scene, since: mark)
 
@@ -163,10 +174,13 @@ struct LeaseDriverPerFanTests {
     func releaseFanOfTheLast() async throws {
         let scene = await LeaseScene()
         let held = try #require(await scene.take(try LeaseScene.target([0: 3000])))
+        await scene.helper.script(.release, .parked)
         let mark = await scene.mark()
 
         await scene.driver.releaseFan(0)
         try #require(await scene.driver.state == .releasing, "Auto: the lease is released")
+        await scene.ledger.waitFor { !$0.releases.isEmpty }
+        await scene.helper.answerParked(.release)
         await scene.waitForState(since: mark) { $0.isReleased }
         await scene.settle()
 
@@ -222,7 +236,7 @@ struct LeaseDriverPerFanTests {
 
         await scene.driver.adjustFan(0, to: try Self.speed(3500))
         await scene.driver.adjustFan(1, to: try Self.speed(4000))
-        #expect(await scene.driver.state == .acquiring(fans: [0]))
+        try #require(await scene.driver.state == .acquiring(fans: [0]))
 
         let expected = try LeaseScene.target([0: 3500])
         let mark = await scene.mark()

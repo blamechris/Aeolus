@@ -47,7 +47,8 @@ struct LeaseDriverPerFanReleasingTests {
         let expected = try LeaseScene.target([1: 4500, 2: 4200])
         let mark = await scene.mark()
         await scene.helper.answerParked(.release)
-        await Self.confirmed(expected, in: scene, since: mark)
+        await LeaseDriverPerFanTests.anyConfirmed(in: scene, since: mark)
+        #expect(await scene.driver.state.heldLease?.phase == .confirmed(expected))
         #expect(await scene.entries.acquires.last?.fanIndices == [1, 2])
         #expect(await scene.entries.applies.last == expected.settings)
         await scene.finish()
@@ -115,11 +116,16 @@ struct LeaseDriverPerFanReleasingTests {
             try await Self.holdTwoFansByTakeFan(in: scene)
         }
         try await Self.reachWithoutTaking(start, in: scene)
+        // Parked, so nothing can move the state on between the verb and the read below.
+        await scene.helper.script(.acquire, .parked)
         let mark = await scene.mark()
+        let asked = await scene.entries.acquires.count
 
         await scene.driver.takeFan(1, at: try Self.speed(4000))
         try #require(
             await scene.driver.state == .acquiring(fans: [1]), "the fan alone, from \(start)")
+        await scene.ledger.waitFor { $0.acquires.count == asked + 1 }
+        await scene.helper.answerParked(.acquire)
         let expected = try LeaseScene.target([1: 4000])
         await Self.confirmed(expected, in: scene, since: mark)
 

@@ -74,8 +74,8 @@ struct LeaseDriverLetGoFloorTests {
         let scene = await LeaseScene()
         let scenario = try await Self.changeOfSetDuringAnApply(in: scene)
 
-        #expect(scenario.acquiring.automaticEvidence == .noRead, "\(scenario.acquiring)")
-        #expect(
+        try #require(scenario.acquiring.automaticEvidence == .noRead, "\(scenario.acquiring)")
+        try #require(
             await scene.driver.report.automaticEvidence == .noRead,
             "B's apply answered; A's has not")
 
