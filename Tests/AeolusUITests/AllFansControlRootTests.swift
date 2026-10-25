@@ -295,7 +295,9 @@ struct AllFansControlRootTests {
     /// on screen was read before the loss (this window's source has no observer, so it carries no
     /// ticket, and no floor admits it), the `apply` is still unanswered (the driver's evidence is
     /// `.noRead`), and the snapshot lists the lease. Each is pinned on its own in
-    /// `FanControlAutomaticTests`; this is the scenario they were written for.
+    /// `FanControlAutomaticTests`; this is the scenario they were written for. With the `apply`
+    /// unanswered, the control also says why Auto is not shown (#505,
+    /// `FanControlAwaitingApplyTests`).
     @Test("A loss during the first apply does not draw Auto from the snapshot before it")
     func aLossDuringTheFirstApplyIsNotAuto() async throws {
         let scene = await CompositionScene()
@@ -317,12 +319,14 @@ struct AllFansControlRootTests {
 
         let control = window.control(scene.root.leaseState.current)
         #expect(control.selection == .none, "not Auto: the helper may still finish the apply")
+        #expect(scene.root.leaseState.current.automaticEvidence == .noRead)
         #expect(
             control.statusLines.map(\.value)
                 == [
                     .init(
                         text: "Control ended.",
-                        detail: "The helper stopped answering (unresponsive).")
+                        detail: "The helper stopped answering (unresponsive)."),
+                    FanControlAwaitingApplyTests.awaiting,
                 ])
         await window.close()
         await scene.finish()

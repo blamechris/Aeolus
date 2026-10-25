@@ -173,6 +173,11 @@ struct AutomaticAfterAReadTests {
         #expect(!early, "a read was asked for while no read could be evidence")
         await Support.tickEnds(polling)
         #expect(control().selection == .none)
+        #expect(
+            control().statusLines.map(\.value) == [
+                Self.released, FanControlAwaitingApplyTests.awaiting,
+            ],
+            "the control says why Auto is not shown (#505)")
 
         await scene.lease.helper.answerParked(.apply)
         try #require(
@@ -185,10 +190,17 @@ struct AutomaticAfterAReadTests {
         try #require(await Support.settle { evidence.admits(Self.ticket(source)) })
         await Support.tickEnds(polling)
         #expect(control().selection == .automatic)
+        #expect(scene.root.leaseState.current.state == .released, "the state did not move")
+        #expect(control().statusLines.map(\.value) == [Self.released], "the wait is over (#505)")
 
         source.stop()
         await scene.finish()
     }
+
+    /// What `.released` says beneath the control.
+    private static let released = FanControlPresentation.StatusLine(
+        text: "Aeolus is renewing no lease.",
+        detail: "Each fan's row shows what the helper reports.")
 
     /// A reply the authority watch renders, rather than a tick, carries its read's ticket too.
     ///
