@@ -34,12 +34,12 @@ import Foundation
 /// one only when none exists, and a loop that is waiting for a reply when its last consumer
 /// leaves finishes that wait before it ends.
 ///
-/// **Nothing here cancels a request.** `stop()` and `retrySoon()` cancel only the pause between
-/// requests. A request outstanding at `stop()` is left to finish, and its answer is **kept**: it
-/// is a real reply, stamped when it arrived, and the freshness bound decides whether anything
-/// may render it later. A `start()` that arrives while it is outstanding does not send another;
-/// the loop that sent it carries on once it is answered. Each request also runs in its own
-/// unstructured task, so even a cancelled loop could not cancel it.
+/// **Nothing here cancels a request.** `stop()`, `retrySoon()` and `readSoon()` cancel only the
+/// pause between requests. A request outstanding at `stop()` is left to finish, and its answer
+/// is **kept**: it is a real reply, stamped when it arrived, and the freshness bound decides
+/// whether anything may render it later. A `start()` that arrives while it is outstanding does
+/// not send another; the loop that sent it carries on once it is answered. Each request also
+/// runs in its own unstructured task, so even a cancelled loop could not cancel it.
 ///
 /// That is #419's rule for the read side. `HelperClient` keeps a cancelled caller's sequenced
 /// message in flight with its deadline running (`InFlightMessages`), so a view that cancelled
@@ -181,8 +181,8 @@ public final class HelperSnapshotSource {
     private var loop: Task<Void, Never>?
     /// The request in flight, while one is. Nothing in this type cancels it.
     private var outstanding: Task<SystemSnapshot, any Error>?
-    /// The pause between two requests: the only task `stop()`, `retrySoon()` and a settled
-    /// interval change cancel.
+    /// The pause between two requests: the only task `stop()`, `retrySoon()`, `readSoon()` and a
+    /// settled interval change cancel.
     private var pause: Task<Void, Never>?
     /// The wait for the refresh interval to hold still, while one is running.
     private var intervalSettle: Task<Void, Never>?
@@ -523,9 +523,11 @@ extension HelperSnapshotSource {
     /// - **A request in flight is left alone**, and no second one is sent beside it (#419). Its
     ///   ticket may predate the moment this is about, so the pause after it is skipped instead,
     ///   once: the next request goes out as soon as it is answered. So is the pause after a ticket
-    ///   being taken, for the same reason.
-    /// - **A backoff is left alone.** A failing helper is not asked again sooner for it, and the
-    ///   failure count is not touched: `retrySoon()` is what ends a backoff.
+    ///   being taken, for the same reason. That holds for a backoff's retry too, so a floor minted
+    ///   while the retry is out is read at once when the retry succeeds; if it fails, the backoff's
+    ///   next pause runs (`run()` skips only after a cycle that did not fail).
+    /// - **A backoff's pause is left alone.** A failing helper is not asked again sooner for it,
+    ///   and the failure count is not touched: `retrySoon()` is what ends a backoff.
     /// - **The interval's debounce is untouched.** A wait for the slider to rest goes on, and its
     ///   cut lands as before (`refreshIntervalDidChange()`).
     /// - With no loop running there is nothing to cut: the next `start()` reads at once.
@@ -533,8 +535,9 @@ extension HelperSnapshotSource {
     /// Called on the main actor by the model that follows the driver's reports
     /// (`LeaseStateModel`), never by the driver: the source holds no reference to it.
     func readSoon() {
-        guard loop != nil, consecutiveFailures == 0 else { return }
+        guard loop != nil else { return }
         if let pause {
+            guard consecutiveFailures == 0 else { return }
             pause.cancel()
         } else {
             readOwed = true

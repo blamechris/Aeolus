@@ -50,7 +50,9 @@ struct HelperSnapshotSourceReadSoonTests {
         #expect(await helper.peakAtHelper == 1)
 
         await helper.reply(with: Support.snapshot())
-        try await pacing.waitForSleeps(2)
+        // Bounded, so a source that never pauses again is a red here, not at the time limit.
+        let paced = await Support.eventually { await pacing.sleptSeconds.count >= 2 }
+        #expect(paced, "no pause followed the read")
         #expect(await pacing.sleptSeconds == [60, 60], "one read, then the interval again")
         await pacing.release()
         await Support.tearDown(source, helper)
@@ -107,10 +109,62 @@ struct HelperSnapshotSourceReadSoonTests {
         await Support.tearDown(source, helper)
     }
 
+    /// A floor minted while the retry after a backoff is in flight. The retry's ticket may predate
+    /// it, so when the retry succeeds the next read goes out at once, as after any request in
+    /// flight, and not after the full interval.
+    ///
+    /// **Mutation (RB, "the nudge dropped during a retry", the code before #503's fold):** guard
+    /// `readSoon()` on `consecutiveFailures == 0` before it looks for a pause. Run: red at `sent`.
+    @Test("readSoon() during a backoff's retry reads again once the retry succeeds")
+    func readSoonDuringTheRetryAfterABackoff() async throws {
+        let helper = FakeSnapshotHelper()
+        let pacing = GatedPollingClock()
+        let source = try await Self.started(helper, pacing: pacing)
+        await helper.fail(with: Failure())
+        try await pacing.waitForSleeps(1)
+        await pacing.release()
+        try await helper.waitForRequests(2)
+        #expect(source.hasOutstandingRequest, "the retry is in flight")
+
+        source.readSoon()
+        await helper.reply(with: Support.snapshot())
+        let sent = await Support.requestsReach(3, on: helper)
+        #expect(sent, "the nudge was dropped: the next read waits the full interval")
+        #expect(await pacing.sleptSeconds == [60], "no pause after the retry")
+        await pacing.release()
+        await Support.tearDown(source, helper)
+    }
+
+    /// The pause skipped after a request in flight is skipped only when that request succeeded.
+    /// When it fails, a backoff has begun, and a failing helper is not asked again at once.
+    ///
+    /// **Mutation (M-D):** in `HelperSnapshotSource.run`, delete `consecutiveFailures == 0` from
+    /// the skip's condition. Run: red at `!sent`.
+    @Test("readSoon() with a request in flight that then fails leaves the backoff's pause")
+    func readSoonThenTheRequestFails() async throws {
+        let helper = FakeSnapshotHelper()
+        let pacing = GatedPollingClock()
+        let source = try await Self.started(helper, pacing: pacing)
+
+        source.readSoon()
+        await helper.fail(with: Failure())
+        let settled = await Support.eventually {
+            let paused = await pacing.sleptSeconds.count >= 1
+            return paused ? true : await helper.requests >= 2
+        }
+        try #require(settled, "the cycle after the failure neither paused nor sent")
+        let sent = await Support.eventually(turns: 2_000) { await helper.requests >= 2 }
+        #expect(!sent, "a failing helper was asked again at once")
+        #expect(await pacing.sleptSeconds.count == 1, "the backoff's pause ran")
+        await pacing.release()
+        await Support.tearDown(source, helper)
+    }
+
     /// The interval's wait to hold still goes on, and its cut lands as before.
     ///
     /// **Mutation (F10e, "the debounce ended"):** in `readSoon()`, call `intervalSettle?.cancel()`
-    /// first. Run: red at `isWaitingForTheIntervalToSettle`.
+    /// first. Run: red at `!cancelled`, and at the settle wait. `isWaitingForTheIntervalToSettle`
+    /// cannot see it: a cancelled wait returns without clearing its task.
     @Test("readSoon() leaves the interval's debounce alone")
     func readSoonLeavesTheDebounce() async throws {
         let helper = FakeSnapshotHelper()
@@ -127,6 +181,10 @@ struct HelperSnapshotSourceReadSoonTests {
 
         source.readSoon()
         try #require(await Support.requestsReach(2, on: helper))
+        let cancelled = await Support.eventually(turns: 2_000) {
+            await settling.cancelledSleeps > 0
+        }
+        #expect(!cancelled, "readSoon() cancelled the slider's wait")
         #expect(source.isWaitingForTheIntervalToSettle, "the slider's wait was ended")
         await helper.reply(with: Support.snapshot())
         try await pacing.waitForSleeps(2)
