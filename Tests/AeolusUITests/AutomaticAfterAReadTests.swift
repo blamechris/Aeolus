@@ -141,6 +141,88 @@ struct AutomaticAfterAReadTests {
         await scene.finish()
     }
 
+    /// Auto during an `apply`, through the root, at a 60 s refresh interval. The driver is
+    /// `released` with the `apply` still at the helper, so no read is evidence and none is asked
+    /// for. When the `apply` answers, the floor is published as a second report with the state
+    /// unchanged, the root asks for a read at once, and its reply reads Automatic.
+    ///
+    /// **Mutation (M-G):** red at `!early`. **Mutation (M-B):** red at the floor's requirement,
+    /// the evidence-only report dropped. **Mutation (M-C):** red at `requestsReach(2)`, no read
+    /// asked for when only the evidence moved. **Mutation (S2m):** red at `.noRead`.
+    @Test("Auto during an apply reads Automatic once the apply has answered and a read follows")
+    func autoDuringAnApplyReadsAutomaticAfterItAnswers() async throws {
+        let (scene, polling) = try await Self.rootAt60Seconds()
+        let source = scene.root.snapshots
+        let control = {
+            AllFansControlPresentation(polling: polling, driver: scene.root.leaseState.current)
+        }
+        await scene.reader.reply(with: Self.cleared)
+        try #require(await Support.settle { Self.ticket(source) != nil })
+        await scene.lease.helper.script(.apply, .parked)
+        await scene.lease.driver.take(try LeaseScene.target([0: 3000, 1: 3000]))
+        await scene.lease.ledger.waitFor { !$0.applies.isEmpty }
+
+        let mark = await scene.lease.mark()
+        try await scene.click { scene.root.selectAutomatic() }
+        await scene.lease.waitForState(since: mark) { $0.isReleased }
+        try #require(await Support.settle { scene.root.leaseState.current.state == .released })
+        #expect(scene.root.leaseState.current.automaticEvidence == .noRead)
+        let early = await Support.eventually(turns: 2_000) { await scene.reader.requests >= 2 }
+        #expect(!early, "a read was asked for while no read could be evidence")
+        await Support.tickEnds(polling)
+        #expect(control().selection == .none)
+
+        await scene.lease.helper.answerParked(.apply)
+        try #require(
+            await Support.settle { Self.isFloor(scene.root.leaseState.current.automaticEvidence) },
+            "the root published the floor the apply's answer minted")
+        let sent = await Support.requestsReach(2, on: scene.reader)
+        try #require(sent, "the root waited out the 60 s pause after the apply answered")
+        await scene.reader.reply(with: Self.cleared)
+        let evidence = scene.root.leaseState.current.automaticEvidence
+        try #require(await Support.settle { evidence.admits(Self.ticket(source)) })
+        await Support.tickEnds(polling)
+        #expect(control().selection == .automatic)
+
+        source.stop()
+        await scene.finish()
+    }
+
+    /// A reply the authority watch renders, rather than a tick, carries its read's ticket too.
+    ///
+    /// **Mutation (O19b):** in `PollingViewModel.reassessAuthority()`, build the snapshot to render
+    /// with `ticket: nil`. Run: red at `renderedReadTicket != nil`.
+    @Test("A reply the authority watch renders keeps the ticket of its read")
+    func theWatchRenderKeepsTheTicket() async throws {
+        let scene = await LeaseScene()
+        let helper = FakeSnapshotHelper()
+        let source = try await Support.handshakenSource(
+            helper, observer: .judging(with: scene.driver))
+        let ticks = GatedPollingClock()
+        let watch = GatedPollingClock()
+        let viewModel = PollingViewModel(
+            provider: Support.directProvider(), clock: ticks, refreshInterval: 60,
+            snapshots: source, authorityWatchClock: watch)
+        viewModel.start()
+        try await helper.waitForRequests(1)
+        await helper.reply(with: Self.cleared)
+        try #require(await Support.settle { Self.ticket(source) != nil })
+        await PollingViewModelWatchRenderTests.step(watch)
+
+        try #require(viewModel.renderedSnapshot == Self.cleared, "the watch rendered the reply")
+        #expect(viewModel.renderedReadTicket != nil, "and dropped the ticket of its read")
+        #expect(viewModel.renderedReadTicket == Self.ticket(source))
+        viewModel.stop()
+        await ticks.release()
+        await watch.release()
+        await Support.tearDown(source, helper)
+        await scene.finish()
+    }
+
+    static func isFloor(_ evidence: LeaseDriverReport.AutomaticEvidence) -> Bool {
+        if case .readFrom = evidence { true } else { false }
+    }
+
     /// A root whose source reads at a 60 s interval on the real pacing clock, handshaken, with its
     /// first request parked, and a window's view model over it that the test ticks by hand.
     static func rootAt60Seconds() async throws -> (CompositionScene, PollingViewModel) {
