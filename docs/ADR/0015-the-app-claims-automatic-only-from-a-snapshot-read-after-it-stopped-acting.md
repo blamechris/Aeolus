@@ -237,7 +237,10 @@ and it fails closed.
   connection: the floor orders the read after them. It does rely on three helper facts, named
   under *Identity* and *Clearance*: a grant only into an empty table, every teardown beginning its
   fans' handbacks before it can suspend, and the lease and the handback registers read with no
-  suspension between them. Until #516 lands, helper tests pin each only in part.
+  suspension between them. Helper tests pin each (#516): the first in `LeaseContractTests`,
+  from another connection and from the holder's own; the second in behaviour for
+  `connectionDidInvalidate` (`TeardownRegistrationGapTests`) and, for every teardown, by a source
+  scan (`TeardownCountTripwireTests`); the third in `HandbackBesideAnotherLeaseTests`.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed
