@@ -170,8 +170,11 @@ exactly which verbs are sequenced and what the remaining cost is.
 connection of its own, a second `HelperClient` separate from the read connection it renders
 snapshots from (`AppComposition`, #153), so no `snapshot` is queued behind the app's own `apply`.
 The app takes a lease when the user clicks a percentage in the main window's control for all fans
-(#153's PR 6b), and the helper refuses it until the write plane exists. The helper-side fix above
-is unchanged by this, and still covers a client that reads and holds on one connection.
+(#153's PR 6b), or puts a fan in Custom in its row (#154), and the helper refuses it until the
+write plane exists. One lease covers every fan in Custom, so changing which fans are in Custom
+releases the lease, which returns its fans to automatic control, and asks again (`LeaseDriver`,
+"One fan at a time"). The helper-side fix above is unchanged by this, and still covers a client
+that reads and holds on one connection.
 
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is

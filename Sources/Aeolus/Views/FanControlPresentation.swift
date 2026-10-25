@@ -8,9 +8,10 @@ import Foundation
 /// is enabled and why not, what it shows as selected, whether it must offer to give the fans back,
 /// and the line beneath it (#154, #155).
 ///
-/// **Rendered by the main window's one control for all fans** (`AllFansControlPresentation`, drawn
-/// at the head of `FanListView`, #153's PR 6b). The contract that control honours is at the end of
-/// this comment. Per-fan control is PR 8.
+/// **Rendered by the main window's control for all fans** (`AllFansControlPresentation`, drawn at
+/// the head of `FanListView`, #153's PR 6b), **and by each fan's row**
+/// (`FanRowControlPresentation`, drawn in `FanRowView`, #154). The contract both honour is at the
+/// end of this comment.
 ///
 /// Pure, like `FanRowModel`: no I/O, no clock and no actor. It is a function of what the window
 /// already has, gathered by `Inputs`, and of one fan's row.
@@ -187,12 +188,13 @@ import Foundation
 ///   Never a greyed control with no explanation.
 /// - **Offer to give the fans back whenever `canRelease` is true, whatever `affordance` says.**
 ///   Auto is `selectAutomatic()`, a release, and a disabled control does not withhold it.
-/// - **Draw `selection` and nothing else as selected.** A click calls the driver (`take` for a
-///   deliberate choice, `selectAutomatic()` for Auto, `adjust` while held) and selects nothing
-///   itself. Draw `.applying` and `.checking` as pending, never as the segment achieved:
-///   `.applying` at the segment its target names; `.checking` with no segment, because no licensed
-///   snapshot is on screen whose bounds could name the percentage a held target is, and the row's
-///   displayed bounds are not what the helper clamps to (#497's review, S2).
+/// - **Draw `selection` and nothing else as selected.** A click calls the driver (`take` or
+///   `takeFan` for a deliberate choice, `selectAutomatic()` or `releaseFan` for Auto, `adjustFan`
+///   while held) and selects nothing itself. Draw `.applying` and `.checking` as pending, never as
+///   the segment achieved: `.applying` at the segment its target names; `.checking` with no
+///   segment, because no licensed snapshot is on screen whose bounds could name the percentage a
+///   held target is, and the row's displayed bounds are not what the helper clamps to (#497's
+///   review, S2).
 /// - Show `status` beneath the control, then `awaitingApply`, and draw `lost` and `refused` as
 ///   what happened.
 /// - **A control that speaks for several fans claims no more than each of them does.** It is
