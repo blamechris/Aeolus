@@ -141,7 +141,7 @@ struct AllFansControlRootTests {
     /// The first `adjust` is waited for on the driver, so the check that nothing was acquired is
     /// made after the driver has run it, not possibly before (#500).
     ///
-    /// **Mutation (W3, "a call the seam never sees"):** in `AppComposition.adjust`, drop
+    /// **Mutation (M500c, "a call the seam never sees"):** in `AppComposition.adjust`, drop
     /// `started(call)`. Run, debug: red at `CompositionScene.click`'s
     /// `#require(root.latestDriverCall)` in 3 of 3 runs.
     @Test("adjust from the root moves a held speed, and never acquires")

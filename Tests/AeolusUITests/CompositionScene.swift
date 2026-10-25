@@ -64,17 +64,17 @@ struct CompositionScene {
     /// round trips are on the fake, the driver and the ledger, never on the main actor, so a test
     /// can finish them, and act again, before that task has started. In release-config runs of
     /// `AeolusUITests`, `autoWhileReleasingCancelsAQueuedTake` answered its parked release before
-    /// Auto's task had started, and went red in 7 of 10 runs.
+    /// Auto's task had started, and went red in 7 of 10 runs before this wait.
     ///
     /// The wait is on the ledger, through `LeaseScene.run`, so a call that never finishes is a red
     /// at the suite's time limit rather than a `swift test` that never exits.
     ///
-    /// **What no test here shows.** With `DriverCall.finished()` made to return at once (W2),
-    /// `AeolusUITests` stayed green in 10 of 10 release-config runs, and in 10 of 10 more with
-    /// the waits written out in the test. So the suite does not show that the wait on the call
-    /// is needed, only that this helper is enough where `settle()` was not (W1); why W2 survives
-    /// was not found. The wait is what makes the order certain: `finished()` returns only after
-    /// the task's one step, the driver's verb, has returned.
+    /// **What no test here shows.** With `DriverCall.finished()` made to return at once
+    /// (M500b), `AeolusUITests` stayed green in 10 of 10 release-config runs, and in 10 of 10
+    /// more with the waits written out in the test. So the suite does not show that the wait on
+    /// the call is needed, only that this helper is enough where `settle()` was not (M500a). Why
+    /// M500b survives was not found. The wait is what makes the order certain: `finished()`
+    /// returns only after the task's one step, the driver's verb, has returned.
     func click(_ click: () -> Void) async throws {
         let before = root.latestDriverCall?.ordinal ?? 0
         click()

@@ -76,7 +76,7 @@ extension AllFansControlRootTests {
     /// is answered, so the take and Auto both reach the driver while it is releasing, as the
     /// clicks they stand for would.
     ///
-    /// **Mutation (W1, "settle instead of the wait", #500):** replace each `scene.click { … }`
+    /// **Mutation (M500a, "settle instead of the wait"):** replace each `scene.click { … }`
     /// and the `#expect` after it with the bare click followed by `await scene.lease.settle()`, as
     /// before #500. Run, release config with testability, whole `AeolusUITests`: red at
     /// `!reacquired` in 8 of 10 runs. A race, so a rate; the fixed test was green in 12 of 12.
