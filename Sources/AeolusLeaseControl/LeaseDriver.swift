@@ -10,9 +10,14 @@ import Foundation
 /// one, over the app's control connection, and wires quit, logout, wake, fast user switching and
 /// the last control window to it. The main window's control for all fans calls `take(_:)` for a
 /// percentage and `selectAutomatic()` for Auto (#153's PR 6b). The per-fan verbs, `takeFan(_:at:)`,
-/// `adjustFan(_:to:)` and `releaseFan(_:)`, compose over those for #154's rows; nothing calls them,
-/// or `adjust(_:)`, until PR 8b wires the rows. Until the write plane exists (#9) the helper
-/// refuses every grant, so the shipping app is refused any lease it asks for.
+/// `adjustFan(_:to:)` and `releaseFan(_:)`, compose over `take(_:)`, `adjust(_:)` and
+/// `selectAutomatic()` for each fan's row (#154), which reaches them through `AppComposition`:
+/// Custom, and a speed typed while the fan's control cannot release, take it; the stepper, and a
+/// speed typed while it can, adjust it; Auto releases it, or is `selectAutomatic()` when the report
+/// on screen names no fan in Custom but this one. From the app, `adjust(_:)` is reached only
+/// through `adjustFan(_:to:)`: the root's own `adjust(_:)` has no caller. Until the write plane
+/// exists (#9) the helper refuses every grant, so the shipping app is refused any lease it asks
+/// for.
 ///
 /// ## States
 ///

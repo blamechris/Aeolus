@@ -169,7 +169,8 @@ struct FanRowControlPresentation: Equatable {
     /// maintainer's to settle at the live look.
     static let changeOfFanSet =
         "Aeolus holds one lease for every fan in Custom. Changing which fans are in Custom hands "
-        + "the lease back, which returns its fans to automatic control, and asks again."
+        + "the lease back, which returns its fans to automatic control, and asks again for any fan "
+        + "still in Custom."
 
     init(_ inputs: Inputs, field state: FieldState) {
         let presentation = inputs.presentation

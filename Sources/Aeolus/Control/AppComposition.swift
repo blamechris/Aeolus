@@ -37,10 +37,10 @@ import Foundation
 /// The main window's control for all fans (`FanListView`, through `AllFansControlActions`) calls
 /// `take(_:)` for a percentage and `selectAutomatic()` for Auto. Each fan's row (through
 /// `FanRowControlActions`, #154) calls `takeFan(_:at:)` for Custom and for a speed typed while the
-/// fan is not held, `adjustFan(_:to:)` for its stepper and for a speed typed while it is, and
-/// `releaseFan(_:)` for its Auto. So the app asks for the fans when the user clicks, and only then.
-/// `adjust(_:)` has no caller in the app. Quit, logout, wake, fast user switching and the last
-/// control window each reach the driver too.
+/// fan's control cannot release (`FanControlPresentation.canRelease`), `adjustFan(_:to:)` for its
+/// stepper and for a speed typed while it can, and `releaseFan(_:)` for its Auto. So the app asks
+/// for the fans when the user clicks, and only then. `adjust(_:)` has no caller in the app. Quit,
+/// logout, wake, fast user switching and the last control window each reach the driver too.
 ///
 /// Today's helper refuses every grant until the write plane exists (#9): its `acquireLease`
 /// refuses a plane that cannot write before it asks anything else, and its snapshot reports each
@@ -211,8 +211,9 @@ final class AppComposition {
 
     /// Puts fan `index` in Custom at `speed`, every other fan in Custom keeping its speed
     /// (`LeaseDriver.takeFan(_:at:)`): a deliberate user action, the Custom segment or a speed
-    /// typed while the fan is not held. The driver composes the target from what is Custom on its
-    /// own actor, never from what the window shows. Returns at once, as `take(_:)` does.
+    /// typed while the fan's control cannot release. The driver composes the target from what is
+    /// Custom on its own actor, never from what the window shows. Returns at once, as `take(_:)`
+    /// does.
     func takeFan(_ index: Int, at speed: FanTargetRPM) {
         guard let driver = lease?.driver else { return }
         leaseState.userAskedForControl()
