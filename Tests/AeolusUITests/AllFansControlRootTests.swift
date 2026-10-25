@@ -137,10 +137,15 @@ struct AllFansControlRootTests {
 
     /// `adjust` has no caller until PR 8's slider. It moves a held lease's speed, and from `idle`
     /// it acquires nothing.
+    ///
+    /// The first `adjust` is waited for on the driver, so the check that nothing was acquired is
+    /// made after the driver has run it, not possibly before (#500).
     @Test("adjust from the root moves a held speed, and never acquires")
     func rootAdjust() async throws {
         let scene = await CompositionScene()
-        scene.root.adjust(try Fans.target(.fifty, fans: [0]))
+        let first = try Fans.target(.fifty, fans: [0])
+        try await scene.click { scene.root.adjust(first) }
+        #expect(await scene.lease.driver.state == .idle)
         let acquired = await Support.eventually(turns: 2_000) {
             await !scene.lease.entries.acquires.isEmpty
         }
@@ -343,6 +348,7 @@ struct AllFansControlRootTests {
                 }))
         AllFansControlActions(composition: scene.root).choose(.fifty, on: window.polling)
 
+        #expect(scene.root.latestDriverCall == nil, "the click started no call on the driver")
         let sent = await Support.eventually(turns: 2_000) {
             await !scene.lease.entries.acquires.isEmpty
         }

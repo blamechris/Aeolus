@@ -56,6 +56,9 @@ import Foundation
 /// synchronous, and could not call an `async` entry point without a task of its own. That a member
 /// added later stays synchronous is documented here and not enforced.
 ///
+/// The one thing here that can be awaited is the suite's `latestDriverCall`. It waits for a call
+/// to have run and holds no `Task`, so it cannot cancel one; awaiting it reaches no driver verb.
+///
 /// This is the app's half of #419's choice, that the UI never cancels a sequenced verb it means
 /// to send again. The driver's half is that it never cancels `acquireLease` or `apply` itself
 /// (`LeaseDriver`, "It never cancels a sequenced verb"), and puts each on a task of its own.
@@ -93,6 +96,11 @@ final class AppComposition {
 
     /// The control windows open now, by the identifier each reported.
     private var controlWindows: Set<UUID> = []
+
+    /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started, and how many they
+    /// have started (`latestDriverCall`).
+    private var latestCall: DriverCall?
+    private var callsStarted = 0
 
     private struct LeaseWiring {
         /// Reached only through this type's entry points, each on a task of its own (#419).
@@ -164,10 +172,12 @@ final class AppComposition {
     ///
     /// Each entry point starts a separate unstructured `Task`. Two calls reach the driver in the
     /// order they were made because the main actor runs its jobs first in, first out, not because
-    /// the language promises it; a user's clicks are many run-loop turns apart.
+    /// the language promises it; a user's clicks are many run-loop turns apart. A call reaches the
+    /// driver only once the main actor runs its task, after this has returned (#500).
     func take(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
-        Task { await driver.take(target) }
+        let call = Task { await driver.take(target) }
+        started(call)
     }
 
     /// Moves the speed of a lease that is acquiring or held, over the same fans, and **never
@@ -175,14 +185,65 @@ final class AppComposition {
     /// Nothing calls it yet. Returns at once, as `take(_:)` does.
     func adjust(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
-        Task { await driver.adjust(target) }
+        let call = Task { await driver.adjust(target) }
+        started(call)
     }
 
     /// Auto, and the release offer: the lease is released, whatever is in flight
     /// (`LeaseDriver.selectAutomatic()`). Returns at once, as `take(_:)` does.
     func selectAutomatic() {
         guard let driver = lease?.driver else { return }
-        Task { await driver.selectAutomatic() }
+        let call = Task { await driver.selectAutomatic() }
+        started(call)
+    }
+
+    // MARK: - The suite's seam
+
+    /// A call one of the entry points above started on the driver, as a handle that can only be
+    /// waited for.
+    ///
+    /// **It holds no `Task`**, as `LeaseDriver.HeartbeatHandle` holds none. A `Task` would hand
+    /// its holder `cancel()`, and the entry points start their calls on tasks of their own so that
+    /// nothing a caller does can cancel them (#419). So the handle keeps only a closure that waits
+    /// for the task, and only this file can make one.
+    struct DriverCall: Sendable {
+
+        /// How many calls the entry points had started when this one began, this one included:
+        /// 1 for the first. A suite tells a new call from the one before by it.
+        let ordinal: Int
+
+        private let wait: @Sendable () async -> Void
+
+        fileprivate init(ordinal: Int, task: Task<Void, Never>) {
+            self.ordinal = ordinal
+            wait = { await task.value }
+        }
+
+        /// Returns once the driver has run the call: the task's one step is the driver's verb,
+        /// which is synchronous on the driver.
+        ///
+        /// **Not cancellable.** It waits on the task's `value`, which does not end when the
+        /// waiting task is cancelled. Call it from a task of its own (`LeaseScene.run`), never
+        /// directly from a test.
+        func finished() async { await wait() }
+    }
+
+    /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started on the driver, or
+    /// `nil` if none has: **a seam for the suite**, which nothing in the app reads.
+    ///
+    /// **Why a suite needs it (#500).** A call reaches the driver only once the main actor runs
+    /// its task. A test on the main actor that clicks and then waits only on other actors can go
+    /// on before the main actor runs that task. In release-config runs of the suite, Auto's task
+    /// had not yet started when the test answered the release it was meant to precede. A test that
+    /// has to know a click has reached the driver waits on this instead
+    /// (`CompositionScene.click(_:)`).
+    ///
+    /// Always `nil` in a build with no helper: no entry point starts anything there.
+    var latestDriverCall: DriverCall? { latestCall }
+
+    private func started(_ task: Task<Void, Never>) {
+        callsStarted += 1
+        latestCall = DriverCall(ordinal: callsStarted, task: task)
     }
 
     // MARK: - Quit

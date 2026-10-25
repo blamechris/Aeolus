@@ -58,6 +58,7 @@ extension AllFansControlRootTests {
         root.adjust(target)
         root.take(target)
 
+        #expect(root.latestDriverCall == nil, "no entry point started a call")
         let sent = await Support.eventually(turns: 2_000) { await !ledger.entries.isEmpty }
         #expect(!sent, "nothing reached a control connection")
         #expect(connected == 0)
@@ -70,6 +71,14 @@ extension AllFansControlRootTests {
     /// the lease enables the control, a click queues a `take` behind the release, and Auto, enabled
     /// with the control, cancels it. That is the user's latest choice, so the pin is that nothing
     /// is acquired once the release answers.
+    ///
+    /// Each click is waited for on the driver (`CompositionScene.click(_:)`) before the release
+    /// is answered, so the take and Auto both reach the driver while it is releasing, as the
+    /// clicks they stand for would.
+    ///
+    /// **Mutation (W1, "settle instead of the wait", #500):** replace each `scene.click { … }`
+    /// with the bare click followed by `await scene.lease.settle()`, as before #500. Run, release
+    /// config, whole `AeolusUITests`: see the pull request for the count.
     @Test("Auto while releasing cancels a take queued behind the release")
     func autoWhileReleasingCancelsAQueuedTake() async throws {
         let scene = await CompositionScene()
@@ -87,10 +96,10 @@ extension AllFansControlRootTests {
         let control = window.control(scene.root.leaseState.current)
         #expect(control.affordance == .enabled)
         #expect(control.automaticIsEnabled)
-        actions.choose(.seventyFive, on: window.polling)
-        await scene.lease.settle()
-        actions.chooseAutomatic()
-        await scene.lease.settle()
+        try await scene.click { actions.choose(.seventyFive, on: window.polling) }
+        #expect(await scene.lease.driver.state == .releasing, "the take is queued behind it")
+        try await scene.click { actions.chooseAutomatic() }
+        #expect(await scene.lease.driver.state == .releasing)
 
         await scene.lease.helper.answerParked(.release)
         try #require(
@@ -120,8 +129,8 @@ extension AllFansControlRootTests {
             await Support.eventually { await scene.lease.entries.releases == [held.lease.id] })
         try await Self.published(on: scene) { $0 == .releasing }
 
-        actions.choose(.seventyFive, on: window.polling)
-        await scene.lease.settle()
+        try await scene.click { actions.choose(.seventyFive, on: window.polling) }
+        #expect(await scene.lease.driver.state == .releasing, "the take is queued behind it")
         await scene.lease.helper.answerParked(.release)
 
         try #require(

@@ -56,6 +56,26 @@ struct CompositionScene {
         workspace.post(name: name, object: nil)
     }
 
+    /// Runs `click`, which must start exactly one call on the driver through the root's entry
+    /// points, and returns once the driver has run that call (`AppComposition.latestDriverCall`).
+    ///
+    /// **Why `LeaseScene.settle()` is not enough after a click (#500).** The click's call reaches
+    /// the driver only once the main actor runs the task the root started for it. `settle()`'s
+    /// round trips are on the fake, the driver and the ledger, never on the main actor, so a test
+    /// can finish them, and act again, before that task has started. In release-config runs of
+    /// `AeolusUITests`, `autoWhileReleasingCancelsAQueuedTake` answered its parked release before
+    /// Auto's task had started, and went red in 7 of 10 runs.
+    ///
+    /// The wait is on the ledger, through `LeaseScene.run`, so a call that never finishes is a red
+    /// at the suite's time limit rather than a `swift test` that never exits.
+    func click(_ click: () -> Void) async throws {
+        let before = root.latestDriverCall?.ordinal ?? 0
+        click()
+        let call = try #require(root.latestDriverCall, "the click started a call on the driver")
+        try #require(call.ordinal == before + 1, "the click started exactly one call")
+        await lease.run { await call.finished() }
+    }
+
     /// Ends everything the scene started, so nothing is left waiting on a fake.
     func finish() async {
         await reader.close()
