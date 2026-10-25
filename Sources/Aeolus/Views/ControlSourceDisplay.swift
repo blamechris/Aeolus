@@ -10,7 +10,7 @@ import Foundation
 ///
 /// It never says the machine is in its safe state. "Every fan on automatic" needs every fan
 /// cleared **and** no lease listed, as `fanctl`'s `SafeState.verdict` checks, and that banner
-/// is #157's, not this.
+/// is #157's (`MonitoringModeDisplay`), not this.
 enum ControlSourceDisplay {
 
     struct Text: Equatable {

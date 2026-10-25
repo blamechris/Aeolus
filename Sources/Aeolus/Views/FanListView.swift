@@ -20,6 +20,12 @@ import SwiftUI
 /// - **A click calls `actions`**, which reads the screen again and asks the root. It selects
 ///   nothing itself.
 ///
+/// ## The monitoring-mode line (#157)
+///
+/// Above the control, `MonitoringModeDisplay`'s banner when it has one: the user chose Auto, the
+/// helper refuses manual control, the system reclaimed fans, or this build has no helper. Computed
+/// in `body` from the same read of `viewModel` and `leaseState` as the control.
+///
 /// This view starts and stops nothing itself — `MainView` owns the view model's lifecycle, so
 /// the fan and sensor panes always observe the same refresh loop, and the control reads a view
 /// model `MainView` started.
@@ -52,6 +58,10 @@ struct FanListView: View {
                     phase: viewModel.phase, lastUpdated: viewModel.lastUpdated))
 
             controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
+
+            if let banner = MonitoringModeDisplay.banner(polling: viewModel, lease: leaseState) {
+                MonitoringModeBanner(banner: banner)
+            }
 
             AllFansControlView(
                 control: AllFansControlPresentation(
