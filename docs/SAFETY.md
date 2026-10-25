@@ -2173,9 +2173,9 @@ main actor until the reply (`MainRunLoop`, #493).
 
 It passes when the helper's `Lease` log shows the restore as
 `returned to automatic control (the client released the lease).`,
-not `(the holding connection died)`, and the quit completes within about two seconds, well under it
-with a healthy helper. A quit that takes the full two seconds means the release went unanswered and
-the bound let it go. Watch it with:
+not `(the holding connection died)`, and the quit completes within about two seconds, expected well
+under it with a healthy helper. A quit that takes the full two seconds means the release was not
+answered within the bound, and the bound let it go. Watch it with:
 
 ```bash
 log stream --level debug --style compact --predicate 'subsystem == "dev.aeolus.AeolusHelper" AND category == "Lease"'

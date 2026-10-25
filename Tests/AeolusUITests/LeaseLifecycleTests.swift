@@ -15,6 +15,9 @@ struct LeaseLifecycleTests {
 
     /// Quit sends `releaseLease`, then tears the connection down, then answers the quit, with
     /// "terminate". The app never relies on the helper's invalidation path alone.
+    /// `disconnected < replied` is a sample: the reply reaches the ledger through two task hops,
+    /// so a hand-over just before the teardown can still pass it. `quitIsBounded` is what holds
+    /// that order.
     ///
     /// **Mutation (X22):** in `LeaseLifecycle.applicationShouldTerminate`, reply `false`. Red on
     /// the reply.
@@ -48,6 +51,15 @@ struct LeaseLifecycleTests {
     /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value`
     /// instead of the bounded outcome. The quit is never answered, and the test is red on its
     /// time limit at the wait for that answer.
+    /// **Mutation (M5, "a hand-over between the release and the teardown"):** in
+    /// `LeaseLifecycle.applicationShouldTerminate`'s detached task, `await driver.releaseFans()`,
+    /// then the `mainRunLoop.perform`, then `await driver.shutDown()`. Red at the requirement that
+    /// the teardown is in the ledger. `shutDown()` calls `releaseFans()` again, which joins the
+    /// release the helper never answered and waits for a second bound on the hand-wound clock; the
+    /// test does not advance it, so when the reply is recorded there has been no `.disconnect`.
+    /// This holds because the release is parked and the clock is the test's: the samples in
+    /// `AppCompositionLeaseTests`, `AppCompositionTests` and `QuitOffTheMainActorTests` can pass
+    /// this mutation. It would stop holding if `shutDown()` stopped waiting a second time.
     @Test("Quit is answered within the bound when the release gets no reply")
     func quitIsBounded() async throws {
         let scene = await LeaseScene()
