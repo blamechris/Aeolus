@@ -51,11 +51,13 @@ struct QuitOffTheMainActorTests {
             "the reply was handed to the main run loop")
         // Read before the test delivers anything, so it is the quit's own order that is looked at
         // and not the order the test chose for the delivery. It is a sample taken after the
-        // hand-over was seen, so it is the weaker half; the stronger one, `performed == 0` while
-        // the release is parked, is `AppCompositionLeaseTests.quitRepliesAfterTheTeardown`.
+        // hand-over was seen, so a teardown that runs just after the hand-over passes it too. The
+        // order is held elsewhere: nothing is handed over before the release is answered
+        // (`AppCompositionLeaseTests.quitRepliesOnlyAfterTheRelease`), and a hand-over before the
+        // teardown is caught by `LeaseLifecycleTests.quitIsBounded`.
         #expect(
             await scene.lease.entries.index(of: .disconnect) != nil,
-            "the connection was not torn down when the reply was handed over")
+            "the connection was not torn down by the time the hand-over was seen")
         scene.runLoop.runParked()
         await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
         #expect(await scene.lease.entries.terminationReplies == [true])

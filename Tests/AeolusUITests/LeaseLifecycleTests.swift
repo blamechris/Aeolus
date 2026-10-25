@@ -48,6 +48,12 @@ struct LeaseLifecycleTests {
     /// **Mutation (unbounded wait):** in `LeaseDriver.releaseFans`, return `await task.value`
     /// instead of the bounded outcome. The quit is never answered, and the test is red on its
     /// time limit at the wait for that answer.
+    /// **Mutation (M5, "a hand-over between the release and the teardown"):** in
+    /// `LeaseLifecycle.applicationShouldTerminate`'s detached task, `await driver.releaseFans()`,
+    /// then the `mainRunLoop.perform`, then `await driver.shutDown()`. Red at the requirement that
+    /// the teardown is in the ledger: when the reply is recorded, there has been no `.disconnect`.
+    /// `.atOnce` delivers on a main-actor task rather than at the hand-over, so this is a race the
+    /// mutation loses, not a deterministic pin.
     @Test("Quit is answered within the bound when the release gets no reply")
     func quitIsBounded() async throws {
         let scene = await LeaseScene()

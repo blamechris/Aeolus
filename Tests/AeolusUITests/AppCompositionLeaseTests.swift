@@ -35,9 +35,13 @@ struct AppCompositionLeaseTests {
     /// reply to the main run loop. Nothing replies while the release is still waiting for the
     /// helper, and the reply is delivered only when the run loop runs it.
     ///
-    /// The order is read from the run loop's own count of hand-overs, which this test does not
-    /// control: `performed` is 0 while the release is parked, and the teardown is in the ledger by
-    /// the time it is 1. Delivery is the test's choice (`runParked()`), so an order measured
+    /// What this test pins is the first half of that order, from the run loop's own count of
+    /// hand-overs, which the test does not control: `performed` is 0 while the release is parked,
+    /// so nothing is handed over before the helper answers. The second half, the teardown before
+    /// the hand-over, is only sampled here: the ledger is read after a poll has seen `performed`
+    /// reach 1, and the quit's task can finish its teardown in between, so a hand-over between the
+    /// release and the teardown passes. `LeaseLifecycleTests.quitIsBounded` is what catches that
+    /// one. Delivery is the test's choice (`runParked()`), so an order measured
     /// between the teardown and the delivered reply would measure the test.
     ///
     /// **Mutation (X19, "an early reply"):** in `AppComposition.applicationShouldTerminate`, reply
@@ -50,8 +54,8 @@ struct AppCompositionLeaseTests {
     /// `LeaseLifecycle.applicationShouldTerminate`, deliver the reply with
     /// `Task { @MainActor in reply(true) }` instead of `mainRunLoop.perform`. Red at the
     /// requirement that the reply was handed to the run loop.
-    @Test("Quit replies once, from the run loop, after the release and the teardown")
-    func quitRepliesAfterTheTeardown() async throws {
+    @Test("Quit replies once, from the run loop, and only after the release is answered")
+    func quitRepliesOnlyAfterTheRelease() async throws {
         let scene = await CompositionScene(runLoop: .parked)
         let held = try #require(await scene.lease.take(LeaseScene.target([0: 3000])))
         await scene.lease.helper.script(.release, .parked)
@@ -73,10 +77,11 @@ struct AppCompositionLeaseTests {
         try #require(
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
-        // Before the test delivers anything: the teardown is in the ledger at the hand-over.
+        // Before the test delivers anything, but after the poll above: a sample, not a pin (see
+        // the doc comment).
         #expect(
             await scene.lease.entries.index(of: .disconnect) != nil,
-            "the connection was not torn down when the reply was handed over")
+            "the connection was not torn down by the time the hand-over was seen")
         scene.runLoop.runParked()
         await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
 

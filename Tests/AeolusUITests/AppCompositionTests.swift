@@ -216,9 +216,10 @@ struct AppCompositionTests {
     }
 
     /// The delegate hands the quit to its root and passes AppKit's reply through, from the run
-    /// loop. The teardown is in the ledger when the reply is handed over; the order the quit keeps
-    /// is pinned by `AppCompositionLeaseTests.quitRepliesAfterTheTeardown`, which parks the
-    /// release.
+    /// loop. That the teardown is in the ledger once the hand-over is seen is a sample, not a
+    /// pin. The order the quit keeps is held by
+    /// `AppCompositionLeaseTests.quitRepliesOnlyAfterTheRelease`, which parks the release, and by
+    /// `LeaseLifecycleTests.quitIsBounded`.
     ///
     /// **Mutation (E1, "the delegate bypasses the root"):** in
     /// `AeolusAppDelegate.applicationShouldTerminate(replyingTo:)`, return `.terminateNow`. Red at
@@ -235,10 +236,11 @@ struct AppCompositionTests {
         try #require(
             await SnapshotTestSupport.eventually { scene.runLoop.performed == 1 },
             "the reply was handed to the main run loop")
-        // Read before the test delivers anything, so it is the quit's order and not the test's.
+        // Read before the test delivers anything, so the test's delivery does not decide it. It
+        // follows the poll above, so it is a sample.
         #expect(
             await scene.lease.entries.index(of: .disconnect) != nil,
-            "the connection was not torn down when the reply was handed over")
+            "the connection was not torn down by the time the hand-over was seen")
         scene.runLoop.runParked()
         await scene.lease.ledger.waitFor { !$0.terminationReplies.isEmpty }
 
