@@ -100,6 +100,8 @@ struct AllFansControlPresentation: Equatable {
     }
 
     /// A value some fans give, and which ones. `fans` is `nil` when every fan on screen gives it.
+    /// `Sendable` when its value is, so `MonitoringModeDisplay.State` can carry the helper's
+    /// refusals.
     struct Attributed<Value: Equatable>: Equatable {
         let fans: [String]?
         let value: Value
@@ -136,6 +138,8 @@ struct AllFansControlPresentation: Equatable {
         return true
     }
 }
+
+extension AllFansControlPresentation.Attributed: Sendable where Value: Sendable {}
 
 extension AllFansControlPresentation {
 
@@ -265,8 +269,9 @@ extension AllFansControlPresentation {
     }
 
     /// `values` said once each, in the order first given, each with the fans that gave it, or with
-    /// none when every one of the `among` fans on screen did.
-    fileprivate static func attributed<Value: Equatable>(
+    /// none when every one of the `among` fans on screen did. `MonitoringModeDisplay` attributes
+    /// the helper's refusals with it too, so the banner and the control name them alike.
+    static func attributed<Value: Equatable>(
         _ values: [(FanPollingReading, Value)], among total: Int
     ) -> [Attributed<Value>] {
         var groups: [(value: Value, fans: [String])] = []

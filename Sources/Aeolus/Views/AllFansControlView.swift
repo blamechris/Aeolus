@@ -228,7 +228,10 @@ struct AllFansControlView: View {
     }
 
     /// `text`, after the fans it is about when it is not about every fan.
-    static func prefixed(_ text: String, by fans: [String]?) -> String {
+    ///
+    /// `nonisolated`: pure, and `MonitoringModeDisplay.banner(for:)` prefixes refusals with it
+    /// from a context that is not the main actor's, which a member of a `View` otherwise is.
+    nonisolated static func prefixed(_ text: String, by fans: [String]?) -> String {
         guard let fans, !fans.isEmpty else { return text }
         return fans.joined(separator: ", ") + ": " + text
     }
