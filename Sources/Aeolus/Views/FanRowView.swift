@@ -18,8 +18,10 @@ import SwiftUI
 /// shows the driver's target, never the snapshot's (`CLAUDE.md` rule 6).
 ///
 /// **The view's own state is the edit alone:** the draft while the field has focus, and the last
-/// Return's courtesy line. Losing focus drops the draft, so the field reverts to what the driver
-/// asks for.
+/// Return's courtesy line. It changes that state only through `FieldState`'s pure functions and
+/// `submit`: focus gained starts the draft from what the field shows, focus lost drops it so the
+/// field reverts to what the driver asks for, and a stepper click resets it. The view only calls
+/// them, from `onChange(of:)`, the binding and `stepped(_:)`.
 ///
 /// **What the suite cannot see is this view's own `body`**, as for `AllFansControlView`: the
 /// buttons, the field's `onSubmit` and focus handling, and the stepper's closures. The suite holds
@@ -182,21 +184,16 @@ struct FanRowView: View {
             TextField(
                 "RPM",
                 text: Binding(
-                    get: { field.draft ?? shown.text },
-                    set: { field.draft = $0 })
+                    get: { shown.text },
+                    set: { field = field.typed($0) })
             )
             .focused($fieldIsFocused)
             .onSubmit {
-                field = submit(field.draft ?? shown.text)
+                field = submit(shown.text)
                 fieldIsFocused = false
             }
             .onChange(of: fieldIsFocused) { focused in
-                if focused {
-                    field = FanRowControlPresentation.FieldState(draft: shown.text, courtesy: nil)
-                } else {
-                    // Losing focus reverts: the field shows the driver's target again.
-                    field.draft = nil
-                }
+                field = field.focus(focused, showing: shown.text)
             }
             .frame(width: 64)
             .font(.caption.monospacedDigit())
@@ -221,7 +218,7 @@ struct FanRowView: View {
     /// A stepper click commits and ends the edit, so the field shows what the driver asks for.
     private func stepped(_ direction: FanRowControlPresentation.StepDirection) {
         step(direction, field)
-        field = FanRowControlPresentation.FieldState()
+        field = .afterStep
         fieldIsFocused = false
     }
 

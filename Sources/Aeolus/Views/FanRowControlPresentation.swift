@@ -71,7 +71,8 @@ struct FanRowControlPresentation: Equatable {
     let custom: Segment
     /// `nil` when no field is drawn.
     let field: Field?
-    /// Beneath the field: what the last Return clamped, until the next edit or step.
+    /// Beneath the field: what the last Return clamped, until the field next gains focus or the
+    /// stepper is clicked (`FieldState`).
     let courtesy: String?
 
     /// One segment as drawn.
@@ -119,12 +120,36 @@ struct FanRowControlPresentation: Equatable {
         let isPending: Bool
     }
 
-    /// What the user is doing in the field: view state, kept by `FanRowView`.
+    /// What the user is doing in the field: view state, kept by `FanRowView`, which changes it only
+    /// through the functions below and `submit(_:_:)`.
     struct FieldState: Equatable {
         /// The text being typed, while the field has focus; `nil` otherwise.
         var draft: String?
-        /// The courtesy line from the last Return that clamped, until the next edit or step.
+        /// The courtesy line from the last Return that clamped. Cleared when the field next gains
+        /// focus, and by a stepper click; kept when focus leaves.
         var courtesy: String?
+
+        /// The field gained or lost focus.
+        ///
+        /// - **Gained:** the edit starts from `shown`, what the field shows when nobody is typing,
+        ///   and the last courtesy line goes.
+        /// - **Lost:** the draft is dropped, so the field reverts to the driver's target and
+        ///   nothing is sent. The courtesy line stays: a Return ends the edit by taking focus away,
+        ///   and its line must outlive that.
+        func focus(_ gained: Bool, showing shown: String) -> FieldState {
+            gained
+                ? FieldState(draft: shown, courtesy: nil)
+                : FieldState(draft: nil, courtesy: courtesy)
+        }
+
+        /// The user typed: the draft is what the field now holds.
+        func typed(_ text: String) -> FieldState {
+            FieldState(draft: text, courtesy: courtesy)
+        }
+
+        /// After a stepper click: the edit ends and the courtesy line goes, so the field shows what
+        /// the driver is asked for.
+        static let afterStep = FieldState()
     }
 
     /// What a click asks the root for.
