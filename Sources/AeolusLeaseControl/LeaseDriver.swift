@@ -95,14 +95,19 @@ import Foundation
 /// helper answers. `shutDown()` releases first and only then tears the connection down, so a quit
 /// never relies on the helper's invalidation path alone.
 ///
-/// **`released` means the helper answered the release.** Its `releaseLease` "drops a lease this
-/// connection holds and returns its fans to automatic" (`FanAuthority.releaseLease`, in the
-/// helper's `FanAuthority.swift`), so a renderer may judge the fans from a snapshot again. A
-/// release the helper refused, or that went unanswered, ends in `lost` instead, with
-/// `LeaseLoss.Cause.releaseUnconfirmed`: nothing then says the helper let the fans go, and it can
-/// still hold them until its connection-invalidation backstop or the lease's TTL. A `take` queued
-/// behind that release is acquired all the same: a second grant is the helper's to refuse, and the
-/// release's answer is not kept.
+/// **`released` says what the driver is doing, not what the fans are.** It holds nothing and has
+/// nothing in flight; what the fans are doing is the next snapshot's to report. It is reached
+/// after an answered release, and also on paths where no answer is kept: a release asked for while
+/// acquiring whose request granted nothing, and an acquisition queued behind a release, which does
+/// not keep that release's answer. Even an answered release does not show the fans are automatic:
+/// the helper's `releaseLease` removes the lease and then awaits a restore that does not throw, so
+/// its reply means "accepted", not "done" (ADR 0015). So no renderer may read the fans as automatic
+/// from `released` alone (ADR 0015 D3; #498 gives the precise rule).
+///
+/// A release the helper refused, or that went unanswered, with no `take` queued behind it, ends in
+/// `lost` with `LeaseLoss.Cause.releaseUnconfirmed`. That is a status line, true where it is
+/// emitted, and no claim depends on it. A `take` queued behind that release is acquired all the
+/// same: a second grant is the helper's to refuse, and the release's answer is not kept.
 ///
 /// ## A snapshot is judged only on what it could show
 ///
@@ -769,11 +774,11 @@ extension LeaseDriver {
         return outcome
     }
 
-    /// The release `id` came back: `releasing` → `released` when the helper answered it, `lost`
-    /// when it refused it or did not answer (`unconfirmed`), or on to the acquisition `wanted`
-    /// either way. A release sent after a loss leaves `lost` as it is. `nil` for `unconfirmed` also
-    /// covers a release asked for while acquiring whose request granted nothing, so nothing was
-    /// sent.
+    /// The release `id` came back: `releasing` → `lost` when the helper refused it or did not
+    /// answer (`unconfirmed`), otherwise `released`, or on to the acquisition `wanted` either way.
+    /// A release sent after a loss leaves `lost` as it is. `nil` for `unconfirmed` also covers a
+    /// release asked for while acquiring whose request granted nothing, so nothing was sent. So
+    /// `released` does not say the helper answered (see "Release").
     ///
     /// The loss's `afterWake` is `false`: `beginRelease` ended the lease, and with it the wake
     /// mark, before the release was sent.

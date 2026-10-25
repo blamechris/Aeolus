@@ -36,9 +36,9 @@ public enum LeaseDriverState: Sendable, Hashable {
     /// The app asked for the fans back and the helper has not answered.
     case releasing
 
-    /// The app gave the fans back, and the helper answered the release. Nothing is held. A release
-    /// the helper refused or did not answer ends in `lost` instead
-    /// (`LeaseLoss.Cause.releaseUnconfirmed`).
+    /// The driver holds nothing and has nothing in flight, after a release. What the fans are doing
+    /// is the next snapshot's to report: this says nothing about them, and nothing about whether
+    /// the helper answered (`LeaseDriver`, "Release"; ADR 0015).
     case released
 
     /// Control ended without the app asking for it to, could not be shown to have begun, or was
@@ -157,8 +157,8 @@ public struct LeaseLoss: Sendable, Hashable {
 
         /// The app released the lease, and the helper refused the release or did not answer it.
         /// Nothing then says the helper let the fans go: it can still hold them until its
-        /// connection-invalidation backstop or the lease's TTL ends the lease. So this is a loss,
-        /// not `released`, which says the helper answered (`LeaseDriver`, "Release").
+        /// connection-invalidation backstop or the lease's TTL ends the lease. A status line, true
+        /// where it is emitted; no claim depends on it (ADR 0015 D3).
         case releaseUnconfirmed(HelperFailure)
     }
 }

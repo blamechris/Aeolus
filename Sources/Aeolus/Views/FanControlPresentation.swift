@@ -72,14 +72,24 @@ import Foundation
 ///   snapshot from before the sleep loses its licence at wake, and `PollingViewModel`'s authority
 ///   watch takes it off screen at its next step. Until that step it is still the snapshot on
 ///   screen, as every other claim in the window is.
-/// - **`.automatic`** only when the fan `isClearedToAutomatic` and the driver neither holds it, nor
-///   is acquiring it, nor is releasing (which names no fans, so it covers every one), nor has lost
-///   its lease. After a loss the helper can still hold the fans, until its connection-invalidation
-///   backstop or the lease's TTL ends the lease, and the snapshot on screen can predate the grant
-///   or the `apply`, so it cannot show that they are back. `released` can: it says the helper
-///   answered the release, and `releaseLease` returns the fans to automatic
-///   (`FanAuthority.swift:56-57`). A release the helper did not confirm is a loss
-///   (`LeaseLoss.Cause.releaseUnconfirmed`).
+/// - **`.automatic`** only while the driver is `.idle`, and the licensed snapshot on screen lists
+///   **no lease** and reports the fan `isClearedToAutomatic` (ADR 0015 D3, the interim until #498
+///   lands D2).
+///   - **Never after the app has acted:** not under `.released`, `.lost` or `.refused`. Automatic's
+///     evidence is an absence, no lease and the fan cleared, and that looks the same in a snapshot
+///     read before the grant and in one read after the release. Only the read's timing can tell
+///     them apart, and the presentation is not given it yet (#498). Not even an answered release
+///     proves it: the helper's `releaseLease` removes the lease and then awaits a restore that
+///     does not throw, so its reply means "accepted", not "done" (ADR 0015's context).
+///   - **No lease listed:** a fan under a live lease whose `apply` has not landed reads available
+///     and automatic, because the helper cannot state `.leaseHeldByAnotherClient` per fan. That
+///     holds for the app's own lease and for another client's.
+///   - Nor while the driver holds the fan, acquires it or releases, nor for a fan beside a lease
+///     the driver holds or is acquiring over other fans.
+///
+///   So once the app has held a lease, the control never reads Auto selected; each fan's row still
+///   shows the helper's reported mode. #498 restores it from a snapshot read after the driver
+///   stopped acting.
 /// - **`.unknown`** otherwise.
 ///
 /// ## The status line
@@ -95,6 +105,8 @@ import Foundation
 ///   lease is one per machine and `LeaseLoss` names no fans, so every fan carries the line. A
 ///   refused reason is said in the past tense (`pastTenseSummary`), with the wire code after it as
 ///   a detail, never ahead of it.
+/// - **`released` says what the app is doing**: it holds no lease and renews none. It says
+///   nothing about the fans, which each row reports from the helper, and never "automatic".
 /// - **The emergency is named only from a flag that is set**: the one in
 ///   `LeaseLoss.Cause.snapshot(_:isThermalEmergencyActive:)`. The flag clears when § 3's latch
 ///   releases (#476 NB3), so a lease gone with the flag clear says only that control ended. A
@@ -185,8 +197,8 @@ struct FanControlPresentation: Equatable {
     }
 
     enum Selection: Equatable {
-        /// The helper reports the fan cleared to automatic, and the driver is neither holding,
-        /// acquiring nor releasing it, and has not lost its lease.
+        /// The driver is `.idle`, and the licensed snapshot on screen lists no lease and reports the
+        /// fan cleared to automatic (ADR 0015 D3).
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
@@ -431,21 +443,29 @@ extension FanControlPresentation {
             let line = StatusLine(
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
             return (.unknown, line)
+        // ADR 0015 D3, until #498: once the app has acted, nothing on screen can show the fans are
+        // back, so `.released`, `.lost` and `.refused` never claim Automatic.
         case .lost(let loss):
-            // Never Automatic: see the type's "The selection is a function of state".
             return (.unknown, LeaseEventText.lost(loss))
         case .refused(let fault):
-            return (automaticOrUnknown(licence), LeaseEventText.refused(fault))
-        case .idle, .acquiring, .held, .released:
-            return (automaticOrUnknown(licence), nil)
+            return (.unknown, LeaseEventText.refused(fault))
+        case .released:
+            return (.unknown, LeaseEventText.released)
+        case .idle:
+            return (automaticBeforeAnyLease(licence), nil)
+        case .acquiring, .held:
+            // A lease over other fans: never Automatic beside it.
+            return (.unknown, nil)
         }
     }
 
-    /// For a fan the driver holds nothing over.
-    private static func automaticOrUnknown(_ licence: Licence) -> Selection {
-        guard case .licensed(_, let state, _) = licence, state.isClearedToAutomatic else {
-            return .unknown
-        }
+    /// Automatic while the driver is `.idle`: the licensed snapshot lists no lease, and reports
+    /// the fan cleared (ADR 0015 D3). Both conditions are needed: a fan under a live lease whose
+    /// `apply` has not landed reads cleared too.
+    private static func automaticBeforeAnyLease(_ licence: Licence) -> Selection {
+        guard case .licensed(_, let state, let activeLease) = licence, activeLease == nil,
+            state.isClearedToAutomatic
+        else { return .unknown }
         return .automatic
     }
 
@@ -534,6 +554,13 @@ private enum LeaseEventText {
     static func refused(_ fault: AeolusXPCFault) -> StatusLine {
         StatusLine(text: "The helper refused the request for control.", detail: Self.fault(fault))
     }
+
+    /// `.released`: the driver holds nothing and has nothing in flight. It says what the app is
+    /// doing, nothing about the fans: what they are doing is each row's, from the helper's
+    /// snapshot. Never "automatic" (ADR 0015 D3).
+    static let released = StatusLine(
+        text: "Aeolus is holding no lease and renewing none.",
+        detail: "Each fan's row shows what the helper reports.")
 
     private static func cause(_ cause: LeaseLoss.Cause) -> String {
         switch cause {

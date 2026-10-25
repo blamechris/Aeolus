@@ -281,7 +281,8 @@ struct AllFansControlPresentationTests {
         #expect(
             try Fixtures.present(which, on: screen).selection
                 == .custom(try Fixtures.speed(target, which)))
-        #expect(try Fixtures.present(1 - which, on: screen).selection == .automatic)
+        // Beside a lease over its neighbour, the other fan claims nothing (ADR 0015 D3).
+        #expect(try Fixtures.present(1 - which, on: screen).selection == .unknown)
         #expect(control.selection == .none)
     }
 

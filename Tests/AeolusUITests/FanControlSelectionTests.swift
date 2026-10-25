@@ -186,16 +186,26 @@ struct FanControlSelectionTests {
         #expect(try Fixtures.present(0, on: screen).selection == .unknown)
     }
 
-    /// `.released` is here because it says the helper answered the release, and the helper's
-    /// `releaseLease` returns the fans to automatic. A release it did not confirm is a loss.
+    /// Only `.idle` reads Automatic over a cleared fan with no lease listed (ADR 0015 D3). Under
+    /// `.released`, `.lost` and `.refused` the app has acted, and a snapshot that shows no lease
+    /// and the fan cleared looks the same whether it was read before the grant or after the
+    /// release; even an answered release does not show the fans are back (ADR 0015's context).
+    ///
+    /// **Mutations (I1, I2):** return `automaticBeforeAnyLease(licence)` for `.released`, or for
+    /// `.refused`. Run, each: red for its argument.
     @Test(
-        "A fan cleared to automatic, with nothing held, reads Automatic",
-        arguments: [Fixtures.DriverTag.idle, .released, .refused])
-    func aClearedFanReadsAutomatic(_ tag: Fixtures.DriverTag) throws {
+        "A cleared fan with no lease listed reads Automatic only while nothing has been held",
+        arguments: Fixtures.DriverTag.allCases)
+    func aClearedFanReadsAutomaticOnlyWhileIdle(_ tag: Fixtures.DriverTag) throws {
         let screen = Fixtures.screen(
             Support.snapshot(fans: [Fixtures.clearedFan(0)]), driver: try tag.state())
+        let expected: FanControlPresentation.Selection
+        switch tag {
+        case .idle: expected = .automatic
+        case .acquiring, .held, .releasing, .released, .lost, .refused: expected = .unknown
+        }
 
-        #expect(try Fixtures.present(0, on: screen).selection == .automatic)
+        #expect(try Fixtures.present(0, on: screen).selection == expected)
     }
 
     /// After a loss the fans read cleared to automatic on screen, and that is still not Automatic.
@@ -256,10 +266,10 @@ struct FanControlSelectionTests {
             case .confirmed: expected = .unknown
             }
             #expect(try selection(0, held) == expected, "\(tag)")
-            // A fan the driver does not hold is judged on its own.
-            #expect(try selection(1, held) == .automatic, "\(tag)")
+            // Nor a fan beside a lease the driver holds over others (ADR 0015 D3's table).
+            #expect(try selection(1, held) == .unknown, "\(tag)")
         }
-        #expect(try selection(1, .acquiring(fans: [0])) == .automatic)
+        #expect(try selection(1, .acquiring(fans: [0])) == .unknown)
     }
 
     // MARK: - A click selects nothing

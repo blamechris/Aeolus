@@ -314,6 +314,10 @@ struct FanControlStatusTests {
                 == StatusLine(
                     text: "Releasing the lease. The helper has not answered yet.", detail: nil))
         #expect(try Fixtures.present(0, on: screen(.idle)).status == nil)
-        #expect(try Fixtures.present(0, on: screen(.released)).status == nil)
+        #expect(
+            try Fixtures.present(0, on: screen(.released)).status
+                == StatusLine(
+                    text: "Aeolus is holding no lease and renewing none.",
+                    detail: "Each fan's row shows what the helper reports."))
     }
 }
