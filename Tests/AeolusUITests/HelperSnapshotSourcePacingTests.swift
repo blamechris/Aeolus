@@ -36,8 +36,8 @@ struct HelperSnapshotSourcePacingTests {
     /// The pause under way was begun on 60 s. Lowered to 1 s, it must end now, or a healthy
     /// helper's snapshot goes stale and the window waits, reading nothing, for most of a minute.
     ///
-    /// **Mutation (N1):** make `refreshIntervalDidChange()` do nothing. Run: red at the
-    /// `requestsReach` requirement.
+    /// **Mutation (N1):** make `refreshIntervalDidChange()` do nothing. Run: red at the settle
+    /// wait's `sleptSeconds` expectation and at the `requestsReach` requirement.
     @Test("Changing the interval cuts the pause under way, and the next pause is the new length")
     func changingTheIntervalCutsThePause() async throws {
         let helper = FakeSnapshotHelper()

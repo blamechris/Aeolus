@@ -92,7 +92,9 @@ extension PollingViewModelWatchRenderTests {
     /// **Mutation (S1):** as above. Run: red at the `claimsAgree` expectation and at the fans
     /// expectation after the watch's step. **Mutation (S1c):** count the reads in flight instead,
     /// with every result applied and the watch held while the count is above zero. Run: red at
-    /// the same two expectations.
+    /// the same two expectations. **Mutation (S1s):** stop clearing the token in `stop()`. Run:
+    /// red at the same two: a render does not touch the token, so only `stop()` discards the
+    /// stopped loop's read here.
     @Test("A read begun by a stopped loop never lands on a snapshot rendered after it")
     func aStoppedLoopsReadNeverLandsOnALaterRender() async throws {
         let helper = FakeSnapshotHelper()
@@ -141,8 +143,8 @@ extension PollingViewModelWatchRenderTests {
     /// says the app is waiting.
     ///
     /// **Mutation (S1s):** stop clearing the token in `stop()`. Run: red at the `controlSource`
-    /// expectation after the step, then at `claimsAgree`. **Mutation (S1):** as above. Run: red
-    /// at the same expectations.
+    /// expectation after the step, at `claimsAgree` and at the fans expectation. **Mutation
+    /// (S1)** and **(S1c)**, as above. Run, each: red at the same three.
     @Test("A read begun by a stopped loop holds nothing back while the new loop waits")
     func aStoppedLoopsReadHoldsNothingBack() async throws {
         let helper = FakeSnapshotHelper()
