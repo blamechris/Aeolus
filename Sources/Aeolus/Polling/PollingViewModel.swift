@@ -43,15 +43,16 @@ import SMCCore
 ///
 /// It never reads the SMC; it renders only what the source already holds. It does not render
 /// while this view model's current loop is reading the SMC, because that read would land on the
-/// render with readings that carry no claims; it renders at its first step after the read lands. So
-/// "within a second" holds except during a direct read, and then a newer snapshot follows within
-/// one step of the read's end. A read begun by a loop `stop()` cancelled does not hold the watch
-/// back, and is discarded when it lands, so it can never land beneath a snapshot rendered after
-/// it began (#485 S1; see `directRead`). It does not run in a build with no helper, where the
-/// source can never license anything. A separate loop rather than a shorter
-/// tick, because the tick's cadence is the user's and costs SMC reads on the direct path, and
-/// the watch's costs nothing. A source that published every change would need a timer for
-/// expiry anyway, which is this loop by another name.
+/// render with readings that carry no claims; it renders at its first step after the read
+/// lands. So "within a second" holds except during a direct read, and then a newer snapshot
+/// follows within one step of the read's end. A read begun by a loop `stop()` cancelled does not
+/// hold the watch back, and is discarded when it lands, so it can never land beneath a snapshot
+/// rendered after it began (#485 S1; see `directRead`).
+///
+/// It does not run in a build with no helper, where the source can never license anything. A
+/// separate loop rather than a shorter tick, because the tick's cadence is the user's and costs
+/// SMC reads on the direct path, and the watch's costs nothing. A source that published every
+/// change would need a timer for expiry anyway, which is this loop by another name.
 ///
 /// ## Refresh design
 ///
@@ -159,10 +160,11 @@ public final class PollingViewModel: ObservableObject {
     /// step after that read lands.
     ///
     /// That also discards every read that lands after a render. A snapshot is rendered in two
-    /// places: a tick's `.fresh` arm, and the watch. A loop's tick does one thing at a time, so
-    /// its render cannot overtake its own read, and the watch holds back while this is set. So a
-    /// render begins while a read is outstanding only once `stop()` has cancelled the loop that
-    /// began that read, and that read is no longer this one.
+    /// places: a tick's `.fresh` arm, and the watch. Outside the suite, only the refresh loop
+    /// calls `tick()`, and a loop runs one tick at a time, so its render cannot overtake its own
+    /// read; and the watch holds back while this is set. So a render begins while a read is
+    /// outstanding only once `stop()` has cancelled the loop that began that read, and that read
+    /// is no longer this one.
     ///
     /// A token rather than a count of reads in flight, the issue's other fix: a count would hold
     /// back the watch, but a tick of the new loop could still render while the stopped loop's
