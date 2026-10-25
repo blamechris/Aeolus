@@ -153,6 +153,12 @@ extension FanRowControlRootTests {
 
     /// The same two clicks, the second once the root has published the release: it reads
     /// `releasing`, which cannot say what is in Custom, and still ends with nothing held.
+    ///
+    /// The wait after the release ends at whichever outcome comes first, released, held or lost,
+    /// so a driver left wanting a fan is a red at the next line, not at the time limit.
+    /// **Mutation (Q5f, "Auto while releasing sends nothing"):** in `AppComposition.releaseFan`'s
+    /// `.releaseFan` arm, start a task that does nothing while the report is `releasing`. Run: red
+    /// at the published state, at once: the fan wanted behind the release is acquired and held.
     @Test("A second per-fan Auto read against releasing still ends with nothing held")
     func aSecondAutoWhileReleasing() async throws {
         let scene = await CompositionScene()
@@ -163,9 +169,14 @@ extension FanRowControlRootTests {
         try await scene.click { actions.chooseAutomatic(fan: 0) }
         try await Root.published(on: scene) { $0 == .releasing }
         try await scene.click { actions.chooseAutomatic(fan: 1) }
+        let mark = await scene.lease.mark()
         await scene.lease.helper.answerParked(.release)
 
-        try await Root.published(on: scene) { $0 == .released }
+        await scene.lease.waitForState(since: mark) { $0.isReleased || $0.isHeld || $0.isLost }
+        let root = scene.root
+        try #require(
+            await Support.settle { root.leaseState.current.state == .released },
+            "the root published released: \(root.leaseState.current.state)")
         await scene.lease.settle()
         #expect(await scene.lease.driver.state == .released)
         #expect(await scene.lease.entries.acquires.count == 1)
