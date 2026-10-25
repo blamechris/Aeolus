@@ -36,11 +36,14 @@ public enum LeaseDriverState: Sendable, Hashable {
     /// The app asked for the fans back and the helper has not answered.
     case releasing
 
-    /// The app gave the fans back. Nothing is held.
+    /// The app gave the fans back, and the helper answered the release. Nothing is held. A release
+    /// the helper refused or did not answer ends in `lost` instead
+    /// (`LeaseLoss.Cause.releaseUnconfirmed`).
     case released
 
-    /// Control ended without the app asking for it to, or could not be shown to have begun.
-    /// Final: the driver neither renews nor acquires again on its own.
+    /// Control ended without the app asking for it to, could not be shown to have begun, or was
+    /// given back without the helper confirming it. Final: the driver neither renews nor acquires
+    /// again on its own.
     case lost(LeaseLoss)
 
     /// The helper refused the lease, in its own words: `.leaseHeldByAnotherClient`,
@@ -151,6 +154,12 @@ public struct LeaseLoss: Sendable, Hashable {
         /// The heartbeat's wait failed with nothing asking it to stop, so the lease could no
         /// longer be renewed on schedule.
         case heartbeatFailed
+
+        /// The app released the lease, and the helper refused the release or did not answer it.
+        /// Nothing then says the helper let the fans go: it can still hold them until its
+        /// connection-invalidation backstop or the lease's TTL ends the lease. So this is a loss,
+        /// not `released`, which says the helper answered (`LeaseDriver`, "Release").
+        case releaseUnconfirmed(HelperFailure)
     }
 }
 

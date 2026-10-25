@@ -73,7 +73,13 @@ import Foundation
 ///   watch takes it off screen at its next step. Until that step it is still the snapshot on
 ///   screen, as every other claim in the window is.
 /// - **`.automatic`** only when the fan `isClearedToAutomatic` and the driver neither holds it, nor
-///   is acquiring it, nor is releasing (which names no fans, so it covers every one).
+///   is acquiring it, nor is releasing (which names no fans, so it covers every one), nor has lost
+///   its lease. After a loss the helper can still hold the fans, until its connection-invalidation
+///   backstop or the lease's TTL ends the lease, and the snapshot on screen can predate the grant
+///   or the `apply`, so it cannot show that they are back. `released` can: it says the helper
+///   answered the release, and `releaseLease` returns the fans to automatic
+///   (`FanAuthority.swift:56-57`). A release the helper did not confirm is a loss
+///   (`LeaseLoss.Cause.releaseUnconfirmed`).
 /// - **`.unknown`** otherwise.
 ///
 /// ## The status line
@@ -177,7 +183,7 @@ struct FanControlPresentation: Equatable {
 
     enum Selection: Equatable {
         /// The helper reports the fan cleared to automatic, and the driver is neither holding,
-        /// acquiring nor releasing it.
+        /// acquiring nor releasing it, and has not lost its lease.
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
@@ -423,7 +429,8 @@ extension FanControlPresentation {
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
             return (.unknown, line)
         case .lost(let loss):
-            return (automaticOrUnknown(licence), LeaseEventText.lost(loss))
+            // Never Automatic: see the type's "The selection is a function of state".
+            return (.unknown, LeaseEventText.lost(loss))
         case .refused(let fault):
             return (automaticOrUnknown(licence), LeaseEventText.refused(fault))
         case .idle, .acquiring, .held, .released:
@@ -543,6 +550,8 @@ private enum LeaseEventText {
             return connection(health)
         case .heartbeatFailed:
             return "The lease could no longer be renewed on schedule."
+        case .releaseUnconfirmed(let failure):
+            return "The helper did not confirm the release: the request " + Self.failure(failure)
         }
     }
 

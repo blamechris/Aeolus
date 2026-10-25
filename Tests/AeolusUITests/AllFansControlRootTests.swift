@@ -274,6 +274,46 @@ struct AllFansControlRootTests {
         await scene.finish()
     }
 
+    /// #497's review, C1. 75 % is clicked, the grant arrives, and the first `apply` is still in
+    /// flight, so the snapshot on screen lists the lease with the fans still cleared to automatic.
+    /// Then the control connection stops answering and the driver loses the lease. The helper can
+    /// still finish the `apply` and hold the fans at 75 % until its backstop or the TTL, so the
+    /// control must not draw Auto from that snapshot.
+    ///
+    /// **Mutation (C1a):** in `FanControlPresentation.claim`, return `automaticOrUnknown(licence)`
+    /// for `.lost` again. Run: red at the selection after the loss.
+    @Test("A loss during the first apply does not draw Auto from the snapshot before it")
+    func aLossDuringTheFirstApplyIsNotAuto() async throws {
+        let scene = await CompositionScene()
+        await scene.lease.helper.script(.apply, .parked)
+        let window = try await ControlWindow.showing(
+            Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)]))
+        AllFansControlActions(composition: scene.root).choose(.seventyFive, on: window.polling)
+        try #require(
+            await Support.eventually { await !scene.lease.entries.applies.isEmpty },
+            "the first apply was sent")
+        let lease = try #require(await scene.lease.helper.heldLeases.values.first)
+        try await window.show(
+            Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)], activeLease: lease))
+        try await Self.published(on: scene) { $0.isHeld }
+        #expect(window.control(scene.root.leaseState.current).selection == .pending(.seventyFive))
+
+        await scene.lease.helper.pushHealth(.unresponsive)
+        try await Self.published(on: scene) { $0.isLost }
+
+        let control = window.control(scene.root.leaseState.current)
+        #expect(control.selection == .none, "not Auto: the helper may still finish the apply")
+        #expect(
+            control.statusLines.map(\.value)
+                == [
+                    .init(
+                        text: "Control ended.",
+                        detail: "The helper stopped answering (unresponsive).")
+                ])
+        await window.close()
+        await scene.finish()
+    }
+
     // MARK: - Fail closed at the click
 
     /// Drawn enabled, then a snapshot in which fan 1 is refused renders before the click. The click

@@ -1,10 +1,10 @@
-import AeolusLeaseControl
 import AeolusXPC
 import AeolusXPCClient
 import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// What the control may show as selected: a function of the driver and the snapshot on screen,
@@ -186,14 +186,40 @@ struct FanControlSelectionTests {
         #expect(try Fixtures.present(0, on: screen).selection == .unknown)
     }
 
+    /// `.released` is here because it says the helper answered the release, and the helper's
+    /// `releaseLease` returns the fans to automatic. A release it did not confirm is a loss.
     @Test(
         "A fan cleared to automatic, with nothing held, reads Automatic",
-        arguments: [Fixtures.DriverTag.idle, .released, .lost, .refused])
+        arguments: [Fixtures.DriverTag.idle, .released, .refused])
     func aClearedFanReadsAutomatic(_ tag: Fixtures.DriverTag) throws {
         let screen = Fixtures.screen(
             Support.snapshot(fans: [Fixtures.clearedFan(0)]), driver: try tag.state())
 
         #expect(try Fixtures.present(0, on: screen).selection == .automatic)
+    }
+
+    /// After a loss the fans read cleared to automatic on screen, and that is still not Automatic.
+    /// The helper can hold the fans after the app's loss, until its connection-invalidation
+    /// backstop or the lease's TTL ends the lease, and the snapshot on screen can predate the grant
+    /// or the `apply`: a lease lost while its first `apply` was in flight shows exactly this
+    /// screen, with the helper free to finish the `apply`. So a loss claims neither Automatic nor
+    /// Custom, and the line says only that control ended.
+    ///
+    /// **Mutation (C1a, "a loss reads the snapshot"):** in `claim`, return
+    /// `automaticOrUnknown(licence)` for `.lost` again. Run: red at the selection, for every cause.
+    @Test(
+        "A lost lease never reads Automatic, even over fans the snapshot shows cleared",
+        arguments: Fixtures.CauseTag.allCases)
+    func aLostLeaseIsNeverAutomatic(_ tag: Fixtures.CauseTag) throws {
+        for cause in tag.causes {
+            let loss = LeaseDriverState.lost(
+                LeaseLoss(lease: Fixtures.ours, cause: cause, afterWake: false))
+            let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: nil)
+            let presentation = try Fixtures.present(0, on: Fixtures.screen(cleared, driver: loss))
+
+            #expect(presentation.selection == .unknown, "\(cause)")
+            #expect(presentation.status?.text != nil, "\(cause): the line says control ended")
+        }
     }
 
     @Test("A fan reading manual with nothing held is unknown, not Custom")

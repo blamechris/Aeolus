@@ -216,6 +216,7 @@ extension FanControlFixtures {
     /// One tag per `LeaseLoss.Cause` case.
     enum CauseTag: CaseIterable {
         case acquireUnanswered, renewal, apply, snapshot, connection, heartbeatFailed
+        case releaseUnconfirmed
 
         init(_ cause: LeaseLoss.Cause) {
             switch cause {
@@ -225,6 +226,7 @@ extension FanControlFixtures {
             case .snapshot: self = .snapshot
             case .connection: self = .connection
             case .heartbeatFailed: self = .heartbeatFailed
+            case .releaseUnconfirmed: self = .releaseUnconfirmed
             }
         }
 
@@ -232,7 +234,8 @@ extension FanControlFixtures {
         static let failures = FailureTag.allCases.map(\.failure)
 
         /// Every cause of this kind with no emergency flag set: one per failure kind for the three
-        /// verbs, one per loss for a snapshot, one per connection state.
+        /// verbs and for an unconfirmed release, one per loss for a snapshot, one per connection
+        /// state.
         var causes: [LeaseLoss.Cause] {
             switch self {
             case .acquireUnanswered: return Self.failures.map { .acquireUnanswered($0) }
@@ -244,6 +247,7 @@ extension FanControlFixtures {
                 }
             case .connection: return HealthTag.departures.map { .connection($0) }
             case .heartbeatFailed: return [.heartbeatFailed]
+            case .releaseUnconfirmed: return Self.failures.map { .releaseUnconfirmed($0) }
             }
         }
     }

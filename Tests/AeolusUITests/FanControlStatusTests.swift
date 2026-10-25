@@ -48,7 +48,8 @@ struct FanControlStatusTests {
                 switch tag {
                 case .acquireUnanswered:
                     expected = "Control could not be shown to have begun."
-                case .renewal, .apply, .snapshot, .connection, .heartbeatFailed:
+                case .renewal, .apply, .snapshot, .connection, .heartbeatFailed,
+                    .releaseUnconfirmed:
                     expected = afterWake ? "Control ended across sleep." : "Control ended."
                 }
                 #expect(line.text == expected, "\(cause), afterWake \(afterWake)")
