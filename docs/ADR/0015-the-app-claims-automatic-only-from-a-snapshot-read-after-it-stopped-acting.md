@@ -40,8 +40,32 @@ chosen by an exhaustive switch. The floor is published atomically with the state
 (`LeaseDriverReport`). The snapshot source carries each reply's ticket to `Authority.fresh` and
 `PollingViewModel`. The presentation compares the two. Nothing crosses the wire.
 
+As built (#498), the report's evidence (`LeaseDriverReport.AutomaticEvidence`) has three values
+rather than an optional floor, because of the case below:
+
+- `anyRead` while the driver has never acted (`idle`);
+- `readFrom(ticket)`, a read ticketed at or after the floor;
+- `noRead`, when the driver stopped acting while an `apply` it sent was still unanswered.
+
+**The floor waits for every `apply` to answer.** Auto during an `apply` releases at once and
+leaves the `apply` to answer (#419), so the driver can be `released` with that `apply` still at
+the helper. The helper does not guarantee that such an `apply` writes nothing after the release
+has answered: `LeaseApplier.step` asks the lease (`EngagementDriver.requireEntitlement`) and only
+then awaits the target write, and `PlaneWriteLedger.admitCommand()` refuses a target command only
+once the plane is sealed for exit. What the ticket-and-seal contract does guarantee is narrower,
+that no engagement step is admitted after a restore was requested (`admitStep`), and the shipping
+plane writes nothing at all. So the app does not rest on it: a stop with an `apply` unanswered
+publishes `noRead`, and the floor is minted when the last `apply` answers, as a new report with
+the state unchanged.
+
+`LeaseStateModel` follows `reportUpdates()`; `stateUpdates()` stays, for consumers that need the
+state alone. Each new floor asks the source to read soon (`HelperSnapshotSource.readSoon()`): an
+ordinary pause is cut by the path a settled interval change takes, a request in flight is left
+alone and the pause after it skipped once, and a backoff and the interval's debounce are left as
+they were. So the user's own Auto reads selected within about one round trip.
+
 **D3 — Until D2 lands**, `released`, `lost` and `refused` never read Automatic, and `idle`
-requires no lease listed. This fails closed on any helper.
+requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #498.)*
 
 **D4 — One definition.** "Nothing leased and fan cleared" is one predicate, shared by
 `SafeState` and the app.
@@ -80,11 +104,22 @@ Rejected: the reply does not report the handback's outcome.
 ## Assumptions
 
 - A read sent on one connection after the reply to a release on another is processed by the
-  helper after the release completed.
-- A snapshot that lists no lease means the helper writes under none of the app's leases.
+  helper after the release completed. The same is assumed of a read sent after an `apply`'s
+  answer.
+- A snapshot that lists no lease, read after every `apply` the app sent has answered, means the
+  helper writes under none of the app's leases. An `apply` the client stopped waiting for at its
+  deadline counts as answered: the cut-off discards the connection, and the helper releases a
+  connection's leases when it goes (`HelperClientDeadlines.applyDeadline`).
 - There is at most one lease per machine.
+- **A relaunch starts `idle`.** A new process starts a new driver, which has never acted and sets
+  no floor. While the helper still lists the old process's lease, the no-lease condition refuses
+  Automatic. Once the helper drops it, the claim rests on the lease's absence and the fan's
+  clearance alone, read at any time. That is D1's "`idle` sets no floor", accepted: the old
+  process's applies are not this driver's to wait for, and the helper ends a connection's leases
+  when the connection goes.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
-helper's lease-gated write proves leaky; or when PR 8 needs Automatic for a fan the app's own
-held lease does not cover, which may relax the no-lease condition to "the listed lease is the
-driver's own and does not cover this fan".
+helper's lease-gated write proves leaky; when the helper guarantees that no write lands under a
+lease once its release has answered, so the floor need not wait for applies; or when PR 8 needs
+Automatic for a fan the app's own held lease does not cover, which may relax the no-lease
+condition to "the listed lease is the driver's own and does not cover this fan".

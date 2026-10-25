@@ -282,11 +282,11 @@ struct AllFansControlRootTests {
     /// still finish the `apply` and hold the fans at 75 % until its backstop or the TTL, so the
     /// control must not draw Auto from that snapshot.
     ///
-    /// Since ADR 0015 D3 two conditions refuse Automatic here: `.lost` never claims it, and the
-    /// snapshot on screen lists the lease. **Mutation (C1a)** alone, `.lost` judged by
-    /// `automaticBeforeAnyLease`, leaves this green, because the listed lease still refuses;
-    /// `FanControlSelectionTests.aLostLeaseIsNeverAutomatic` is red for it. **C1a with I3**,
-    /// the no-lease condition deleted too, is red here, at the selection after the loss.
+    /// Under ADR 0015 D1 three conditions refuse Automatic here, each enough alone: the snapshot
+    /// on screen was read before the loss (this window's source has no observer, so it carries no
+    /// ticket, and no floor admits it), the `apply` is still unanswered (the driver's evidence is
+    /// `.noRead`), and the snapshot lists the lease. Each is pinned on its own in
+    /// `FanControlAutomaticTests`; this is the scenario they were written for.
     @Test("A loss during the first apply does not draw Auto from the snapshot before it")
     func aLossDuringTheFirstApplyIsNotAuto() async throws {
         let scene = await CompositionScene()
