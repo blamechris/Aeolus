@@ -77,8 +77,9 @@ extension AllFansControlRootTests {
     /// clicks they stand for would.
     ///
     /// **Mutation (W1, "settle instead of the wait", #500):** replace each `scene.click { … }`
-    /// with the bare click followed by `await scene.lease.settle()`, as before #500. Run, release
-    /// config, whole `AeolusUITests`: see the pull request for the count.
+    /// and the `#expect` after it with the bare click followed by `await scene.lease.settle()`, as
+    /// before #500. Run, release config with testability, whole `AeolusUITests`: red at
+    /// `!reacquired` in 8 of 10 runs. A race, so a rate; the fixed test was green in 12 of 12.
     @Test("Auto while releasing cancels a take queued behind the release")
     func autoWhileReleasingCancelsAQueuedTake() async throws {
         let scene = await CompositionScene()

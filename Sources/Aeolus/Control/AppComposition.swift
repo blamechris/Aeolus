@@ -200,16 +200,12 @@ final class AppComposition {
     // MARK: - The suite's seam
 
     /// A call one of the entry points above started on the driver, as a handle that can only be
-    /// waited for.
-    ///
-    /// **It holds no `Task`**, as `LeaseDriver.HeartbeatHandle` holds none. A `Task` would hand
-    /// its holder `cancel()`, and the entry points start their calls on tasks of their own so that
-    /// nothing a caller does can cancel them (#419). So the handle keeps only a closure that waits
-    /// for the task, and only this file can make one.
+    /// waited for. **It holds no `Task`**, as `LeaseDriver.HeartbeatHandle` holds none: a `Task`
+    /// would hand its holder `cancel()`, and these calls are on tasks of their own so that nothing
+    /// a caller does can cancel them (#419). Only this file can make one.
     struct DriverCall: Sendable {
 
-        /// How many calls the entry points had started when this one began, this one included:
-        /// 1 for the first. A suite tells a new call from the one before by it.
+        /// How many calls the entry points had started when this one began, this one included.
         let ordinal: Int
 
         private let wait: @Sendable () async -> Void
@@ -219,26 +215,20 @@ final class AppComposition {
             wait = { await task.value }
         }
 
-        /// Returns once the driver has run the call: the task's one step is the driver's verb,
-        /// which is synchronous on the driver.
-        ///
-        /// **Not cancellable.** It waits on the task's `value`, which does not end when the
-        /// waiting task is cancelled. Call it from a task of its own (`LeaseScene.run`), never
-        /// directly from a test.
+        /// Returns once the driver has run the call: the task's one step is the driver's verb.
+        /// **Not cancellable:** it waits on the task's `value`. Call it from a task of its own
+        /// (`LeaseScene.run`), never directly from a test.
         func finished() async { await wait() }
     }
 
     /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started on the driver, or
     /// `nil` if none has: **a seam for the suite**, which nothing in the app reads.
     ///
-    /// **Why a suite needs it (#500).** A call reaches the driver only once the main actor runs
-    /// its task. A test on the main actor that clicks and then waits only on other actors can go
-    /// on before the main actor runs that task. In release-config runs of the suite, Auto's task
-    /// had not yet started when the test answered the release it was meant to precede. A test that
-    /// has to know a click has reached the driver waits on this instead
-    /// (`CompositionScene.click(_:)`).
-    ///
-    /// Always `nil` in a build with no helper: no entry point starts anything there.
+    /// **Why (#500).** A call reaches the driver only once the main actor runs its task, and a test
+    /// that clicks and then waits only on other actors can go on before that. In release-config
+    /// runs, Auto's task had not started when the test answered the release it was meant to
+    /// precede. So a test that must know a click has reached the driver waits on this
+    /// (`CompositionScene.click(_:)`). Always `nil` in a build with no helper.
     var latestDriverCall: DriverCall? { latestCall }
 
     private func started(_ task: Task<Void, Never>) {
