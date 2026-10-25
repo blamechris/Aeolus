@@ -63,51 +63,89 @@ final class ControlWindow {
 
 /// Fans, snapshots and speeds for the all-fans control's suites. Namespaced, so nothing here can
 /// shadow a global helper another suite in this target declares.
+///
+/// **Every fan has bounds of its own**, so a speed taken from the wrong fan's envelope is a
+/// different number and a red (#497's review, test gap 3):
+///
+/// | Fan | Bounds | 50 % | 75 % | 100 % |
+/// |---|---|---|---|---|
+/// | 0 | 1350 to 5777 (`Mac16,5`'s) | 3564 | 4670 | 5777 |
+/// | 1 | 1200 to 4800 | 3000 | 3900 | 4800 |
+/// | 2 | 1500 to 6000 | 3750 | 4875 | 6000 |
 enum AllFansFixtures {
 
     typealias Support = SnapshotTestSupport
 
-    /// A fan the helper offers and reports on automatic, with `Mac16,5`'s bounds, 1350 to 5777.
+    /// Fan `index`'s declared bounds: see the table above. Any other index has fan 0's.
+    static func bounds(_ index: Int) -> (minimum: Double, maximum: Double) {
+        switch index {
+        case 1: return (1200, 4800)
+        case 2: return (1500, 6000)
+        default: return (1350, 5777)
+        }
+    }
+
+    /// A fan with fan `index`'s bounds.
+    static func fan(
+        _ index: Int, mode: FanControlMode, availability: ManualControlAvailability,
+        target: Double? = nil
+    ) -> FanState {
+        let (minimum, maximum) = bounds(index)
+        return FanState(
+            index: index, actualRPM: .measured(2345), minimumRPM: .measured(minimum),
+            maximumRPM: .measured(maximum), targetRPM: target, mode: mode,
+            isReclaimedBySystem: false, manualControlAvailability: availability)
+    }
+
+    /// A fan the helper offers and reports on automatic.
     static func offered(_ index: Int) -> FanState {
-        Support.fan(index, mode: .automatic, availability: .available)
+        fan(index, mode: .automatic, availability: .available)
     }
 
     /// A fan the helper reports held under a lease at `rpm`.
     static func held(_ index: Int, at rpm: Double) -> FanState {
-        Support.fan(index, mode: .manualFixed, availability: .available, target: rpm)
+        fan(index, mode: .manualFixed, availability: .available, target: rpm)
     }
 
     /// A fan the helper refuses, for `reason`.
     static func refused(_ index: Int, _ reason: ManualControlAvailability.Reason) -> FanState {
-        Support.fan(index, mode: .automatic, availability: .unavailable(reason))
+        fan(index, mode: .automatic, availability: .unavailable(reason))
     }
 
-    /// The speed `percent` names on `Mac16,5`'s 1350 to 5777: 3564, 4670 and 5777.
-    static func rpm(_ percent: FanSpeedPercent) throws -> Double {
+    /// Fan `index`'s envelope.
+    static func envelope(_ index: Int) throws -> FanControlEnvelope {
+        let (minimum, maximum) = bounds(index)
         guard
             case .success(let envelope) = FanControlEnvelope.validating(
-                declaredMinimumRPM: 1350, declaredMaximumRPM: 5777)
+                declaredMinimumRPM: minimum, declaredMaximumRPM: maximum)
         else { throw LeaseScene.TargetError.envelopeRefused }
-        return envelope.target(forPercent: percent.percent).rpm
+        return envelope
     }
 
-    /// The target `percent` names for each of `fans` on those bounds.
+    /// The speed `percent` names for fan `index`.
+    static func rpm(_ percent: FanSpeedPercent, fan index: Int) throws -> Double {
+        try envelope(index).target(forPercent: percent.percent).rpm
+    }
+
+    /// The target `percent` names for each of `fans`, each from its own envelope.
     static func target(_ percent: FanSpeedPercent, fans: [Int]) throws -> LeaseTarget {
-        let rpm = try rpm(percent)
-        return try LeaseScene.target(Dictionary(uniqueKeysWithValues: fans.map { ($0, rpm) }))
+        var speeds: [Int: FanTargetRPM] = [:]
+        for index in fans {
+            speeds[index] = try envelope(index).target(forPercent: percent.percent)
+        }
+        return try #require(LeaseTarget(speeds: speeds))
     }
 
     /// What `apply` sends for that target.
     static func settings(_ percent: FanSpeedPercent, fans: [Int]) throws -> [FanSetting] {
-        let rpm = try rpm(percent)
-        return fans.map { FanSetting(fanIndex: $0, control: .fixed(rpm: rpm)) }
+        try fans.map { FanSetting(fanIndex: $0, control: .fixed(rpm: try rpm(percent, fan: $0))) }
     }
 
-    /// The snapshot that shows `lease` holding `fans` at `percent`.
+    /// The snapshot that shows `lease` holding `fans` at `percent`, each at its own speed.
     static func holding(
         _ lease: Lease, _ fans: [Int], at percent: FanSpeedPercent
     ) throws -> SystemSnapshot {
-        let rpm = try rpm(percent)
-        return Support.snapshot(fans: fans.map { held($0, at: rpm) }, activeLease: lease)
+        Support.snapshot(
+            fans: try fans.map { held($0, at: try rpm(percent, fan: $0)) }, activeLease: lease)
     }
 }

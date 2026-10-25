@@ -48,19 +48,25 @@ struct AllFansControlPresentationTests {
         #expect(control.drawsControl)
     }
 
+    /// Fan 0 refused, then fan 1, so a rule that looks at one end of the list is a red.
+    ///
     /// **Mutation (M3, "enabled beside one disabled fan"):** in `affordance`, return `.enabled`
     /// unless every fan refuses (`refusing.count < fans.count`). Run: red at the affordance.
-    @Test("One disabled fan disables the control for all, and names that fan and its reason")
-    func oneDisabledFanDisablesAll() {
-        let control = Self.control(
-            Support.snapshot(fans: [Fans.offered(0), Fans.refused(1, .foreignManualControl)]))
+    @Test(
+        "One disabled fan disables the control for all, and names that fan and its reason",
+        arguments: [0, 1])
+    func oneDisabledFanDisablesAll(_ which: Int) {
+        let fans = [0, 1].map {
+            $0 == which ? Fans.refused($0, .foreignManualControl) : Fans.offered($0)
+        }
+        let control = Self.control(Support.snapshot(fans: fans))
 
         let foreign = ManualControlAvailability.Reason.foreignManualControl
         #expect(
             control.affordance
                 == .disabled([
                     .init(
-                        fans: ["Fan 1"],
+                        fans: ["Fan \(which)"],
                         value: Reason(
                             summary: foreign.userFacingSummary, advice: foreign.recoveryAdvice,
                             wireValue: "foreignManualControl"))
@@ -170,6 +176,24 @@ struct AllFansControlPresentationTests {
         #expect(!control.percentsAreEnabled)
     }
 
+    /// A lease over one of two fans, with the read connection stale: only the release can enable
+    /// Auto, and it must, whichever fan the lease covers.
+    @Test("A release is offered when any one fan can release", arguments: [0, 1])
+    func releaseIsOfferedForAnyFan(_ which: Int) throws {
+        let driver = Fixtures.held(
+            Fixtures.ours, fans: [which], .confirmed(try Fans.target(.fifty, fans: [which])))
+        let screen = Fixtures.withdrawn(
+            .snapshotStale, driver: driver,
+            from: Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)]))
+        let fans = Self.fans(screen)
+        let control = Control(fans: fans, snapshot: nil)
+
+        #expect(fans.map(\.presentation.canRelease) == [which == 0, which == 1])
+        #expect(control.offersRelease)
+        #expect(control.automaticIsEnabled)
+        #expect(!control.percentsAreEnabled)
+    }
+
     @Test("A release is offered while acquiring, and not with nothing held or asked for")
     func releaseFollowsTheDriver() {
         let snapshot = Support.snapshot(fans: [Support.fan(0), Support.fan(1)])
@@ -239,25 +263,25 @@ struct AllFansControlPresentationTests {
         #expect(control.selection == .pending(percent))
     }
 
+    /// One fan held at 50 % and the other on automatic, fan 0 held and then fan 1.
+    ///
     /// **Mutation (M9, "one fan decides"):** in `onlyPercent`, use `contains` for `allSatisfy`.
     /// Run: red at `.none` for the mixed screen.
-    @Test("Fans at different choices select nothing")
-    func mixedSelectionsSelectNothing() throws {
-        let fifty = try Fans.rpm(.fifty)
-        let target = try LeaseScene.target([0: fifty])
-        let snapshot = Support.snapshot(
-            fans: [Fans.held(0, at: fifty), Fans.offered(1)], activeLease: Fixtures.ours)
-        let control = Self.control(
-            snapshot, driver: Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)))
+    @Test("Fans at different choices select nothing", arguments: [0, 1])
+    func mixedSelectionsSelectNothing(_ which: Int) throws {
+        let target = try Fans.target(.fifty, fans: [which])
+        let fans = try [0, 1].map {
+            $0 == which ? Fans.held($0, at: try Fans.rpm(.fifty, fan: $0)) : Fans.offered($0)
+        }
+        let snapshot = Support.snapshot(fans: fans, activeLease: Fixtures.ours)
+        let driver = Fixtures.held(Fixtures.ours, fans: [which], .confirmed(target))
+        let control = Self.control(snapshot, driver: driver)
 
-        let presentations = Self.fans(Fixtures.screen(snapshot, driver: .idle))
-        #expect(presentations.count == 2)
+        let screen = Fixtures.screen(snapshot, driver: driver)
         #expect(
-            try Fixtures.present(
-                0,
-                on: Fixtures.screen(
-                    snapshot, driver: Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)))
-            ).selection == .custom(try Fixtures.speed(target, 0)))
+            try Fixtures.present(which, on: screen).selection
+                == .custom(try Fixtures.speed(target, which)))
+        #expect(try Fixtures.present(1 - which, on: screen).selection == .automatic)
         #expect(control.selection == .none)
     }
 
@@ -297,18 +321,35 @@ struct AllFansControlPresentationTests {
         #expect(control.selection == .none)
     }
 
-    @Test("A lease checked against no snapshot selects nothing, and says why")
-    func checkingSelectsNothing() throws {
-        let target = try Fans.target(.fifty, fans: [0])
+    /// A held lease that nothing on screen can confirm is pending, at no percentage: with no
+    /// snapshot on screen there are no bounds to name one from (#497's review, S2).
+    ///
+    /// **Mutation (S2a, "checking selects nothing"):** delete the `.checking` arm of `selection`.
+    /// Run: red at `.checking`.
+    @Test("A lease checked against no snapshot is pending at no percentage, and says why")
+    func checkingIsPendingAtNoPercentage() throws {
+        let target = try Fans.target(.fifty, fans: [0, 1])
         let screen = Fixtures.withdrawn(
-            .snapshotStale, driver: Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)),
-            from: Support.snapshot(fans: [Fans.held(0, at: try Fans.rpm(.fifty))]))
+            .snapshotStale, driver: Fixtures.held(Fixtures.ours, fans: [0, 1], .confirmed(target)),
+            from: try Fans.holding(Fixtures.ours, [0, 1], at: .fifty))
         let control = Control(fans: Self.fans(screen), snapshot: nil)
 
-        #expect(control.selection == .none)
+        #expect(control.selection == .checking)
         #expect(
             control.statusLines.map(\.value.text)
                 == ["Not confirmed: no current helper snapshot is on screen."])
+    }
+
+    /// A lease over fan 0 alone, unconfirmed, beside fan 1 that nothing holds: a mix.
+    @Test("Checking over some fans and not others selects nothing")
+    func checkingOverSomeFansIsAMix() throws {
+        let target = try Fans.target(.fifty, fans: [0])
+        let screen = Fixtures.withdrawn(
+            .snapshotStale, driver: Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target)),
+            from: Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)]))
+        let control = Control(fans: Self.fans(screen), snapshot: nil)
+
+        #expect(control.selection == .none)
     }
 
     // MARK: - Lines beneath it
@@ -347,8 +388,9 @@ struct AllFansControlPresentationTests {
 
     // MARK: - The target a percentage names
 
-    /// The row's displayed bounds differ from the `FanState` the snapshot carries: 1200 to 5312
-    /// against 1350 to 5777. The target is the snapshot's: 3564 RPM at 50 %, not 3256.
+    /// The row's displayed bounds, 1100 to 5300 for both fans, differ from the `FanState` the
+    /// snapshot carries: 1350 to 5777 for fan 0 and 1200 to 4800 for fan 1. The target is the
+    /// snapshot's, each fan's from its own: 3564 and 3000 RPM at 50 %, not 3200 for both.
     ///
     /// **Mutation (M2, "the row's bounds"):** in `speed(_:forFan:in:)`, build the envelope from
     /// the row's `minimum` and `maximum` (`FanState.controlEnvelope(declaredMinimum:
@@ -361,8 +403,8 @@ struct AllFansControlPresentationTests {
         let rows = screen.rows.map { row in
             FanPollingReading(
                 index: row.index, displayName: row.displayName, actual: row.actual,
-                minimum: .value(key: SMCFanEnumeration.minimumKey(forFan: row.index), 1200),
-                maximum: .value(key: SMCFanEnumeration.maximumKey(forFan: row.index), 5312),
+                minimum: .value(key: SMCFanEnumeration.minimumKey(forFan: row.index), 1100),
+                maximum: .value(key: SMCFanEnumeration.maximumKey(forFan: row.index), 5300),
                 control: row.control)
         }
         let fans = rows.map { ($0, FanControlPresentation(reading: $0, given: screen.inputs)) }
@@ -370,7 +412,7 @@ struct AllFansControlPresentationTests {
 
         let target = try #require(Control.target(for: .fifty, fans: fans, snapshot: snapshot))
 
-        #expect(target.speeds.mapValues(\.rpm) == [0: 3564, 1: 3564])
+        #expect(target.speeds.mapValues(\.rpm) == [0: 3564, 1: 3000])
         #expect(target == (try Fans.target(.fifty, fans: [0, 1])))
     }
 
@@ -383,23 +425,24 @@ struct AllFansControlPresentationTests {
             for: percent, fans: Self.fans(Fixtures.screen(snapshot, driver: .idle)),
             snapshot: snapshot)
 
-        let expected: Double
+        let expected: [Int: Double]
         switch percent {
-        case .fifty: expected = 3564
-        case .seventyFive: expected = 4670
-        case .hundred: expected = 5777
+        case .fifty: expected = [0: 3564, 1: 3000]
+        case .seventyFive: expected = [0: 4670, 1: 3900]
+        case .hundred: expected = [0: 5777, 1: 4800]
         }
-        #expect(target?.speeds.mapValues(\.rpm) == [0: expected, 1: expected])
+        #expect(target?.speeds.mapValues(\.rpm) == expected)
     }
 
     /// Each fail-closed condition alone, on a screen that otherwise builds a target.
     enum Refusal: CaseIterable {
-        case aFanDisabled, noSnapshot, aFanMissingFromTheSnapshot, anExtraFanInTheSnapshot
+        case theFirstFanDisabled, theSecondFanDisabled, noSnapshot, aFanMissingFromTheSnapshot
+        case anExtraFanInTheSnapshot
         case aRepeatedFan, anEnvelopeFailure
     }
 
     /// **Mutation (M10a):** delete the `allSatisfy { ... == .enabled }` guard. Run: red for
-    /// `.aFanDisabled`. **Mutation (G-repeat):** delete the guard that each reported fan is
+    /// `.theFirstFanDisabled` and `.theSecondFanDisabled`. **Mutation (G-repeat):** delete the guard that each reported fan is
     /// reported once. Run: red for `.aRepeatedFan` only. **Mutation (G-set):** delete the guard
     /// that the snapshot's fans are the fans on screen. Run: red for `.anExtraFanInTheSnapshot`
     /// only: `.aFanMissingFromTheSnapshot` is refused again by the per-fan lookup, which finds no
@@ -412,8 +455,12 @@ struct AllFansControlPresentationTests {
 
         let refused: LeaseTarget?
         switch refusal {
-        case .aFanDisabled:
-            let one = Support.snapshot(fans: [Fans.offered(0), Fans.refused(1, .supervisorBlind)])
+        case .theFirstFanDisabled, .theSecondFanDisabled:
+            let which = refusal == .theFirstFanDisabled ? 0 : 1
+            let one = Support.snapshot(
+                fans: [0, 1].map {
+                    $0 == which ? Fans.refused($0, .supervisorBlind) : Fans.offered($0)
+                })
             refused = Control.target(
                 for: .fifty, fans: Self.fans(Fixtures.screen(one, driver: .idle)), snapshot: one)
         case .noSnapshot:
@@ -445,5 +492,17 @@ struct AllFansControlPresentationTests {
                 snapshot: Support.snapshot(fans: [Fans.offered(0), unbounded]))
         }
         #expect(refused == nil)
+    }
+
+    // MARK: - The percentages
+
+    /// **Mutations (O9a, O9b):** make `.hundred` 110, or drop the space from the label. Run: red
+    /// here.
+    @Test("The percentages are 50, 75 and 100, labelled with a space before the sign")
+    func thePercentages() {
+        #expect(FanSpeedPercent.allCases == [.fifty, .seventyFive, .hundred])
+        #expect(FanSpeedPercent.allCases.map(\.rawValue) == [50, 75, 100])
+        #expect(FanSpeedPercent.allCases.map(\.percent) == [50, 75, 100])
+        #expect(FanSpeedPercent.allCases.map(\.label) == ["50 %", "75 %", "100 %"])
     }
 }

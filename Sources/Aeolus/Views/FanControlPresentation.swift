@@ -145,7 +145,10 @@ import Foundation
 ///   Auto is `selectAutomatic()`, a release, and a disabled control does not withhold it.
 /// - **Draw `selection` and nothing else as selected.** A click calls the driver (`take` for a
 ///   deliberate choice, `selectAutomatic()` for Auto, `adjust` while held) and selects nothing
-///   itself. Draw `.applying` and `.checking` as pending, never as the segment achieved.
+///   itself. Draw `.applying` and `.checking` as pending, never as the segment achieved:
+///   `.applying` at the segment its target names; `.checking` with no segment, because no licensed
+///   snapshot is on screen whose bounds could name the percentage a held target is, and the row's
+///   displayed bounds are not what the helper clamps to (#497's review, S2).
 /// - Show `status` beneath the control, and draw `lost` and `refused` as what happened.
 /// - **A control that speaks for several fans claims no more than each of them does.** It is
 ///   enabled only if every fan's affordance is enabled. A segment is selected only if every fan's

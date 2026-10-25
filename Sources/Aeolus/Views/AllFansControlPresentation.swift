@@ -48,8 +48,13 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 /// - **A percentage** only when every fan's selection is `.custom(rpm)` and each `rpm` is the speed
 ///   that percentage names for that fan's envelope, read from the same snapshot.
 /// - **Pending at a percentage** the same way, when every fan is `.applying` at it.
-/// - **Nothing** otherwise: a mix, `.checking`, `.unknown`, or a speed no percentage names. The
-///   per-fan status lines say what is happening instead.
+/// - **Checking**, pending at no percentage, when every fan is `.checking`: a lease is held and no
+///   licensed snapshot is on screen to confirm it. No segment is named. In any read `body` can
+///   make, `.checking` comes with no snapshot on screen (`PollingViewModel.render` assigns the
+///   snapshot with the rest, and a withdrawal removes it), so there are no bounds from which a
+///   percentage could be named, and the row's displayed bounds are not what the helper clamps to.
+/// - **Nothing** otherwise: a mix, `.unknown`, or a speed no percentage names. The per-fan status
+///   lines say what is happening instead.
 ///
 /// When two percentages name the same speed for every fan, as on a fan whose commandable range is
 /// a single speed, nothing is selected: the speed alone cannot say which was asked for.
@@ -81,6 +86,9 @@ struct AllFansControlPresentation: Equatable {
         case percent(FanSpeedPercent)
         /// Sent, and the helper has not answered: drawn as asked for, never as achieved.
         case pending(FanSpeedPercent)
+        /// A lease is held over every fan, and nothing on screen can confirm it: pending at no
+        /// percentage.
+        case checking
         case none
     }
 
@@ -225,6 +233,7 @@ extension AllFansControlPresentation {
             if case .applying(let speed) = fan.presentation.selection { speed } else { nil }
         }
         if let asked { return .pending(asked) }
+        if fans.allSatisfy({ $0.presentation.selection == .checking }) { return .checking }
         return .none
     }
 

@@ -8,8 +8,10 @@ import SwiftUI
 /// alone: Auto must stay enabled while the percentages are disabled whenever a release is offered.
 ///
 /// It decides nothing. Which segment is selected, which is pending, what is enabled and what
-/// each line says all come from the presentation, and a click only calls `choose` or
-/// `chooseAutomatic`; the next presentation says what came of it.
+/// each line says all come from the presentation, through `segments(for:)` and `labelMark(for:)`,
+/// and a click only reaches `perform(_:)`, which calls `choose` or `chooseAutomatic`; the next
+/// presentation says what came of it. What the suite cannot see is the one `Button` closure that
+/// calls `perform(_:)`: that needs a hosted window.
 struct AllFansControlView: View {
     let control: AllFansControlPresentation
     let choose: (FanSpeedPercent) -> Void
@@ -17,11 +19,15 @@ struct AllFansControlView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("All fans")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            if control.drawsControl {
-                buttons
+            label
+            let segments = Self.segments(for: control)
+            if !segments.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(segments) { segment in
+                        button(segment)
+                    }
+                }
+                .controlSize(.small)
             }
             switch control.affordance {
             case .hidden(let reason):
@@ -42,31 +48,75 @@ struct AllFansControlView: View {
         .padding(.bottom, 6)
     }
 
-    private var buttons: some View {
-        HStack(spacing: 6) {
-            segment(
-                "Auto", control.selection == .automatic ? .selected : .plain,
-                isEnabled: control.automaticIsEnabled,
-                help:
-                    "Releases the manual-control lease, if one is held. What the fans do next is "
-                    + "the helper's snapshot to show.",
-                action: chooseAutomatic)
-            ForEach(FanSpeedPercent.allCases, id: \.self) { percent in
-                segment(
-                    percent.label, Self.mark(percent, in: control.selection),
-                    isEnabled: control.percentsAreEnabled,
-                    help:
-                        "Every fan at \(percent.label) of its commandable range, as the helper "
-                        + "reports it. The helper clamps every speed again.",
-                    action: { choose(percent) })
+    /// "All fans", with a spinner while a lease is held that nothing on screen confirms
+    /// (`labelMark(for:)`).
+    private var label: some View {
+        HStack(spacing: 4) {
+            Text("All fans")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if Self.labelMark(for: control.selection) == .pending {
+                ProgressView().controlSize(.mini)
+                    .accessibilityLabel("Held, not confirmed")
             }
         }
-        .controlSize(.small)
     }
 
-    /// How a segment is drawn: as the selection, as asked for and not yet answered, or neither.
+    /// How a segment, or the control's label, is drawn: as the selection, as asked for and not
+    /// yet answered, or neither.
     enum Mark: Equatable {
         case selected, pending, plain
+    }
+
+    /// One segment as drawn: what a click on it does, how it is marked, and whether it may be
+    /// clicked.
+    struct Segment: Equatable, Identifiable {
+
+        /// What a click asks for.
+        enum Action: Hashable {
+            case automatic
+            case percent(FanSpeedPercent)
+        }
+
+        let action: Action
+        let mark: Mark
+        let isEnabled: Bool
+
+        var id: Action { action }
+
+        var title: String {
+            switch action {
+            case .automatic: return "Auto"
+            case .percent(let percent): return percent.label
+            }
+        }
+
+        var help: String {
+            switch action {
+            case .automatic:
+                return "Releases the manual-control lease, if one is held. What the fans do next "
+                    + "is the helper's snapshot to show."
+            case .percent(let percent):
+                return "Every fan at \(percent.label) of its commandable range, as the helper "
+                    + "reports it. The helper clamps every speed again."
+            }
+        }
+    }
+
+    /// Every segment `control` draws, in order: none when it draws no control, otherwise Auto and
+    /// then each percentage. Auto is enabled whenever a release is offered; the percentages only
+    /// when the control is enabled.
+    static func segments(for control: AllFansControlPresentation) -> [Segment] {
+        guard control.drawsControl else { return [] }
+        let automatic = Segment(
+            action: .automatic, mark: control.selection == .automatic ? .selected : .plain,
+            isEnabled: control.automaticIsEnabled)
+        let percents = FanSpeedPercent.allCases.map { percent in
+            Segment(
+                action: .percent(percent), mark: mark(percent, in: control.selection),
+                isEnabled: control.percentsAreEnabled)
+        }
+        return [automatic] + percents
     }
 
     /// The mark `selection` gives the segment for `percent`.
@@ -76,36 +126,51 @@ struct AllFansControlView: View {
         switch selection {
         case .percent(let selected) where selected == percent: return .selected
         case .pending(let asked) where asked == percent: return .pending
+        case .automatic, .percent, .pending, .checking, .none: return .plain
+        }
+    }
+
+    /// The mark the control's label carries: pending while every fan is `.checking`, a lease held
+    /// with no licensed snapshot on screen to name the percentage it holds, so no segment can be.
+    static func labelMark(for selection: AllFansControlPresentation.Selection) -> Mark {
+        switch selection {
+        case .checking: return .pending
         case .automatic, .percent, .pending, .none: return .plain
+        }
+    }
+
+    /// What a click on a segment does: the one place an action reaches `choose` or
+    /// `chooseAutomatic`.
+    func perform(_ action: Segment.Action) {
+        switch action {
+        case .automatic: chooseAutomatic()
+        case .percent(let percent): choose(percent)
         }
     }
 
     /// One segment. Selected is drawn prominent; pending is drawn as asked for, with a spinner,
     /// never as achieved.
     @ViewBuilder
-    private func segment(
-        _ title: String, _ mark: Mark, isEnabled: Bool, help: String,
-        action: @escaping () -> Void
-    ) -> some View {
+    private func button(_ segment: Segment) -> some View {
         let label = HStack(spacing: 4) {
-            Text(title)
-            if mark == .pending {
+            Text(segment.title)
+            if segment.mark == .pending {
                 ProgressView().controlSize(.mini)
             }
         }
         Group {
-            if mark == .selected {
-                Button(action: action) { label }
+            if segment.mark == .selected {
+                Button(action: { perform(segment.action) }) { label }
                     .buttonStyle(.borderedProminent)
                     .accessibilityAddTraits(.isSelected)
             } else {
-                Button(action: action) { label }
+                Button(action: { perform(segment.action) }) { label }
                     .buttonStyle(.bordered)
-                    .accessibilityValue(mark == .pending ? "Asked for, not confirmed" : "")
+                    .accessibilityValue(segment.mark == .pending ? "Asked for, not confirmed" : "")
             }
         }
-        .disabled(!isEnabled)
-        .help(help)
+        .disabled(!segment.isEnabled)
+        .help(segment.help)
     }
 
     /// A refusal: whose it is when not every fan's, the reason's own summary, its wire value
