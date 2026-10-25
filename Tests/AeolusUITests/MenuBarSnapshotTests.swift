@@ -43,11 +43,11 @@ struct MenuBarSnapshotTests {
             provider: Self.provider(), clock: FakePollingClock(), snapshots: source)
         let menuBar = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await Support.tickEnds(polling)
         #expect(menuBar.thermalEmergency == .active)
 
         try await Support.report(.unresponsive, to: source, from: helper)
-        await polling.tick()
+        await Support.tickEnds(polling)
         #expect(menuBar.thermalEmergency == .unknown)
 
         await Support.tearDown(source, helper)
@@ -65,7 +65,7 @@ struct MenuBarSnapshotTests {
             provider: Self.provider(), clock: FakePollingClock(), snapshots: source)
         let menuBar = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await Support.tickEnds(polling)
         #expect(menuBar.controlSource == .helperSnapshot(activeLease: lease))
 
         await Support.tearDown(source, helper)
@@ -86,7 +86,7 @@ struct MenuBarSnapshotTests {
         let menuBar = MenuBarViewModel(
             polling: polling, selection: [MenuBarReadout(key: "F0Ac", source: .fan)])
 
-        await polling.tick()
+        await Support.tickEnds(polling)
 
         #expect(menuBar.readouts.map(\.key) == ["F0Ac"])
         #expect(menuBar.isAnyFanReportedReclaimed)

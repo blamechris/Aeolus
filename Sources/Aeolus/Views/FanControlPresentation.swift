@@ -24,11 +24,13 @@ import Foundation
 ///    `ControlSource` is `.notTracked`, or the fan's own `FanControlSource` is, or no snapshot is
 ///    on screen, or the inputs come from different snapshots (see "One snapshot at a time").
 ///    The reason is `ControlSourceDisplay.explanation(_:)` where there is one.
-/// 3. **Disabled, thermal emergency** while the snapshot reports one. `LeaseAuthority` refuses
-///    every new lease while § 3's latch holds (`refuseIfThermalEmergencyActive`, in
-///    `acquireLease`), and that is all the reason says: no new lease. It says nothing about which
-///    fans anything is driving, and nothing about the lease the app may already hold (#485's S3,
-///    #484).
+/// 3. **Disabled, thermal emergency** while the snapshot reports one. `LeaseAuthority` refuses a
+///    grant that finds § 3's latch holding (`refuseIfThermalEmergencyActive`, in
+///    `acquireLease`), and that is all the reason says: no new lease. A grant already past that
+///    check when the emergency engages proceeds, and each § 3 cycle that keeps the latch revokes
+///    it (`ThermalEmergencyDisplay`'s documentation; `docs/records/handback-ledger.md`, "Why § 3
+///    revokes every lease"). It says nothing about which fans anything is driving, and nothing
+///    about the lease the app may already hold (#485's S3, #484).
 /// 4. **Disabled, held by another lease** when the snapshot lists a lease whose identifier is not
 ///    the one the driver holds. The helper grants one lease per machine: `acquireLease` refuses
 ///    `.leaseHeldByAnotherClient` while its table is non-empty, whoever is in it. **Compared by
@@ -399,11 +401,10 @@ extension FanControlPresentation.Reason {
         wireValue: nil)
 
     /// No new lease while the emergency lasts, and nothing more: see the type's rule 3. The
-    /// wording #485's S3 gives the banner, which today still says "grants no manual control".
+    /// banner's own sentence (`ThermalEmergencyDisplay.emergency`), so the control and the banner
+    /// above it cannot describe one emergency two ways.
     static let thermalEmergencyActive = Self(
-        summary:
-            "Thermal emergency reported by the helper — it grants no new manual-control lease "
-            + "while this lasts.",
+        summary: ThermalEmergencyDisplay.emergency.text,
         advice: nil,
         wireValue: nil)
 

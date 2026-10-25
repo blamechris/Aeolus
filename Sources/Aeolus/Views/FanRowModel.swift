@@ -62,8 +62,10 @@ struct FanRowModel: Equatable, Identifiable {
     /// - **A fan that reads manual while the emergency flag is set** says exactly that — "Manual
     ///   during a thermal emergency" — rather than "Manual — fixed speed", which is the label a
     ///   user's own setting gets and would read as their choice. It claims nothing about who is
-    ///   driving the fan: `docs/SAFETY.md` § 3 acts only on fans Aeolus took off automatic,
-    ///   never on one another program holds, and on a helper that cannot write, on none.
+    ///   driving the fan: `docs/SAFETY.md` § 3 acts only on fans in its own registers, which are
+    ///   fans Aeolus took off automatic control. It is never told about a fan the grant path
+    ///   reports `.foreignManualControl`, and on a helper that cannot write, it has registered
+    ///   none.
     /// - Otherwise the mode the helper reports.
     ///
     /// Everything but the first is the helper's report, and the fan pane says so once, above

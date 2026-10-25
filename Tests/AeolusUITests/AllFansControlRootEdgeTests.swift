@@ -38,7 +38,7 @@ extension AllFansControlRootTests {
         let polling = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(),
             snapshots: root.snapshots)
-        await polling.tick()
+        await Support.tickEnds(polling)
 
         let presentation = AllFansControlPresentation(
             polling: polling, driver: root.leaseState.current)

@@ -13,11 +13,16 @@ import Testing
 /// `HardwareIdentity.current()` rather than a third test-only sysctl reader — `AeolusUI`
 /// already depends on `FanKit`, so nothing stops this from calling it directly, per this
 /// issue's own instruction to use `HardwareIdentity.current()` for hardware gating.
+///
+/// The time limit is what lets `SnapshotTestSupport.tickEnds(_:)` end a tick that never
+/// returns as a red; without one, a cancellable wait is still a wait that never ends. A cold
+/// discovery on this machine is measured in seconds (`SensorPoller`), so a minute is room.
 @Suite(
     "AeolusUI polling — real hardware",
     .enabled(
         if: SMCConnection.isHardwareAvailable()
-            && HardwareIdentity.current().modelIdentifier == "Mac16,5")
+            && HardwareIdentity.current().modelIdentifier == "Mac16,5"),
+    .timeLimit(.minutes(1))
 )
 struct HardwareSmokeTests {
 
@@ -67,7 +72,7 @@ struct HardwareSmokeTests {
         let viewModel = PollingViewModel(
             provider: provider, snapshots: .noHelper())
 
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.fans.isEmpty)
         #expect(!viewModel.sensors.isEmpty)
@@ -77,7 +82,7 @@ struct HardwareSmokeTests {
         // warm, full enumeration is ~0.6 s warm and ~4.5 s cold. This does not assert a
         // timing bound (too flaky across machines/CI), only that the second tick still
         // succeeds using the cached discovery from the first.
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .ready)
     }
 }

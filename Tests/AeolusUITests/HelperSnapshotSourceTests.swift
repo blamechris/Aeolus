@@ -170,7 +170,7 @@ struct HelperSnapshotSourceTests {
             isThermalEmergencyActive: true)
         await helper.reply(with: old)
         try await helper.waitForRequests(2)  // request 2 parked: the one that re-handshakes
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.thermalEmergency == .active)
 
         try await Support.report(departure, to: source, from: helper)
@@ -179,7 +179,7 @@ struct HelperSnapshotSourceTests {
         #expect(Support.freshSnapshot(source) == nil, "the dead process's snapshot is current")
         #expect(source.authority() == .awaitHelper(.awaitingSnapshot))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.thermalEmergency == .unknown)
         #expect(viewModel.fans.map(\.control) == [.notTracked(.awaitingSnapshot)])
         #expect(viewModel.controlSource == .notTracked(.awaitingSnapshot))

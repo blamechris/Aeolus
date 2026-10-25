@@ -94,9 +94,10 @@ struct FanRowModelTests {
 
     /// The emergency flag is set and the fan reads manual: that, and nothing more, is what the
     /// row may say. It must not read as a user's chosen speed, and it must not claim anything
-    /// is protecting the fan — `docs/SAFETY.md` § 3 acts only on fans Aeolus took off automatic,
-    /// so not on a fan another program holds (`.foreignManualControl`), and on a helper that
-    /// cannot write (`.writePathNotBuilt`) on none at all.
+    /// is protecting the fan — `docs/SAFETY.md` § 3 acts only on fans in its own registers, which
+    /// are fans Aeolus took off automatic control. It is never told about a fan the grant path
+    /// reports `.foreignManualControl`, and on a helper that cannot write (`.writePathNotBuilt`)
+    /// it has registered none.
     ///
     /// **Mutation (T1):** delete the `thermalEmergency` branch of `controlStateLabel(for:)`.
     /// **Mutation (P2):** return "Under thermal protection" from it. Run, each: red for every

@@ -35,9 +35,9 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: provider, clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
-        await viewModel.tick()
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
+        await Support.tickEnds(viewModel)
+        await Support.tickEnds(viewModel)
 
         #expect(await provider.readAllCallCount == 0)
         #expect(await provider.readKeysCalls.isEmpty)
@@ -67,19 +67,19 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: provider, clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(await Support.readCount(provider) == 0)
         #expect(viewModel.phase == .waitingForHelper)
         #expect(viewModel.controlSource == .notTracked(.helperConnection(.idle)))
 
         try await Support.report(.handshaken, to: source, from: helper)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(await Support.readCount(provider) == 0)
         #expect(viewModel.phase == .waitingForHelper)
         #expect(viewModel.controlSource == .notTracked(.awaitingSnapshot))
 
         try await Support.report(.refused, to: source, from: helper)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(await Support.readCount(provider) > 0)
         #expect(viewModel.phase == .ready)
         #expect(viewModel.fans.map(\.control) == [.notTracked(.helperConnection(.refused))])
@@ -102,19 +102,23 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.thermalEmergency == .active)
         #expect(
             viewModel.fans.map(\.control) == [.reported(snapshot.fans[0], thermalEmergency: true)])
 
         try await Support.report(.unresponsive, to: source, from: helper)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         let why = ControlNotTracked.helperConnection(.unresponsive)
         #expect(viewModel.fans.map(\.control) == [.notTracked(why)])
         #expect(viewModel.thermalEmergency == .unknown)
         #expect(viewModel.controlSource == .notTracked(why))
-        #expect(FanRowModel(reading: viewModel.fans[0]).controlStateLabel == "Mode not tracked")
+        // Mapped rather than indexed, so a tick that left no fans is a red and not a crash that
+        // takes the whole run down with it (#485 S5).
+        #expect(
+            viewModel.fans.map { FanRowModel(reading: $0).controlStateLabel }
+                == ["Mode not tracked"])
 
         await Support.tearDown(source, helper)
     }
@@ -135,9 +139,9 @@ struct PollingViewModelSnapshotTests {
             provider: Support.directProvider(isAvailable: false), clock: FakePollingClock(),
             snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         try await Support.report(.invalidated, to: source, from: helper)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.phase == .failed(.noSMC))
         #expect(viewModel.fans.map(\.actual) == [.value(key: "F0Ac", 2999)])
@@ -159,11 +163,11 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: provider, clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.thermalEmergency == .active)
 
         clock.advance(by: source.freshnessBound)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.fans.map(\.control) == [.notTracked(.snapshotStale)])
         #expect(viewModel.thermalEmergency == .unknown)
@@ -188,7 +192,7 @@ struct PollingViewModelSnapshotTests {
             provider: Support.directProvider(), clock: FakePollingClock(),
             snapshots: HelperSnapshotSource(withoutHelper: .noHelperInThisBuild))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.fans.isEmpty)
@@ -215,7 +219,7 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.controlSource == .helperSnapshot(activeLease: Self.lease))
         #expect(viewModel.thermalEmergency == .inactive)
@@ -237,7 +241,7 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.lastUpdated == receivedAt)
         #expect(viewModel.lastUpdated != capturedAt)
@@ -257,7 +261,7 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.thermalEmergency == .active)
         #expect(
@@ -276,7 +280,7 @@ struct PollingViewModelSnapshotTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.thermalEmergency == .inactive)
         #expect(
@@ -294,7 +298,7 @@ struct PollingViewModelSnapshotTests {
             provider: Support.directProvider(), clock: FakePollingClock(),
             snapshots: HelperSnapshotSource(withoutHelper: .noHelperInThisBuild))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
 
         #expect(viewModel.thermalEmergency == .unknown)
         #expect(

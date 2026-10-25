@@ -27,14 +27,14 @@ struct FanControlInputsTests {
         let driver = Fixtures.held(
             Fixtures.ours, fans: [0], .confirmed(try Fixtures.target([0: 3000])))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.renderedSnapshot == snapshot)
         let shown = Fixtures.screen(snapshot, driver: driver)
         #expect(FanControlPresentation.Inputs(polling: viewModel, driver: driver) == shown.inputs)
         #expect(viewModel.fans == shown.rows)
 
         try await Support.report(.unresponsive, to: source, from: helper)
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         #expect(viewModel.renderedSnapshot == nil)
         let gone = Fixtures.withdrawn(
             .helperConnection(.unresponsive), driver: driver, from: snapshot)
@@ -57,7 +57,7 @@ struct FanControlInputsTests {
         let viewModel = PollingViewModel(
             provider: Support.directProvider(), clock: FakePollingClock(), snapshots: source)
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         let inputs = FanControlPresentation.Inputs(polling: viewModel, driver: .idle)
         #expect(inputs.thermalEmergency == .active)
         #expect(inputs == Fixtures.screen(snapshot, driver: .idle).inputs)
@@ -84,7 +84,7 @@ struct FanControlInputsTests {
         let target = try Fixtures.target([0: 3000])
         let driver = Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         let before = FanControlPresentation.onScreen(in: viewModel, driver: driver)
         #expect(before.map(\.presentation.selection) == [.custom(try Fixtures.speed(target, 0))])
 
@@ -97,7 +97,7 @@ struct FanControlInputsTests {
             seen += FanControlPresentation.onScreen(in: viewModel, driver: driver)
                 .map(\.presentation)
         }
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         sink.cancel()
 
         #expect(seen.count == 1)
@@ -123,7 +123,7 @@ struct FanControlInputsTests {
         let driver = Fixtures.held(
             Fixtures.ours, fans: [0, 1], .confirmed(try Fixtures.target([0: 3000, 1: 3200])))
 
-        await viewModel.tick()
+        await Support.tickEnds(viewModel)
         let every = FanControlPresentation.onScreen(in: viewModel, driver: driver)
         let screen = Fixtures.screen(snapshot, driver: driver)
 
