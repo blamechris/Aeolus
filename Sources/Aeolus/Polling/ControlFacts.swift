@@ -76,7 +76,7 @@ public enum ControlNotTracked: Sendable, Hashable {
     case helperConnection(HelperConnectionHealth)
     /// Handshaken, and nothing has answered yet in this handshaken episode. A snapshot from an
     /// earlier episode — before the helper process was replaced, or the connection dropped —
-    /// does not count.
+    /// does not count, and nor does a request that failed before this handshake (#501).
     case awaitingSnapshot
     /// The most recent snapshot request failed. `detail` has already been through
     /// `HelperAuthoredText.sanitised(_:)`, because an `AeolusXPCFault` can carry the helper's
