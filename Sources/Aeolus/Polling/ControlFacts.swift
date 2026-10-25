@@ -27,9 +27,10 @@ public enum FanControlSource: Sendable, Hashable {
     ///
     /// `thermalEmergency` is the same snapshot's `isThermalEmergencyActive`, carried beside
     /// each fan so a row can say what is true of it: the flag is set and the fan reads manual.
-    /// It says nothing about who is driving the fan. `docs/SAFETY.md` § 3 acts only on fans
-    /// Aeolus itself took off automatic control, never on one another program holds, and on a
-    /// helper that cannot write it has taken none.
+    /// It says nothing about who is driving the fan. `docs/SAFETY.md` § 3 acts only on fans in
+    /// its own registers, which are fans Aeolus took off automatic control. It is never told
+    /// about a fan the grant path reports `.foreignManualControl`, and on a helper that cannot
+    /// write, it has registered none.
     case reported(FanState, thermalEmergency: Bool)
 
     /// Whether the helper reports this fan reclaimed by the system.

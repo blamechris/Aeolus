@@ -12,10 +12,22 @@ import Foundation
 /// helper that has stopped answering.
 ///
 /// **The copy names the emergency only while the flag is set**, says only what the helper does
-/// while it is — grant no manual control — and says nothing about leases or about protecting any
-/// particular fan: § 3 acts only on fans Aeolus took off automatic, never on another program's.
-/// § 3 revokes every lease when it fires, and its flag clears once the latch releases (#476
-/// NB3), so a banner that inferred a cause from a lease that had gone would be guessing.
+/// while it is — grant no new manual-control lease — and infers nothing from a lease and says
+/// nothing about protecting any particular fan. `docs/SAFETY.md` § 3 acts only on fans in its own
+/// registers, which are fans Aeolus took off automatic control. It is never told about a fan the
+/// grant path reports `.foreignManualControl`, and on a helper that cannot write, it has
+/// registered none. § 3 revokes every lease when it fires, and its flag clears once the latch
+/// releases (#476 NB3), so a banner that inferred a cause from a lease that had gone would be
+/// guessing.
+///
+/// **"No new lease", not "no manual control" (#485 S3).** `ThermalEmergency.fire()` engages the
+/// latch first, then bridges the fans in its registers to maximum and back, and revokes every
+/// live lease last; § 3's opening in `docs/SAFETY.md` gives the same order for the last three.
+/// `LeaseAuthority.acquireLease` refuses while the latch holds, and `renewLease` does not consult
+/// it. So a snapshot can carry the flag beside a lease it still lists — the window
+/// `SystemSnapshot.controlLoss(leaseID:covering:)` names — and "grants no manual control" would
+/// sit beside "Manual-control lease held by …". On a helper that cannot write, that window holds
+/// no lease, because none is granted; the sentence is for the helper that can.
 enum ThermalEmergencyDisplay {
 
     enum Severity: Equatable {
@@ -36,8 +48,8 @@ enum ThermalEmergencyDisplay {
     static let emergency = Banner(
         severity: .emergency,
         text:
-            "Thermal emergency reported by the helper — it grants no manual control while this "
-            + "lasts.",
+            "Thermal emergency reported by the helper — it grants no new manual-control lease "
+            + "while this lasts.",
         compactText: "Thermal emergency active")
 
     /// The unknown line, with the reason nothing is tracked.

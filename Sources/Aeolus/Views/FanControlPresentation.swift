@@ -399,11 +399,10 @@ extension FanControlPresentation.Reason {
         wireValue: nil)
 
     /// No new lease while the emergency lasts, and nothing more: see the type's rule 3. The
-    /// wording #485's S3 gives the banner, which today still says "grants no manual control".
+    /// banner's own sentence (`ThermalEmergencyDisplay.emergency`), so the control and the banner
+    /// above it cannot describe one emergency two ways.
     static let thermalEmergencyActive = Self(
-        summary:
-            "Thermal emergency reported by the helper — it grants no new manual-control lease "
-            + "while this lasts.",
+        summary: ThermalEmergencyDisplay.emergency.text,
         advice: nil,
         wireValue: nil)
 

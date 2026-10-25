@@ -165,14 +165,35 @@ struct ThermalEmergencyDisplayTests {
             ThermalEmergencyDisplay.banner(for: .unknown, source: Self.monitor))
 
         #expect(active.text.hasPrefix("Thermal emergency reported by the helper"))
-        // § 3 acts only on fans Aeolus took off automatic, so nothing is said to protect fans.
+        // § 3 acts only on fans in its own registers, so nothing is said to protect fans.
         #expect(!active.text.lowercased().contains("protect"))
         #expect(!active.compactText.lowercased().contains("protect"))
         #expect(unknown.text.contains("unknown"))
         #expect(!unknown.text.contains("reported by the helper"))
-        // Neither infers a cause from a lease: § 3's flag can clear before it is read (#476).
-        #expect(!active.text.lowercased().contains("lease"))
+        // The unknown line infers nothing from a lease: § 3's flag can clear before it is read
+        // (#476). The emergency's own sentence is pinned whole, below.
         #expect(!unknown.text.lowercased().contains("lease"))
+    }
+
+    /// While the flag is set, the helper grants no new lease, and that is all the banner may say.
+    /// It must not say the helper grants no manual control: § 3 latches before it revokes, and a
+    /// renewal does not consult the latch, so a snapshot can list a lease beside the flag
+    /// (`ThermalEmergencyDisplay`'s documentation, #485 S3). A check for words that must not
+    /// appear cannot catch that, so the sentence is pinned whole.
+    ///
+    /// **Mutation (BA):** put back `5b324df`'s "it grants no manual control while this lasts".
+    /// Run: red at the `text` expectation, and in `FanControlAffordanceTests.anEmergencyDisables`,
+    /// whose reason is the same sentence.
+    @Test("The emergency banner says the helper grants no new lease, in exactly these words")
+    func theEmergencySaysOnlyNoNewLease() throws {
+        let active = try #require(
+            ThermalEmergencyDisplay.banner(for: .active, source: Self.monitor))
+
+        #expect(
+            active.text
+                == "Thermal emergency reported by the helper — it grants no new manual-control "
+                + "lease while this lasts.")
+        #expect(active.compactText == "Thermal emergency active")
     }
 }
 
