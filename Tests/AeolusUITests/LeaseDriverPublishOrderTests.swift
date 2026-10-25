@@ -29,16 +29,22 @@ struct LeaseDriverPublishOrderTests {
     ///
     /// **Mutation (P1, coalesce):** in `LeaseDriverPublisher.stream(of:add:remove:)`, buffer with
     /// `.bufferingNewest(1)`. Run: red at "nothing coalesced", three reports where five were
-    /// published.
+    /// published. No other lease-driver, lease-state-model or lifecycle test goes red.
     /// **Mutation (P2, reorder):** in `LeaseDriver.transition(to:)`, publish a state that stops
-    /// acting from a `Task` on the driver's actor, its report taken at the transition
-    /// (`let stopped = report; Task { publisher.publishStateChange(stopped) }`). Run: red at "in
-    /// order" alone. Every report still arrives, with its own floor, but `lost` arrives after the
-    /// two changes made after it in the same turn.
-    /// **Mutation (P3, publish before minting):** in `transition(to:)`, call
-    /// `publisher.publishStateChange(report)` before the `hasStoppedActing` block that sets
-    /// `evidence`. Run: red at "each with its own floor" alone, `lost` going out with the
-    /// evidence from before it.
+    /// acting from a `Task` on the driver's actor, with its report taken at the transition
+    /// (`let stopped = report; Task { self.publisher.publishStateChange(stopped) }`), and every
+    /// other state as now. Run: red at the two order assertions, the reports' ("in order") and
+    /// the state stream's, and nowhere else. Every report still arrives with its own floor, but
+    /// `lost` arrives after the two changes made after it in the same turn.
+    /// **Mutation (P3, publish before minting):** in `transition(to:)`, move
+    /// `publisher.publishStateChange(report)` above the `hasStoppedActing` block that sets
+    /// `evidence`. Run: red at "each with its own floor" and at the release's later floor; the
+    /// count and the order hold. `lost` goes out with the evidence from before it, and
+    /// `released` with the loss's floor. `LeaseDriverFloorTests` goes red too (its F3).
+    /// **Mutation (P4, a deferred publish):** in `transition(to:)`, replace the publish with
+    /// `Task { self.publisher.publishStateChange(self.report) }`. Run: red at the two order
+    /// assertions. Each of the turn's three tasks publishes the report as it is when the task
+    /// runs, so the subscriber reads `releasing` three times and never `lost` or `acquiring`.
     @Test("Changes in one turn reach a suspended subscriber, each in order with its own floor")
     func aTurnOfChangesIsPublishedWhole() async throws {
         let scene = await LeaseScene()

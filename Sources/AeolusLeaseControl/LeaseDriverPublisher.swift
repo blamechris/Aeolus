@@ -2,20 +2,20 @@ import Foundation
 
 // Who follows a `LeaseDriver`, and the sending of its states and reports to them (#511).
 //
-// **Nothing here holds the driver's state**, which is why it can live outside `LeaseDriver.swift`
-// with nothing there widened. The driver hands over every value it sends, once `transition(to:)`
-// has set the state and minted the floor. `current`, the evidence, the ticket epoch and
-// `transition(to:)` stay `private` to the driver, and `SnapshotTicket`'s epoch stays
-// `fileprivate`.
+// **Nothing here reads or sets the driver's state**, which is why it can live outside
+// `LeaseDriver.swift` with nothing there widened. The driver hands over every value it sends,
+// once `transition(to:)` has set the state and minted the floor. `current`, the evidence, the
+// ticket epoch and `transition(to:)` stay `private` to the driver, and `SnapshotTicket`'s epoch
+// stays `fileprivate`.
 
 /// Every observer of one `LeaseDriver`, and the publishing of its states and reports to them.
 ///
 /// ## Owned by the driver, and used only on its actor
 ///
 /// The driver keeps its one instance in a `private` stored property. So only `LeaseDriver.swift`
-/// can name it, and only on the driver's actor, which isolates every stored property of its own.
-/// It is **not `Sendable`**, so the compiler refuses to let that instance be captured by a task
-/// that runs anywhere else and publishes from there.
+/// can name it, and only on the driver's actor, to which an actor's stored properties are
+/// isolated. It is **not `Sendable`** (see the end of this file), so the compiler refuses a task
+/// that captures that instance to publish from anywhere else.
 ///
 /// **Every method is synchronous.** A publication runs to its end inside the turn of the driver's
 /// actor that asked for it, so no other job runs between a state and its report, or between one
@@ -23,7 +23,9 @@ import Foundation
 /// out apart from its floor, or let two publications swap (ADR 0015 D2).
 ///
 /// The type is `internal`, so other code in the module can make an instance of its own. That
-/// instance has no observer of any driver, and what it publishes reaches nobody.
+/// instance is not the driver's: only closures written in `LeaseDriver.swift` can reach the
+/// driver's, so no subscriber of a driver is ever registered with another, and what another
+/// publishes reaches none of them.
 ///
 /// ## What it keeps
 ///
