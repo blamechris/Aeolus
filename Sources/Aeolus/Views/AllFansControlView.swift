@@ -45,7 +45,7 @@ struct AllFansControlView: View {
     private var buttons: some View {
         HStack(spacing: 6) {
             segment(
-                "Auto", isSelected: control.selection == .automatic, isPending: false,
+                "Auto", control.selection == .automatic ? .selected : .plain,
                 isEnabled: control.automaticIsEnabled,
                 help:
                     "Releases the manual-control lease, if one is held. What the fans do next is "
@@ -53,8 +53,7 @@ struct AllFansControlView: View {
                 action: chooseAutomatic)
             ForEach(FanSpeedPercent.allCases, id: \.self) { percent in
                 segment(
-                    percent.label, isSelected: control.selection == .percent(percent),
-                    isPending: control.selection == .pending(percent),
+                    percent.label, Self.mark(percent, in: control.selection),
                     isEnabled: control.percentsAreEnabled,
                     help:
                         "Every fan at \(percent.label) of its commandable range, as the helper "
@@ -65,28 +64,44 @@ struct AllFansControlView: View {
         .controlSize(.small)
     }
 
+    /// How a segment is drawn: as the selection, as asked for and not yet answered, or neither.
+    enum Mark: Equatable {
+        case selected, pending, plain
+    }
+
+    /// The mark `selection` gives the segment for `percent`.
+    static func mark(
+        _ percent: FanSpeedPercent, in selection: AllFansControlPresentation.Selection
+    ) -> Mark {
+        switch selection {
+        case .percent(let selected) where selected == percent: return .selected
+        case .pending(let asked) where asked == percent: return .pending
+        case .automatic, .percent, .pending, .none: return .plain
+        }
+    }
+
     /// One segment. Selected is drawn prominent; pending is drawn as asked for, with a spinner,
     /// never as achieved.
     @ViewBuilder
     private func segment(
-        _ title: String, isSelected: Bool, isPending: Bool, isEnabled: Bool, help: String,
+        _ title: String, _ mark: Mark, isEnabled: Bool, help: String,
         action: @escaping () -> Void
     ) -> some View {
         let label = HStack(spacing: 4) {
             Text(title)
-            if isPending {
+            if mark == .pending {
                 ProgressView().controlSize(.mini)
             }
         }
         Group {
-            if isSelected {
+            if mark == .selected {
                 Button(action: action) { label }
                     .buttonStyle(.borderedProminent)
                     .accessibilityAddTraits(.isSelected)
             } else {
                 Button(action: action) { label }
                     .buttonStyle(.bordered)
-                    .accessibilityValue(isPending ? "Asked for, not confirmed" : "")
+                    .accessibilityValue(mark == .pending ? "Asked for, not confirmed" : "")
             }
         }
         .disabled(!isEnabled)

@@ -217,22 +217,14 @@ extension AllFansControlPresentation {
     private static func selection(_ fans: [Fan], _ snapshot: SystemSnapshot?) -> Selection {
         guard !fans.isEmpty else { return .none }
         if fans.allSatisfy({ $0.presentation.selection == .automatic }) { return .automatic }
-        if let percent = onlyPercent(
-            fans, snapshot,
-            at: { fan in
-                if case .custom(let speed) = fan.presentation.selection { speed } else { nil }
-            })
-        {
-            return .percent(percent)
+        let held = onlyPercent(fans, snapshot) { fan in
+            if case .custom(let speed) = fan.presentation.selection { speed } else { nil }
         }
-        if let percent = onlyPercent(
-            fans, snapshot,
-            at: { fan in
-                if case .applying(let speed) = fan.presentation.selection { speed } else { nil }
-            })
-        {
-            return .pending(percent)
+        if let held { return .percent(held) }
+        let asked = onlyPercent(fans, snapshot) { fan in
+            if case .applying(let speed) = fan.presentation.selection { speed } else { nil }
         }
+        if let asked { return .pending(asked) }
         return .none
     }
 
