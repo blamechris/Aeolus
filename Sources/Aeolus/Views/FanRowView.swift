@@ -184,16 +184,16 @@ struct FanRowView: View {
             TextField(
                 "RPM",
                 text: Binding(
-                    get: { shown.text },
+                    get: { field.text(showing: driversTarget) },
                     set: { field = field.typed($0) })
             )
             .focused($fieldIsFocused)
             .onSubmit {
-                field = submit(shown.text)
+                field = submit(field.text(showing: driversTarget))
                 fieldIsFocused = false
             }
             .onChange(of: fieldIsFocused) { focused in
-                field = field.focus(focused, showing: shown.text)
+                field = field.focus(focused, showing: driversTarget)
             }
             .frame(width: 64)
             .font(.caption.monospacedDigit())
@@ -213,6 +213,11 @@ struct FanRowView: View {
             }
         }
         .disabled(!shown.isEnabled)
+    }
+
+    /// What the field shows when nobody is typing: the driver's target for the fan, as text.
+    private var driversTarget: String {
+        FanRowControlPresentation.shownText(control)
     }
 
     /// A stepper click commits and ends the edit, so the field shows what the driver asks for.

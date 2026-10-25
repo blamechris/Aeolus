@@ -71,8 +71,10 @@ struct FanRowControlPresentation: Equatable {
     let custom: Segment
     /// `nil` when no field is drawn.
     let field: Field?
-    /// Beneath the field: what the last Return clamped, until the field next gains focus or the
-    /// stepper is clicked (`FieldState`).
+    /// Beneath the field: what the last Return clamped. Shown only while the report's target for
+    /// the fan is the speed it clamped to, so never under Auto, never beside another speed, and
+    /// never without the field showing that number. Gone for good when the field next gains focus
+    /// or the stepper is clicked (`FieldState`).
     let courtesy: String?
 
     /// One segment as drawn.
@@ -128,6 +130,16 @@ struct FanRowControlPresentation: Equatable {
         /// The courtesy line from the last Return that clamped. Cleared when the field next gains
         /// focus, and by a stepper click; kept when focus leaves.
         var courtesy: String?
+        /// The speed that Return clamped to, beside `courtesy`: the line is shown only while the
+        /// driver's target for the fan is this speed.
+        var clampedTo: FanTargetRPM?
+
+        /// What the field holds now, for the binding and for Return: the live draft while there is
+        /// one, else `shown`, the driver's target as text. Read from this value, never from a
+        /// `Field` captured when the view last drew, which a keystroke can have overtaken.
+        func text(showing shown: String) -> String {
+            draft ?? shown
+        }
 
         /// The field gained or lost focus.
         ///
@@ -138,13 +150,13 @@ struct FanRowControlPresentation: Equatable {
         ///   and its line must outlive that.
         func focus(_ gained: Bool, showing shown: String) -> FieldState {
             gained
-                ? FieldState(draft: shown, courtesy: nil)
-                : FieldState(draft: nil, courtesy: courtesy)
+                ? FieldState(draft: shown)
+                : FieldState(draft: nil, courtesy: courtesy, clampedTo: clampedTo)
         }
 
         /// The user typed: the draft is what the field now holds.
         func typed(_ text: String) -> FieldState {
-            FieldState(draft: text, courtesy: courtesy)
+            FieldState(draft: text, courtesy: courtesy, clampedTo: clampedTo)
         }
 
         /// After a stepper click: the edit ends and the courtesy line goes, so the field shows what
@@ -186,7 +198,7 @@ struct FanRowControlPresentation: Equatable {
         custom = Segment(
             mark: Self.customMark(presentation.selection),
             isEnabled: enabled && !inputs.isInCustom && Self.custom(inputs) != nil)
-        courtesy = drawsControl ? state.courtesy : nil
+        courtesy = Self.courtesy(state, inputs, drawn: drawsControl)
         guard drawsControl, inputs.driverTarget != nil || state.draft != nil else {
             field = nil
             return
@@ -197,6 +209,14 @@ struct FanRowControlPresentation: Equatable {
             isEnabled: enabled,
             canStepUp: Self.step(.up, from: state, inputs) != nil,
             canStepDown: Self.step(.down, from: state, inputs) != nil)
+    }
+
+    /// The courtesy line, while the report's target for the fan is the speed it clamped to.
+    private static func courtesy(_ state: FieldState, _ inputs: Inputs, drawn: Bool) -> String? {
+        guard drawn, let clamped = state.clampedTo, inputs.driverTarget?.speed == clamped else {
+            return nil
+        }
+        return state.courtesy
     }
 
     private static func customMark(_ selection: FanControlPresentation.Selection) -> Mark {
@@ -299,7 +319,11 @@ extension FanRowControlPresentation {
         let request: Request =
             inputs.presentation.canRelease
             ? .adjustFan(inputs.index, to: entry.speed) : .takeFan(inputs.index, at: entry.speed)
-        return (request, FieldState(draft: nil, courtesy: entry.courtesy(in: envelope)))
+        let courtesy = entry.courtesy(in: envelope)
+        return (
+            request,
+            FieldState(draft: nil, courtesy: courtesy, clampedTo: courtesy.map { _ in entry.speed })
+        )
     }
 
     /// A stepper click: always `adjustFan`, from what the field shows, one `stepRPM` up or down,
