@@ -137,4 +137,36 @@ extension SystemSnapshot {
     public func showsAutomatic(_ fans: some Sequence<FanState>) -> Bool {
         activeLease == nil && fans.allSatisfy(\.isClearedToAutomatic)
     }
+
+    /// Whether this snapshot shows `fans` under automatic control **beside the caller's own lease**,
+    /// which covers none of them: it lists exactly the lease `leaseID` and reports no thermal
+    /// emergency (`controlLoss(leaseID:covering: [])` is `nil`), none of `fans` is in `covered`, and
+    /// it reports every one of them `FanState.isClearedToAutomatic`. ADR 0015 D5's conditions 1 and
+    /// 3, beside D4's `showsAutomatic(_:)`, for the app alone.
+    ///
+    /// **The lease is compared by identifier, never by holder.** A lease the helper lists is the
+    /// caller's only if its identifier is, and that lease was granted over exactly `covered`, so no
+    /// write under it reaches a fan outside them (D5's identity argument). Any other listing, none
+    /// included, says nothing about such a fan. During § 3's emergency the lease is still listed
+    /// until it is revoked, and § 3, not Apple's management, decides what the fans do.
+    ///
+    /// **A fan in `covered` is refused**, whatever it reports: a fan under a live lease whose
+    /// `apply` has not landed reads cleared, because the helper cannot state
+    /// `.leaseHeldByAnotherClient` per fan.
+    ///
+    /// **It says nothing about when the snapshot was read**, as `showsAutomatic(_:)` does not: the
+    /// app judges only a read its lease driver's evidence admits.
+    ///
+    /// - Parameters:
+    ///   - fans: Fans this snapshot reports. With none, it judges the lease and the emergency alone.
+    ///   - leaseID: The lease the caller holds.
+    ///   - covered: The fans that lease covers.
+    /// - Returns: `true` only when the snapshot lists that lease, reports no emergency, and every
+    ///   one of `fans` is outside `covered` and cleared.
+    public func showsAutomatic(
+        _ fans: some Sequence<FanState>, besideLease leaseID: UUID, covering covered: [Int]
+    ) -> Bool {
+        controlLoss(leaseID: leaseID, covering: []) == nil
+            && fans.allSatisfy { !covered.contains($0.index) && $0.isClearedToAutomatic }
+    }
 }
