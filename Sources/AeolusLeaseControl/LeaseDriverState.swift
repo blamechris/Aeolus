@@ -36,11 +36,14 @@ public enum LeaseDriverState: Sendable, Hashable {
     /// The app asked for the fans back and the helper has not answered.
     case releasing
 
-    /// The app gave the fans back. Nothing is held.
+    /// The driver holds nothing and has nothing in flight, after a release. What the fans are doing
+    /// is the next snapshot's to report: this says nothing about them, and nothing about whether
+    /// the helper answered (`LeaseDriver`, "Release"; ADR 0015).
     case released
 
-    /// Control ended without the app asking for it to, or could not be shown to have begun.
-    /// Final: the driver neither renews nor acquires again on its own.
+    /// Control ended without the app asking for it to, could not be shown to have begun, or was
+    /// given back without the helper confirming it. Final: the driver neither renews nor acquires
+    /// again on its own.
     case lost(LeaseLoss)
 
     /// The helper refused the lease, in its own words: `.leaseHeldByAnotherClient`,
@@ -151,6 +154,12 @@ public struct LeaseLoss: Sendable, Hashable {
         /// The heartbeat's wait failed with nothing asking it to stop, so the lease could no
         /// longer be renewed on schedule.
         case heartbeatFailed
+
+        /// The app released the lease, and the helper refused the release or did not answer it.
+        /// Nothing then says the helper let the fans go: it can still hold them until its
+        /// connection-invalidation backstop or the lease's TTL ends the lease. A status line, true
+        /// where it is emitted; no claim depends on it (ADR 0015 D3).
+        case releaseUnconfirmed(HelperFailure)
     }
 }
 

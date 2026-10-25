@@ -4,8 +4,8 @@ import SwiftUI
 /// refuses, and the actual/minimum/maximum RPM readings — each with its raw SMC key shown
 /// alongside it, per `CLAUDE.md`.
 ///
-/// Read-only. No slider, no target-speed field, no curve control — see issue #62's
-/// "no control affordance" constraint. Controls arrive in later PRs of #153, greyed with the
+/// Read-only. No slider, no target-speed field, no curve control. The control for all fans sits
+/// above the list (`FanListView`, #153's PR 6b); per-fan control arrives in PR 8, greyed with the
 /// refusal this row already shows.
 struct FanRowView: View {
     let row: FanRowModel

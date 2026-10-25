@@ -105,11 +105,36 @@ struct FanControlGenerationTests {
                 return Fixtures.screen(Support.snapshot(fans: [cleared]), driver: driver)
             }
         }
+
+        /// The affordance this rule's screen gives, with its exact reason, under every driver
+        /// state: no rule's reason depends on the driver, the held lease included.
+        var affordance: FanControlPresentation.Affordance {
+            let writePath = ManualControlAvailability.Reason.writePathNotBuilt
+            switch self {
+            case .hidden: return .hidden(.noHelperInThisBuild)
+            case .notTracked: return .disabled(.notTracked(.snapshotStale))
+            case .nothingOnScreen: return .disabled(.nothingOnScreen)
+            case .betweenSnapshots: return .disabled(.betweenSnapshots)
+            case .emergency: return .disabled(.thermalEmergencyActive)
+            case .anotherLease: return .disabled(.heldElsewhere(Fixtures.theirs))
+            case .refused:
+                return .disabled(
+                    FanControlPresentation.Reason(
+                        summary: writePath.userFacingSummary, advice: writePath.recoveryAdvice,
+                        wireValue: "writePathNotBuilt"))
+            case .enabled: return .enabled
+            }
+        }
     }
 
     /// `canRelease` follows the driver and nothing else: true while it is acquiring or holding a
     /// lease over the fan, under every affordance, hidden included.
     ///
+    /// Each rule's screen reaches its own rule, with its exact reason, under every driver state.
+    ///
+    /// **Mutation (RX):** in `affordance`, return `.disabled(.betweenSnapshots)` for
+    /// `.nothingOnScreen`. Run: red here for `.nothingOnScreen` under every driver state, where the
+    /// assertion this replaced, `!= .enabled`, passed; and in `FanControlAffordanceTests`.
     /// **Mutation (CR):** in `init(reading:given:)`, compute `canRelease` as
     /// `affordance == .enabled && Self.canRelease(...)`. Run: red for `.acquiring` and `.held`
     /// under every rule but `.enabled`.
@@ -125,14 +150,7 @@ struct FanControlGenerationTests {
         case .idle, .releasing, .released, .lost, .refused: expected = false
         }
         #expect(presentation.canRelease == expected)
-        switch rule {
-        case .hidden:
-            #expect(presentation.affordance == .hidden(.noHelperInThisBuild))
-        case .enabled:
-            #expect(presentation.affordance == .enabled)
-        case .notTracked, .nothingOnScreen, .betweenSnapshots, .emergency, .anotherLease, .refused:
-            #expect(presentation.affordance != .enabled, "\(rule) reached its rule")
-        }
+        #expect(presentation.affordance == rule.affordance, "\(rule) reached its own rule")
     }
 
     /// **Mutation (CR2):** make `canRelease`'s `.held` arm return `true` whatever fans it covers.

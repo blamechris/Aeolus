@@ -48,7 +48,8 @@ struct FanControlStatusTests {
                 switch tag {
                 case .acquireUnanswered:
                     expected = "Control could not be shown to have begun."
-                case .renewal, .apply, .snapshot, .connection, .heartbeatFailed:
+                case .renewal, .apply, .snapshot, .connection, .heartbeatFailed,
+                    .releaseUnconfirmed:
                     expected = afterWake ? "Control ended across sleep." : "Control ended."
                 }
                 #expect(line.text == expected, "\(cause), afterWake \(afterWake)")
@@ -80,9 +81,9 @@ struct FanControlStatusTests {
     /// **Mutation (ED):** make `LeaseEventText.fault` return
     /// `HelperAuthoredText.sanitised(fault.errorDescription ?? fault.wireCode)`. Run: red at the
     /// "returned to automatic" expectation for `.leaseExpired`, and at the detail's shape for
-    /// every argument. **Mutation (PT):** render `.manualControlUnavailable` as the reason's
-    /// summary followed by its wire value, which reads as the state now. Run: red for that
-    /// argument.
+    /// every argument. **Mutation (PT):** render `.manualControlUnavailable` with the reason's
+    /// `userFacingSummary`, which reads as the state now, in place of `pastTenseSummary`. Run: red
+    /// for that argument.
     @Test(
         "A refusal says it was refused, by the helper's own code, and claims no fan state",
         arguments: Fixtures.FaultTag.allCases)
@@ -93,11 +94,11 @@ struct FanControlStatusTests {
         #expect(line.text == "The helper refused the request for control.")
         let detail = try #require(line.detail)
         switch fault {
-        case .manualControlUnavailable(let reason):
+        case .manualControlUnavailable:
             #expect(
                 detail
-                    == "manualControlUnavailable (detail). At the time, that meant: "
-                    + reason.userFacingSummary)
+                    == "The helper refused manual control for a reason this build does not "
+                    + "recognise. (manualControlUnavailable: detail)")
         case .unknown:
             #expect(detail == "detail: detail")
         default:
@@ -180,7 +181,8 @@ struct FanControlStatusTests {
         let violation = HelperClientError.protocolViolation(detail: sent)
         let violationText = HelperAuthoredText.sanitised(
             try #require(violation.errorDescription))
-        let summary = ManualControlAvailability.Reason.unknown(sent).userFacingSummary
+        let summary =
+            "The helper refused manual control for a reason this build does not recognise."
 
         return [
             (.refused(.malformedPayload(detail: sent)), "malformedPayload: \(piece)"),
@@ -190,7 +192,7 @@ struct FanControlStatusTests {
             ),
             (
                 .refused(.manualControlUnavailable(reason: .unknown(sent))),
-                "manualControlUnavailable (\(piece)). At the time, that meant: \(summary)"
+                "\(summary) (manualControlUnavailable: \(piece))"
             ),
             (
                 .refused(.boundsImplausible(fanIndex: 0, detail: sent)),
@@ -231,9 +233,10 @@ struct FanControlStatusTests {
 
         let expected: String
         switch HealthTag(health) {
-        case .idle: expected = "The connection to the helper reported no handshake (idle)."
+        case .idle:
+            expected = "The control connection to the helper was no longer handshaken (idle)."
         case .handshaken:
-            expected = "The connection to the helper reported a handshake (handshaken)."
+            expected = "The control connection reported its state as handshaken (handshaken)."
         case .unresponsive: expected = "The helper stopped answering (unresponsive)."
         case .interrupted: expected = "The helper process went away (interrupted)."
         case .invalidated: expected = "The connection to the helper ended (invalidated)."
@@ -311,6 +314,10 @@ struct FanControlStatusTests {
                 == StatusLine(
                     text: "Releasing the lease. The helper has not answered yet.", detail: nil))
         #expect(try Fixtures.present(0, on: screen(.idle)).status == nil)
-        #expect(try Fixtures.present(0, on: screen(.released)).status == nil)
+        #expect(
+            try Fixtures.present(0, on: screen(.released)).status
+                == StatusLine(
+                    text: "Aeolus is holding no lease and renewing none.",
+                    detail: "Each fan's row shows what the helper reports."))
     }
 }

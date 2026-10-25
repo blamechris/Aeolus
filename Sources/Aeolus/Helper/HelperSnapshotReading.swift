@@ -7,9 +7,9 @@ import AeolusXPCClient
 /// is no lease, apply, renew or release here, and none may be added. Control travels on a
 /// **second** `HelperClient`, the lease driver's (`AppComposition`), so that an `apply` that
 /// may lawfully take 57 s never queues a `snapshot` behind it on one connection and freezes the
-/// display. Nothing in the app takes a lease yet, so it sends no control verb. A read
-/// connection that could also acquire would be one refactor away from being that second
-/// connection.
+/// display. The app's control verbs go out on that second connection only, from the driver,
+/// when the main window's control is clicked. A read connection that could also acquire would
+/// be one refactor away from being that second connection.
 ///
 /// The seam is also what lets `AeolusUITests` drive the source against a fake helper whose
 /// replies are parked until the test releases them, so "one request in flight" is something

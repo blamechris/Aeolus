@@ -15,6 +15,7 @@ import Foundation
 ///   may take its whole deadline, 57 s for one fan, and a `snapshot` sequenced behind it on one
 ///   connection would freeze the display for that long (`HelperLeaseControlling`).
 /// - **One `LeaseLifecycle`**, the one place each lifecycle event reaches the driver.
+/// - **One `LeaseStateModel`**, the driver's state on the main actor, for views to read.
 /// - The `PreferencesController` every window reads. The source reads its refresh interval, and
 ///   `running` builds both, so `AeolusApp` and `AeolusAppDelegate` share one of each.
 ///
@@ -27,23 +28,37 @@ import Foundation
 /// exist only when the bundle ships a helper (`HelperEmbedding.embedded`). A `Monitor` build, and
 /// a damaged bundle, gets a source with no reader and none of the rest, and cannot reach the
 /// helper's mach name even by accident. Every entry point below then does what it would do with
-/// nothing held: a quit is answered `.terminateNow`, and nothing else happens.
+/// nothing held: a quit is answered `.terminateNow`, `take`, `adjust` and `selectAutomatic` do
+/// nothing, the lease state is `.idle` for good, and nothing else happens.
 ///
-/// ## Inert: nothing here takes a lease
+/// ## A click takes a lease; the helper decides whether it is granted
 ///
-/// Nothing in this type calls `LeaseDriver.take(_:)` or `adjust(_:)`, so the app still asks for no
-/// fans. Every hook is in place for the control that will (#153's PR 6b): quit, logout, wake, fast
-/// user switching and the last control window each reach the driver now, and each finds nothing
-/// held and sends nothing.
+/// The main window's control for all fans (`FanListView`, through `AllFansControlActions`) calls
+/// `take(_:)` for a percentage and `selectAutomatic()` for Auto, so the app asks for the fans when
+/// the user clicks one, and only then. `adjust(_:)` is here for the per-fan slider of #153's PR 8;
+/// nothing calls it yet. Quit, logout, wake, fast user switching and the last control window each
+/// reach the driver too.
+///
+/// Today's helper refuses every grant until the write plane exists (#9): its `acquireLease`
+/// refuses a plane that cannot write before it asks anything else, and its snapshot reports each
+/// fan `.unavailable(.writePathNotBuilt)`, or `.foreignManualControl` for a fan another program
+/// holds (`AvailabilityRestatement.swift`, `ReadOnlyFanReport`). So the control is drawn disabled
+/// with that reason, and no percentage can be clicked. Once the helper reports every fan
+/// `.available`, the same code takes the lease, with no change to the app.
 ///
 /// ## Every driver call is on a task this type spawns (#419)
 ///
 /// SwiftUI cancels a `.task` when its view goes away, and a `.task(id:)` each time its id
 /// changes, so a view that owned a driver await would cancel calls the driver means to finish. So
-/// the driver is held only inside `private` members here, through the lifecycle, and nothing a
-/// view can reach on this type is `async`: every entry point is synchronous and starts its own
-/// unstructured `Task`. That much the compiler holds. That a member added later stays synchronous
-/// is documented here and not enforced.
+/// the driver is held only inside `private` members here, and nothing a view can reach on this
+/// type is `async`: every entry point is synchronous and starts its own unstructured `Task`, which
+/// a caller's cancellation does not reach. That much the compiler holds: a view's action is
+/// synchronous, and could not call an `async` entry point without a task of its own. That a member
+/// added later stays synchronous is documented here and not enforced.
+///
+/// This is the app's half of #419's choice, that the UI never cancels a sequenced verb it means
+/// to send again. The driver's half is that it never cancels `acquireLease` or `apply` itself
+/// (`LeaseDriver`, "It never cancels a sequenced verb"), and puts each on a task of its own.
 @MainActor
 final class AppComposition {
 
@@ -69,6 +84,10 @@ final class AppComposition {
     /// Where this root listens for power, wake and session events.
     let workspaceNotifications: NotificationCenter
 
+    /// The driver's state on the main actor, for views to read in `body`: the driver's, followed
+    /// from a task of its own, in a build with a helper; `.idle` for good in one without.
+    let leaseState: LeaseStateModel
+
     /// The driver and everything that reaches it, or `nil` in a build with no helper.
     private let lease: LeaseWiring?
 
@@ -76,6 +95,8 @@ final class AppComposition {
     private var controlWindows: Set<UUID> = []
 
     private struct LeaseWiring {
+        /// Reached only through this type's entry points, each on a task of its own (#419).
+        let driver: LeaseDriver
         let lifecycle: LeaseLifecycle
         let assertions: LeaseProcessAssertions
         let workspaceObservers: [any NSObjectProtocol]
@@ -109,9 +130,11 @@ final class AppComposition {
         switch embedding {
         case .absent:
             snapshots = HelperSnapshotSource(withoutHelper: .noHelperInThisBuild)
+            leaseState = LeaseStateModel()
             lease = nil
         case .incomplete:
             snapshots = HelperSnapshotSource(withoutHelper: .helperInstallIncomplete)
+            leaseState = LeaseStateModel()
             lease = nil
         case .embedded:
             let connections = connect()
@@ -120,7 +143,9 @@ final class AppComposition {
             snapshots = HelperSnapshotSource(
                 reader: connections.read, observer: .judging(with: driver),
                 refreshInterval: refreshInterval)
+            leaseState = LeaseStateModel(following: driver.stateUpdates())
             lease = LeaseWiring(
+                driver: driver,
                 lifecycle: lifecycle,
                 assertions: LeaseProcessAssertions(process: process, states: driver.stateUpdates()),
                 workspaceObservers: Self.observeWorkspace(workspaceNotifications, for: lifecycle))
@@ -129,6 +154,36 @@ final class AppComposition {
 
     /// Whether this build has a lease driver at all.
     var hasLeaseControl: Bool { lease != nil }
+
+    // MARK: - Control
+
+    /// Takes control of `target`'s fans at its speeds: a deliberate user action, from a click
+    /// (`LeaseDriver.take(_:)`). Returns at once; the driver's work runs on a task of its own, so
+    /// cancelling the caller cancels nothing the driver sends (#419). Does nothing in a build with
+    /// no helper.
+    ///
+    /// Each entry point starts a separate unstructured `Task`. Two calls reach the driver in the
+    /// order they were made because the main actor runs its jobs first in, first out, not because
+    /// the language promises it; a user's clicks are many run-loop turns apart.
+    func take(_ target: LeaseTarget) {
+        guard let driver = lease?.driver else { return }
+        Task { await driver.take(target) }
+    }
+
+    /// Moves the speed of a lease that is acquiring or held, over the same fans, and **never
+    /// acquires** (`LeaseDriver.adjust(_:)`): for a slider or a stepper, which #153's PR 8 adds.
+    /// Nothing calls it yet. Returns at once, as `take(_:)` does.
+    func adjust(_ target: LeaseTarget) {
+        guard let driver = lease?.driver else { return }
+        Task { await driver.adjust(target) }
+    }
+
+    /// Auto, and the release offer: the lease is released, whatever is in flight
+    /// (`LeaseDriver.selectAutomatic()`). Returns at once, as `take(_:)` does.
+    func selectAutomatic() {
+        guard let driver = lease?.driver else { return }
+        Task { await driver.selectAutomatic() }
+    }
 
     // MARK: - Quit
 

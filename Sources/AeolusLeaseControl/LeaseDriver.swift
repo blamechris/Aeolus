@@ -6,10 +6,12 @@ import Foundation
 /// The app's one lease on the fans: it asks for them, keeps proving it is alive, gives them back,
 /// and says so when it can no longer show it holds them (`CLAUDE.md` rules 2 and 6, #155).
 ///
-/// **Built by `AppComposition`, and nothing takes a lease through it yet.** A build with a helper
-/// constructs one, over the app's control connection, and wires quit, logout, wake, fast user
-/// switching and the last control window to it. Nothing calls `take(_:)` or `adjust(_:)` until the
-/// first control (#153's PR 6b), so the shipping app acquires no lease.
+/// **Built by `AppComposition`, and taken through it on a click.** A build with a helper constructs
+/// one, over the app's control connection, and wires quit, logout, wake, fast user switching and
+/// the last control window to it. The main window's control for all fans calls `take(_:)` for a
+/// percentage and `selectAutomatic()` for Auto (#153's PR 6b); nothing calls `adjust(_:)` until
+/// PR 8's slider. Until the write plane exists (#9) the helper refuses every grant, so the
+/// shipping app is refused any lease it asks for.
 ///
 /// ## States
 ///
@@ -18,8 +20,8 @@ import Foundation
 ///                      │ refusal              │ release, Auto   │ renewal, apply,
 ///                      ▼                      ▼                 │ snapshot, health
 ///                    refused              releasing             ▼
-///                                             │               lost
-///                                             ▼
+///                                             │ └─unconfirmed─▶ lost
+///                                    answered ▼
 ///                                         released
 ///
 /// ## Two ways to ask for a speed, and the UI must use the right one
@@ -57,11 +59,12 @@ import Foundation
 /// Each of these ends the lease as `lost` (`LeaseLoss.Cause`): an acquire that failed without the
 /// helper saying no; a renewal refused or unanswered; an `apply` refused or unanswered; the
 /// control connection leaving `.handshaken`; a snapshot for which
-/// `SystemSnapshot.controlLoss(leaseID:covering:)` is non-nil; and a heartbeat whose wait failed.
-/// After `lost` the driver sends one release for the lease, because it cannot tell from here
-/// whether the helper still has it, and a release of a lease the helper no longer holds is
-/// refused (`.leaseUnknown`, `.leaseExpired`, `.leaseNotHeldByThisConnection`) and changes
-/// nothing. Then it never renews and never acquires on its own.
+/// `SystemSnapshot.controlLoss(leaseID:covering:)` is non-nil; a heartbeat whose wait failed; and
+/// a release the helper refused or did not answer, with no `take` queued behind it (see
+/// "Release"). After any loss but the last, the driver sends one release for the lease, because
+/// it cannot tell from here whether the helper still has it, and a release of a lease the helper
+/// no longer holds is refused (`.leaseUnknown`, `.leaseExpired`, `.leaseNotHeldByThisConnection`)
+/// and changes nothing. Then it never renews and never acquires on its own.
 ///
 /// **Wake** is the same: `systemDidWake()` brings the next renewal forward so a lease that did not
 /// survive the sleep is reported at once, and it never asks for the fans again. `docs/SAFETY.md`
@@ -91,6 +94,20 @@ import Foundation
 /// than sending another, and every caller is let go within `releaseBound` whether or not the
 /// helper answers. `shutDown()` releases first and only then tears the connection down, so a quit
 /// never relies on the helper's invalidation path alone.
+///
+/// **`released` says what the driver is doing, not what the fans are.** It holds nothing and has
+/// nothing in flight; what the fans are doing is the next snapshot's to report. It is reached
+/// after an answered release, and also on paths where no answer is kept: a release asked for while
+/// acquiring whose request granted nothing, and an acquisition queued behind a release, which does
+/// not keep that release's answer. Even an answered release does not show the fans are automatic:
+/// the helper's `releaseLease` removes the lease and then awaits a restore that does not throw, so
+/// its reply means "accepted", not "done" (ADR 0015). So no renderer may read the fans as automatic
+/// from `released` alone (ADR 0015 D3; #498 gives the precise rule).
+///
+/// A release the helper refused, or that went unanswered, with no `take` queued behind it, ends in
+/// `lost` with `LeaseLoss.Cause.releaseUnconfirmed`. That is a status line, true where it is
+/// emitted, and no claim depends on it. A `take` queued behind that release is acquired all the
+/// same: a second grant is the helper's to refuse, and the release's answer is not kept.
 ///
 /// ## A snapshot is judged only on what it could show
 ///
@@ -723,7 +740,7 @@ extension LeaseDriver {
         let id = releases
         let task = Task { () -> ReleaseOutcome in
             guard let lease = await acquiring.value else {
-                self.releaseAnswered(id)
+                self.releaseAnswered(id, unconfirmed: nil)
                 return .nothingHeld
             }
             return await self.send(release: lease, as: id)
@@ -743,24 +760,43 @@ extension LeaseDriver {
 
     private func send(release lease: Lease, as id: UInt64) async -> ReleaseOutcome {
         let outcome: ReleaseOutcome
+        let unconfirmed: (lease: Lease, failure: HelperFailure)?
         do {
             try await control.releaseLease(id: lease.id)
             outcome = .released
+            unconfirmed = nil
         } catch {
-            outcome = .failed(HelperFailure(error))
+            let failure = HelperFailure(error)
+            outcome = .failed(failure)
+            unconfirmed = (lease, failure)
         }
-        releaseAnswered(id)
+        releaseAnswered(id, unconfirmed: unconfirmed)
         return outcome
     }
 
-    /// The release `id` answered: `releasing` → `released`, or on to the acquisition `wanted`.
-    /// A release sent after a loss leaves `lost` as it is.
-    private func releaseAnswered(_ id: UInt64) {
+    /// The release `id` came back: `releasing` → `lost` when the helper refused it or did not
+    /// answer (`unconfirmed`), otherwise `released`, or on to the acquisition `wanted` either way.
+    /// A release sent after a loss leaves `lost` as it is. `nil` for `unconfirmed` also covers a
+    /// release asked for while acquiring whose request granted nothing, so nothing was sent. So
+    /// `released` does not say the helper answered (see "Release").
+    ///
+    /// The loss's `afterWake` is `false`: `beginRelease` ended the lease, and with it the wake
+    /// mark, before the release was sent.
+    private func releaseAnswered(
+        _ id: UInt64, unconfirmed: (lease: Lease, failure: HelperFailure)?
+    ) {
         if pendingRelease?.id == id { pendingRelease = nil }
         guard case .releasing = current, pendingRelease == nil else { return }
         if let wanted, !shuttingDown {
             self.wanted = nil
             startAcquisition(of: wanted)
+        } else if let unconfirmed {
+            wanted = nil
+            transition(
+                to: .lost(
+                    LeaseLoss(
+                        lease: unconfirmed.lease, cause: .releaseUnconfirmed(unconfirmed.failure),
+                        afterWake: false)))
         } else {
             wanted = nil
             transition(to: .released)

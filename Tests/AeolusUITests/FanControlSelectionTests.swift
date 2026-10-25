@@ -1,10 +1,10 @@
-import AeolusLeaseControl
 import AeolusXPC
 import AeolusXPCClient
 import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// What the control may show as selected: a function of the driver and the snapshot on screen,
@@ -56,10 +56,10 @@ struct FanControlSelectionTests {
         }
         #expect(
             try Fixtures.present(0, on: screen).status?.text
-                == "Accepted 3000 RPM; the helper's last snapshot reports 2900 RPM.")
+                == "Accepted 3000 RPM; the snapshot on screen reports a held target of 2900 RPM.")
         #expect(
             try Fixtures.present(1, on: screen).status?.text
-                == "Accepted 3200 RPM; the helper's last snapshot reports 3100 RPM.")
+                == "Accepted 3200 RPM; the snapshot on screen reports a held target of 3100 RPM.")
     }
 
     /// The snapshot would prove control; only the phase says the apply has not answered.
@@ -174,8 +174,8 @@ struct FanControlSelectionTests {
 
     /// The reasons a fan reading automatic is not cleared, from `FanRowModelTests`' exhaustive tag.
     ///
-    /// **Mutation (A1):** in `automaticOrUnknown`, use `state.mode == .automatic`. Run: red for
-    /// every argument.
+    /// **Mutation (A1):** in `automaticBeforeAnyLease`, use `state.mode == .automatic`. Run: red
+    /// for every argument.
     @Test(
         "Automatic needs the helper to have cleared the fan, not only its mode",
         arguments: FanRowModelTests.notClearing)
@@ -186,14 +186,50 @@ struct FanControlSelectionTests {
         #expect(try Fixtures.present(0, on: screen).selection == .unknown)
     }
 
+    /// Only `.idle` reads Automatic over a cleared fan with no lease listed (ADR 0015 D3). Under
+    /// `.released`, `.lost` and `.refused` the app has acted, and a snapshot that shows no lease
+    /// and the fan cleared looks the same whether it was read before the grant or after the
+    /// release; even an answered release does not show the fans are back (ADR 0015's context).
+    ///
+    /// **Mutations (I1, I2):** return `automaticBeforeAnyLease(licence)` for `.released`, or for
+    /// `.refused`. Run, each: red for its argument.
     @Test(
-        "A fan cleared to automatic, with nothing held, reads Automatic",
-        arguments: [Fixtures.DriverTag.idle, .released, .lost, .refused])
-    func aClearedFanReadsAutomatic(_ tag: Fixtures.DriverTag) throws {
+        "A cleared fan with no lease listed reads Automatic only while nothing has been held",
+        arguments: Fixtures.DriverTag.allCases)
+    func aClearedFanReadsAutomaticOnlyWhileIdle(_ tag: Fixtures.DriverTag) throws {
         let screen = Fixtures.screen(
             Support.snapshot(fans: [Fixtures.clearedFan(0)]), driver: try tag.state())
+        let expected: FanControlPresentation.Selection
+        switch tag {
+        case .idle: expected = .automatic
+        case .acquiring, .held, .releasing, .released, .lost, .refused: expected = .unknown
+        }
 
-        #expect(try Fixtures.present(0, on: screen).selection == .automatic)
+        #expect(try Fixtures.present(0, on: screen).selection == expected)
+    }
+
+    /// After a loss the fans read cleared to automatic on screen, and that is still not Automatic.
+    /// The helper can hold the fans after the app's loss, until its connection-invalidation
+    /// backstop or the lease's TTL ends the lease, and the snapshot on screen can predate the grant
+    /// or the `apply`: a lease lost while its first `apply` was in flight shows exactly this
+    /// screen, with the helper free to finish the `apply`. So a loss claims neither Automatic nor
+    /// Custom, and the line says only that control ended.
+    ///
+    /// **Mutation (C1a, "a loss reads the snapshot"):** in `claim`, return
+    /// `automaticBeforeAnyLease(licence)` for `.lost`. Run: red at the selection, for every cause.
+    @Test(
+        "A lost lease never reads Automatic, even over fans the snapshot shows cleared",
+        arguments: Fixtures.CauseTag.allCases)
+    func aLostLeaseIsNeverAutomatic(_ tag: Fixtures.CauseTag) throws {
+        for cause in tag.causes {
+            let loss = LeaseDriverState.lost(
+                LeaseLoss(lease: Fixtures.ours, cause: cause, afterWake: false))
+            let cleared = Support.snapshot(fans: [Fixtures.clearedFan(0)], activeLease: nil)
+            let presentation = try Fixtures.present(0, on: Fixtures.screen(cleared, driver: loss))
+
+            #expect(presentation.selection == .unknown, "\(cause)")
+            #expect(presentation.status?.text != nil, "\(cause): the line says control ended")
+        }
     }
 
     @Test("A fan reading manual with nothing held is unknown, not Custom")
@@ -207,7 +243,7 @@ struct FanControlSelectionTests {
     /// first `apply`. Only the driver says it is wanted.
     ///
     /// **Mutation (A2):** delete `claim`'s `.acquiring(let fans) where fans.contains(index)` arm.
-    /// **Mutation (A3):** make its `.releasing` arm return `automaticOrUnknown(licence)`.
+    /// **Mutation (A3):** make its `.releasing` arm return `automaticBeforeAnyLease(licence)`.
     /// **Mutation (A4):** delete its `.held(let held) where held.fans.contains(index)` arm, so a
     /// held fan is judged as if nothing held it. Run, each: red at its expectation.
     @Test("A fan the driver holds, is asking for or is releasing never reads Automatic")
@@ -230,10 +266,10 @@ struct FanControlSelectionTests {
             case .confirmed: expected = .unknown
             }
             #expect(try selection(0, held) == expected, "\(tag)")
-            // A fan the driver does not hold is judged on its own.
-            #expect(try selection(1, held) == .automatic, "\(tag)")
+            // Nor a fan beside a lease the driver holds over others (ADR 0015 D3's table).
+            #expect(try selection(1, held) == .unknown, "\(tag)")
         }
-        #expect(try selection(1, .acquiring(fans: [0])) == .automatic)
+        #expect(try selection(1, .acquiring(fans: [0])) == .unknown)
     }
 
     // MARK: - A click selects nothing

@@ -73,9 +73,14 @@ import os
 /// - **A SwiftUI `.task` never owns an XPC await.** SwiftUI cancels a `.task` when its view
 ///   disappears, which is exactly the cancellation this rule forbids. Views call the source's
 ///   `start()` and `stop()`, and the request's task belongs to the source.
-/// - **Control is to travel on a second connection** (later PRs of #153), so that no
-///   `snapshot` ever queues behind an `apply`; until then the app sends no control verb. The
-///   control side's own test of this rule lands with its driver.
+/// - **Control travels on a second connection** (`AppComposition`, #153), so that no `snapshot`
+///   ever queues behind an `apply`. The app's control for all fans sends its verbs only through
+///   the root's synchronous entry points, each of which starts a task of its own, and the lease
+///   driver sends `acquireLease` and `apply` from tasks of its own and never cancels either
+///   (`LeaseDriver`, "It never cancels a sequenced verb"). So no caller's cancellation reaches a
+///   sequenced control verb. `AllFansControlRootTests.aCancelledCallerCancelsNothing` holds it: a
+///   take from a cancelled caller still acquires and applies, each verb answered to a caller
+///   nobody cancelled.
 ///
 /// ## A discard answers everything still in flight on its connection
 ///

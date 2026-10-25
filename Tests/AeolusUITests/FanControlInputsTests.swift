@@ -85,7 +85,7 @@ struct FanControlInputsTests {
         let driver = Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target))
 
         await viewModel.tick()
-        let before = FanControlPresentation.everyFan(of: viewModel, driver: driver)
+        let before = FanControlPresentation.onScreen(in: viewModel, driver: driver)
         #expect(before.map(\.presentation.selection) == [.custom(try Fixtures.speed(target, 0))])
 
         await helper.reply(with: newer)
@@ -94,7 +94,7 @@ struct FanControlInputsTests {
 
         var seen: [FanControlPresentation] = []
         let sink = viewModel.$lastUpdated.dropFirst().sink { _ in
-            seen += FanControlPresentation.everyFan(of: viewModel, driver: driver)
+            seen += FanControlPresentation.onScreen(in: viewModel, driver: driver)
                 .map(\.presentation)
         }
         await viewModel.tick()
@@ -104,15 +104,15 @@ struct FanControlInputsTests {
         #expect(!seen.contains { if case .custom = $0.selection { true } else { false } })
         #expect(seen.map(\.selection) == [.checking])
         #expect(seen.map(\.affordance) == [.disabled(.betweenSnapshots)])
-        let after = FanControlPresentation.everyFan(of: viewModel, driver: driver)
+        let after = FanControlPresentation.onScreen(in: viewModel, driver: driver)
         #expect(after.map(\.presentation.selection) == [.unknown])
 
         await Support.tearDown(source, helper)
     }
 
-    /// **Mutation (FE):** make `everyFan(of:driver:)` present every row against `.idle`. Run: red.
-    @Test("everyFan pairs each row the view model shows with its own presentation")
-    func everyFanPairsEachRow() async throws {
+    /// **Mutation (FE):** make `onScreen(in:driver:)` present every row against `.idle`. Run: red.
+    @Test("onScreen pairs each row the view model shows with its own presentation")
+    func onScreenPairsEachRow() async throws {
         let helper = FakeSnapshotHelper()
         let snapshot = Support.snapshot(
             fans: [Fixtures.heldFan(0, target: 3000), Fixtures.heldFan(1, target: 3200)],
@@ -124,7 +124,7 @@ struct FanControlInputsTests {
             Fixtures.ours, fans: [0, 1], .confirmed(try Fixtures.target([0: 3000, 1: 3200])))
 
         await viewModel.tick()
-        let every = FanControlPresentation.everyFan(of: viewModel, driver: driver)
+        let every = FanControlPresentation.onScreen(in: viewModel, driver: driver)
         let screen = Fixtures.screen(snapshot, driver: driver)
 
         #expect(every.map(\.reading) == screen.rows)
