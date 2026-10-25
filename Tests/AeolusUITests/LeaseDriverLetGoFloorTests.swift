@@ -178,6 +178,7 @@ struct LeaseDriverLetGoFloorTests {
         try #require(await scene.driver.report.automaticEvidence == .noRead, "A's is unanswered")
         await scene.helper.script(.release, .parked)
         await scene.driver.releaseFan(1)
+        try #require(await scene.driver.state == .releasing, "fan 1 on Auto releases lease B")
         await scene.ledger.waitFor { $0.releases.count == 2 }
 
         let report = try await Self.answerTheParkedApply(in: scene)

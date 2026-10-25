@@ -26,6 +26,8 @@ extension LeaseDriverPerFanTests {
     func twoReleaseFansAtOnce() async throws {
         let scene = await LeaseScene()
         try #require(await scene.take(try LeaseScene.target([0: 3000, 1: 3200])) != nil)
+        // Parked, so the state both verbs leave can be read before the release answers.
+        await scene.helper.script(.release, .parked)
         let mark = await scene.mark()
 
         let driver = scene.driver
@@ -33,6 +35,9 @@ extension LeaseDriverPerFanTests {
             group.addTask { await driver.releaseFan(0) }
             group.addTask { await driver.releaseFan(1) }
         }
+        try #require(await scene.driver.state == .releasing, "the first verb released the lease")
+        await scene.ledger.waitFor { !$0.releases.isEmpty }
+        await scene.helper.answerParked(.release)
         await scene.waitForState(since: mark) { $0.isReleased || $0.isHeld }
         await scene.settle()
 
