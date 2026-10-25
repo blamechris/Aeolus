@@ -85,6 +85,39 @@ requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #
 **D4 — One definition.** "Nothing leased and fan cleared" is one predicate, shared by
 `SafeState` and the app.
 
+**D5 — A fan the driver's held lease does not cover (#154, PR 8; amendment 2026-10-25).** While
+the driver is `held` over fans F, a fan f outside F reads Automatic only when: (1) a licensed
+snapshot is on screen that lists exactly the driver's held lease, compared by identifier, and
+reports no thermal emergency (`controlLoss(leaseID:covering: [])` is `nil`); (2) that read's
+ticket is admitted by the driver's evidence; and (3) the snapshot reports f
+`isClearedToAutomatic`. Conditions 1 and 3 are one predicate beside D4's,
+`SystemSnapshot.showsAutomatic(_:besideLease:covering:)`, which also refuses any fan in
+`covering`. In `acquiring` and `releasing`, a fan outside the request still reads `.unknown`. D1 is
+unchanged for a driver that holds nothing.
+
+**The floor marks the driver's last let-go, not only its last stop.** D2 gains a mint site: when a
+release answers ahead of an acquisition (a change of which fans are held), the driver mints a
+floor, or publishes `noRead` while an `apply` is unanswered, before it starts the acquisition. The
+floor that waits for applies is minted when the last one answers in any state. Every fan outside
+the held lease either was never under one of this driver's leases since the last mint, or left
+coverage at a release that answered at or before it. So one driver-wide floor at the latest
+let-go admits only reads taken after every uncovered fan's last handback and after every `apply`
+then unanswered had answered. It may also wait for the new lease's first `apply`, which cannot
+write f; that is accepted as failing closed.
+
+*Identity.* A listed lease that is the driver's own was granted over exactly `HeldLease.fans`.
+`LeaseAuthority` stores the request's indices, and `LeaseRecord.fanIndices` is a `let`. Level 6
+refuses an `apply` naming a fan its lease does not cover (`LeaseApplyRules.goals`,
+`Detail.uncovered`). So no write under that lease reaches f, and the listing proves the read was
+served after the grant, when the table held no other lease. A snapshot listing no lease beside a
+held one predates the grant or shows a loss not yet judged. One listing another lease is the
+affordance's rule 4. Neither is evidence about f. *No emergency:* between § 3 firing and its
+revocation the lease is still listed, and § 3, not Apple's management, decides what f does. *Read
+timing:* fact 1 holds for f as for every fan, and an `apply` under the lease that last covered f
+can land one `F<n>Tg` on it after its restore (D2). *Clearance:* a fan whose handback is in flight
+reads `.releaseInProgress`, and a refused or unconfirmed one reads `.restoreToAutomaticFailed` or
+`.handbackUnconfirmed`; none is cleared.
+
 ## Rationale
 
 Deciding by driver state asks which paths could have produced a state. The paths multiply, and
@@ -124,6 +157,16 @@ nobody has observed: ADR 0014 calls it reported harmless on Apple Silicon and un
 Waiting for every `apply` to answer costs at most an `apply`'s deadline of Auto shown unselected,
 and it fails closed.
 
+### For D5 (#154, PR 8)
+
+- Keep D1, never Automatic beside a held lease: sound, but the commonest per-fan state then never
+  shows the Auto fans' selection; reverting D5 means deleting one arm.
+- A floor per fan, with apply counts per fan: rejected, per-fan state to save at most one apply's
+  duration in a rare ordering.
+- Trust the listing alone: rejected on D2's grounds.
+- Narrow the lease instead of releasing it: not expressible (`LeaseRecord.fanIndices` is a `let`;
+  an apply naming fewer fans leaves the omitted ones held).
+
 ## Assumptions
 
 - A read sent on one connection after the reply to a release on another is processed by the
@@ -145,10 +188,18 @@ and it fails closed.
   clearance alone, read at any time. That is D1's "`idle` sets no floor", accepted: the old
   process's applies are not this driver's to wait for, and the helper ends a connection's leases
   when the connection goes.
+- **U7 (ADR 0014): `Ftst = 1` does not change the behaviour of a fan Aeolus did not engage.**
+  Unobserved; only `Mac16,5` can test it. D5 is true on M3+ only if it holds. If run 1 contradicts
+  it, ADR 0014 makes engagement all-fans-or-nothing, and the helper must refuse a lease that does
+  not cover every fan, which makes D5 unreachable. Until that refusal exists, D5 reverts to
+  `.unknown`. On M1/M2 and Intel, the independence of `F<n>Md` and of `FS!` bit *n* is documented
+  and untested.
+- D5 does not rely on the helper's sequencer ordering a grant after earlier applies on the same
+  connection; the read timing is the driver's.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed
 harmless on hardware, or `admitCommand` refuses after an ordinary restore, so the floor need not
-wait for applies; or when PR 8 needs
-Automatic for a fan the app's own held lease does not cover, which may relax the no-lease
-condition to "the listed lease is the driver's own and does not cover this fan".
+wait for applies; or when PR 8 needs Automatic for a fan the app's own held lease does not cover —
+done, D5. Revisit D5 when U7 is observed either way, when a lease-narrowing verb exists, or when
+the observed gap makes floors per fan worth their state.
