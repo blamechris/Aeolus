@@ -14,7 +14,8 @@ import Testing
 /// Every `apply` that must stay unanswered is parked at the fake helper and answered by hand, so
 /// the order is the test's, never a clock's. Each ticket is taken immediately before the event it
 /// is compared against.
-@Suite("LeaseDriver — the floor at a let-go, and at the last apply's answer in any state",
+@Suite(
+    "LeaseDriver — the floor at a let-go, and at the last apply's answer in any state",
     .timeLimit(.minutes(1)))
 struct LeaseDriverLetGoFloorTests {
 
@@ -63,7 +64,8 @@ struct LeaseDriverLetGoFloorTests {
     /// and a read ticketed while A's `apply` was unanswered does not pass it.
     ///
     /// **Mutation (M2, "the let-go ignores an unanswered apply"):** in `releaseAnswered`, set
-    /// `.readFrom(mintFloor())` whatever `appliesUnanswered` is. Run: red at `acquiring == .noRead`.
+    /// `.readFrom(mintFloor())` whatever `appliesUnanswered` is. Run: red at
+    /// `acquiring == .noRead`.
     /// **Mutation (M3, "only a stop mints"):** in `applyAnswered()`, restore
     /// `Self.hasStoppedActing(current)` to the guard. Run: red at `isFloor(report)`, the evidence
     /// still `.noRead` beside `held`.
@@ -92,7 +94,9 @@ struct LeaseDriverLetGoFloorTests {
         #expect(!report.automaticEvidence.admits(during), "a read before A's apply answered")
         #expect(report.automaticEvidence.admits(after))
         await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).reports.contains { Self.isFloor($0.automaticEvidence) }
+            Array(entries.dropFirst(answered)).reports.contains {
+                Self.isFloor($0.automaticEvidence)
+            }
         }
         let published = Array(await scene.entries.dropFirst(answered))
         #expect(

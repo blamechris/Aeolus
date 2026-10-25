@@ -67,8 +67,10 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 /// Each fan gives its `status`, then its `awaitingApply`. **The wait is said once, after the
 /// event, with no names** (#505): the evidence it follows is the driver's, one value for the
 /// machine, and the states it is given beside (`released`, `lost`, `refused`) give every fan the
-/// same line whatever its index. A fan whose control is hidden gives neither, so the wait is
-/// named by the fans that give it only in a mix no build produces, as any other line is.
+/// same line whatever its index. **Beside a held lease, only the fans it does not cover give it**
+/// (ADR 0015 D5), so there it is named by those fans, after the covered fans' lines. A fan whose
+/// control is hidden gives neither, so otherwise the wait is named by the fans that give it only
+/// in a mix no build produces, as any other line is.
 struct AllFansControlPresentation: Equatable {
 
     let affordance: Affordance

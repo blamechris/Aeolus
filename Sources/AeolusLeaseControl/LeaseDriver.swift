@@ -39,7 +39,8 @@ import Foundation
 /// acquire, an unpaced retry of a refusal (ADR 0010).
 ///
 /// The per-fan verbs keep the split: `takeFan(_:at:)` and `releaseFan(_:)` are `take`s, and
-/// `adjustFan(_:to:)` an `adjust`, of what is Custom now with one fan changed ("One fan at a time").
+/// `adjustFan(_:to:)` an `adjust`, of what is Custom now with one fan changed (see "One fan at a
+/// time").
 ///
 /// ## Renewal
 ///
@@ -474,8 +475,8 @@ extension LeaseDriver {
     }
 
     /// Moves the speed of fan `index` when it is in Custom: `adjust(_:)` of what is Custom now with
-    /// the fan's speed replaced. **Never acquires and never changes which fans are held:** for a fan
-    /// not in Custom, or with nothing in Custom, it does nothing.
+    /// the fan's speed replaced. **Never acquires, and never changes which fans are held:** for a
+    /// fan not in Custom, or with nothing in Custom, it does nothing.
     public func adjustFan(_ index: Int, to speed: FanTargetRPM) {
         guard let custom, custom.speeds[index] != nil else { return }
         adjust(custom.setting(index, to: speed))

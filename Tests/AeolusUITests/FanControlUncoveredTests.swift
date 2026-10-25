@@ -91,7 +91,8 @@ struct FanControlUncoveredTests {
             try Fixtures.present(0, on: screen).selection
                 == .custom(try Fixtures.speed(try Self.target(), 0)))
         #expect(try Fixtures.present(1, on: screen).selection == .automatic)
-        let control = Control(fans: AllFansControlPresentationTests.fans(screen), snapshot: snapshot)
+        let control = Control(
+            fans: AllFansControlPresentationTests.fans(screen), snapshot: snapshot)
         #expect(control.selection == .none)
         #expect(control.offersRelease, "fan 0 can be given back")
     }
@@ -208,7 +209,8 @@ struct FanControlUncoveredTests {
         #expect(confirmed.selection == .unknown, "not held in the snapshot: no Custom either")
         #expect(
             confirmed.status?.text
-                == "Not confirmed: the helper's snapshot does not show this lease holding its fans.")
+                == "Not confirmed: the helper's snapshot does not show this lease holding its fans."
+        )
     }
 
     // MARK: - Acquiring and releasing keep `.unknown`
@@ -227,7 +229,8 @@ struct FanControlUncoveredTests {
         for driver in [LeaseDriverState.acquiring(fans: [0]), .releasing] {
             let fan1 = try Self.present(1, driver, floor.evidence, readWith: floor.after)
             #expect(fan1.selection == .unknown, "\(driver)")
-            let waiting = try Self.present(1, driver, .noRead, readWith: floor.after, over: snapshot)
+            let waiting = try Self.present(
+                1, driver, .noRead, readWith: floor.after, over: snapshot)
             #expect(waiting.awaitingApply == nil, "\(driver): the line is held's and stopped's")
         }
     }
@@ -262,16 +265,17 @@ struct FanControlUncoveredTests {
         let driver = Fixtures.held(
             Fixtures.ours, fans: [0], .applying(try Self.target(), queued: nil))
         let snapshot = Self.snapshot()
-        let screen = Fixtures.screen(snapshot, driver: driver, evidence: .noRead, readWith: floor.after)
-        let control = Control(fans: AllFansControlPresentationTests.fans(screen), snapshot: snapshot)
+        let screen = Fixtures.screen(
+            snapshot, driver: driver, evidence: .noRead, readWith: floor.after)
+        let control = Control(
+            fans: AllFansControlPresentationTests.fans(screen), snapshot: snapshot)
 
+        let asked = FanControlPresentation.StatusLine(
+            text: "Asked the helper for 3000 RPM. Not confirmed yet.", detail: nil)
         #expect(
             control.statusLines
                 == [
-                    .init(
-                        fans: ["Fan 0"],
-                        value: .init(
-                            text: "Asked the helper for 3000 RPM. Not confirmed yet.", detail: nil)),
+                    .init(fans: ["Fan 0"], value: asked),
                     .init(fans: ["Fan 1"], value: FanControlAwaitingApplyTests.awaiting),
                 ])
     }
@@ -280,7 +284,8 @@ struct FanControlUncoveredTests {
 
     /// Both fans held; fan 1 back on Auto releases the lease and acquires one over fan 0. The
     /// report the driver publishes then admits a read ticketed after the release answered, and not
-    /// one ticketed before, so fan 1 reads Automatic only from the later read listing the new lease.
+    /// one ticketed before, so fan 1 reads Automatic only from the later read, which lists the new
+    /// lease.
     @Test("After per-fan Auto, the other fan reads Automatic only from a read after the let-go")
     func afterPerFanAuto() async throws {
         let scene = await LeaseScene()

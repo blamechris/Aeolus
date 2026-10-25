@@ -22,8 +22,9 @@ import Foundation
 /// inside the judgement, so the driver judges each reply with its own read's ticket. The source
 /// keeps the ticket beside that reply and publishes them together (`HelperSnapshotSource`'s
 /// `Authority.fresh`), so the presentation can ask whether the snapshot on screen was read after
-/// the driver last stopped acting (ADR 0015 D2). A ticket only orders reads against the driver's
-/// moments: it can take, adjust and release nothing.
+/// the driver last let go: its last stop, or a release answered ahead of an acquisition (ADR 0015
+/// D2, D5). A ticket only orders reads against the driver's moments: it can take, adjust and
+/// release nothing.
 ///
 /// ## The source does not own the driver
 ///

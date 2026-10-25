@@ -678,9 +678,10 @@ extension FanControlPresentation.StatusLine {
     ///   first one, and there can be several.
     /// - **"Aeolus sent"**: this driver's. A relaunch starts `idle`, which waits for nothing.
     /// - **"Auto is not shown as selected"**: `.noRead` admits no read, so `automaticClaim` and
-    ///   `uncoveredClaim` answer `.unknown`, and the all-fans control selects Auto only when every fan reads
-    ///   `.automatic`. "Auto" is the segment's title, and "shown" makes it the control's, not the
-    ///   fans': the line says nothing about what the fans are doing, which each row reports.
+    ///   `uncoveredClaim` answer `.unknown`, and the all-fans control selects Auto only when every
+    ///   fan reads `.automatic`. "Auto" is the segment's title, and "shown" makes it the control's,
+    ///   not the fans': the line says nothing about what the fans are doing, which each row
+    ///   reports.
     /// - **"while Aeolus waits"**: the same wait, so the line promises nothing after it. A read
     ///   after the wait still has to list no lease, or exactly the held lease, and show each fan
     ///   cleared (ADR 0015 D1, D5).

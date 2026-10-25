@@ -111,12 +111,13 @@ import Foundation
 /// `HelperSnapshotObserver`: the ticket before the request's task exists, and every successful
 /// reply after it is recorded. See that type for why, and for what is judged. The ticket is kept
 /// beside the reply it was taken for, and `.fresh` carries it, so a consumer can tell whether the
-/// snapshot was read after the driver last stopped acting (ADR 0015 D2). The source holds no
-/// policy about it: it neither compares tickets nor withholds a snapshot for one.
+/// snapshot was read after the driver last let go (ADR 0015 D2, D5). The source holds no policy
+/// about it: it neither compares tickets nor withholds a snapshot for one.
 ///
 /// ## A read soon after the driver stops acting
 ///
-/// Automatic is claimed only from a snapshot read after the driver stopped acting, and the next
+/// Automatic is claimed only from a snapshot read after the driver's latest floor, minted when it
+/// stops acting or, beside a held lease, when it lets go of one (ADR 0015 D5), and the next
 /// ordinary read can be a minute away. `readSoon()` cuts an ordinary pause, by the path a settled
 /// interval change takes, so the user's own Auto reads selected within about one round trip.
 @MainActor

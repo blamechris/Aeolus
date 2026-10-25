@@ -147,7 +147,8 @@ struct FanControlAwaitingApplyTests {
     /// line goes.
     ///
     /// **Mutation (M3, "only a stop mints"):** red at `answeredAfter.awaitingApply == nil`.
-    @Test("Beside a held lease, a fan it does not cover gives the line until the last apply answers")
+    @Test(
+        "Beside a held lease, a fan it does not cover gives the line until the last apply answers")
     func heldGivesTheLineUntilTheLastApplyAnswers() async throws {
         let scene = await LeaseScene()
         let scenario = try await LeaseDriverLetGoFloorTests.changeOfSetDuringAnApply(in: scene)

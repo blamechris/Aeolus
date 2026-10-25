@@ -197,8 +197,8 @@ struct FanControlSelectionTests {
     ///
     /// **Mutation (A5, "condition 1 dropped"):** in `claim`, return `automaticClaim(licence,
     /// inputs)` for `.releasing`, `.acquiring` over other fans, and in place of `uncoveredClaim`
-    /// for `.held` over other fans. Run: red for those arguments. (A2 to A4 below hold the arms over
-    /// this fan.)
+    /// for `.held` over other fans. Run: red for those arguments. (A2 to A4 below hold the arms
+    /// over this fan.)
     @Test(
         "A cleared fan, no lease, a read past the floor: Automatic only when nothing is held",
         arguments: Fixtures.DriverTag.allCases)
