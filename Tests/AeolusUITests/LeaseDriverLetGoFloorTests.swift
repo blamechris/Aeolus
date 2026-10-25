@@ -63,7 +63,8 @@ struct LeaseDriverLetGoFloorTests {
     /// `acquiring == .noRead`.
     /// **Mutation (M3, "only a stop mints"):** in `applyAnswered()`, restore
     /// `Self.hasStoppedActing(current)` to the guard. Run: red at the floor's `#require`, once
-    /// `LeaseScene.floorBound` has passed with the evidence still `.noRead` beside `held`.
+    /// `LeaseScene.firstFloor(since:)`'s patience is spent, the evidence still `.noRead` beside
+    /// `held`.
     @Test("A let-go with an apply unanswered says noRead, until the last apply answers in held")
     func anUnansweredApplyHoldsTheLetGoBack() async throws {
         let scene = await LeaseScene()
@@ -97,7 +98,7 @@ struct LeaseDriverLetGoFloorTests {
     ///
     /// **Mutations (M1, M2):** red at `.noRead`, before A's `apply` answers: the let-go set
     /// `.anyRead` (M1) or a floor (M2), so no floor is minted beside `held`. **(M3):** red at the
-    /// floor's `#require`, once `LeaseScene.floorBound` has passed.
+    /// floor's `#require`, once `LeaseScene.firstFloor(since:)`'s patience is spent.
     @Test("A floor minted while a lease is held leaves observe alone")
     func aFloorWhileHeldLeavesObserveAlone() async throws {
         let scene = await LeaseScene()
@@ -127,8 +128,8 @@ struct LeaseDriverLetGoFloorTests {
     ///
     /// **Mutation (mA, "(b) skips acquiring and releasing"):** in `applyAnswered()`, return
     /// before minting while `current` is `.acquiring` or `.releasing`. Run: red at the floor's
-    /// `#require` in `answerTheParkedApply`, once `LeaseScene.floorBound` has passed, here and in
-    /// `theLastApplyMintsWhileReleasing`.
+    /// `#require` in `answerTheParkedApply`, once `LeaseScene.firstFloor(since:)`'s patience is
+    /// spent, here and in `theLastApplyMintsWhileReleasing`.
     @Test("The last apply's answer mints the floor while acquiring")
     func theLastApplyMintsWhileAcquiring() async throws {
         let scene = await LeaseScene()

@@ -151,8 +151,9 @@ struct FanControlAwaitingApplyTests {
     /// the driver has handled it, so no number of hops after it is enough (#519).
     ///
     /// **Mutation (M3, "only a stop mints"):** red at the floor's `#require`, once
-    /// `LeaseScene.floorBound` has passed with no floor published. **(M1, M2):** red at
-    /// `awaitingApply == awaiting` and at `.noRead`, before A's `apply` answers.
+    /// `LeaseScene.firstFloor(since:)`'s patience is spent with no floor published.
+    /// **(M1, M2):** red at `awaitingApply == awaiting` and at `.noRead`, before A's `apply`
+    /// answers.
     @Test(
         "Beside a held lease, a fan it does not cover gives the line until the last apply answers")
     func heldGivesTheLineUntilTheLastApplyAnswers() async throws {
