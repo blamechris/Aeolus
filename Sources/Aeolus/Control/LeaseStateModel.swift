@@ -28,14 +28,50 @@ import Combine
 /// ordinary read can be a minute away. So each report that carries a new floor runs
 /// `whenTheDriverStopsActing`, after the report is stored: `AppComposition` passes the source's
 /// `readSoon()`. It runs once per floor, never for a report whose evidence is unchanged.
+///
+/// ## Whether the user's own Auto came before the state (#157)
+///
+/// `released` does not say who released. Closing the last control window and fast user switching
+/// away reach the driver through `LeaseLifecycle`, which calls `LeaseDriver.releaseFans()`, and
+/// leave the app running in `released`. A power-off notice does the same, and whether a logout
+/// cancelled at its dialog leaves the app running after one is a hardware check #153 lists. None
+/// of them is the user choosing Auto. So the root tells this model each time the user asks for
+/// something (`userAskedForAutomatic()`, `userAskedForControl()`), and
+/// `enteredAfterTheUsersAuto` says whether the driver's state now was entered after the user's
+/// last request, and that request was Auto. `MonitoringModeDisplay` asks it before it says "as
+/// you chose".
 @MainActor
 final class LeaseStateModel: ObservableObject {
 
     private var stored: LeaseDriverReport = .idle
     private let whenTheDriverStopsActing: @MainActor () -> Void
 
+    /// Whether the user's last request through the root was Auto, with no `take` or `adjust`
+    /// since.
+    private var lastAskedForAutomatic = false
+    /// Whether the driver's state in `stored` was entered while `lastAskedForAutomatic` held.
+    private var stateFollowsAutomatic = false
+
     /// The driver's report, as last delivered to the main actor.
     var current: LeaseDriverReport { stored }
+
+    /// Whether the driver entered the state in `current` after the user last asked for Auto, with
+    /// nothing else asked for since. **A change of state is what counts**, never a report alone:
+    /// a report that moves only the evidence (an `apply` answering after the stop) keeps the
+    /// answer the state had.
+    ///
+    /// - `false` until the user asks for Auto, and from each `take` or `adjust` until the next
+    ///   Auto.
+    /// - `false` for the state the driver is already in when Auto is asked for: that state was
+    ///   entered before the request. A second Auto with nothing asked for between changes nothing.
+    /// - `true` from the first state the driver enters after it. That can be `releasing`, `lost`
+    ///   or `released`, so this says nothing about how the release ended: the caller reads the
+    ///   state as well.
+    ///
+    /// The request is recorded as it is made, on the main actor, before the root starts the
+    /// driver call. A state the driver entered before the call reached it, and delivered here
+    /// after the request, counts as after it. The user did ask for Auto last in that case too.
+    var enteredAfterTheUsersAuto: Bool { stateFollowsAutomatic }
 
     /// A build with no driver: `.idle`, and nothing ever changes it.
     init() {
@@ -58,12 +94,32 @@ final class LeaseStateModel: ObservableObject {
         }
     }
 
+    /// The user asked for Auto: the Auto segment, or the release offer, through
+    /// `AppComposition.selectAutomatic()`.
+    ///
+    /// Changes nothing on screen. `enteredAfterTheUsersAuto` is `true` only once a state is entered
+    /// with this set, and while it is, the last request was already Auto, so a second one leaves it
+    /// as it is. After a `take` or an `adjust` it is already `false`.
+    func userAskedForAutomatic() {
+        lastAskedForAutomatic = true
+    }
+
+    /// The user asked for manual control: `AppComposition.take(_:)` or `adjust(_:)`. The state on
+    /// screen was entered before this request, so it no longer follows the user's Auto.
+    func userAskedForControl() {
+        lastAskedForAutomatic = false
+        guard stateFollowsAutomatic else { return }
+        objectWillChange.send()
+        stateFollowsAutomatic = false
+    }
+
     private func publish(_ report: LeaseDriverReport) {
         guard report != stored else { return }
         let newFloor =
             report.automaticEvidence != stored.automaticEvidence
             && Self.isFloor(report.automaticEvidence)
         objectWillChange.send()
+        if report.state != stored.state { stateFollowsAutomatic = lastAskedForAutomatic }
         stored = report
         if newFloor { whenTheDriverStopsActing() }
     }

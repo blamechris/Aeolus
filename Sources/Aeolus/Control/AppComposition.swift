@@ -179,6 +179,7 @@ final class AppComposition {
     /// driver only once the main actor runs its task, after this has returned (#500).
     func take(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
+        leaseState.userAskedForControl()
         let call = Task { await driver.take(target) }
         started(call)
     }
@@ -188,14 +189,17 @@ final class AppComposition {
     /// Nothing calls it yet. Returns at once, as `take(_:)` does.
     func adjust(_ target: LeaseTarget) {
         guard let driver = lease?.driver else { return }
+        leaseState.userAskedForControl()
         let call = Task { await driver.adjust(target) }
         started(call)
     }
 
     /// Auto, and the release offer: the lease is released, whatever is in flight
-    /// (`LeaseDriver.selectAutomatic()`). Returns at once, as `take(_:)` does.
+    /// (`LeaseDriver.selectAutomatic()`). Returns at once, as `take(_:)` does. Each entry point
+    /// tells `leaseState` what the user asked for first (`enteredAfterTheUsersAuto`, #157).
     func selectAutomatic() {
         guard let driver = lease?.driver else { return }
+        leaseState.userAskedForAutomatic()
         let call = Task { await driver.selectAutomatic() }
         started(call)
     }
