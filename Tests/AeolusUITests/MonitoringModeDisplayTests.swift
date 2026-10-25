@@ -64,7 +64,8 @@ struct MonitoringModeDisplayTests {
     // MARK: - One test per state, its text by literal
 
     /// **Mutation (V1, "no helper says nothing"):** in `state(given:)`, return `nil` for
-    /// `.notTracked(.noHelperInThisBuild)`. Run: red at the state.
+    /// `.notTracked(.noHelperInThisBuild)`. Run: red at the state, and at `drawn` in
+    /// `MonitoringModeBannerTests`' build with no helper.
     @Test("No helper in this build: monitoring only, and why")
     func noHelperInThisBuild() {
         let screen = Fixtures.withdrawn(
@@ -96,7 +97,8 @@ struct MonitoringModeDisplayTests {
     }
 
     /// **Mutation (V2, "every fan, always"):** in `state(given:)`, report `fans: nil` whatever
-    /// was reclaimed. Run: red at the state.
+    /// was reclaimed. Run: red at the state, and at every named reclamation in
+    /// `MonitoringModePrecedenceTests`.
     @Test("Some fans reclaimed: named, and only those")
     func someFansReclaimed() {
         let snapshot = Support.snapshot(fans: [
@@ -135,7 +137,8 @@ struct MonitoringModeDisplayTests {
     }
 
     /// **Mutation (V3, "the wrong reason"):** in `banner(for:)`, draw each refusal's `advice` in
-    /// place of its `summary`. Run: red here and at the two tests below.
+    /// place of its `summary`. Run: red at the reasons in every refused test in this suite: the
+    /// write path above, this one, and the three below.
     @Test("Refused, no thermal telemetry: its own words")
     func refusedNoThermalTelemetry() {
         let snapshot = Support.snapshot(fans: [
@@ -197,7 +200,7 @@ struct MonitoringModeDisplayTests {
     }
 
     /// **Mutation (V4, "the first fan's reason for all"):** in `refusals(_:)`, append the first
-    /// fan's refusal for every fan. Run: red at the state.
+    /// fan's refusal for every fan. Run: red at the state and at the texts.
     @Test("Refused for different reasons: each named by its fans")
     func refusedForDifferentReasons() {
         let snapshot = Support.snapshot(fans: [

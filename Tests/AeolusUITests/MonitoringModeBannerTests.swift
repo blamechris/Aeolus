@@ -100,13 +100,15 @@ struct MonitoringModeBannerTests {
     /// is from before the grant, so nothing is said; the read the root asks for after the stop is
     /// D1's evidence, and the body draws the formatter's "as you chose".
     ///
-    /// **Mutation (B1, "the view ignores the formatter"):** in `FanListView.body`, draw
-    /// `MonitoringModeBanner(banner: MonitoringModeDisplay.banner(for: .noHelperInThisBuild))`
-    /// in place of the formatter's banner. Run: red at the `nil` before the grant and at the
-    /// banner. **Mutation (B2, "the view reads another model"):** in `FanListView.body`, pass
+    /// **Mutation (B1, "the view ignores the formatter"):** in `FanListView.body`, make the
+    /// banner's `if let` bind `Optional(MonitoringModeDisplay.banner(for: .noHelperInThisBuild))`.
+    /// Run: red at both `nil`s and both comparisons here, at the `nil` in
+    /// `aLifecycleReleaseIsNotAChoice`, and at the refusal's three expectations.
+    /// **Mutation (B2, "the view reads another model"):** in `FanListView.body`, pass
     /// `LeaseStateModel()` for `lease`. Run: red at `drawn`. **Mutation (R1, "Auto unrecorded"):**
     /// in `AppComposition.selectAutomatic()`, delete `leaseState.userAskedForAutomatic()`. Run:
-    /// red at `enteredAfterTheUsersAuto` and at `drawn`.
+    /// red at `enteredAfterTheUsersAuto` and at `drawn`, and at `aTakeEndsTheAutosClaim`'s first
+    /// expectation.
     @Test("The body draws 'as you chose' after the user's Auto, from a read after it")
     func theBodyDrawsTheUsersAuto() async throws {
         let (scene, polling) = try await Self.heldThroughTheRoot()
@@ -133,7 +135,7 @@ struct MonitoringModeBannerTests {
     /// control reads Auto, and nothing says the user chose it.
     ///
     /// **Mutation (V6, "released is a choice"):** red here as well as in
-    /// `MonitoringModeDisplayTests`.
+    /// `MonitoringModePrecedenceTests`.
     @Test(
         "A release the user did not ask for draws no 'as you chose', though the control reads Auto")
     func aLifecycleReleaseIsNotAChoice() async throws {
@@ -187,7 +189,7 @@ struct MonitoringModeBannerTests {
     /// draws the formatter's refusal, in the reason's own words.
     ///
     /// **Mutation (B3, "no banner drawn"):** in `FanListView.body`, delete the banner's `if let`.
-    /// Run: red at `drawn` here and in the two tests above and below.
+    /// Run: red at `drawn` here, in `theBodyDrawsTheUsersAuto` and in the build with no helper.
     @Test("The body draws the helper's refusal, as the formatter words it")
     func theBodyDrawsTheRefusal() async throws {
         let scene = await CompositionScene()

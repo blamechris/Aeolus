@@ -26,7 +26,8 @@ struct MonitoringModePrecedenceTests {
     ///
     /// **Mutation (V5, "chose without D1"):** in `everyFanReadsAutomatic(_:)`, ask
     /// `$0.reading.control` for a fan the helper reports `isClearedToAutomatic` in place of the
-    /// presentation's selection. Run: red at each of the four expectations.
+    /// presentation's selection. Run: red at each of the four `nil` expectations, and at the `nil`
+    /// before the grant in `MonitoringModeBannerTests.theBodyDrawsTheUsersAuto`.
     @Test("No 'as you chose' without D1's evidence")
     func notChosenWithoutTheEvidence() async throws {
         let (before, floor) = try await LeaseStateModelTests.twoFloors()
@@ -69,7 +70,8 @@ struct MonitoringModePrecedenceTests {
     /// switching release too, and leave the app running in `released`.
     ///
     /// **Mutation (V6, "released is a choice"):** in `isTheUsersAuto(_:)`, drop
-    /// `inputs.enteredAfterTheUsersAuto`. Run: red here.
+    /// `inputs.enteredAfterTheUsersAuto`. Run: red here, and at
+    /// `MonitoringModeBannerTests.aLifecycleReleaseIsNotAChoice`.
     @Test("No 'as you chose' for a release the user did not ask for")
     func notChosenForAReleaseNobodyAskedFor() {
         #expect(Tests.state(Tests.cleared, driver: .released, afterAuto: false) == nil)
@@ -100,7 +102,10 @@ struct MonitoringModePrecedenceTests {
     // MARK: - Precedence
 
     /// **Mutation (V8, "the emergency ignored"):** in `state(given:)`, delete the
-    /// `thermalEmergency != .active` guard. Run: red at the reclaimed and refused screens.
+    /// `thermalEmergency != .active` guard. Run: red at the reclaimed screen and at the one after
+    /// the user's Auto. The refused screen stays `nil` without the guard: the control's rule 3
+    /// disables every fan for the emergency before rule 5's refusal is reached, so it is no
+    /// refusal this banner counts.
     @Test("A thermal emergency silences the banner: ThermalEmergencyBanner speaks")
     func anEmergencySilencesIt() {
         let reclaimed = Support.snapshot(
@@ -120,7 +125,8 @@ struct MonitoringModePrecedenceTests {
     /// user's Auto both hold.
     ///
     /// **Mutation (V9, "chose above reclaimed"):** in `state(given:)`, test "as you chose" before
-    /// reclamation. Run: red here.
+    /// reclamation. Run: red here, and at "Refused outranks 'as you chose'", since the mutation
+    /// puts the choice above both.
     @Test("Reclaimed outranks 'as you chose'")
     func reclaimedOutranksChosen() throws {
         let snapshot = Support.snapshot(fans: [
@@ -142,7 +148,8 @@ struct MonitoringModePrecedenceTests {
     }
 
     /// **Mutation (V10, "refused above reclaimed"):** in `state(given:)`, test refusals before
-    /// reclamation. Run: red here.
+    /// reclamation. Run: red here, and at both reclaimed tests in `MonitoringModeDisplayTests`,
+    /// whose fans are refused `writePathNotBuilt` too.
     @Test("Reclaimed outranks refused")
     func reclaimedOutranksRefused() {
         let snapshot = Support.snapshot(fans: [

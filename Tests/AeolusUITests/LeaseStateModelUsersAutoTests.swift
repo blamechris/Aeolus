@@ -27,7 +27,8 @@ struct LeaseStateModelUsersAutoTests {
     /// **Mutation (L2, "a take keeps it"):** in `userAskedForControl()`, delete the line that sets
     /// `stateFollowsAutomatic` to `false`. Run: red at the expectation right after the take.
     /// **Mutation (L3, "a take is not a request"):** in `userAskedForControl()`, delete
-    /// `lastAskedForAutomatic = false`. Run: red at the release nobody asked for.
+    /// `lastAskedForAutomatic = false`. Run: red at the release nobody asked for and at the last
+    /// expectation, and at `MonitoringModeBannerTests.aTakeEndsTheAutosClaim`.
     /// **Mutation (L4, "nothing re-renders"):** in `userAskedForControl()`, delete
     /// `objectWillChange.send()`. Run: red at the publish count after the take.
     @Test("True from the first state after the user's Auto, until the next take")
