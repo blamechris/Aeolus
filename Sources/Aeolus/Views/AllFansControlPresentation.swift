@@ -20,7 +20,8 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 }
 
 /// What the main window's one control for all fans may claim: Auto, 50 %, 75 % or 100 % (#153's
-/// PR 6b, the basic version of the maintainer's request). Per-fan control is PR 8.
+/// PR 6b, the basic version of the maintainer's request). Each fan's own Auto or Custom is its
+/// row's (`FanRowControlPresentation`, #154); a percentage here overrides any per-fan speed.
 ///
 /// Pure, like `FanControlPresentation`, and derived from it alone: every fan's presentation and
 /// the snapshot those presentations were judged against. A control that speaks for several fans

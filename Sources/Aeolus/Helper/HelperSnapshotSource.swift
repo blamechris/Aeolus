@@ -114,12 +114,14 @@ import Foundation
 /// snapshot was read after the driver last let go (ADR 0015 D2, D5). The source holds no policy
 /// about it: it neither compares tickets nor withholds a snapshot for one.
 ///
-/// ## A read soon after the driver stops acting
+/// ## A read soon after the driver stops acting, lets go, or is granted a lease
 ///
 /// Automatic is claimed only from a snapshot read after the driver's latest floor, minted when it
 /// stops acting or, beside a held lease, when it lets go of one (ADR 0015 D5), and the next
 /// ordinary read can be a minute away. `readSoon()` cuts an ordinary pause, by the path a settled
-/// interval change takes, so the user's own Auto reads selected within about one round trip.
+/// interval change takes, so the user's own Auto reads selected within about one round trip. It is
+/// also asked for at each grant, because a fan the new lease does not cover reads Automatic only
+/// from a snapshot that lists that lease (D5; `LeaseStateModel`, "The reads it asks for").
 @MainActor
 public final class HelperSnapshotSource {
 
@@ -544,14 +546,15 @@ public final class HelperSnapshotSource {
     var isWaitingForTheIntervalToSettle: Bool { intervalSettle != nil }
 }
 
-// MARK: - A read soon after the driver stops acting
+// MARK: - A read soon after the driver stops acting, lets go, or is granted a lease
 
 extension HelperSnapshotSource {
 
     /// Something the next snapshot is evidence of has just happened: the lease driver stopped
-    /// acting, and Automatic waits for a read ticketed after that (ADR 0015 D2). An **ordinary**
-    /// pause ends now, by the cut a settled interval change makes, so the next request goes out at
-    /// once.
+    /// acting or let go of a lease, and Automatic waits for a read ticketed after that (ADR 0015
+    /// D2, D5), or it was granted a lease, and only a read listing it can show a fan it does not
+    /// cover Automatic (D5). An **ordinary** pause ends now, by the cut a settled interval change
+    /// makes, so the next request goes out at once.
     ///
     /// - **A request in flight is left alone**, and no second one is sent beside it (#419). Its
     ///   ticket may predate the moment this is about, so the pause after it is skipped instead,

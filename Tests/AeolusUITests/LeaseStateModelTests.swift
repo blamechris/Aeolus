@@ -61,7 +61,7 @@ struct LeaseStateModelTests {
     /// `report.state != stored.state`. Run: red at the floor's step, which the model never holds.
     /// **Mutation (M-C, "a state change nudges"):** nudge when the state changes, not the
     /// evidence. Run: red at `acquiring`'s and `noRead`'s zero nudges, and at the floor's one.
-    /// **Mutation (M-E, "every report nudges"):** call `whenTheDriverStopsActing()` for every
+    /// **Mutation (M-E, "every report nudges"):** call `askForARead()` for every
     /// report. Run: red at the first zero.
     /// **Mutation (M-G, "noRead nudges"):** treat `.noRead` as a floor in `isFloor`. Run: red at
     /// `noRead`'s zero.
@@ -75,7 +75,7 @@ struct LeaseStateModelTests {
         let (stream, feed) = AsyncStream.makeStream(of: LeaseDriverReport.self)
         let counts = Counts()
         let model = LeaseStateModel(
-            following: stream, whenTheDriverStopsActing: { counts.nudges += 1 })
+            following: stream, askForARead: { counts.nudges += 1 })
         let sink = model.objectWillChange.sink { counts.publishes += 1 }
         defer { sink.cancel() }
 

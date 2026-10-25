@@ -14,8 +14,10 @@ import Testing
 /// lease: the floor bounds the `apply`s, not the handback. What bounds the handback is the lease
 /// the read lists (ADR 0015 D5, *Identity*). On this path the driver asks for the next grant only
 /// once the release has answered (`LeaseDriverGuardTests.aTakeAfterALossWaitsForTheRelease`, the
-/// ordering this test depends on), so a read served before that grant lists the lost lease or no
-/// lease, and D5 refuses both. A read listing the new lease shows fan 1 Automatic only when the
+/// ordering this test depends on), so a read served before that grant lists an earlier lease, the
+/// driver's or another client's, or no lease (ADR 0015 D5, *Identity*), and D5 refuses each: this
+/// test walks the driver's lost lease, and `FanControlUncoveredTests.anotherLeaseListed` (M4a)
+/// another client's. A read listing the new lease shows fan 1 Automatic only when the
 /// helper reports it cleared, and a handback still in flight reads `.releaseInProgress` there
 /// (*Clearance*).
 @Suite(
@@ -69,7 +71,8 @@ struct FanControlUncoveredAfterALossTests {
 
         // (a) The floor was minted at the loss, so it admits the early read.
         #expect(report.automaticEvidence.admits(early), "the floor alone does not refuse it")
-        // (b) Served before B's grant, that read can list A or no lease. D5 refuses both.
+        // (b) Served before B's grant, that read can list A, another client's lease, or no lease.
+        // D5 refuses each; another client's is `anotherLeaseListed`'s.
         for listed in [leaseA.lease, nil] as [Lease?] {
             let presented = try Self.fan1(
                 report, readWith: early, over: Uncovered.snapshot(listing: listed))
