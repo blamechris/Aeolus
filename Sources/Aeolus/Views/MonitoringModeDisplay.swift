@@ -26,7 +26,8 @@ import Foundation
 ///   the past tense, and nothing about what the fan does now, which its row shows.
 /// - **The helper refuses manual control of every fan.** Every fan's presentation is disabled by
 ///   the helper's own refusal (`FanControlPresentation`'s rule 5): a licensed snapshot, no thermal
-///   emergency, no lease listed, and `manualControlAvailability` `.unavailable(reason)`. Each
+///   emergency, no lease listed but one the driver holds, and `manualControlAvailability`
+///   `.unavailable(reason)`. Each
 ///   reason is said in its own words, `userFacingSummary`, with its wire value beside it: the
 ///   refusal the fan's row and the control already give (`FanRowModel.Refusal`), so no reason is
 ///   described two ways. `.supervisorBlind`, which #157's thread asks to keep apart from
@@ -71,8 +72,8 @@ import Foundation
 /// 6. **Refused.** Above "as you chose": a refusal is the helper's answer now, and it says what
 ///    the user can do next; the choice is history.
 /// 7. **Auto, as you chose.**
-/// 8. **Nothing** otherwise: an `idle` driver over fans that read automatic and are offered, a
-///    loss, a refused grant, a mix of refused and offered fans, a fan between snapshots.
+/// 8. **Nothing** otherwise: an `idle` driver over fans that read automatic, offered or a mix of
+///    refused and offered; a loss; a refused grant; a fan between snapshots.
 enum MonitoringModeDisplay {
 
     typealias Fan = AllFansControlPresentation.Fan
@@ -237,7 +238,7 @@ enum MonitoringModeDisplay {
             return Banner(
                 headline: "Monitoring only: Auto, as you chose.",
                 detail:
-                    "The helper reports every fan back under automatic control, and lists no "
+                    "The helper reports every fan under automatic control, and lists no "
                     + "manual-control lease.",
                 reasons: [], severity: .normal)
         }

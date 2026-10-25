@@ -229,7 +229,7 @@ struct MonitoringModeDisplayTests {
                 == Display.Banner(
                     headline: "Monitoring only: Auto, as you chose.",
                     detail:
-                        "The helper reports every fan back under automatic control, and lists no "
+                        "The helper reports every fan under automatic control, and lists no "
                         + "manual-control lease.",
                     reasons: [], severity: .normal))
     }
@@ -242,7 +242,8 @@ struct MonitoringModeDisplayTests {
     }
 
     /// Only the one state with the user's Auto behind it says "chose", and none says what the fans
-    /// are rather than what the helper reports.
+    /// are rather than what the helper reports. None says "back under" automatic control either:
+    /// Auto while acquiring gives the grant straight back, so Aeolus may never have driven a fan.
     @Test("Only 'as you chose' says chose, and nothing says the fans are automatic")
     func onlyTheChoiceSaysChose() {
         for state in Self.everyState {
@@ -252,6 +253,7 @@ struct MonitoringModeDisplayTests {
             #expect(words.contains("chose") == (state == .automaticAsChosen), "\(state)")
             #expect(!words.contains("fans are"), "\(state)")
             #expect(!words.contains("is automatic"), "\(state)")
+            #expect(!words.contains("back under"), "\(state): presupposes a manual period")
         }
     }
 }
