@@ -23,11 +23,20 @@ import Foundation
 /// **"No new lease", not "no manual control" (#485 S3).** `ThermalEmergency.fire()` engages the
 /// latch first, then bridges the fans in its registers to maximum and back, and revokes every
 /// live lease last; § 3's opening in `docs/SAFETY.md` gives the same order for the last three.
-/// `LeaseAuthority.acquireLease` refuses while the latch holds, and `renewLease` does not consult
-/// it. So a snapshot can carry the flag beside a lease it still lists — the window
-/// `SystemSnapshot.controlLoss(leaseID:covering:)` names — and "grants no manual control" would
-/// sit beside "Manual-control lease held by …". On a helper that cannot write, that window holds
-/// no lease, because none is granted; the sentence is for the helper that can.
+/// `renewLease` does not consult the latch. So a snapshot can carry the flag beside a lease it
+/// still lists — the window `SystemSnapshot.controlLoss(leaseID:covering:)` names — and "grants
+/// no manual control" would sit beside "Manual-control lease held by …".
+///
+/// **"No new lease" has one documented exception, a grant already under way.**
+/// `LeaseAuthority.acquireLease` refuses a grant that finds the latch holding
+/// (`refuseIfThermalEmergencyActive`). It reads the latch across an actor hop, though, and then
+/// awaits the blindness check, so an emergency that engages during that hop does not stop the
+/// grant (`docs/records/handback-ledger.md`, "Why § 3 revokes every lease"). § 3 closes that
+/// window from its own side: every cycle that keeps the latch, an unreadable one included,
+/// revokes every live lease (`ThermalEmergency.takeBackAnythingEngagedSinceFiring()`). So a
+/// lease granted in the window can be listed beside the flag until § 3's next cycle. None of
+/// this is reachable on a helper that cannot write: `refuseIfWritePathNotBuilt`, the first check
+/// in `acquireLease`, refuses every grant there, and the sentence is for the helper that can.
 enum ThermalEmergencyDisplay {
 
     enum Severity: Equatable {

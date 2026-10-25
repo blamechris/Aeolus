@@ -331,7 +331,10 @@ public final class HelperSnapshotSource {
     ///
     /// Like `retrySoon()`, it cuts only a pause: a request in flight is left alone, and no
     /// second one is sent beside it (#419). A cut that lands while a request is in flight finds
-    /// no pause, and the pause after that request is already the new length.
+    /// no pause, and the pause after that request is already the new length. But a request
+    /// answered inside the wait leaves a pause that began on the new length, and the cut ends
+    /// that pause anyway: one request goes out at once, a pause sooner than the new interval
+    /// asks for.
     public func refreshIntervalDidChange() {
         intervalSettle?.cancel()
         let settling = settling
