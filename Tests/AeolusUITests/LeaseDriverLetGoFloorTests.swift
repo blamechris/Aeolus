@@ -19,11 +19,6 @@ import Testing
     .timeLimit(.minutes(1)))
 struct LeaseDriverLetGoFloorTests {
 
-    static func isFloor(_ evidence: LeaseDriverReport.AutomaticEvidence) -> Bool {
-        if case .readFrom = evidence { return true }
-        return false
-    }
-
     static func isAcquiring(_ state: LeaseDriverState) -> Bool {
         if case .acquiring = state { return true }
         return false
@@ -67,8 +62,9 @@ struct LeaseDriverLetGoFloorTests {
     /// `.readFrom(mintFloor())` whatever `appliesUnanswered` is. Run: red at
     /// `acquiring == .noRead`.
     /// **Mutation (M3, "only a stop mints"):** in `applyAnswered()`, restore
-    /// `Self.hasStoppedActing(current)` to the guard. Run: red at `isFloor(report)`, the evidence
-    /// still `.noRead` beside `held`.
+    /// `Self.hasStoppedActing(current)` to the guard. Run: red at the floor's `#require`, once
+    /// `LeaseScene.firstFloor(since:)`'s patience is spent, the evidence still `.noRead` beside
+    /// `held`.
     @Test("A let-go with an apply unanswered says noRead, until the last apply answers in held")
     func anUnansweredApplyHoldsTheLetGoBack() async throws {
         let scene = await LeaseScene()
@@ -82,44 +78,39 @@ struct LeaseDriverLetGoFloorTests {
         let during = await scene.driver.beginSnapshotRead()
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).contains { $0.event.isApplyAnswer }
-        }
-        await scene.settle()
-        let report = await scene.driver.report
-        try #require(Self.isFloor(report.automaticEvidence), "minted beside held: \(report)")
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        let report = try #require(published, "minted beside held: \(now)")
         let after = await scene.driver.beginSnapshotRead()
 
         #expect(report.state.heldLease?.lease.id == scenario.leaseB.lease.id, "\(report)")
         #expect(!report.automaticEvidence.admits(during), "a read before A's apply answered")
         #expect(report.automaticEvidence.admits(after))
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).reports.contains {
-                Self.isFloor($0.automaticEvidence)
-            }
-        }
-        let published = Array(await scene.entries.dropFirst(answered))
-        #expect(
-            published.reports.contains { $0 == report }, "published as a report: \(published)")
-        #expect(published.states.isEmpty, "the evidence moved alone: no state was published")
+        #expect(now == report, "the driver's report is the one it published: \(now)")
+        let since = Array(await scene.entries.dropFirst(answered))
+        #expect(since.states.isEmpty, "the evidence moved alone: no state was published")
         await scene.finish()
     }
 
     /// The floor minted beside a held lease moves no ticket across the grant's mark: a read
     /// ticketed before B's grant is still not judged against B, and one ticketed after it still is
     /// (see `LeaseDriver`, "Minting cannot change what `observe(_:readWith:)` decides").
+    ///
+    /// **Mutations (M1, M2):** red at `.noRead`, before A's `apply` answers: the let-go set
+    /// `.anyRead` (M1) or a floor (M2), so no floor is minted beside `held`. **(M3):** red at the
+    /// floor's `#require`, once `LeaseScene.firstFloor(since:)`'s patience is spent.
     @Test("A floor minted while a lease is held leaves observe alone")
     func aFloorWhileHeldLeavesObserveAlone() async throws {
         let scene = await LeaseScene()
         await scene.helper.script(.acquire, .now, .parked)
         let scenario = try await Self.changeOfSetDuringAnApply(in: scene, parkingB: true)
+        try #require(
+            await scene.driver.report.automaticEvidence == .noRead, "A's apply is unanswered")
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).contains { $0.event.isApplyAnswer }
-        }
-        await scene.settle()
-        try #require(Self.isFloor(await scene.driver.report.automaticEvidence))
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        try #require(published != nil, "minted beside held: \(now)")
         let gone = LeaseDriverLossTests.snapshot([], listing: nil)
 
         await scene.driver.observe(gone, readWith: scenario.beforeGrant)
@@ -136,8 +127,9 @@ struct LeaseDriverLetGoFloorTests {
     /// `acquiring`: the floor is minted there, as a report beside `acquiring`.
     ///
     /// **Mutation (mA, "(b) skips acquiring and releasing"):** in `applyAnswered()`, return
-    /// before minting while `current` is `.acquiring` or `.releasing`. Run: red at
-    /// `isFloor(report)` here and in `theLastApplyMintsWhileReleasing`.
+    /// before minting while `current` is `.acquiring` or `.releasing`. Run: red at the floor's
+    /// `#require` in `answerTheParkedApply`, once `LeaseScene.firstFloor(since:)`'s patience is
+    /// spent, here and in `theLastApplyMintsWhileReleasing`.
     @Test("The last apply's answer mints the floor while acquiring")
     func theLastApplyMintsWhileAcquiring() async throws {
         let scene = await LeaseScene()
@@ -162,7 +154,7 @@ struct LeaseDriverLetGoFloorTests {
     /// own `apply` answered, so `noRead` is kept through `held`. Fan 1 back on Auto releases B,
     /// the release parked, and A's `apply` answers while the driver is `releasing`.
     ///
-    /// **Mutation (mA):** red at `isFloor(report)`.
+    /// **Mutation (mA):** red at the floor's `#require` in `answerTheParkedApply`.
     @Test("The last apply's answer mints the floor while releasing")
     func theLastApplyMintsWhileReleasing() async throws {
         let scene = await LeaseScene()
@@ -187,26 +179,24 @@ struct LeaseDriverLetGoFloorTests {
         await scene.finish()
     }
 
-    /// Answers the one parked `apply` and returns the driver's report once it has handled the
-    /// answer, required to carry a floor that a read ticketed before the answer does not pass and
-    /// one after it does, and to have been published as an evidence-only report.
+    /// Answers the one parked `apply` and returns the report the driver published when it handled
+    /// the answer, required to carry a floor that a read ticketed before the answer does not pass
+    /// and one after it does, with the state unchanged, and to be the driver's report then.
+    ///
+    /// Waits on the published report (`LeaseScene.firstFloor(since:)`), never on `settle()`: the
+    /// fake's answer reaches the ledger before the driver has handled it (#519).
     static func answerTheParkedApply(in scene: LeaseScene) async throws -> LeaseDriverReport {
         let state = await scene.driver.state
         let during = await scene.driver.beginSnapshotRead()
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).contains { $0.event.isApplyAnswer }
-        }
-        await scene.settle()
-        let report = await scene.driver.report
-        try #require(isFloor(report.automaticEvidence), "minted beside \(state): \(report)")
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        let report = try #require(published, "minted beside \(state): \(now)")
         #expect(report.state == state, "the state did not move")
         #expect(!report.automaticEvidence.admits(during))
         #expect(report.automaticEvidence.admits(await scene.driver.beginSnapshotRead()))
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).reports.contains { $0 == report }
-        }
+        #expect(now == report, "the driver's report is the one it published: \(now)")
         return report
     }
 
