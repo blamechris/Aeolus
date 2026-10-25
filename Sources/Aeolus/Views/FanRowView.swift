@@ -11,7 +11,8 @@ import SwiftUI
 /// is enabled, what the field shows and the courtesy line all come from it, and a click only
 /// reaches `perform(_:)`, which calls one of the closures `FanListView` hands it. Those read the
 /// screen again and ask the root (`FanRowControlActions`). The `Monitor` build draws none of it,
-/// and the row never repeats a reason the control for all fans already gives.
+/// and the control adds no reason of its own to the row's refusal line or to the control for all
+/// fans.
 ///
 /// The field is labelled as a target, never beside the actual reading as if it were one, and
 /// shows the driver's target, never the snapshot's (`CLAUDE.md` rule 6).

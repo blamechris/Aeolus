@@ -56,12 +56,13 @@ import Foundation
 /// clamps every speed again after it crosses (`CLAUDE.md` rule 7). This is the courtesy, not the
 /// control.
 ///
-/// ## What a row never says
+/// ## What the per-fan control never says
 ///
-/// **No reason of its own.** Why the control is disabled is said once, by the control for all
-/// fans above the list, attributed to the fans it is about (`AllFansControlPresentation`), and a
-/// helper refusal is the row's own line (`FanRowModel.refusal`). A row repeats neither. **No
-/// control at all** where the affordance is hidden and no release is offered: the `Monitor` build.
+/// **No reason of its own.** Why the control is disabled is said by the control for all fans
+/// above the list, attributed to the fans it is about (`AllFansControlPresentation`), and a helper
+/// refusal is also the row's own line (`FanRowModel.refusal`), which the row showed before it had
+/// a control. The per-fan control adds to neither. **No control at all** where the affordance is
+/// hidden and no release is offered: the `Monitor` build.
 struct FanRowControlPresentation: Equatable {
 
     /// Whether the row draws any per-fan control.

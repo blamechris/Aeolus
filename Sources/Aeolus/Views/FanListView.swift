@@ -20,8 +20,9 @@ import SwiftUI
 /// - **What is drawn as selected is the presentations'**, never the last click.
 /// - **A click calls `actions` or `rowActions`**, which read the screen again and ask the root.
 ///   Neither selects anything itself.
-/// - **A reason is said once.** Why control is disabled is the control for all fans' to say,
-///   attributed to the fans it is about; a row draws its control greyed and repeats none of it.
+/// - **The per-fan control adds no reason of its own.** Why control is disabled is the control
+///   for all fans' to say, attributed to the fans it is about. A row draws its control greyed
+///   beside what it already showed: its own line for a helper refusal (`FanRowModel.refusal`).
 /// - **The change-of-fan-set sentence** (`FanRowControlPresentation.changeOfFanSet`) is said once,
 ///   above the rows, whenever any row draws a control.
 ///
