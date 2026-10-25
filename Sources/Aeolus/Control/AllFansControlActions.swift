@@ -15,9 +15,9 @@ struct AllFansControlActions {
     /// The root this control acts through.
     let composition: AppComposition
 
-    /// A percentage segment: **`take`**, the deliberate user action, whatever the driver holds. From
-    /// `idle`, `released`, `refused` or `lost` it acquires; while the same fans are held it is a
-    /// re-apply, so 50 % then 75 % is a second `take` (`LeaseDriver.take(_:)`). Never `adjust`,
+    /// A percentage segment: **`take`**, the deliberate user action, whatever the driver holds.
+    /// From `idle`, `released`, `refused` or `lost` it acquires; while the same fans are held it is
+    /// a re-apply, so 50 % then 75 % is a second `take` (`LeaseDriver.take(_:)`). Never `adjust`,
     /// which acquires nothing and would leave a click from `idle` doing nothing.
     ///
     /// The target is built now, at the click, from one read of what `polling` has on screen and

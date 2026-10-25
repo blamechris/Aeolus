@@ -166,8 +166,8 @@ struct AllFansControlRootTests {
 
     // MARK: - #419: the UI never cancels a sequenced verb
 
-    /// The caller is cancelled before it calls `take`, and both sequenced verbs are parked so that a
-    /// cancelled caller would be answered at once with `CancellationError`. The acquire and the
+    /// The caller is cancelled before it calls `take`, and both sequenced verbs are parked so that
+    /// a cancelled caller would be answered at once with `CancellationError`. The acquire and the
     /// apply are still each answered by the test, neither caller cancelled, and the lease is held.
     ///
     /// What holds it is two facts, and this test can see only their sum. The root's entry point
@@ -176,14 +176,14 @@ struct AllFansControlRootTests {
     /// (`LeaseDriver.startAcquisition`, `granted`, `requestApply`). Either alone keeps the verbs
     /// off the cancelled task, so a mutation of the root alone is masked by the driver.
     ///
-    /// **Mutation (M7, "the root awaits in the caller's task"):** make `AppComposition.take` `async`,
-    /// awaiting `driver.take(target)`, and await it here. Run: green, as reasoned: the driver's own
-    /// tasks still carry the verbs. The root's half is held by the compiler instead:
+    /// **Mutation (M7, "the root awaits in the caller's task"):** make `AppComposition.take`
+    /// `async`, awaiting `driver.take(target)`, and await it here. Run: green, as reasoned: the
+    /// driver's own tasks still carry the verbs. The root's half is held by the compiler instead:
     /// `AllFansControlActions.choose` and every view action are synchronous and call the entry
     /// points without `await`, so an `async` entry point does not compile there.
     /// **Mutation (M7′, "the verbs on the caller's task"):** as M7, and in `LeaseDriver.take`'s
     /// first arm run the acquisition inline (`await acquire(id, after: previous)`) instead of on
-    /// `acquiring`'s task. Run: red at `callerWasCancelled`'s pairing: the parked acquire is answered
+    /// `acquiring`'s task. Run: red, see the PR's mutation table: the parked acquire is answered
     /// with `CancellationError`, and the driver reports the acquire unanswered.
     @Test("A take from a cancelled caller still acquires and applies (#419)")
     func aCancelledCallerCancelsNothing() async throws {

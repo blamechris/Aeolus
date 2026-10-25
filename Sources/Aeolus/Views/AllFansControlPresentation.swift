@@ -93,7 +93,8 @@ struct AllFansControlPresentation: Equatable {
     typealias Fan = (reading: FanPollingReading, presentation: FanControlPresentation)
 
     /// - Parameters:
-    ///   - fans: Every fan on screen beside its presentation: `FanControlPresentation.onScreen(in:driver:)`.
+    ///   - fans: Every fan on screen beside its presentation, from
+    ///     `FanControlPresentation.onScreen(in:driver:)`.
     ///   - snapshot: The snapshot those presentations were judged against, `renderedSnapshot`.
     init(fans: [Fan], snapshot: SystemSnapshot?) {
         affordance = Self.affordance(fans)
