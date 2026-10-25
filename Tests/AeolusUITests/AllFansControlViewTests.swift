@@ -12,9 +12,11 @@ import Testing
 /// dispatch, and `FanListView.body`, evaluated as SwiftUI would, wired to the root it was given
 /// (#497's review, S1).
 ///
-/// What no test here can see is the `Button` closure inside `AllFansControlView.button(_:)` that
-/// calls `perform(_:)`: reaching it needs a hosted window. It is one closure for every segment,
-/// and it calls `perform` with the segment's own action, which the tests below hold.
+/// What no test here evaluates is `AllFansControlView.body` itself. That leaves its
+/// `ForEach(segments)`, both `Button` closures in `button(_:)` that call `perform(_:)`, and the
+/// `.disabled(!segment.isEnabled)` beneath them, unpinned: reaching them needs a hosted window.
+/// The tests below hold what each of them reads, `segments(for:)` and `perform(_:)`, and
+/// `FanListView.body`, which builds the view.
 @Suite("All fans — what the view draws, and what a click asks for", .timeLimit(.minutes(1)))
 @MainActor
 struct AllFansControlViewTests {

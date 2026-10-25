@@ -10,8 +10,13 @@ import SwiftUI
 /// It decides nothing. Which segment is selected, which is pending, what is enabled and what
 /// each line says all come from the presentation, through `segments(for:)` and `labelMark(for:)`,
 /// and a click only reaches `perform(_:)`, which calls `choose` or `chooseAutomatic`; the next
-/// presentation says what came of it. What the suite cannot see is the one `Button` closure that
-/// calls `perform(_:)`: that needs a hosted window.
+/// presentation says what came of it.
+///
+/// **What the suite cannot see is this view's own `body`**: no test evaluates it. That leaves the
+/// `ForEach(segments)` that draws the segments, both `Button` closures in `button(_:)` that call
+/// `perform(_:)`, and the `.disabled(!segment.isEnabled)` beneath them, held by reading rather
+/// than by a test. Reaching them needs a hosted window. The suite holds what each of them reads:
+/// `segments(for:)`, `labelMark(for:)` and `perform(_:)`.
 struct AllFansControlView: View {
     let control: AllFansControlPresentation
     let choose: (FanSpeedPercent) -> Void
