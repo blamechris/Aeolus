@@ -212,7 +212,7 @@ struct AllFansControlPresentationTests {
     /// cancel a `take` queued behind the release (`autoWhileReleasingCancelsAQueuedTake`).
     ///
     /// **Mutation (M10):** in `FanControlPresentation.canRelease`, answer `false` for `.releasing`.
-    /// Run: red at `offersRelease` and `automaticIsEnabled`, for both snapshots.
+    /// Run: red at `offersRelease` for both, and at `automaticIsEnabled` beside the old lease.
     @Test("While releasing, Auto is offered whatever the affordance")
     func whileReleasingAutoIsAlwaysOffered() {
         let gone = Self.control(

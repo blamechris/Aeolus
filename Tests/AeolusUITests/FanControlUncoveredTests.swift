@@ -187,9 +187,9 @@ struct FanControlUncoveredTests {
     /// every D5 condition holds for it but coverage. It is the held claim's, never Automatic.
     ///
     /// **Mutation (M5b, "the arm order"):** in `claim`, move the `.held(let held)` arm for a fan
-    /// the lease does not cover above the one for a fan it covers. Run: red at both phases'
-    /// selections (the predicate's `covering` check then answers `.unknown`, and without it,
-    /// `.automatic`).
+    /// the lease does not cover above the one for a fan it covers. Run: red at the `.applying`
+    /// selection and both status lines. The confirmed selection stays `.unknown`, which the
+    /// predicate's `covering` check also answers; without that check it would be `.automatic`.
     @Test("A fan the held lease covers is the held claim's, never D5's")
     func aCoveredFanIsTheHeldClaims() async throws {
         let floor = try await SnapshotTickets.aroundAFloor()
