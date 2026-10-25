@@ -82,8 +82,9 @@ struct FanControlCopyTests {
                 + "it did not know what mode the fan was in."
         case .restoreToAutomaticUnconfirmed:
             expected =
-                "Aeolus had issued a restore-to-automatic write for a fan and had not confirmed the "
-                + "fan back under automatic control; whether the write was accepted was not known."
+                "Aeolus had issued a restore-to-automatic write for a fan and had not confirmed "
+                + "the fan back under automatic control; whether the write was accepted was not "
+                + "known."
         case .restoreToAutomaticFailed:
             expected =
                 "Aeolus had tried to hand a fan back to automatic control and the firmware never "

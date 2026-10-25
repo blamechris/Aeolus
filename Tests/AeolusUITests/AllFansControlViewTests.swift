@@ -48,7 +48,7 @@ struct AllFansControlViewTests {
     }
 
     static func segment(
-        _ action: Segment.Action, _ mark: ControlView.Mark, enabled: Bool
+        _ action: ControlView.SegmentAction, _ mark: ControlView.Mark, enabled: Bool
     ) -> Segment {
         Segment(action: action, mark: mark, isEnabled: enabled)
     }

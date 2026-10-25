@@ -68,21 +68,20 @@ struct AllFansControlView: View {
         case selected, pending, plain
     }
 
+    /// What a click on a segment asks for.
+    enum SegmentAction: Hashable {
+        case automatic
+        case percent(FanSpeedPercent)
+    }
+
     /// One segment as drawn: what a click on it does, how it is marked, and whether it may be
     /// clicked.
     struct Segment: Equatable, Identifiable {
-
-        /// What a click asks for.
-        enum Action: Hashable {
-            case automatic
-            case percent(FanSpeedPercent)
-        }
-
-        let action: Action
+        let action: SegmentAction
         let mark: Mark
         let isEnabled: Bool
 
-        var id: Action { action }
+        var id: SegmentAction { action }
 
         var title: String {
             switch action {
@@ -141,7 +140,7 @@ struct AllFansControlView: View {
 
     /// What a click on a segment does: the one place an action reaches `choose` or
     /// `chooseAutomatic`.
-    func perform(_ action: Segment.Action) {
+    func perform(_ action: SegmentAction) {
         switch action {
         case .automatic: chooseAutomatic()
         case .percent(let percent): choose(percent)
@@ -160,13 +159,21 @@ struct AllFansControlView: View {
         }
         Group {
             if segment.mark == .selected {
-                Button(action: { perform(segment.action) }) { label }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityAddTraits(.isSelected)
+                Button {
+                    perform(segment.action)
+                } label: {
+                    label
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityAddTraits(.isSelected)
             } else {
-                Button(action: { perform(segment.action) }) { label }
-                    .buttonStyle(.bordered)
-                    .accessibilityValue(segment.mark == .pending ? "Asked for, not confirmed" : "")
+                Button {
+                    perform(segment.action)
+                } label: {
+                    label
+                }
+                .buttonStyle(.bordered)
+                .accessibilityValue(segment.mark == .pending ? "Asked for, not confirmed" : "")
             }
         }
         .disabled(!segment.isEnabled)
