@@ -151,8 +151,12 @@ struct LeaseDriverLetGoFloorTests {
         await scene.driver.take(try LeaseScene.target([0: 3000, 1: 3000]))
         await scene.ledger.waitFor { $0.applies.count == 1 }
 
+        await scene.helper.script(.release, .parked)
         let mark = await scene.mark()
         await scene.driver.releaseFan(1)
+        try #require(await scene.driver.state == .releasing, "fan 1 on Auto releases lease A")
+        await scene.ledger.waitFor { !$0.releases.isEmpty }
+        await scene.helper.answerParked(.release)
         let acquiring = try #require(await scene.firstReport(since: mark, where: Self.isAcquiring))
         if parkingB { await scene.ledger.waitFor { $0.acquires.count == 2 } }
         let beforeGrant = await scene.driver.beginSnapshotRead()

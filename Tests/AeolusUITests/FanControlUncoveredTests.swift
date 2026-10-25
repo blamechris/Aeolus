@@ -292,6 +292,7 @@ struct FanControlUncoveredTests {
         try #require(await scene.take(try LeaseScene.target([0: 3000, 1: 3200])) != nil)
         await scene.helper.script(.release, .parked)
         await scene.driver.releaseFan(1)
+        try #require(await scene.driver.state == .releasing, "fan 1 on Auto releases the lease")
         await scene.ledger.waitFor { !$0.releases.isEmpty }
         let before = await scene.driver.beginSnapshotRead()
         let mark = await scene.mark()

@@ -255,9 +255,9 @@ struct LeaseDriverPerFanTests {
         await scene.ledger.waitFor { !$0.acquires.isEmpty }
 
         await scene.driver.releaseFan(1)
-        #expect(await scene.driver.state == .acquiring(fans: [0]))
+        try #require(await scene.driver.state == .acquiring(fans: [0]))
         await scene.driver.releaseFan(0)
-        #expect(await scene.driver.state == .releasing, "nothing is left: Auto")
+        try #require(await scene.driver.state == .releasing, "nothing is left: Auto")
 
         let mark = await scene.mark()
         await scene.helper.answerParked(.acquire)
