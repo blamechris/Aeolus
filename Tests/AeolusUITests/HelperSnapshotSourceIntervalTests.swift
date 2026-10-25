@@ -47,8 +47,15 @@ struct HelperSnapshotSourceIntervalTests {
     /// next change to cut: a request per step, each a whole snapshot from the helper. A drag must
     /// send nothing until the interval holds still, and then one request.
     ///
+    /// **Each change ends the wait before it**, which is what makes this a debounce and not a
+    /// delay. `GatedPollingClock` lets every parked wait go at once, so a delay — twenty waits,
+    /// each cutting a pause when it ends — would still send one request here; on a real clock it
+    /// sent one per step. So the test counts the waits: nineteen ended early, one still waiting.
+    ///
     /// **Mutation (S2):** remove the debounce — `refreshIntervalDidChange()` cuts the pause at
     /// once, as `5b324df` did. Run: red at the `requests == 1` expectation after the drag.
+    /// **Mutation (D1):** a delay, not a debounce — delete `intervalSettle?.cancel()`. Run: red
+    /// at the `cancelledSleeps` and `parkedCount` expectations.
     @Test("Dragging the interval through twenty values sends one request, once it holds still")
     func aDragSendsOneRequest() async throws {
         let helper = FakeSnapshotHelper()
@@ -78,6 +85,9 @@ struct HelperSnapshotSourceIntervalTests {
                 try await pacing.waitForSleeps(answered)
             }
         }
+        let earlierWaitsEnded = await Support.eventually { await settling.cancelledSleeps == 19 }
+        #expect(earlierWaitsEnded, "a change left the wait before it running")
+        #expect(await settling.parkedCount == 1, "more than the last change is still waiting")
         #expect(await helper.requests == 1, "the drag sent a request per step")
 
         // The interval holds still: the last change's wait runs its course and cuts the pause.
@@ -88,6 +98,48 @@ struct HelperSnapshotSourceIntervalTests {
         _ = await Support.settle(turns: 200) { false }
         #expect(await helper.requests == 2)
         #expect(await helper.peakAtHelper == 1)
+
+        await Support.tearDown(source, helper)
+    }
+
+    /// A wait that has run its course, but whose change is overtaken before its task gets back to
+    /// the main actor, must cut nothing: the later change owns the cut, after a wait of its own.
+    /// `HeldPollingClock` lets the first wait go inside the test's turn, and the second change
+    /// lands in that same turn, so the first wait's task finds itself cancelled when it gets back.
+    ///
+    /// **Mutation (D2):** delete `!Task.isCancelled` from the settled wait's `guard`. Run: red at
+    /// `!sent`.
+    @Test("A wait overtaken by a later change after it ran its course cuts nothing")
+    func anOvertakenWaitCutsNothing() async throws {
+        let helper = FakeSnapshotHelper()
+        let interval = RefreshIntervalBox(60)
+        let pacing = GatedPollingClock()
+        let settling = HeldPollingClock()
+        let source = try await HelperSnapshotSourcePacingTests.source(
+            helper, interval: interval, pacing: pacing, settling: settling)
+        source.start()
+        try await helper.waitForRequests(1)
+        await helper.reply(with: Support.snapshot())
+        try await pacing.waitForSleeps(1)
+
+        interval.seconds = 30
+        source.refreshIntervalDidChange()
+        try #require(await Support.settle { settling.parkedCount == 1 })
+        // One turn of the main actor: the first wait runs its course, then a second change.
+        settling.releaseNow()
+        interval.seconds = 20
+        source.refreshIntervalDidChange()
+
+        // Bounded, and spent in full when the code is right.
+        let sent = await Support.requestsReach(2, on: helper)
+        #expect(!sent, "a wait a later change overtook cut the pause")
+
+        // The later change's own wait still cuts the pause once it runs its course.
+        try #require(await Support.settle { settling.parkedCount == 1 })
+        settling.releaseNow()
+        let cut = await Support.requestsReach(2, on: helper)
+        await pacing.release()
+        #expect(cut, "the later change's wait cut nothing")
 
         await Support.tearDown(source, helper)
     }

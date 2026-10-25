@@ -185,6 +185,55 @@ extension PollingViewModelWatchRenderTests {
         await Support.tearDown(source, helper)
     }
 
+    /// The token a landing read finds must be its own, not merely a token. The stopped loop's
+    /// read began while the helper refused; the new loop's began after the connection was
+    /// invalidated, and is still in flight when the stopped loop's lands, so a token is set — the
+    /// new read's. The stopped read's readings, untracked for the old reason, must not go on
+    /// screen beneath a header giving the new one, and must not end the new tick's `.polling`.
+    ///
+    /// **Mutation (T1):** in `tick()`, `guard directRead != nil` instead of `guard directRead ==
+    /// read`. Run: red at the `phase`, `claimsAgree` and fans expectations.
+    @Test("A stopped loop's read is discarded while the new loop's read is in flight")
+    func aStoppedLoopsReadIsNotTakenForTheRunningOnes() async throws {
+        let helper = FakeSnapshotHelper()
+        let source = Support.source(helper)
+        try await Support.report(.refused, to: source, from: helper)
+        let provider = ParkedReadProvider(inner: Support.directProvider())
+        let fixture = Self.fixture(on: source, provider: provider)
+        let (viewModel, read) = (fixture.viewModel, fixture.read)
+        let refused = ControlNotTracked.helperConnection(.refused)
+        let invalidated = ControlNotTracked.helperConnection(.invalidated)
+
+        // A first read lands, so there are rows for a header to disagree with.
+        viewModel.start()
+        try #require(await Support.eventually { await provider.parkedCount == 1 })
+        await provider.releaseOldest()
+        try await read.waitForSleeps(1)
+        try #require(viewModel.fans.map(\.control) == [.notTracked(refused)])
+
+        // The loop's next tick begins a read while the helper still refuses; then stop().
+        await read.release()
+        try #require(await Support.eventually { await provider.readsStarted == 2 })
+        viewModel.stop()
+
+        // The connection is invalidated, and the new loop's first tick reads under that reason.
+        try await Support.report(.invalidated, to: source, from: helper)
+        viewModel.start()
+        try #require(await Support.eventually { await provider.readsStarted == 3 })
+        try #require(viewModel.controlSource == .notTracked(invalidated))
+
+        // The stopped loop's read lands, and that loop ends; the new loop's read is in flight.
+        await provider.releaseOldest()
+        try #require(await Support.settle { viewModel.runningRefreshLoops == 1 })
+        #expect(viewModel.phase == .polling, "the stopped loop's read ended the new tick")
+        #expect(Self.claimsAgree(viewModel), "the stopped loop's rows landed beneath the header")
+        #expect(viewModel.fans.map(\.control) == [.notTracked(invalidated)])
+
+        viewModel.stop()
+        await provider.releaseAll()
+        await Support.tearDown(source, helper)
+    }
+
     /// The watch renders a licensed snapshot only when it is not the one on screen. Without that
     /// check it renders the same snapshot again at every step, and each render moves `revision`,
     /// which `MenuBarViewModel` follows: the menu bar would be woken twice a second for nothing.
