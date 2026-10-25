@@ -8,9 +8,15 @@ import Testing
 
 /// A release the helper refused or did not answer, with no `take` queued behind it, ends in `lost`
 /// with `.releaseUnconfirmed` (#497's review, C1), and an answered one ends in `released`. These
-/// are status lines: since ADR 0015 D3 no claim depends on which, because neither `released` nor
-/// `lost` reads the fans as automatic.
-@Suite("LeaseDriver — released only when the helper answers the release", .timeLimit(.minutes(1)))
+/// are status lines: no claim depends on which. Both set a read-timing floor, and Automatic waits
+/// for a snapshot read after it that lists no lease (ADR 0015 D1), so a lease the helper still
+/// holds after an unconfirmed release refuses it whichever state the driver is in.
+///
+/// `released` is reached on other paths too, where no release answer is kept (`LeaseDriver`,
+/// "Release"), so it never says the helper answered.
+@Suite(
+    "LeaseDriver — an unconfirmed release ends lost, and an answered one released",
+    .timeLimit(.minutes(1)))
 struct LeaseDriverReleaseOutcomeTests {
 
     /// A release refused, or failed with no answer the client could read.

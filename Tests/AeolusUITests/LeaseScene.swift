@@ -7,8 +7,8 @@ import os
 
 @testable import AeolusLeaseControl
 
-/// A `LeaseDriver` over a `FakeLeaseHelper` and a `HandWoundClock`, with the driver's states
-/// forwarded into the scene's `LeaseLedger`.
+/// A `LeaseDriver` over a `FakeLeaseHelper` and a `HandWoundClock`, with the driver's states and
+/// reports forwarded into the scene's `LeaseLedger`.
 ///
 /// Every wait here is on the ledger or the clock, so none spends wall-clock time and none blocks a
 /// thread. A test whose driver never does what it waits for does not finish; the suites carry a
@@ -24,6 +24,7 @@ struct LeaseScene: Sendable {
     /// Where the clock's hands start, and the instant every offset in a test is measured from.
     let start: ContinuousClock.Instant
     private let forwarding: Task<Void, Never>
+    private let forwardingReports: Task<Void, Never>
 
     init(releaseBound: Duration = LeaseDriver.releaseBound) async {
         let clock = HandWoundClock()
@@ -41,8 +42,12 @@ struct LeaseScene: Sendable {
         forwarding = Task {
             for await state in updates { await ledger.record(.state(state), at: clock.now) }
         }
-        // The subscription is in place before the test acts, so no state is missed.
-        await ledger.waitFor { $0.states.contains(.idle) }
+        let reports = driver.reportUpdates()
+        forwardingReports = Task {
+            for await report in reports { await ledger.record(.report(report), at: clock.now) }
+        }
+        // The subscriptions are in place before the test acts, so no state or report is missed.
+        await ledger.waitFor { $0.states.contains(.idle) && $0.reports.contains(.idle) }
     }
 
     /// `start` plus `duration`.
@@ -168,9 +173,30 @@ struct LeaseScene: Sendable {
     }
 
     /// Ends the forwarding and answers anything still parked, so nothing waits on the fake.
-    func finish() async {
+    ///
+    /// **And holds the driver to "never `idle` again"** (#497's delta review, S4): in every scene,
+    /// no `idle` follows the first state that is not `idle`, in the states or in the reports.
+    /// `idle` is the one state with no read-timing floor, so a route back to it would let a
+    /// snapshot from before the grant claim Automatic. A property of every scene rather than of
+    /// one path, so a route added later is caught by whichever suite walks it.
+    func finish(sourceLocation: SourceLocation = #_sourceLocation) async {
         forwarding.cancel()
+        forwardingReports.cancel()
+        let entries = await ledger.entries
+        Self.expectNoIdleAfterActing(entries.states, sourceLocation: sourceLocation)
+        let reported = entries.reports.map(\.state)
+        Self.expectNoIdleAfterActing(reported, sourceLocation: sourceLocation)
         await helper.disconnect()
+    }
+
+    /// No `idle` after the first state that is not `idle`.
+    static func expectNoIdleAfterActing(
+        _ states: [LeaseDriverState], sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        guard let acted = states.firstIndex(where: { $0 != .idle }) else { return }
+        #expect(
+            !states[acted...].contains(.idle), "the driver went back to idle: \(states)",
+            sourceLocation: sourceLocation)
     }
 }
 

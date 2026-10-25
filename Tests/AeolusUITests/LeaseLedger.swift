@@ -29,6 +29,8 @@ actor LeaseLedger {
         case healthAsked
         case healthPushed(HelperConnectionHealth)
         case state(LeaseDriverState)
+        /// A report the driver published (`reportUpdates()`), forwarded as `state` is.
+        case report(LeaseDriverReport)
         /// A quit was answered, with whether to terminate.
         case terminationReplied(Bool)
         /// A call `LeaseScene.call(_:)` started has returned.
@@ -100,6 +102,10 @@ extension [LeaseLedger.Entry] {
 
     var states: [LeaseDriverState] {
         compactMap { if case .state(let state) = $0.event { state } else { nil } }
+    }
+
+    var reports: [LeaseDriverReport] {
+        compactMap { if case .report(let report) = $0.event { report } else { nil } }
     }
 
     /// Where the first entry matching `event` sits, if any.
