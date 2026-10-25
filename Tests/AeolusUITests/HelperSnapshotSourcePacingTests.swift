@@ -8,7 +8,9 @@ import Testing
 
 /// How `HelperSnapshotSource` paces its requests at the edges: a preference changed during a
 /// pause, an activation that must not cut a healthy pause, a backoff at a long interval, a
-/// contradiction backed off like a failure, and the interval clamp (#478's second delta).
+/// contradiction backed off like a failure, and the interval clamp (#478's second delta). The
+/// interval change's own duties — a debounce, a backoff cut with its count kept, and no request
+/// cancelled — are `HelperSnapshotSourceIntervalTests` (#485).
 @Suite("HelperSnapshotSource — pacing at the edges", .timeLimit(.minutes(1)))
 @MainActor
 struct HelperSnapshotSourcePacingTests {
@@ -17,14 +19,16 @@ struct HelperSnapshotSourcePacingTests {
 
     struct Failure: Error {}
 
-    /// A source on `helper` whose interval the test can change, handshaken.
-    private static func source(
-        _ helper: FakeSnapshotHelper, interval: RefreshIntervalBox, pacing: any PollingClock
+    /// A source on `helper` whose interval the test can change, handshaken. An interval change
+    /// settles on `settling`, which by default lets it through at once.
+    static func source(
+        _ helper: FakeSnapshotHelper, interval: RefreshIntervalBox, pacing: any PollingClock,
+        settling: any PollingClock = FakePollingClock()
     ) async throws -> HelperSnapshotSource {
         helper.report(.handshaken)
         let source = HelperSnapshotSource(
             reader: helper, refreshInterval: { interval.seconds }, clock: SnapshotTestClock(),
-            pacing: pacing)
+            pacing: pacing, settling: settling)
         try #require(await Support.settle { source.health == .handshaken })
         return source
     }
@@ -39,7 +43,9 @@ struct HelperSnapshotSourcePacingTests {
         let helper = FakeSnapshotHelper()
         let interval = RefreshIntervalBox(60)
         let pacing = GatedPollingClock()
-        let source = try await Self.source(helper, interval: interval, pacing: pacing)
+        let settling = GatedPollingClock()
+        let source = try await Self.source(
+            helper, interval: interval, pacing: pacing, settling: settling)
 
         source.start()
         try await helper.waitForRequests(1)
@@ -49,6 +55,9 @@ struct HelperSnapshotSourcePacingTests {
 
         interval.seconds = 1
         source.refreshIntervalDidChange()
+        _ = await Support.eventually { await settling.parkedCount == 1 }
+        #expect(await settling.sleptSeconds == [HelperSnapshotSource.intervalSettleDelay])
+        await settling.release()
         let sent = await Support.requestsReach(2, on: helper)
         await pacing.release()
         try #require(sent, "the 60 s pause ran on after the interval became 1 s")

@@ -17,7 +17,7 @@ import Foundation
 /// - `.awaitHelper(why)`: no claim, and the app reads **nothing** — the connection is being
 ///   made, or is handshaken and its first answer in this episode has not come yet, or its last
 ///   answer in this episode has outlived its bound. Reading the SMC then would put a discovery
-///   walk of every key beside the helper's own, for as long as the handshake takes.
+///   walk of every key beside the helper's own, until the helper answers.
 ///
 /// ## One per app
 ///
@@ -66,9 +66,10 @@ import Foundation
 /// the instant its reply reached this object. The bound is one pause plus one full deadline:
 /// if the helper wedges on the next request, `HelperClient` gives up on it at `gatedVerb`, and
 /// by then this snapshot has already gone stale rather than outliving the wedge. The interval is
-/// read **live**, on every cycle and every judgement, and a pause already under way is cut short
-/// when the preference changes (`refreshIntervalDidChange()`), so a change applies at once in
-/// either direction.
+/// read **live**, on every cycle and every judgement, so the bound follows a change at once in
+/// either direction. A pause already under way is cut short once the preference has held still
+/// for `intervalSettleDelay` (`refreshIntervalDidChange()`), so the cadence follows within that
+/// and one round trip.
 ///
 /// **`SystemSnapshot.capturedAt` is never compared against.** It is the helper's wall clock,
 /// which can jump, and an age read off it would make a snapshot fresh forever after a clock
@@ -83,7 +84,8 @@ import Foundation
 /// mach name launchd is restarting a daemon behind is a boot-loop amplifier; a fixed one-second
 /// cadence against an absent or refusing helper would be that amplifier at the caller's level.
 /// `retrySoon()` ends a backoff early when the user has just done something that may have
-/// fixed it — approving the helper, or coming back to the app.
+/// fixed it — approving the helper, or coming back to the app — and starts the count again. A
+/// changed refresh interval ends one too, and keeps the count (`refreshIntervalDidChange()`).
 ///
 /// ## No client at all in a build with no helper
 ///
@@ -126,6 +128,10 @@ public final class HelperSnapshotSource {
     /// `refreshInterval` itself if that is longer.
     public static let retryCeiling: TimeInterval = 30
 
+    /// How long the refresh interval must hold still before a change cuts the pause under way:
+    /// the debounce in `refreshIntervalDidChange()` (#485 S2).
+    public static let intervalSettleDelay: TimeInterval = 0.3
+
     private enum Reading {
         case none(ControlNotTracked)
         case helper(any HelperSnapshotReading)
@@ -143,6 +149,8 @@ public final class HelperSnapshotSource {
     private let refreshInterval: @MainActor () -> TimeInterval
     private let now: @Sendable () -> ContinuousClock.Instant
     private let pacing: any PollingClock
+    /// What the interval's debounce waits on.
+    private let settling: any PollingClock
 
     /// The connection's health as last reported by `healthUpdates()`. `.idle` until the first
     /// report arrives, which licenses nothing.
@@ -159,8 +167,11 @@ public final class HelperSnapshotSource {
     private var loop: Task<Void, Never>?
     /// The request in flight, while one is. Nothing in this type cancels it.
     private var outstanding: Task<SystemSnapshot, any Error>?
-    /// The pause between two requests: the only task `stop()` and `retrySoon()` cancel.
+    /// The pause between two requests: the only task `stop()`, `retrySoon()` and a settled
+    /// interval change cancel.
     private var pause: Task<Void, Never>?
+    /// The wait for the refresh interval to hold still, while one is running.
+    private var intervalSettle: Task<Void, Never>?
     private var healthWatch: Task<Void, Never>?
 
     /// A source for a process with no helper to read: `authority()` is always
@@ -169,7 +180,7 @@ public final class HelperSnapshotSource {
         self.init(
             reading: .none(why), observer: nil,
             refreshInterval: { PreferencesRefreshInterval.defaultValue },
-            clock: ContinuousClock(), pacing: SystemPollingClock())
+            clock: ContinuousClock(), pacing: SystemPollingClock(), settling: SystemPollingClock())
     }
 
     /// A source reading `reader`, pausing `refreshInterval()` seconds between requests — read
@@ -190,22 +201,24 @@ public final class HelperSnapshotSource {
     ) {
         self.init(
             reader: reader, refreshInterval: refreshInterval, clock: ContinuousClock(),
-            pacing: SystemPollingClock(), observer: observer)
+            pacing: SystemPollingClock(), settling: SystemPollingClock(), observer: observer)
     }
 
-    /// The same source with its clocks named, for the suite: `clock` measures a snapshot's age
-    /// and `pacing` waits between requests. Any clock whose instant is `ContinuousClock`'s will
-    /// do, so a test can wind one by hand.
+    /// The same source with its clocks named, for the suite: `clock` measures a snapshot's age,
+    /// `pacing` waits between requests, and `settling` waits for a changed interval to hold
+    /// still. Any clock whose instant is `ContinuousClock`'s will do, so a test can wind one by
+    /// hand.
     convenience init<C: Clock>(
         reader: any HelperSnapshotReading,
         refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
         pacing: any PollingClock,
+        settling: any PollingClock = SystemPollingClock(),
         observer: HelperSnapshotObserver? = nil
     ) where C.Instant == ContinuousClock.Instant {
         self.init(
             reading: .helper(reader), observer: observer, refreshInterval: refreshInterval,
-            clock: clock, pacing: pacing)
+            clock: clock, pacing: pacing, settling: settling)
     }
 
     private init<C: Clock>(
@@ -213,13 +226,15 @@ public final class HelperSnapshotSource {
         observer: HelperSnapshotObserver?,
         refreshInterval: @escaping @MainActor () -> TimeInterval,
         clock: C,
-        pacing: any PollingClock
+        pacing: any PollingClock,
+        settling: any PollingClock
     ) where C.Instant == ContinuousClock.Instant {
         self.reading = reading
         self.observer = observer
         self.refreshInterval = refreshInterval
         self.now = { clock.now }
         self.pacing = pacing
+        self.settling = settling
 
         guard case .helper(let reader) = reading else { return }
         let updates = reader.healthUpdates()
@@ -297,12 +312,45 @@ public final class HelperSnapshotSource {
     }
 
     /// The refresh interval preference changed. The pause between requests in progress was
-    /// measured on the old interval; it is cut short, so the next request goes out now and
-    /// the pause after it is the new length. Without this, lowering the interval from 60 s to
-    /// 1 s would leave a healthy helper's snapshot stale — and the window waiting, reading
-    /// nothing — for most of a minute. Like `retrySoon()`, it cuts only a pause: a request in
-    /// flight is left alone, and no second one is sent beside it.
+    /// measured on the old interval. Once the preference has held still for
+    /// `intervalSettleDelay`, that pause is cut short, so the next request goes out then and the
+    /// pause after it is the new length. Without this, lowering the interval from 60 s to 1 s
+    /// would leave a healthy helper's snapshot stale — and the window waiting, reading nothing —
+    /// for most of a minute.
+    ///
+    /// **Debounced.** Each call starts the wait again, and only a wait that runs its course cuts
+    /// the pause. The Settings slider moves in steps of 0.1 s, so a drag is a change per step,
+    /// and cutting the pause at each one sent a request per step: #485's probe saw 21 requests
+    /// for 20 changes at 60 s. The freshness bound reads the interval live, so it follows each
+    /// change at once; only the cut waits for the slider to rest.
+    ///
+    /// **It cuts any pause, a backoff's included, and keeps the failure count.** So a failing
+    /// helper is asked once more when the cut lands, and if that request fails as well, the
+    /// pause after it is the backoff's next step, on the new interval. `retrySoon()`, by
+    /// contrast, cuts only a backoff and starts the count again.
+    ///
+    /// Like `retrySoon()`, it cuts only a pause: a request in flight is left alone, and no
+    /// second one is sent beside it (#419). A cut that lands while a request is in flight finds
+    /// no pause, and the pause after that request is already the new length.
     public func refreshIntervalDidChange() {
+        intervalSettle?.cancel()
+        let settling = settling
+        intervalSettle = Task { [weak self] in
+            do {
+                try await settling.sleep(seconds: Self.intervalSettleDelay)
+            } catch {
+                return
+            }
+            // A later change cancelled this wait after it ended, before it got here.
+            guard !Task.isCancelled, let self else { return }
+            self.intervalSettle = nil
+            self.intervalHasSettled()
+        }
+    }
+
+    /// The interval has held still: the pause under way, measured on an older interval, ends now.
+    /// See `refreshIntervalDidChange()`.
+    private func intervalHasSettled() {
         pause?.cancel()
     }
 
@@ -422,4 +470,8 @@ public final class HelperSnapshotSource {
     /// Whether the request loop exists. The suite waits on this with a bounded wait, never on
     /// the loop's task itself, so a loop that never ends is a red and not a hung run.
     var isLoopRunning: Bool { loop != nil }
+
+    /// Whether an interval change is still waiting to hold still. `false` once its cut has been
+    /// made, so the suite can wait for the cut rather than for a number of turns.
+    var isWaitingForTheIntervalToSettle: Bool { intervalSettle != nil }
 }
