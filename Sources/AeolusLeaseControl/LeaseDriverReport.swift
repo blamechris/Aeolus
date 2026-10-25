@@ -17,7 +17,9 @@ import Foundation
 /// It says which reads may be evidence, never what the fans are doing. A read it admits is still
 /// judged on what it shows: that it lists no lease and reports the fan cleared
 /// (`SystemSnapshot.showsAutomatic(_:)`), and the renderer still requires the driver to be holding
-/// nothing and not acquiring or releasing (ADR 0015 D1's condition 1).
+/// nothing and not acquiring or releasing (ADR 0015 D1's condition 1). Beside a held lease, for a
+/// fan it does not cover, the read must list exactly that lease and report the fan cleared
+/// (`showsAutomatic(_:besideLease:covering:)`, D5).
 ///
 /// Only the driver makes a report with a minted floor: the synthesized initializer is `internal`,
 /// and a `SnapshotTicket` can only be minted in `LeaseDriver.swift`.
@@ -35,26 +37,33 @@ public struct LeaseDriverReport: Sendable, Hashable {
 
     /// Which reads may be evidence that a fan is automatic.
     ///
-    /// Set only when the driver enters `released`, `lost` or `refused`, the states in which it has
-    /// stopped acting, and kept through every other state, where the renderer claims no Automatic
-    /// whatever this says. So it is "since the driver last stopped acting", ADR 0015 D1's
-    /// condition 2.
+    /// Set when the driver enters `released`, `lost` or `refused`, the states in which it has
+    /// stopped acting, and when a release answers ahead of an acquisition, a change of which fans
+    /// are held (ADR 0015 D5). A `noRead` becomes `readFrom` when the last unanswered `apply`
+    /// answers, in any state. Kept otherwise. So it is "since the driver last let go": D1's
+    /// condition 2 beside a stopped driver, and D5's condition 2 for a fan a held lease does not
+    /// cover. In `acquiring` and `releasing` the renderer claims no Automatic whatever this says.
     public enum AutomaticEvidence: Sendable, Hashable {
 
         /// The driver has never acted (`idle`): any licensed snapshot may be evidence. D1's "idle
-        /// sets no floor". A new process starts here, whatever an earlier one held.
+        /// sets no floor". A new process starts here, whatever an earlier one held. Kept through
+        /// a first acquisition and the lease it grants, until the driver first lets go: no fan
+        /// outside that lease was ever under one of this driver's leases (D5). An earlier
+        /// process's leases are ADR 0015's relaunch assumption, for D5 as for D1.
         case anyRead
 
         /// Only a snapshot whose read was ticketed with this ticket or a later one: read after the
-        /// driver last stopped acting with no `apply` unanswered.
+        /// driver last let go, with no `apply` unanswered.
         case readFrom(LeaseDriver.SnapshotTicket)
 
-        /// No snapshot yet: the driver stopped acting while an `apply` it sent was still
-        /// unanswered, and no read is evidence until that `apply` has answered, when this becomes
-        /// `readFrom` a ticket minted then (#498's S2). Such an `apply` can still land a target
-        /// write after the release's restore, on a fan already automatic. ADR 0014 calls that
-        /// reported harmless on Apple Silicon and untested on Intel: a hardware claim nobody has
-        /// observed, so a read the helper may have served before that write is not evidence.
+        /// No snapshot yet: the driver stopped acting, or let go of a lease ahead of an
+        /// acquisition, while an `apply` it sent was still unanswered, and no read is evidence
+        /// until every such `apply` has answered, when this becomes `readFrom` a ticket minted
+        /// then, in whatever state the driver is (#498's S2, ADR 0015 D5). So in every state it
+        /// means an `apply` is unanswered. Such an `apply` can still land a target write after
+        /// the release's restore, on a fan already automatic. ADR 0014 calls that reported
+        /// harmless on Apple Silicon and untested on Intel: a hardware claim nobody has observed,
+        /// so a read the helper may have served before that write is not evidence.
         case noRead
 
         /// Whether a snapshot whose read was ticketed `ticket` may be evidence. `nil` is a read the

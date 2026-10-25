@@ -56,8 +56,8 @@ struct LeaseDriverPublisher {
     }
 
     /// The evidence moved and the state did not, as it does when the last unanswered `apply`
-    /// answers after the driver stopped acting: `report` to every report observer, and nothing to
-    /// the state observers, which have no new state to see.
+    /// answers after the driver stopped acting or let go of a lease (ADR 0015 D5): `report` to
+    /// every report observer, and nothing to the state observers, which have no new state to see.
     func publishEvidenceChange(_ report: LeaseDriverReport) {
         for observer in reportObservers.values { observer.yield(report) }
     }

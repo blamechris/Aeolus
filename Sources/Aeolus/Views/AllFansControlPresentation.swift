@@ -44,7 +44,10 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 ///
 /// ## The selection is the presentations', never the last click
 ///
-/// - **Auto** only when every fan's selection is `.automatic`.
+/// - **Auto** only when every fan's selection is `.automatic`, and never while the driver holds a
+///   lease (`FanControlPresentation.driverHoldsALease`). Under ADR 0015 D5 a fan beside a held
+///   lease can read Automatic; a lease whose fans are all off screen would otherwise select Auto
+///   while the app holds fans, so the control fails closed there.
 /// - **A percentage** only when every fan's selection is `.custom(rpm)` and each `rpm` is the speed
 ///   that percentage names for that fan's envelope, read from the same snapshot.
 /// - **Pending at a percentage** the same way, when every fan is `.applying` at it.
@@ -67,8 +70,10 @@ enum FanSpeedPercent: Int, CaseIterable, Sendable, Hashable {
 /// Each fan gives its `status`, then its `awaitingApply`. **The wait is said once, after the
 /// event, with no names** (#505): the evidence it follows is the driver's, one value for the
 /// machine, and the states it is given beside (`released`, `lost`, `refused`) give every fan the
-/// same line whatever its index. A fan whose control is hidden gives neither, so the wait is
-/// named by the fans that give it only in a mix no build produces, as any other line is.
+/// same line whatever its index. **Beside a held lease, only the fans it does not cover give it**
+/// (ADR 0015 D5), so there it is named by those fans, after the covered fans' lines. A fan whose
+/// control is hidden gives neither, so otherwise the wait is named by the fans that give it only
+/// in a mix no build produces, as any other line is.
 struct AllFansControlPresentation: Equatable {
 
     let affordance: Affordance
@@ -239,7 +244,11 @@ extension AllFansControlPresentation {
 
     private static func selection(_ fans: [Fan], _ snapshot: SystemSnapshot?) -> Selection {
         guard !fans.isEmpty else { return .none }
-        if fans.allSatisfy({ $0.presentation.selection == .automatic }) { return .automatic }
+        // Fail closed: never Auto beside a lease the driver holds, even when every fan on screen
+        // reads Automatic under ADR 0015 D5, as when none of the lease's fans is on screen (#515).
+        let everyFanAutomatic = fans.allSatisfy { $0.presentation.selection == .automatic }
+        let besideAHeldLease = fans.contains { $0.presentation.driverHoldsALease }
+        if everyFanAutomatic, !besideAHeldLease { return .automatic }
         let held = onlyPercent(fans, snapshot) { fan in
             if case .custom(let speed) = fan.presentation.selection { speed } else { nil }
         }

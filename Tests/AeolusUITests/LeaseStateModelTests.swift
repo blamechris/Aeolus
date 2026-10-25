@@ -32,10 +32,16 @@ struct LeaseStateModelTests {
 
     /// Two floors from one driver, the second later than the first: two refused acquisitions.
     static func twoFloors() async throws -> (Ticket, Ticket) {
+        let floors = try await floors(2)
+        return (floors[0], floors[1])
+    }
+
+    /// `count` floors from one driver, each later than the one before: refused acquisitions.
+    static func floors(_ count: Int) async throws -> [Ticket] {
         let scene = await LeaseScene()
-        await scene.helper.script(.acquire, .refuse(.leaseUnknown), .refuse(.leaseUnknown))
+        for _ in 0..<count { await scene.helper.script(.acquire, .refuse(.leaseUnknown)) }
         var floors: [Ticket] = []
-        for _ in 0..<2 {
+        for _ in 0..<count {
             let mark = await scene.mark()
             await scene.driver.take(try LeaseScene.target([0: 3000]))
             await scene.waitForState(since: mark) { if case .refused = $0 { true } else { false } }
@@ -45,8 +51,8 @@ struct LeaseStateModelTests {
             floors.append(floor)
         }
         await scene.finish()
-        try #require(floors[0] < floors[1], "the second floor is later")
-        return (floors[0], floors[1])
+        try #require(zip(floors, floors.dropFirst()).allSatisfy { $0 < $1 }, "each is later")
+        return floors
     }
 
     struct FloorMissing: Error {}
@@ -59,9 +65,13 @@ struct LeaseStateModelTests {
     /// report. Run: red at the first zero.
     /// **Mutation (M-G, "noRead nudges"):** treat `.noRead` as a floor in `isFloor`. Run: red at
     /// `noRead`'s zero.
+    /// **Mutation (mB, "only a stop nudges"):** nudge only when the report's state is `released`,
+    /// `lost` or `refused`. Run: red at the floor beside `acquiring` (#515's panel, completeness
+    /// S1): ADR 0015 D5 mints there too, at a let-go and at the last `apply`'s answer.
     @Test("A report is published when it changes, and a read asked only for a new floor")
     func publishesEveryChangeAndNudgesOncePerFloor() async throws {
-        let (floor, laterFloor) = try await Self.twoFloors()
+        let floors = try await Self.floors(3)
+        let (floor, laterFloor, latestFloor) = (floors[0], floors[1], floors[2])
         let (stream, feed) = AsyncStream.makeStream(of: LeaseDriverReport.self)
         let counts = Counts()
         let model = LeaseStateModel(
@@ -104,6 +114,18 @@ struct LeaseStateModelTests {
             LeaseDriverReport(state: .refused(fault), automaticEvidence: .readFrom(laterFloor)))
         #expect(counts.publishes == 5)
         #expect(counts.nudges == 2, "no read was asked for at the newer floor")
+
+        // A change of which fans are held: releasing with the floor kept, then acquiring at a
+        // floor minted for the let-go (ADR 0015 D5). A floor beside a state that acts asks for a
+        // read too, for the fans the next lease will not cover.
+        try await step(
+            LeaseDriverReport(state: .releasing, automaticEvidence: .readFrom(laterFloor)))
+        #expect(counts.nudges == 2, "a read was asked for without a new floor")
+        try await step(
+            LeaseDriverReport(
+                state: .acquiring(fans: [0]), automaticEvidence: .readFrom(latestFloor)))
+        #expect(counts.publishes == 7)
+        #expect(counts.nudges == 3, "no read was asked for at a floor beside acquiring")
         feed.finish()
     }
 }

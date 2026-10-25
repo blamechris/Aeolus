@@ -132,7 +132,13 @@ struct FanControlGenerationTests {
     }
 
     /// `canRelease` follows the driver and nothing else: true while it is acquiring or holding a
-    /// lease over the fan, under every affordance, hidden included.
+    /// lease over the fan, and for every fan while it is releasing, under every affordance, hidden
+    /// included.
+    ///
+    /// **Changed by #154's ruling (Q2, PR 8a):** `.releasing` used to answer `false`. It answers
+    /// `true`, so Auto can cancel a `take` queued behind the release while the snapshot on screen
+    /// still lists the old lease. **Mutation (M10):** answer `false` for `.releasing`. Run: red for
+    /// `.releasing` under every rule.
     ///
     /// Each rule's screen reaches its own rule, with its exact reason, under every driver state.
     ///
@@ -143,15 +149,15 @@ struct FanControlGenerationTests {
     /// `affordance == .enabled && Self.canRelease(...)`. Run: red for `.acquiring` and `.held`
     /// under every rule but `.enabled`.
     @Test(
-        "A release is offered whenever the driver holds or is acquiring the fan, whatever the rule",
+        "A release is offered while the driver holds, asks for or releases, whatever the rule",
         arguments: Fixtures.DriverTag.allCases, Rule.allCases)
     func releaseFollowsTheDriverAlone(_ tag: Fixtures.DriverTag, _ rule: Rule) throws {
         let presentation = try Fixtures.present(0, on: rule.screen(try tag.state()))
 
         let expected: Bool
         switch tag {
-        case .acquiring, .held: expected = true
-        case .idle, .releasing, .released, .lost, .refused: expected = false
+        case .acquiring, .held, .releasing: expected = true
+        case .idle, .released, .lost, .refused: expected = false
         }
         #expect(presentation.canRelease == expected)
         #expect(presentation.affordance == rule.affordance, "\(rule) reached its own rule")

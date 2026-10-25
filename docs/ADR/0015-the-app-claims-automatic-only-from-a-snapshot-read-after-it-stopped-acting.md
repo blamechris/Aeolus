@@ -85,6 +85,69 @@ requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #
 **D4 — One definition.** "Nothing leased and fan cleared" is one predicate, shared by
 `SafeState` and the app.
 
+**D5 — A fan the driver's held lease does not cover (#154, PR 8; amendment 2026-10-25).** While
+the driver is `held` over fans F, a fan f outside F reads Automatic only when: (1) a licensed
+snapshot is on screen that lists exactly the driver's held lease, compared by identifier, and
+reports no thermal emergency (`controlLoss(leaseID:covering: [])` is `nil`); (2) that read's
+ticket is admitted by the driver's evidence; and (3) the snapshot reports f
+`isClearedToAutomatic`. Conditions 1 and 3 are one predicate beside D4's,
+`SystemSnapshot.showsAutomatic(_:besideLease:covering:)`, which also refuses any fan in
+`covering`. In `acquiring` and `releasing`, a fan outside the request still reads `.unknown`. D1 is
+unchanged for a driver that holds nothing.
+
+**The floor bounds the `apply`s; the listing bounds the handback.** D2 gains a mint site: when a
+release answers ahead of an acquisition (a change of which fans are held), the driver mints a
+floor, or publishes `noRead` while an `apply` is unanswered, before it starts the acquisition. The
+floor that waits for applies is minted when the last one answers, in any state. So a read D5
+admits was sent after every `apply` this driver sent under an earlier lease had answered, and, on
+D1's assumptions, the whole snapshot, each fan's mode included, was read after whatever those
+`apply`s wrote. It may also wait for the new lease's first `apply`, which cannot write f; that is
+accepted as failing closed.
+
+The floor does not place the read after the earlier lease's handback. After a change of set whose
+release succeeded it does, because `releaseLease` answers only once its restore has returned.
+After a loss it does not: the floor is minted when the loss is judged, and the lost lease's release
+answers later. After an acquire that went unanswered no release is sent at all: a lease the helper
+may have granted ends in its `connectionDidInvalidate`, once the driver has torn the connection
+down. A change of set whose release failed mints as well, and the acquisition after it waits for
+nothing. `acquire(_:after:)` closes the gap only for a `take` after a loss whose release then
+succeeds; otherwise there is no release to wait for, or its answer is a failure that says nothing
+about when the helper tore the lease down. What D5 rests on is condition 1 (*Identity*).
+
+*Identity.* A listed lease that is the driver's own was granted over exactly `HeldLease.fans`.
+`LeaseAuthority` stores the request's indices, and `LeaseRecord.fanIndices` is a `let`. Level 6
+refuses an `apply` naming a fan its lease does not cover (`LeaseApplyRules.goals`,
+`Detail.uncovered`). So no write under that lease reaches f. The listing also places the
+snapshot's lease view after the grant. The helper grants only into an empty table
+(`acquireLease`'s `table.isEmpty`, with no suspension between it and the insert), and every path
+that removes a lease (`releaseLease`, `expireLapsedLeases`, `connectionDidInvalidate`, the three
+revocations and `releaseEveryLease`) begins its fans' handbacks before it can suspend: each calls
+`restore`, which registers every fan it is given as mid-handback before its first `await`. So by
+that view every earlier lease, the driver's or another client's, and one a loss ended among them,
+had been removed and its fans' handbacks begun. A snapshot listing no lease beside a held one
+predates the grant or shows a loss not yet judged. One listing another lease is the affordance's
+rule 4. Neither is evidence about f.
+
+*No emergency.* Condition 1 is `controlLoss(leaseID:covering: [])`, the definition the driver ends
+a lease on (`observe(_:readWith:)`), so no fan reads Automatic beside a lease the same snapshot
+shows lost. That is its reason, and it fails closed. It is not a claim about what drives f. § 3's
+firing cycle bridges every fan it registered as engaged and every fan it restored and has not read
+back, which can include a fan an earlier lease covered, and it does so beside no lease too, where
+D1 has no emergency condition. Each bridge restores the fan in the same plane job
+(`SafetyActorWriter.bridgeToMaximumThenRestore(of:)`).
+
+*Read timing.* Fact 1 holds for f as for every fan, and an `apply` under the lease that last
+covered f can land one `F<n>Tg` on it after its restore (D2).
+
+*Clearance.* In the snapshot that lists the lease, a fan whose handback is still in flight reads
+`.releaseInProgress`: the helper reads the lease and the handback registers with no suspension
+between them (`LeaseAuthority.activeLeaseView()`), and the restatement refuses a fan in flight
+(`ReadOnlyFanReport.firstRefusal`). A refused or unconfirmed handback reads
+`.restoreToAutomaticFailed` or `.handbackUnconfirmed`. None is cleared. A handback that ended
+accepted leaves f to the mode the snapshot read, after every `apply` above had answered: a fan
+that lease engaged reads manual until a restore takes, and is not cleared. What an accepted
+handback proves beyond that is D1's question as much as D5's (fact 2).
+
 ## Rationale
 
 Deciding by driver state asks which paths could have produced a state. The paths multiply, and
@@ -124,6 +187,19 @@ nobody has observed: ADR 0014 calls it reported harmless on Apple Silicon and un
 Waiting for every `apply` to answer costs at most an `apply`'s deadline of Auto shown unselected,
 and it fails closed.
 
+### For D5 (#154, PR 8)
+
+- Keep D1, never Automatic beside a held lease: sound, but the commonest per-fan state then never
+  shows the Auto fans' selection; reverting D5 means deleting one arm.
+- A floor per fan, with apply counts per fan: rejected, per-fan state to save at most one apply's
+  duration in a rare ordering.
+- Trust the listing alone: rejected on D2's grounds.
+- Narrow the lease instead of releasing it: not expressible (`LeaseRecord.fanIndices` is a `let`;
+  an apply naming fewer fans leaves the omitted ones held).
+- Rest D5's handback bound on the floor, or on `acquire(_:after:)` ordering the grant after the
+  release: rejected. Neither is on every loss path (the floor paragraph names those that miss it);
+  the listing is.
+
 ## Assumptions
 
 - A read sent on one connection after the reply to a release on another is processed by the
@@ -144,11 +220,29 @@ and it fails closed.
   Automatic. Once the helper drops it, the claim rests on the lease's absence and the fan's
   clearance alone, read at any time. That is D1's "`idle` sets no floor", accepted: the old
   process's applies are not this driver's to wait for, and the helper ends a connection's leases
-  when the connection goes.
+  when the connection goes. **The same is accepted for D5.** The evidence stays `anyRead` through
+  the new driver's first grant, until it first lets go, so beside that first lease D5 admits a
+  read whatever its ticket. An `apply` the old process left at the helper can then have engaged a
+  fan outside the lease after the snapshot read that fan's mode, and the claim rests, as under D1,
+  on the helper's restore of it having taken. The listing still places the lease view after the
+  old lease was removed and its handbacks begun (*Identity*).
+- **U7 (ADR 0014): `Ftst = 1` does not change the behaviour of a fan Aeolus did not engage.**
+  Unobserved; only `Mac16,5` can test it. D5 is true on M3+ only if it holds. If run 1 contradicts
+  it, ADR 0014 makes engagement all-fans-or-nothing, and the helper must refuse a lease that does
+  not cover every fan, which makes D5 unreachable. Until that refusal exists, D5 reverts to
+  `.unknown`. Nothing but the helper's refusal of every grant holds D5 dormant today; the gate on
+  lifting it is recorded on #9. On M1/M2 and Intel, the independence of `F<n>Md` and of `FS!` bit
+  *n* is documented and untested.
+- D5 does not rely on the helper's sequencer ordering a grant after earlier applies on the same
+  connection: the floor orders the read after them. It does rely on three helper facts, named
+  under *Identity* and *Clearance*: a grant only into an empty table, every teardown beginning its
+  fans' handbacks before it can suspend, and the lease and the handback registers read with no
+  suspension between them. Until #516 lands, helper tests pin each only in part.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed
 harmless on hardware, or `admitCommand` refuses after an ordinary restore, so the floor need not
-wait for applies; or when PR 8 needs
-Automatic for a fan the app's own held lease does not cover, which may relax the no-lease
-condition to "the listed lease is the driver's own and does not cover this fan".
+wait for applies; or when PR 8 needs Automatic for a fan the app's own held lease does not cover —
+done, D5. Revisit D5 when U7 is observed either way, when a lease-narrowing verb exists, when the
+observed gap makes floors per fan worth their state, or when the helper may grant beside another
+lease, or remove a lease without beginning its fans' handbacks before it can suspend.

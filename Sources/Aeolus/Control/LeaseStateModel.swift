@@ -27,7 +27,10 @@ import Combine
 /// Automatic is claimed only from a snapshot read after the driver's floor, and the source's next
 /// ordinary read can be a minute away. So each report that carries a new floor runs
 /// `whenTheDriverStopsActing`, after the report is stored: `AppComposition` passes the source's
-/// `readSoon()`. It runs once per floor, never for a report whose evidence is unchanged.
+/// `readSoon()`. It runs once per floor, never for a report whose evidence is unchanged. A floor
+/// also comes without a stop: when a release answers ahead of an acquisition, and when the last
+/// unanswered `apply` answers beside a held lease (ADR 0015 D5). Each asks for the read the same
+/// way, for the fans that lease does not cover.
 ///
 /// ## Whether the user's own Auto came before the state (#157)
 ///

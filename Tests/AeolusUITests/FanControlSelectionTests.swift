@@ -188,16 +188,21 @@ struct FanControlSelectionTests {
 
     /// ADR 0015 D1's first condition, with every other met: a cleared fan, no lease listed, and a
     /// read the driver's evidence admits. Only a driver that holds nothing and is not acquiring or
-    /// releasing reads Automatic: `.idle`, from any read, and `.released`, `.lost` and `.refused`,
-    /// from a read past the floor.
+    /// releasing reads Automatic here: `.idle`, from any read, and `.released`, `.lost` and
+    /// `.refused`, from a read past the floor.
+    ///
+    /// **`.held` still reads `.unknown`, now by ADR 0015 D5 (#154, PR 8a).** Fan 1 is outside the
+    /// held lease, so D5 decides it, and D5 needs the snapshot to list exactly the held lease. This
+    /// one lists none. `FanControlUncoveredTests` holds D5 one condition at a time.
     ///
     /// **Mutation (A5, "condition 1 dropped"):** in `claim`, return `automaticClaim(licence,
-    /// inputs)` for `.releasing`, and for `.acquiring` and `.held` over other fans. Run: red for
-    /// those arguments. (A2 to A4 below hold the arms over this fan.)
+    /// inputs)` for `.releasing`, `.acquiring` over other fans, and in place of `uncoveredClaim`
+    /// for `.held` over other fans. Run: red for those arguments. (A2 to A4 below hold the arms
+    /// over this fan.)
     @Test(
-        "A cleared fan, no lease, a read past the floor: Automatic only when nothing is held",
+        "A cleared fan, no lease listed, a read past the floor: Automatic only when not acting",
         arguments: Fixtures.DriverTag.allCases)
-    func aClearedFanReadsAutomaticOnlyWhenNothingIsHeld(_ tag: Fixtures.DriverTag) async throws {
+    func aClearedFanIsAutomaticOnlyWhenNotActing(_ tag: Fixtures.DriverTag) async throws {
         let floor = try await SnapshotTickets.aroundAFloor()
         let snapshot = Support.snapshot(fans: [Fixtures.clearedFan(0), Fixtures.clearedFan(1)])
         let evidence = tag == .idle ? .anyRead : floor.evidence
@@ -282,8 +287,9 @@ struct FanControlSelectionTests {
             case .confirmed: expected = .unknown
             }
             #expect(try selection(0, held) == expected, "\(tag)")
-            // Nor a fan beside a lease the driver holds over others (ADR 0015 D1's first
-            // condition).
+            // Nor a fan beside a lease the driver holds over others, while the snapshot lists no
+            // lease: ADR 0015 D5 needs exactly the held lease listed (#154, PR 8a; D1's first
+            // condition decided this before D5).
             #expect(try selection(1, held) == .unknown, "\(tag)")
         }
         #expect(try selection(1, .acquiring(fans: [0])) == .unknown)

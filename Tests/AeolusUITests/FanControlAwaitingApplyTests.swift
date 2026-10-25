@@ -10,7 +10,8 @@ import Testing
 /// #505: while the driver has stopped acting with an `apply` it sent unanswered (evidence
 /// `.noRead`), the control says why Auto is not shown selected, and nothing about the fans. When
 /// the evidence moves to `readFrom`, the line goes. Beside a state that acts, or has never acted,
-/// it is never given.
+/// it is never given, except to a fan a held lease does not cover (ADR 0015 D5,
+/// `FanControlUncoveredTests.theWaitBesideAHeldLease`).
 ///
 /// Every screen here lists no lease and shows both fans cleared, and every read is past the floor
 /// a real driver minted (`SnapshotTickets.aroundAFloor()`), so the evidence is the only thing that
@@ -49,7 +50,8 @@ struct FanControlAwaitingApplyTests {
     /// answer `nil` for `.noRead`. Run: red at `awaitingApply == awaiting`, for every argument.
     /// **Mutation (W3, "the text changed"):** in `StatusLine.awaitingApply`, change "a speed
     /// change" to "the last speed change". Run: red at the same expectation, for every argument.
-    /// Each is red in `heldCanOutliveTheWait`, `theControlSaysItOnce` and the two root scenes too.
+    /// Each is red in `theControlSaysItOnce` and the two root scenes too, and W2 in
+    /// `heldGivesTheLineUntilTheLastApplyAnswers` and `FanControlUncoveredTests`' wait line.
     @Test(
         "While an apply is unanswered, every state that stops acting says why, beside its own line",
         arguments: FanControlAutomaticTests.stopped)
@@ -90,10 +92,14 @@ struct FanControlAwaitingApplyTests {
 
     // MARK: - Never beside a state that acts, or has never acted
 
-    /// Every state of `tag`'s kind that this suite holds to no line: over fan 0 and over fan 1
-    /// alone where the kind names fans, and in every phase where it is held. The driver keeps its
-    /// evidence through these and mints a floor only on a stop, so `.noRead` beside one of them
-    /// says nothing about an `apply` in flight. Exhaustive, with no `default:`.
+    /// Every state of `tag`'s kind that this suite holds to no line for fan 0: over fan 0 and over
+    /// fan 1 alone where the kind is acquiring, and in every phase over fan 0 where it is held.
+    /// Exhaustive, with no `default:`.
+    ///
+    /// **Changed by ADR 0015 D5 (#154, PR 8a).** A lease held over fan 1 alone is no longer here:
+    /// fan 0, which it does not cover, gives the line under `.noRead`, because `.noRead` now means
+    /// an `apply` is unanswered since the last let-go in every state, and D5's claim for that fan
+    /// follows the evidence (`FanControlUncoveredTests.theWaitBesideAHeldLease`).
     static func notStopped(_ tag: Fixtures.DriverTag) throws -> [LeaseDriverState] {
         let target = try LeaseScene.target([0: 3000, 1: 3000])
         switch tag {
@@ -102,10 +108,8 @@ struct FanControlAwaitingApplyTests {
         case .acquiring:
             return [.acquiring(fans: [0]), .acquiring(fans: [1])]
         case .held:
-            return Fixtures.PhaseTag.allCases.flatMap { phase in
-                [[0, 1], [1]].map { fans in
-                    Fixtures.held(Fixtures.ours, fans: fans, phase.phase(target))
-                }
+            return Fixtures.PhaseTag.allCases.map { phase in
+                Fixtures.held(Fixtures.ours, fans: [0, 1], phase.phase(target))
             }
         case .releasing:
             return [.releasing]
@@ -131,26 +135,30 @@ struct FanControlAwaitingApplyTests {
         }
     }
 
-    /// Why the line is given only beside a stop: a real driver reaches `held` with `.noRead` and
-    /// no `apply` unanswered. Lease A's `apply` is parked and Auto releases it, so the stop
-    /// publishes `.noRead`; lease B is taken and confirmed; A's `apply` then answers. The evidence
-    /// is kept through `held`, and nothing is being waited for.
+    /// **Rewritten for ADR 0015 D5 (#154, PR 8a).** This test used to show a held lease keeping
+    /// `.noRead` after every `apply` had answered, which is why the line was given only beside a
+    /// stop. D5's floor is minted when the last `apply` answers in any state, so `.noRead` beside a
+    /// held lease now means an `apply` is unanswered, and the line is given to a fan the lease does
+    /// not cover, until that `apply` answers.
     ///
-    /// **Mutation (W4):** red at `awaitingApply == nil` beside `held`.
-    @Test("A held lease can keep noRead after every apply has answered, and gives no line")
-    func heldCanOutliveTheWait() async throws {
+    /// Lease A over both fans, its `apply` parked; fan 1 back on Auto releases A and acquires
+    /// lease B over fan 0, whose own `apply` is answered at once. Fan 1 gives the line while A's
+    /// `apply` is unanswered, and fan 0, which B covers, does not. When A's `apply` answers, the
+    /// line goes.
+    ///
+    /// **Mutation (M3, "only a stop mints"):** red at `answeredAfter.awaitingApply == nil`.
+    @Test(
+        "Beside a held lease, a fan it does not cover gives the line until the last apply answers")
+    func heldGivesTheLineUntilTheLastApplyAnswers() async throws {
         let scene = await LeaseScene()
-        await scene.helper.script(.apply, .parked)
-        await scene.driver.take(try LeaseScene.target([0: 3000, 1: 3000]))
-        await scene.ledger.waitFor { $0.applies.count == 1 }
-        let mark = await scene.mark()
-        await scene.driver.selectAutomatic()
-        let stopped = try #require(await scene.firstReport(since: mark) { $0.isReleased })
-        try #require(stopped.automaticEvidence == .noRead, "A's apply is unanswered: \(stopped)")
-        let atTheStop = try Self.present(stopped.state, stopped.automaticEvidence, readWith: nil)
-        #expect(atTheStop.awaitingApply == Self.awaiting, "the driver's own stop gives the line")
+        let scenario = try await LeaseDriverLetGoFloorTests.changeOfSetDuringAnApply(in: scene)
+        let waiting = await scene.driver.report
+        try #require(waiting.state.heldLease?.lease.id == scenario.leaseB.lease.id)
+        let uncovered = try Self.fan1(waiting)
+        #expect(uncovered.awaitingApply == Self.awaiting, "A's apply is unanswered: \(waiting)")
+        let covered = try Self.present(waiting.state, waiting.automaticEvidence, readWith: nil)
+        #expect(covered.awaitingApply == nil, "fan 0 is B's, and says what is applied")
 
-        try #require(await scene.take(try LeaseScene.target([0: 3000, 1: 3000])) != nil)
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
         await scene.ledger.waitFor { entries in
@@ -158,15 +166,16 @@ struct FanControlAwaitingApplyTests {
         }
         await scene.settle()
         let report = await scene.driver.report
-        try #require(report.automaticEvidence == .noRead, "kept through held: \(report)")
-        guard case .held = report.state else {
-            Issue.record("lease B is held: \(report)")
-            await scene.finish()
-            return
-        }
-        let held = try Self.present(report.state, report.automaticEvidence, readWith: nil)
-        #expect(held.awaitingApply == nil, "every apply has answered: \(report)")
+        let answeredAfter = try Self.fan1(report)
+        #expect(answeredAfter.awaitingApply == nil, "every apply has answered: \(report)")
         await scene.finish()
+    }
+
+    /// Fan 1's presentation over `cleared`, beside `report`.
+    static func fan1(_ report: LeaseDriverReport) throws -> FanControlPresentation {
+        try Fixtures.present(
+            1,
+            on: Fixtures.screen(cleared, driver: report.state, evidence: report.automaticEvidence))
     }
 
     // MARK: - The all-fans control
