@@ -48,18 +48,25 @@ extension FanRowControlRootTests {
         let mark = await scene.lease.mark()
         try await scene.click { actions.chooseAutomatic(fan: 0) }
 
-        // Ends at either outcome, so a driver that released both is a red here and not a wait.
+        // Every wait ends at either outcome, so a driver that released both fans is a red at the
+        // next line, not a wait until the time limit.
         await scene.lease.waitForState(since: mark) { state in
             if case .held(let now) = state { return now.fans == [1] }
             return state.isReleased || state.isLost
         }
-        try await Root.published(on: scene) { state in
+        let heldOverFan1: @Sendable (LeaseDriverState) -> Bool = { state in
             if case .held(let now) = state {
                 now.fans == [1] && now.lease.id != held.lease.id
             } else {
                 false
             }
         }
+        try #require(
+            await Support.settle { heldOverFan1(scene.root.leaseState.current.state) },
+            "the root published fan 1 held alone: \(scene.root.leaseState.current.state)")
+        try #require(
+            await Support.eventually { await scene.lease.entries.applies.count == 2 },
+            "fan 1's apply was sent")
         let entries = await scene.lease.entries
         #expect(entries.releases == [held.lease.id])
         #expect(entries.acquires.map(\.fanIndices) == [[0, 1], [1]])
