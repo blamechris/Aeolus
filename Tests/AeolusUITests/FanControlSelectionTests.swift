@@ -195,7 +195,7 @@ struct FanControlSelectionTests {
     /// inputs)` for `.releasing`, and for `.acquiring` and `.held` over other fans. Run: red for
     /// those arguments. (A2 to A4 below hold the arms over this fan.)
     @Test(
-        "A cleared fan, no lease listed, a read past the floor: Automatic only when nothing is held",
+        "A cleared fan, no lease, a read past the floor: Automatic only when nothing is held",
         arguments: Fixtures.DriverTag.allCases)
     func aClearedFanReadsAutomaticOnlyWhenNothingIsHeld(_ tag: Fixtures.DriverTag) async throws {
         let floor = try await SnapshotTickets.aroundAFloor()
