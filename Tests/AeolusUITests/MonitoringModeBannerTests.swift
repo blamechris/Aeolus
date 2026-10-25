@@ -185,6 +185,42 @@ struct MonitoringModeBannerTests {
         await scene.finish()
     }
 
+    /// Auto, then a percentage, clicked faster than the driver answers: the take is the user's last
+    /// request, so the release fast user switching makes later is not "as you chose". It holds
+    /// only because each entry point records its request synchronously, in click order, before it
+    /// starts its task (#509's review, S1). A record made inside the task can land after the take
+    /// recorded its own.
+    ///
+    /// **Mutation (O2', "the Auto recorded in its task"):** in `AppComposition.selectAutomatic()`,
+    /// move `leaseState.userAskedForAutomatic()` into the `Task`, before the `await`. Run: red at
+    /// the last expectation.
+    @Test("Auto then a take, clicked back to back, leave the take as the last request")
+    func autoThenATakeBackToBack() async throws {
+        let scene = await CompositionScene()
+        let target = try LeaseScene.target([0: 3000])
+        var mark = await scene.lease.mark()
+        try await scene.click { scene.root.take(target) }
+        try await Self.reaches(scene, since: mark, Self.confirmed(target))
+
+        mark = await scene.lease.mark()
+        let before = scene.root.latestDriverCall?.ordinal ?? 0
+        scene.root.selectAutomatic()
+        scene.root.take(target)
+        let call = try #require(scene.root.latestDriverCall, "the clicks started calls")
+        try #require(call.ordinal == before + 2, "the two clicks started two calls")
+        await scene.lease.run { await call.finished() }
+        try await Self.reaches(scene, since: mark, Self.confirmed(target))
+
+        mark = await scene.lease.mark()
+        scene.post(NSWorkspace.sessionDidResignActiveNotification)
+        try await Self.reaches(scene, since: mark) { $0 == .released }
+
+        #expect(
+            !scene.root.leaseState.enteredAfterTheUsersAuto,
+            "a release after Auto-then-take read as the user's Auto")
+        await scene.finish()
+    }
+
     /// Every fan refused for want of a temperature, on a window whose driver is idle: the body
     /// draws the formatter's refusal, in the reason's own words.
     ///

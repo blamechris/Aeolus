@@ -196,7 +196,7 @@ final class AppComposition {
 
     /// Auto, and the release offer: the lease is released, whatever is in flight
     /// (`LeaseDriver.selectAutomatic()`). Returns at once, as `take(_:)` does. Each entry point
-    /// tells `leaseState` what the user asked for first (`enteredAfterTheUsersAuto`, #157).
+    /// records its request in `leaseState` before its task, so in click order (#157, #509 S1).
     func selectAutomatic() {
         guard let driver = lease?.driver else { return }
         leaseState.userAskedForAutomatic()
