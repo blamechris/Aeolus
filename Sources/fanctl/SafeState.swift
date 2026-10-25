@@ -1,4 +1,5 @@
 import AeolusXPC
+import AeolusXPCClient
 import FanKit
 import Foundation
 
@@ -59,7 +60,8 @@ enum SafeState {
             clearance(of: $0.manualControlAvailability) == .durable
         }
         if !pinned.isEmpty { return .cannotReturn(fans: pinned.map(\.index)) }
-        if snapshot.fans.allSatisfy(isCleared) && snapshot.activeLease == nil { return .automatic }
+        // The app's Automatic claim asks the same question, of one fan (ADR 0015 D4).
+        if snapshot.showsAutomatic(snapshot.fans) { return .automatic }
         return .notConfirmed
     }
 

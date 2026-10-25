@@ -116,4 +116,25 @@ extension SystemSnapshot {
         }
         return nil
     }
+
+    /// Whether this snapshot shows `fans` back under automatic control: it lists **no lease**, and
+    /// reports every one of them `FanState.isClearedToAutomatic`. One definition, for `fanctl`'s
+    /// safe-state check (`SafeState.verdict`, ADR 0013) and for the app's Automatic claim (ADR
+    /// 0015 D1's conditions 3 and 4, D4).
+    ///
+    /// **Both halves are needed.** A fan under a live lease whose first `apply` has not landed
+    /// reads automatic and offered, because the helper cannot state `.leaseHeldByAnotherClient`
+    /// per fan, so a cleared fan alone says nothing while a lease is listed. And no lease listed
+    /// says nothing about a fan the helper has not cleared.
+    ///
+    /// **It says nothing about when the snapshot was read.** "No lease, fan cleared" looks the
+    /// same before a grant and after a release, so a caller that asked for the safe state judges
+    /// only a snapshot it read afterwards: `fanctl auto` reads after its request, and the app
+    /// only from a read its lease driver ticketed after it stopped acting.
+    ///
+    /// - Parameter fans: Fans this snapshot reports. With none, it judges the lease alone.
+    /// - Returns: `true` only when no lease is listed and every one of `fans` is cleared.
+    public func showsAutomatic(_ fans: some Sequence<FanState>) -> Bool {
+        activeLease == nil && fans.allSatisfy(\.isClearedToAutomatic)
+    }
 }
