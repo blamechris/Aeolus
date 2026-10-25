@@ -9,9 +9,10 @@ import Foundation
 /// **Built by `AppComposition`, and taken through it on a click.** A build with a helper constructs
 /// one, over the app's control connection, and wires quit, logout, wake, fast user switching and
 /// the last control window to it. The main window's control for all fans calls `take(_:)` for a
-/// percentage and `selectAutomatic()` for Auto (#153's PR 6b); nothing calls `adjust(_:)` until
-/// PR 8's slider. Until the write plane exists (#9) the helper refuses every grant, so the
-/// shipping app is refused any lease it asks for.
+/// percentage and `selectAutomatic()` for Auto (#153's PR 6b). The per-fan verbs, `takeFan(_:at:)`,
+/// `adjustFan(_:to:)` and `releaseFan(_:)`, compose over those for #154's rows; nothing calls them,
+/// or `adjust(_:)`, until PR 8b wires the rows. Until the write plane exists (#9) the helper
+/// refuses every grant, so the shipping app is refused any lease it asks for.
 ///
 /// ## States
 ///
@@ -36,6 +37,9 @@ import Foundation
 /// § 3 revoked the lease, ask for the fans again and apply the speed the user was dragging, and the
 /// user would never see that control had ended; from `refused`, every tick would be another
 /// acquire, an unpaced retry of a refusal (ADR 0010).
+///
+/// The per-fan verbs keep the split: `takeFan(_:at:)` and `releaseFan(_:)` are `take`s, and
+/// `adjustFan(_:to:)` an `adjust`, of what is Custom now with one fan changed ("One fan at a time").
 ///
 /// ## Renewal
 ///
@@ -111,7 +115,7 @@ import Foundation
 /// emitted, and no claim depends on it. A `take` queued behind that release is acquired all the
 /// same: a second grant is the helper's to refuse, and the release's answer is not kept.
 ///
-/// ## When a snapshot may show the fans automatic (ADR 0015 D2)
+/// ## When a snapshot may show a fan automatic (ADR 0015 D2 and D5)
 ///
 /// Every state change passes through `transition(to:)`, and the states in which the driver has
 /// stopped acting, `released`, `lost` and `refused`, set a read-timing floor there, chosen by an
@@ -120,19 +124,29 @@ import Foundation
 /// the state, as one `LeaseDriverReport`, so a renderer never pairs a state with an older floor.
 /// `idle` sets none: the driver has never acted.
 ///
+/// **The floor marks the driver's last let-go, not only its last stop (D5).** A release that
+/// answers ahead of an acquisition, a change of which fans are held, sets one in
+/// `releaseAnswered` before the acquisition starts, published with `acquiring`. So a fan outside
+/// a held lease was never under one of this driver's leases since the floor, or the driver let it
+/// go at or before the floor. A snapshot listing the held lease was served after its grant, and
+/// `acquire(_:after:)` sends the request only once the release in flight has answered.
+///
 /// **The floor waits for every `apply` to answer (#498's S2).** An `apply` in flight under a lease
 /// whose release has answered can still land one target write after the restore: never a mode
 /// write, which the step ticket refuses, but `F<n>Tg` on an automatic fan, which ADR 0014
 /// calls reported harmless on Apple Silicon and untested on Intel. That is a hardware claim nobody
-/// has observed, so a stop with an `apply` unanswered publishes `noRead`, and the floor is minted
-/// when the last `apply` has answered, as a new report with the same state. A read sent after that
-/// answer is, on ADR 0015's assumption about two connections, served after that `apply` finished.
+/// has observed, so a stop or a let-go with an `apply` unanswered publishes `noRead`, and the floor
+/// is minted when the last `apply` has answered, in whatever state, as a new report with the same
+/// state. So `noRead` means, in every state, that an `apply` is unanswered since the last let-go.
+/// A read sent after that answer is, on ADR 0015's assumption about two connections, served after
+/// that `apply` finished.
 ///
 /// **Minting cannot change what `observe(_:readWith:)` decides.** Each mint advances the epoch by
 /// one, and a ticket is the epoch when it was taken, so a ticket is at or past a mint exactly when
 /// it was taken after that mint, however many other mints there are. The grant's
-/// `leaseJudgedFrom` and the first `apply`'s `fansJudgedFrom` keep that meaning beside the
-/// floor's. And the floor is minted only where nothing is held, where `observe` judges nothing.
+/// `leaseJudgedFrom` and the first `apply`'s `fansJudgedFrom` are marks of the same kind, so a
+/// floor minted while a lease is held, when its last `apply` answers, moves no ticket across
+/// either. And `observe` never reads the evidence.
 ///
 /// ## A snapshot is judged only on what it could show
 ///
@@ -441,6 +455,65 @@ public actor LeaseDriver {
 
 }
 
+// MARK: - One fan at a time
+
+/// The per-fan verbs (#154): each composes over `take(_:)`, `adjust(_:)` or `selectAutomatic()`,
+/// on this actor, from what is Custom now with one fan changed. They keep no state of their own.
+///
+/// **A lease cannot be narrowed or widened.** The helper grants exactly the fans asked for, and
+/// an `apply` naming fewer leaves the others held. So a change of which fans are in Custom is a
+/// change of which fans are held: a release, which returns every fan to automatic control, then an
+/// acquire and an apply.
+extension LeaseDriver {
+
+    /// Puts fan `index` in Custom at `speed`, every other fan in Custom keeping its speed: a
+    /// deliberate user action, `take(_:)` of what is Custom now with the fan set, or of the fan
+    /// alone when nothing is. Ignored once `shutDown()` has begun, as `take(_:)` is.
+    public func takeFan(_ index: Int, at speed: FanTargetRPM) {
+        take(custom?.setting(index, to: speed) ?? LeaseTarget(fan: index, at: speed))
+    }
+
+    /// Moves the speed of fan `index` when it is in Custom: `adjust(_:)` of what is Custom now with
+    /// the fan's speed replaced. **Never acquires and never changes which fans are held:** for a fan
+    /// not in Custom, or with nothing in Custom, it does nothing.
+    public func adjustFan(_ index: Int, to speed: FanTargetRPM) {
+        guard let custom, custom.speeds[index] != nil else { return }
+        adjust(custom.setting(index, to: speed))
+    }
+
+    /// Puts fan `index` back on Auto when it is in Custom: `take(_:)` of the rest, or Auto
+    /// (`selectAutomatic()`) when it was the last fan in Custom. For a fan not in Custom, or with
+    /// nothing in Custom, it does nothing.
+    public func releaseFan(_ index: Int) {
+        guard let custom, custom.speeds[index] != nil else { return }
+        if let rest = custom.removing(index) {
+            take(rest)
+        } else {
+            selectAutomatic()
+        }
+    }
+
+    /// What is Custom now: the newest target asked for, where one is still wanted. While held, the
+    /// target queued, or else the one in flight or confirmed; while acquiring, the acquisition's;
+    /// while releasing, the `take` waiting on the release. Nothing otherwise: a loss is final, and
+    /// what was held before it is never composed over.
+    private var custom: LeaseTarget? {
+        switch current {
+        case .held(let held):
+            switch held.phase {
+            case .applying(let sending, let queued): return queued ?? sending
+            case .confirmed(let confirmed): return confirmed
+            }
+        case .acquiring:
+            return acquisition?.target
+        case .releasing:
+            return wanted
+        case .idle, .released, .lost, .refused:
+            return nil
+        }
+    }
+}
+
 // MARK: - Acquiring
 
 extension LeaseDriver {
@@ -592,13 +665,13 @@ extension LeaseDriver {
         }
     }
 
-    /// An `apply` answered, whatever it answered. When it was the last one unanswered and the
-    /// driver has stopped acting with no read yet admitted, the floor is minted now and published
-    /// with the state unchanged (#498's S2; see "When a snapshot may show the fans automatic").
+    /// An `apply` answered, whatever it answered. When it was the last one unanswered and no read
+    /// is yet admitted, the floor is minted now, **in any state**, and published with the state
+    /// unchanged (#498's S2, ADR 0015 D5; see "When a snapshot may show a fan automatic"). Beside
+    /// a held lease this is the floor that admits a read for a fan the lease does not cover.
     private func applyAnswered() {
         appliesUnanswered -= 1
-        guard appliesUnanswered == 0, case .noRead = evidence, Self.hasStoppedActing(current)
-        else { return }
+        guard appliesUnanswered == 0, case .noRead = evidence else { return }
         evidence = .readFrom(mintFloor())
         publisher.publishEvidenceChange(report)
     }
@@ -816,6 +889,10 @@ extension LeaseDriver {
     ///
     /// The loss's `afterWake` is `false`: `beginRelease` ended the lease, and with it the wake
     /// mark, before the release was sent.
+    ///
+    /// **A release answered ahead of an acquisition is a let-go, and sets a floor** (ADR 0015 D5),
+    /// or `noRead` while an `apply` is unanswered, before the acquisition starts, so the report
+    /// published with `acquiring` carries it.
     private func releaseAnswered(
         _ id: UInt64, unconfirmed: (lease: Lease, failure: HelperFailure)?
     ) {
@@ -823,6 +900,7 @@ extension LeaseDriver {
         guard case .releasing = current, pendingRelease == nil else { return }
         if let wanted, !shuttingDown {
             self.wanted = nil
+            evidence = appliesUnanswered == 0 ? .readFrom(mintFloor()) : .noRead
             startAcquisition(of: wanted)
         } else if let unconfirmed {
             wanted = nil
@@ -858,7 +936,8 @@ extension LeaseDriver {
     }
 
     /// Whether the driver has stopped acting in `state`: it holds nothing and is not acquiring or
-    /// releasing. The states that set a floor. Exhaustive, with no `default:`, so a state added
+    /// releasing. The states whose entry sets a floor; a let-go ahead of an acquisition, and the
+    /// last `apply`'s answer, set one too (D5). Exhaustive, with no `default:`, so a state added
     /// later has to be decided here.
     private static func hasStoppedActing(_ state: LeaseDriverState) -> Bool {
         switch state {

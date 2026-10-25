@@ -194,26 +194,35 @@ struct AllFansControlPresentationTests {
         #expect(!control.percentsAreEnabled)
     }
 
-    @Test("A release is offered while acquiring, and not with nothing held or asked for")
+    /// **Changed by #154's ruling (Q2, PR 8a):** `.releasing` now offers a release; see
+    /// `whileReleasingAutoIsAlwaysOffered`.
+    @Test("A release is offered while acquiring or releasing, and not with nothing held or asked for")
     func releaseFollowsTheDriver() {
         let snapshot = Support.snapshot(fans: [Support.fan(0), Support.fan(1)])
 
         #expect(Self.control(snapshot, driver: .acquiring(fans: [0, 1])).offersRelease)
-        for state in [LeaseDriverState.idle, .released, .releasing] {
+        #expect(Self.control(snapshot, driver: .releasing).offersRelease)
+        for state in [LeaseDriverState.idle, .released] {
             #expect(!Self.control(snapshot, driver: state).offersRelease, "\(state)")
         }
     }
 
-    /// Under `.releasing`, `canRelease` is false for every fan, so Auto is enabled only by the
-    /// affordance. A take queued behind that release is reachable from this control when a
-    /// snapshot that no longer lists the lease is on screen before the release has answered, and
-    /// Auto then cancels it (`AllFansControlRootTests.autoWhileReleasingCancelsAQueuedTake`).
-    @Test("While releasing, Auto is enabled exactly when the control is")
-    func whileReleasingAutoFollowsTheAffordance() {
+    /// **Changed by #154's ruling (Q2, PR 8a).** Under `.releasing`, `canRelease` is true for every
+    /// fan, so Auto is enabled whatever the affordance. It used to follow the affordance, and the
+    /// snapshot on screen often still lists the old lease, which disables the control
+    /// (`.heldElsewhere`): Auto was then unclickable, and a `take` queued behind the release, a
+    /// change of which fans are held, could not be cancelled. Auto cancels it
+    /// (`AllFansControlRootEdgeTests.autoWhileReleasingCancelsAQueuedTake`).
+    ///
+    /// **Mutation (M10, "no release while releasing"):** in `FanControlPresentation.canRelease`,
+    /// answer `false` for `.releasing`. Run: red at `offersRelease` and `automaticIsEnabled` for
+    /// both snapshots, and in `FanControlGenerationTests.releaseFollowsTheDriverAlone`.
+    @Test("While releasing, Auto is offered whatever the affordance")
+    func whileReleasingAutoIsAlwaysOffered() {
         let gone = Self.control(
             Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)]), driver: .releasing)
         #expect(gone.affordance == .enabled)
-        #expect(!gone.offersRelease)
+        #expect(gone.offersRelease)
         #expect(gone.automaticIsEnabled)
 
         let listed = Self.control(
@@ -221,7 +230,9 @@ struct AllFansControlPresentationTests {
                 fans: [Fans.offered(0), Fans.offered(1)], activeLease: Fixtures.ours),
             driver: .releasing)
         #expect(listed.affordance != .enabled, "the snapshot still lists the lease")
-        #expect(!listed.automaticIsEnabled)
+        #expect(!listed.percentsAreEnabled)
+        #expect(listed.offersRelease)
+        #expect(listed.automaticIsEnabled, "Auto stays clickable beside the old lease")
     }
 
     // MARK: - The selection
@@ -265,6 +276,11 @@ struct AllFansControlPresentationTests {
 
     /// One fan held at 50 % and the other on automatic, fan 0 held and then fan 1.
     ///
+    /// **Changed by ADR 0015 D5 (#154, PR 8a).** The other fan used to claim nothing beside a
+    /// lease over its neighbour (D1's first condition). Under D5 it reads Automatic: the snapshot
+    /// lists exactly the driver's held lease, reports no emergency and the fan cleared, and the
+    /// screen's evidence (`.anyRead`) admits the read. The control still selects nothing.
+    ///
     /// **Mutation (M9, "one fan decides"):** in `onlyPercent`, use `contains` for `allSatisfy`.
     /// Run: red at `.none` for the mixed screen.
     @Test("Fans at different choices select nothing", arguments: [0, 1])
@@ -281,8 +297,9 @@ struct AllFansControlPresentationTests {
         #expect(
             try Fixtures.present(which, on: screen).selection
                 == .custom(try Fixtures.speed(target, which)))
-        // Beside a lease over its neighbour, the other fan claims nothing (ADR 0015 D1).
-        #expect(try Fixtures.present(1 - which, on: screen).selection == .unknown)
+        // Beside the driver's own lease over its neighbour, the other fan reads Automatic (ADR
+        // 0015 D5).
+        #expect(try Fixtures.present(1 - which, on: screen).selection == .automatic)
         #expect(control.selection == .none)
     }
 

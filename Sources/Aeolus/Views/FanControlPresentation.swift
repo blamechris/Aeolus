@@ -50,11 +50,13 @@ import Foundation
 ///
 /// ## Release is not an affordance
 ///
-/// `canRelease` is true while the driver is acquiring or holding a lease over this fan, and it is
-/// read from the driver alone. A disabled control refuses taking or changing manual control; it
-/// never refuses giving the fans back. The read connection can go stale while the lease keeps
-/// renewing, and rule 2 then disables every fan: without `canRelease` the user's only way back to
-/// automatic would be to quit.
+/// `canRelease` is true while the driver is acquiring or holding a lease over this fan, and for
+/// every fan while it is releasing, and it is read from the driver alone. A disabled control
+/// refuses taking or changing manual control; it never refuses giving the fans back. The read
+/// connection can go stale while the lease keeps renewing, and rule 2 then disables every fan:
+/// without `canRelease` the user's only way back to automatic would be to quit. While releasing,
+/// the snapshot on screen often still lists the old lease, so rule 4 disables every fan, and Auto
+/// is what cancels a `take` queued behind the release.
 ///
 /// ## The selection is a function of state
 ///
@@ -78,7 +80,8 @@ import Foundation
 ///   (`automaticClaim(_:_:)`, the one function that decides it):
 ///   1. **The driver holds nothing and is not acquiring or releasing:** it is `.idle`,
 ///      `.released`, `.lost` or `.refused`. Never while it holds the fan, acquires it or
-///      releases, nor for a fan beside a lease it holds or is acquiring over other fans.
+///      releases, nor for a fan beside a lease it is acquiring over other fans. Beside a lease it
+///      holds over other fans, D5 decides instead (below).
 ///   2. **The snapshot on screen was read after the driver last stopped acting:** its read's ticket
 ///      (`PollingViewModel.renderedReadTicket`) is admitted by the evidence the driver published
 ///      with its state (`LeaseDriverReport.AutomaticEvidence`). Automatic's evidence is an
@@ -98,6 +101,15 @@ import Foundation
 ///   It needs a licensed snapshot: none on screen, or one between snapshots, claims nothing. A new
 ///   process starts `.idle`, so it claims Automatic from clearance and the listed lease alone; the
 ///   no-lease condition is what refuses it while the helper still lists an earlier process's lease.
+/// - **`.automatic` for a fan the held lease does not cover** only under ADR 0015 D5
+///   (`uncoveredClaim`): the driver is `.held` over other fans; a licensed snapshot is on screen
+///   that lists exactly that lease, by identifier, and reports no emergency; its read's ticket is
+///   admitted by the driver's evidence; and it reports the fan `isClearedToAutomatic`. The lease,
+///   the emergency and the fan are one predicate,
+///   `SystemSnapshot.showsAutomatic(_:besideLease:covering:)`. A fan the lease covers never
+///   reaches it: `claim` sends it to the covered arm first. D5's truth on M3 and later rests on ADR
+///   0014's U7, unobserved: that `Ftst = 1` leaves a fan Aeolus did not engage under Apple's
+///   management.
 /// - **`.unknown`** otherwise.
 ///
 /// ## The status line
@@ -119,9 +131,10 @@ import Foundation
 ///   from the helper and the selection claims, and never "automatic".
 /// - **A second line, `awaitingApply`, says why Auto is not shown selected while an `apply` is
 ///   unanswered** (#505). It is given only beside `released`, `lost` and `refused`, the states in
-///   which the driver has stopped acting, and only while their evidence is `.noRead`: the driver
-///   stopped with an `apply` it sent unanswered, and no read is evidence until the last such
-///   `apply` has answered (`LeaseDriverReport.AutomaticEvidence.noRead`). It says what Aeolus is
+///   which the driver has stopped acting, and for a fan a held lease does not cover (D5), and only
+///   while the evidence is `.noRead`: an `apply` the driver sent is unanswered since its last
+///   let-go, and no read is evidence until the last such `apply` has answered
+///   (`LeaseDriverReport.AutomaticEvidence.noRead`). It says what Aeolus is
 ///   waiting for and what the control does meanwhile. Not what the fans are doing, not
 ///   "automatic", not when the wait ends, and not "the last" speed change: the one unanswered can
 ///   be an earlier lease's, and there can be several. See `StatusLine.awaitingApply`.
@@ -192,13 +205,13 @@ struct FanControlPresentation: Equatable {
     let affordance: Affordance
     let selection: Selection
     /// Whether the control must offer to give the fans back: the driver is acquiring or holding a
-    /// lease over this fan. Read from the driver alone, never from `affordance`.
+    /// lease over this fan, or releasing. Read from the driver alone, never from `affordance`.
     let canRelease: Bool
     /// `nil` when there is nothing to say beneath the control.
     let status: StatusLine?
     /// Why Auto is not shown selected: `StatusLine.awaitingApply` while the driver has stopped
-    /// acting with an `apply` it sent unanswered (evidence `.noRead`), and `nil` otherwise. Said
-    /// after `status`, never in place of it.
+    /// acting, or for a fan a held lease does not cover, with an `apply` it sent unanswered
+    /// (evidence `.noRead`), and `nil` otherwise. Said after `status`, never in place of it.
     let awaitingApply: StatusLine?
 
     enum Affordance: Equatable {
@@ -223,7 +236,8 @@ struct FanControlPresentation: Equatable {
     enum Selection: Equatable {
         /// The driver holds nothing and is not acquiring or releasing, and the licensed snapshot on
         /// screen was read after it last stopped acting, lists no lease and reports the fan
-        /// cleared to automatic (ADR 0015 D1).
+        /// cleared to automatic (ADR 0015 D1). Or the driver holds a lease that does not cover the
+        /// fan, and an admitted read lists exactly that lease and reports the fan cleared (D5).
         case automatic
         /// The helper accepted this target, and the snapshot on screen shows the lease holding
         /// every fan it covers.
@@ -285,15 +299,20 @@ struct FanControlPresentation: Equatable {
         self.awaitingApply = awaitingApply
     }
 
-    /// Whether the driver is acquiring or holding a lease over fan `index`. Exhaustive, with no
-    /// `default:`, so a driver state added later has to be decided here.
+    /// Whether the driver is acquiring or holding a lease over fan `index`, or releasing. While
+    /// releasing it is true for every fan: the snapshot on screen often still lists the old lease,
+    /// which disables the control (`.heldElsewhere`), and Auto must stay clickable then, to cancel
+    /// a `take` queued behind the release (#154's ruling, Q2). Exhaustive, with no `default:`, so a
+    /// driver state added later has to be decided here.
     private static func canRelease(_ index: Int, _ driver: LeaseDriverState) -> Bool {
         switch driver {
         case .acquiring(let fans):
             return fans.contains(index)
         case .held(let held):
             return held.fans.contains(index)
-        case .idle, .releasing, .released, .lost, .refused:
+        case .releasing:
+            return true
+        case .idle, .released, .lost, .refused:
             return false
         }
     }
@@ -464,7 +483,8 @@ extension FanControlPresentation.Reason {
 
 extension FanControlPresentation {
 
-    /// What `claim` decides for one fan. `awaitingApply` is set only by `stopped`.
+    /// What `claim` decides for one fan. `awaitingApply` is set only by `stopped` and
+    /// `uncoveredClaim`.
     private struct Claim {
         let selection: Selection
         let status: StatusLine?
@@ -481,17 +501,20 @@ extension FanControlPresentation {
         about index: Int, _ licence: Licence, _ inputs: Inputs
     ) -> Claim {
         switch inputs.driver {
+        // A fan the held lease covers, first: only `heldClaim` speaks for it, never D5's arm.
         case .held(let held) where held.fans.contains(index):
             let claim = heldClaim(about: index, held, licence)
             return Claim(claim.selection, claim.status)
+        case .held(let held):
+            return uncoveredClaim(held, licence, inputs)
         case .acquiring(let fans) where fans.contains(index):
             return Claim(.unknown, StatusLine(text: "Asking the helper for control.", detail: nil))
         case .releasing:
             let line = StatusLine(
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
             return Claim(.unknown, line)
-        case .acquiring, .held:
-            // A lease over other fans: never Automatic beside it.
+        case .acquiring:
+            // A request over other fans: never Automatic beside it. D5 is for `held` alone.
             return Claim(.unknown, nil)
         // ADR 0015 D1's first condition: the driver holds nothing and is not acquiring or
         // releasing. The other three are `automaticClaim`'s. `idle` has never acted, so it has
@@ -519,13 +542,15 @@ extension FanControlPresentation {
     }
 
     /// `StatusLine.awaitingApply` while no read is evidence, beside a driver that has stopped
-    /// acting. Exhaustive, with no `default:`, so evidence added later has to be decided here.
+    /// acting, and for a fan a held lease does not cover. Exhaustive, with no `default:`, so
+    /// evidence added later has to be decided here.
     ///
-    /// Beside a stopped driver, `.noRead` means an `apply` it sent is unanswered: the driver
-    /// publishes it on a stop only with an `apply` unanswered, and replaces it with `readFrom` when
-    /// the last one answers (`LeaseDriverReport.AutomaticEvidence.noRead`;
-    /// `LeaseDriverApplyCountTests`). Beside any other state the evidence is only kept, and an
-    /// `apply` may have answered since, so only `stopped` asks this.
+    /// In every state, `.noRead` means an `apply` the driver sent is unanswered: it publishes it at
+    /// a stop or a let-go only with an `apply` unanswered, and replaces it with `readFrom` when the
+    /// last one answers, in any state (`LeaseDriverReport.AutomaticEvidence.noRead`;
+    /// `LeaseDriverApplyCountTests`, `LeaseDriverLetGoFloorTests`). Only `stopped` and
+    /// `uncoveredClaim` ask this: those are the claims the evidence decides. A fan a lease covers,
+    /// or one an acquisition or a release is about, is told what the driver is doing instead.
     private static func awaitingApply(
         _ evidence: LeaseDriverReport.AutomaticEvidence
     ) -> StatusLine? {
@@ -553,6 +578,29 @@ extension FanControlPresentation {
             snapshot.showsAutomatic([state])
         else { return .unknown }
         return .automatic
+    }
+
+    /// A fan the driver's held lease does not cover: Automatic only under ADR 0015 D5, the only
+    /// other place the selection says Automatic, and otherwise `.unknown`, with no status line.
+    ///
+    /// - The snapshot is licensed, so it is the one on screen and speaks for this fan.
+    /// - Its read is admitted by the driver's evidence: one floor, at the driver's latest let-go
+    ///   and after every `apply` then unanswered had answered, bounds every fan outside the lease.
+    /// - It lists exactly the held lease, compared by identifier, reports no emergency, and reports
+    ///   this fan, which the lease does not cover, cleared:
+    ///   `SystemSnapshot.showsAutomatic(_:besideLease:covering:)`, beside D4's predicate.
+    ///
+    /// `awaitingApply` follows the evidence, as beside a stopped driver: under `.noRead` no read is
+    /// admitted, so the selection is `.unknown` and the line says why.
+    private static func uncoveredClaim(
+        _ held: HeldLease, _ licence: Licence, _ inputs: Inputs
+    ) -> Claim {
+        let waiting = awaitingApply(inputs.automaticEvidence)
+        guard case .licensed(let snapshot, let state, _) = licence,
+            inputs.automaticEvidence.admits(inputs.renderedReadTicket),
+            snapshot.showsAutomatic([state], besideLease: held.lease.id, covering: held.fans)
+        else { return Claim(.unknown, nil, awaitingApply: waiting) }
+        return Claim(.automatic, nil, awaitingApply: waiting)
     }
 
     private static func heldClaim(
@@ -617,23 +665,25 @@ extension FanControlPresentation {
 
 extension FanControlPresentation.StatusLine {
 
-    /// Why Auto is not shown selected while the driver has stopped acting with an `apply` it sent
-    /// unanswered (#505). Given only beside `released`, `lost` and `refused` with evidence
-    /// `.noRead`, and gone with it. Each word holds while it is shown:
+    /// Why Auto is not shown selected while an `apply` the driver sent is unanswered (#505). Given
+    /// only beside `released`, `lost` and `refused`, and for a fan a held lease does not cover (ADR
+    /// 0015 D5), with evidence `.noRead`, and gone with it. Each word holds while it is shown:
     ///
     /// - **"Waiting for the helper to answer"**: an `apply` is a request to the helper, and the
     ///   driver awaits its reply. The wait ends at the answer or at the client's deadline, after
     ///   which the `apply` counts as answered (ADR 0015's assumptions), and the line goes either
     ///   way. It says neither which will end it nor when.
     /// - **"a speed change"**: an `apply`, in the words `LeaseEventText` uses for one. "A", not
-    ///   "the last": the one unanswered can be an earlier lease's, and there can be several.
+    ///   "the last": the one unanswered can be an earlier lease's, or beside a held lease its own
+    ///   first one, and there can be several.
     /// - **"Aeolus sent"**: this driver's. A relaunch starts `idle`, which waits for nothing.
-    /// - **"Auto is not shown as selected"**: `.noRead` admits no read, so `automaticClaim` answers
-    ///   `.unknown` for every fan, and the all-fans control selects Auto only when every fan reads
+    /// - **"Auto is not shown as selected"**: `.noRead` admits no read, so `automaticClaim` and
+    ///   `uncoveredClaim` answer `.unknown`, and the all-fans control selects Auto only when every fan reads
     ///   `.automatic`. "Auto" is the segment's title, and "shown" makes it the control's, not the
     ///   fans': the line says nothing about what the fans are doing, which each row reports.
     /// - **"while Aeolus waits"**: the same wait, so the line promises nothing after it. A read
-    ///   after the wait still has to list no lease and show each fan cleared (ADR 0015 D1).
+    ///   after the wait still has to list no lease, or exactly the held lease, and show each fan
+    ///   cleared (ADR 0015 D1, D5).
     static let awaitingApply = Self(
         text: "Waiting for the helper to answer a speed change Aeolus sent.",
         detail: "Auto is not shown as selected while Aeolus waits.")
