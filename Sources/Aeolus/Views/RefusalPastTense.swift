@@ -28,8 +28,8 @@ extension ManualControlAvailability.Reason {
         case .reclaimedBySystem:
             return "The system had taken a fan back from manual control."
         case .leaseHeldByAnotherClient:
-            return "Another Aeolus client held the manual-control lease that would have been "
-                + "needed to take a fan."
+            return "Another Aeolus client held the manual-control lease that taking a fan "
+                + "required."
         case .selfRenewalNotBuilt:
             return "A self-renewing lease was requested, and the helper's build did not implement "
                 + "one."
@@ -43,8 +43,8 @@ extension ManualControlAvailability.Reason {
                 + "so it did not know what mode the fan was in."
         case .restoreToAutomaticUnconfirmed:
             return "Aeolus had issued a restore-to-automatic write for a fan and had not confirmed "
-                + "the fan back under automatic control; the write may or may not have been "
-                + "accepted."
+                + "the fan back under automatic control; whether the write was accepted was not "
+                + "known."
         case .restoreToAutomaticFailed:
             return "Aeolus had tried to hand a fan back to automatic control and the firmware "
                 + "never took the write, so Aeolus did not know what mode the fan was in."
