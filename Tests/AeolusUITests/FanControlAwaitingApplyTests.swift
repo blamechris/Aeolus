@@ -146,7 +146,13 @@ struct FanControlAwaitingApplyTests {
     /// `apply` is unanswered, and fan 0, which B covers, does not. When A's `apply` answers, the
     /// line goes.
     ///
-    /// **Mutation (M3, "only a stop mints"):** red at `answeredAfter.awaitingApply == nil`.
+    /// The line goes with the report the driver publishes when A's `apply` answers, waited for on
+    /// the ledger (`LeaseScene.firstFloor(since:)`): the fake's answer reaches the ledger before
+    /// the driver has handled it, so no number of hops after it is enough (#519).
+    ///
+    /// **Mutation (M3, "only a stop mints"):** red at the floor's `#require`, once
+    /// `LeaseScene.floorBound` has passed with no floor published. **(M1, M2):** red at
+    /// `awaitingApply == awaiting` and at `.noRead`, before A's `apply` answers.
     @Test(
         "Beside a held lease, a fan it does not cover gives the line until the last apply answers")
     func heldGivesTheLineUntilTheLastApplyAnswers() async throws {
@@ -158,14 +164,13 @@ struct FanControlAwaitingApplyTests {
         #expect(uncovered.awaitingApply == Self.awaiting, "A's apply is unanswered: \(waiting)")
         let covered = try Self.present(waiting.state, waiting.automaticEvidence, readWith: nil)
         #expect(covered.awaitingApply == nil, "fan 0 is B's, and says what is applied")
+        try #require(waiting.automaticEvidence == .noRead, "A's apply is unanswered: \(waiting)")
 
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).contains { $0.event.isApplyAnswer }
-        }
-        await scene.settle()
-        let report = await scene.driver.report
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        let report = try #require(published, "A's apply answered, and no floor followed: \(now)")
         let answeredAfter = try Self.fan1(report)
         #expect(answeredAfter.awaitingApply == nil, "every apply has answered: \(report)")
         await scene.finish()

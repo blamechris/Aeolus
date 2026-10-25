@@ -10,9 +10,10 @@ import os
 /// A `LeaseDriver` over a `FakeLeaseHelper` and a `HandWoundClock`, with the driver's states and
 /// reports forwarded into the scene's `LeaseLedger`.
 ///
-/// Every wait here is on the ledger or the clock, so none spends wall-clock time and none blocks a
-/// thread. A test whose driver never does what it waits for does not finish; the suites carry a
-/// one-minute time limit so that it fails instead, as the helper's suites do.
+/// Every wait here is on the ledger or the clock, and none blocks a thread. A test whose driver
+/// never does what it waits for does not finish; the suites carry a one-minute time limit so that
+/// it fails instead, as the helper's suites do. One wait, `firstFloor(since:)`, also ends at a
+/// bound in wall-clock time, which only a driver that never mints the floor spends.
 struct LeaseScene: Sendable {
 
     static let holder = "Aeolus.app 9.9.9"
@@ -114,6 +115,40 @@ struct LeaseScene: Sendable {
         return Array(await ledger.entries.dropFirst(mark)).reports.first { matches($0.state) }
     }
 
+    /// How long `firstFloor(since:)` waits before it gives up.
+    static let floorBound: Duration = .seconds(10)
+
+    /// The first report published after `mark` that carries a floor, once the ledger has one, or
+    /// `nil` if none has reached it within `floorBound`.
+    ///
+    /// **For the floor the last unanswered `apply`'s answer mints** (ADR 0015 D5). The fake writes
+    /// the answer to the ledger and only then returns to the driver, which mints on its own actor
+    /// and publishes the floor as a report with the state unchanged. So the answer's entry is no
+    /// promise that the driver has handled it, and `settle()` is none either (#519): in 40 runs of
+    /// `AeolusUITests` in the release configuration, 13 of 200 reads of `driver.report` after
+    /// that entry and `settle()` still said `noRead`. In every one of the 13 the floor was
+    /// published within a millisecond after, and none was missing for good. This waits on the
+    /// published report itself, forwarded from `reportUpdates()`, as `firstReport(since:where:)`
+    /// does.
+    ///
+    /// **It ends at either outcome.** A driver that never mints publishes nothing, so no event can
+    /// end the wait; the bound does, and the caller's `#require` is a red with a message rather
+    /// than a red at the suite's time limit. A correct driver never spends the bound: its report
+    /// ends the wait as soon as the ledger has it. The bound is wall-clock time rather than a
+    /// number of hops or turns, because a release build runs those faster, and that is how
+    /// `settle()` came to lose the race.
+    func firstFloor(since mark: Int) async -> LeaseDriverReport? {
+        let isFloor: @Sendable (LeaseDriverReport) -> Bool = { report in
+            if case .readFrom = report.automaticEvidence { return true }
+            return false
+        }
+        let ledger = self.ledger
+        await firstOf(
+            { await ledger.waitFor { Array($0.dropFirst(mark)).reports.contains(where: isFloor) } },
+            { try? await Task.sleep(for: Self.floorBound) })
+        return Array(await ledger.entries.dropFirst(mark)).reports.first(where: isFloor)
+    }
+
     /// The ledger now.
     var entries: [LeaseLedger.Entry] {
         get async { await ledger.entries }
@@ -129,6 +164,11 @@ struct LeaseScene: Sendable {
     /// default actors behave but not a language guarantee: a correct driver passes whatever the
     /// order, and only a mutant's red could be missed. It is a fixed number of hops, never a
     /// loop on a condition, and spends no time.
+    ///
+    /// **Never before something the driver must do.** The hops are not enough to promise the
+    /// driver has acted on a reply, and before a positive assertion a correct driver goes red
+    /// whenever they are not (#519). Wait for the event the driver publishes instead
+    /// (`firstReport(since:where:)`, `firstFloor(since:)`).
     func settle() async {
         for _ in 0..<4 {
             _ = await helper.heldLeases
