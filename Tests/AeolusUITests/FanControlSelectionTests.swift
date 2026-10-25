@@ -174,7 +174,7 @@ struct FanControlSelectionTests {
 
     /// The reasons a fan reading automatic is not cleared, from `FanRowModelTests`' exhaustive tag.
     ///
-    /// **Mutation (A1):** in `automaticOrUnknown`, use `state.mode == .automatic`. Run: red for
+    /// **Mutation (A1):** in `automaticBeforeAnyLease`, use `state.mode == .automatic`. Run: red for
     /// every argument.
     @Test(
         "Automatic needs the helper to have cleared the fan, not only its mode",
@@ -216,7 +216,7 @@ struct FanControlSelectionTests {
     /// Custom, and the line says only that control ended.
     ///
     /// **Mutation (C1a, "a loss reads the snapshot"):** in `claim`, return
-    /// `automaticOrUnknown(licence)` for `.lost` again. Run: red at the selection, for every cause.
+    /// `automaticBeforeAnyLease(licence)` for `.lost`. Run: red at the selection, for every cause.
     @Test(
         "A lost lease never reads Automatic, even over fans the snapshot shows cleared",
         arguments: Fixtures.CauseTag.allCases)
@@ -243,7 +243,7 @@ struct FanControlSelectionTests {
     /// first `apply`. Only the driver says it is wanted.
     ///
     /// **Mutation (A2):** delete `claim`'s `.acquiring(let fans) where fans.contains(index)` arm.
-    /// **Mutation (A3):** make its `.releasing` arm return `automaticOrUnknown(licence)`.
+    /// **Mutation (A3):** make its `.releasing` arm return `automaticBeforeAnyLease(licence)`.
     /// **Mutation (A4):** delete its `.held(let held) where held.fans.contains(index)` arm, so a
     /// held fan is judged as if nothing held it. Run, each: red at its expectation.
     @Test("A fan the driver holds, is asking for or is releasing never reads Automatic")
