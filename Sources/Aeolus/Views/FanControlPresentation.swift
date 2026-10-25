@@ -464,9 +464,18 @@ extension FanControlPresentation.Reason {
 
 extension FanControlPresentation {
 
-    private typealias Claim = (
-        selection: Selection, status: StatusLine?, awaitingApply: StatusLine?
-    )
+    /// What `claim` decides for one fan. `awaitingApply` is set only by `stopped`.
+    private struct Claim {
+        let selection: Selection
+        let status: StatusLine?
+        let awaitingApply: StatusLine?
+
+        init(_ selection: Selection, _ status: StatusLine?, awaitingApply: StatusLine? = nil) {
+            self.selection = selection
+            self.status = status
+            self.awaitingApply = awaitingApply
+        }
+    }
 
     private static func claim(
         about index: Int, _ licence: Licence, _ inputs: Inputs
@@ -474,21 +483,21 @@ extension FanControlPresentation {
         switch inputs.driver {
         case .held(let held) where held.fans.contains(index):
             let claim = heldClaim(about: index, held, licence)
-            return (claim.selection, claim.status, nil)
+            return Claim(claim.selection, claim.status)
         case .acquiring(let fans) where fans.contains(index):
-            return (.unknown, StatusLine(text: "Asking the helper for control.", detail: nil), nil)
+            return Claim(.unknown, StatusLine(text: "Asking the helper for control.", detail: nil))
         case .releasing:
             let line = StatusLine(
                 text: "Releasing the lease. The helper has not answered yet.", detail: nil)
-            return (.unknown, line, nil)
+            return Claim(.unknown, line)
         case .acquiring, .held:
             // A lease over other fans: never Automatic beside it.
-            return (.unknown, nil, nil)
+            return Claim(.unknown, nil)
         // ADR 0015 D1's first condition: the driver holds nothing and is not acquiring or
         // releasing. The other three are `automaticClaim`'s. `idle` has never acted, so it has
         // sent no `apply` to wait for.
         case .idle:
-            return (automaticClaim(licence, inputs), nil, nil)
+            return Claim(automaticClaim(licence, inputs), nil)
         case .released:
             return stopped(LeaseEventText.released, licence, inputs)
         case .lost(let loss):
@@ -504,7 +513,9 @@ extension FanControlPresentation {
     private static func stopped(
         _ event: StatusLine, _ licence: Licence, _ inputs: Inputs
     ) -> Claim {
-        (automaticClaim(licence, inputs), event, awaitingApply(inputs.automaticEvidence))
+        Claim(
+            automaticClaim(licence, inputs), event,
+            awaitingApply: awaitingApply(inputs.automaticEvidence))
     }
 
     /// `StatusLine.awaitingApply` while no read is evidence, beside a driver that has stopped
@@ -614,8 +625,8 @@ extension FanControlPresentation.StatusLine {
     ///   driver awaits its reply. The wait ends at the answer or at the client's deadline, after
     ///   which the `apply` counts as answered (ADR 0015's assumptions), and the line goes either
     ///   way. It says neither which will end it nor when.
-    /// - **"a speed change"**: an `apply`, in the words `LeaseEventText` uses for one. "A", not "the
-    ///   last": the one unanswered can be an earlier lease's, and there can be several.
+    /// - **"a speed change"**: an `apply`, in the words `LeaseEventText` uses for one. "A", not
+    ///   "the last": the one unanswered can be an earlier lease's, and there can be several.
     /// - **"Aeolus sent"**: this driver's. A relaunch starts `idle`, which waits for nothing.
     /// - **"Auto is not shown as selected"**: `.noRead` admits no read, so `automaticClaim` answers
     ///   `.unknown` for every fan, and the all-fans control selects Auto only when every fan reads

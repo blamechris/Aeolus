@@ -8,9 +8,9 @@ import Testing
 @testable import AeolusUI
 
 /// #505: while the driver has stopped acting with an `apply` it sent unanswered (evidence
-/// `.noRead`), the control says why Auto is not shown selected, and nothing about the fans. When the
-/// evidence moves to `readFrom`, the line goes. Beside a state that acts, or has never acted, it is
-/// never given.
+/// `.noRead`), the control says why Auto is not shown selected, and nothing about the fans. When
+/// the evidence moves to `readFrom`, the line goes. Beside a state that acts, or has never acted,
+/// it is never given.
 ///
 /// Every screen here lists no lease and shows both fans cleared, and every read is past the floor
 /// a real driver minted (`SnapshotTickets.aroundAFloor()`), so the evidence is the only thing that
@@ -47,8 +47,9 @@ struct FanControlAwaitingApplyTests {
 
     /// **Mutation (W2, "missing under noRead"):** in `FanControlPresentation.awaitingApply(_:)`,
     /// answer `nil` for `.noRead`. Run: red at `awaitingApply == awaiting`, for every argument.
-    /// **Mutation (W3, "the text changed"):** in `StatusLine.awaitingApply`, change "a speed change"
-    /// to "the last speed change". Run: red at the same expectation, for every argument.
+    /// **Mutation (W3, "the text changed"):** in `StatusLine.awaitingApply`, change "a speed
+    /// change" to "the last speed change". Run: red at the same expectation, for every argument.
+    /// Each is red in `heldCanOutliveTheWait`, `theControlSaysItOnce` and the two root scenes too.
     @Test(
         "While an apply is unanswered, every state that stops acting says why, beside its own line",
         arguments: FanControlAutomaticTests.stopped)
@@ -61,7 +62,8 @@ struct FanControlAwaitingApplyTests {
         #expect(waiting.selection == .unknown, "the line says Auto is not shown: \(driver)")
         #expect(waiting.status != nil, "\(driver)")
         #expect(waiting.status == answered.status, "the event's own line is kept: \(driver)")
-        let whole = Self.awaiting.text + " " + (Self.awaiting.detail ?? "")
+        let shown = try #require(waiting.awaitingApply, "\(driver)")
+        let whole = shown.text + " " + (shown.detail ?? "")
         #expect(!whole.lowercased().contains("automatic"), "Auto is the segment, not a claim")
     }
 
