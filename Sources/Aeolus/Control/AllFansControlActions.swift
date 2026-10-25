@@ -25,8 +25,8 @@ struct AllFansControlActions {
     /// was last drawn. If it cannot be built for every fan, or any fan's control is not enabled
     /// now, **nothing is sent** (`AllFansControlPresentation.target(for:fans:snapshot:)`).
     func choose(_ percent: FanSpeedPercent, on polling: PollingViewModel) {
-        let fans = FanControlPresentation.everyFan(
-            of: polling, driver: composition.leaseState.current)
+        let fans = FanControlPresentation.onScreen(
+            in: polling, driver: composition.leaseState.current)
         guard
             let target = AllFansControlPresentation.target(
                 for: percent, fans: fans, snapshot: polling.renderedSnapshot)

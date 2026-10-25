@@ -93,7 +93,7 @@ struct AllFansControlPresentation: Equatable {
     typealias Fan = (reading: FanPollingReading, presentation: FanControlPresentation)
 
     /// - Parameters:
-    ///   - fans: Every fan on screen beside its presentation: `FanControlPresentation.everyFan`.
+    ///   - fans: Every fan on screen beside its presentation: `FanControlPresentation.onScreen(in:driver:)`.
     ///   - snapshot: The snapshot those presentations were judged against, `renderedSnapshot`.
     init(fans: [Fan], snapshot: SystemSnapshot?) {
         affordance = Self.affordance(fans)
@@ -120,12 +120,12 @@ struct AllFansControlPresentation: Equatable {
 extension AllFansControlPresentation {
 
     /// What `polling` has on screen now, beside `driver`, from **one** main-actor read: the
-    /// presentations through `everyFan(of:driver:)` and the snapshot they were judged against,
+    /// presentations through `onScreen(in:driver:)` and the snapshot they were judged against,
     /// with no suspension between the two.
     @MainActor
     init(polling: PollingViewModel, driver: LeaseDriverState) {
         self.init(
-            fans: FanControlPresentation.everyFan(of: polling, driver: driver),
+            fans: FanControlPresentation.onScreen(in: polling, driver: driver),
             snapshot: polling.renderedSnapshot)
     }
 }

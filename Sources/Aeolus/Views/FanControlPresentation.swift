@@ -122,8 +122,8 @@ import Foundation
 /// ## The contract the control must honour (#153's PR 6b)
 ///
 /// - **Compute presentations in a SwiftUI `body`, or on `polling.$revision` as `MenuBarViewModel`
-///   does, through `everyFan(of:driver:)`**, which reads the rows and the inputs together. Never
-///   from a sink on any single published property of `polling`. `everyFan` is the only entry
+///   does, through `onScreen(in:driver:)`**, which reads the rows and the inputs together. Never
+///   from a sink on any single published property of `polling`. `onScreen` is the only entry
 ///   production code takes. `init(reading:given:)` and `Inputs(polling:driver:)` stay `internal`
 ///   for this file and for the suite, which pins each rule one fan at a time, and nothing else in
 ///   the app pairs a row with inputs by hand. That is documented here, not enforced by an access
@@ -259,9 +259,14 @@ extension FanControlPresentation {
 
     /// Every fan `polling` shows, each beside its presentation, from one read of `polling`: the
     /// rows and the inputs are read together, so a caller never pairs them itself.
+    ///
+    /// **Named `onScreen`, not `everyFan` as #488 had it.** `.everyFan` is the machine-wide
+    /// restore scope's token, and `PanicPathScopeTripwireTests` counts every file under
+    /// `Sources/` whose code names it as a call site of that restore. A caller writing
+    /// `FanControlPresentation.everyFan(of:)` would be counted as one.
     @MainActor
-    static func everyFan(
-        of polling: PollingViewModel, driver: LeaseDriverState
+    static func onScreen(
+        in polling: PollingViewModel, driver: LeaseDriverState
     ) -> [(reading: FanPollingReading, presentation: FanControlPresentation)] {
         let inputs = Inputs(polling: polling, driver: driver)
         return polling.fans.map { ($0, FanControlPresentation(reading: $0, given: inputs)) }
