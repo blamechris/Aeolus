@@ -4,6 +4,7 @@ import FanKit
 import Foundation
 import Testing
 
+@testable import AeolusLeaseControl
 @testable import AeolusUI
 
 /// `Inputs(polling:driver:)` reads what the view model has on screen, and the snapshot on screen
@@ -30,7 +31,9 @@ struct FanControlInputsTests {
         await Support.tickEnds(viewModel)
         #expect(viewModel.renderedSnapshot == snapshot)
         let shown = Fixtures.screen(snapshot, driver: driver)
-        #expect(FanControlPresentation.Inputs(polling: viewModel, driver: driver) == shown.inputs)
+        #expect(
+            FanControlPresentation.Inputs(polling: viewModel, driver: Fixtures.report(driver))
+                == shown.inputs)
         #expect(viewModel.fans == shown.rows)
 
         try await Support.report(.unresponsive, to: source, from: helper)
@@ -38,7 +41,9 @@ struct FanControlInputsTests {
         #expect(viewModel.renderedSnapshot == nil)
         let gone = Fixtures.withdrawn(
             .helperConnection(.unresponsive), driver: driver, from: snapshot)
-        #expect(FanControlPresentation.Inputs(polling: viewModel, driver: driver) == gone.inputs)
+        #expect(
+            FanControlPresentation.Inputs(polling: viewModel, driver: Fixtures.report(driver))
+                == gone.inputs)
         #expect(viewModel.fans.map(\.control) == gone.rows.map(\.control))
 
         await Support.tearDown(source, helper)
@@ -85,7 +90,7 @@ struct FanControlInputsTests {
         let driver = Fixtures.held(Fixtures.ours, fans: [0], .confirmed(target))
 
         await Support.tickEnds(viewModel)
-        let before = FanControlPresentation.onScreen(in: viewModel, driver: driver)
+        let before = FanControlPresentation.onScreen(in: viewModel, driver: Fixtures.report(driver))
         #expect(before.map(\.presentation.selection) == [.custom(try Fixtures.speed(target, 0))])
 
         await helper.reply(with: newer)
@@ -94,7 +99,7 @@ struct FanControlInputsTests {
 
         var seen: [FanControlPresentation] = []
         let sink = viewModel.$lastUpdated.dropFirst().sink { _ in
-            seen += FanControlPresentation.onScreen(in: viewModel, driver: driver)
+            seen += FanControlPresentation.onScreen(in: viewModel, driver: Fixtures.report(driver))
                 .map(\.presentation)
         }
         await Support.tickEnds(viewModel)
@@ -104,7 +109,7 @@ struct FanControlInputsTests {
         #expect(!seen.contains { if case .custom = $0.selection { true } else { false } })
         #expect(seen.map(\.selection) == [.checking])
         #expect(seen.map(\.affordance) == [.disabled(.betweenSnapshots)])
-        let after = FanControlPresentation.onScreen(in: viewModel, driver: driver)
+        let after = FanControlPresentation.onScreen(in: viewModel, driver: Fixtures.report(driver))
         #expect(after.map(\.presentation.selection) == [.unknown])
 
         await Support.tearDown(source, helper)
@@ -124,7 +129,7 @@ struct FanControlInputsTests {
             Fixtures.ours, fans: [0, 1], .confirmed(try Fixtures.target([0: 3000, 1: 3200])))
 
         await Support.tickEnds(viewModel)
-        let every = FanControlPresentation.onScreen(in: viewModel, driver: driver)
+        let every = FanControlPresentation.onScreen(in: viewModel, driver: Fixtures.report(driver))
         let screen = Fixtures.screen(snapshot, driver: driver)
 
         #expect(every.map(\.reading) == screen.rows)

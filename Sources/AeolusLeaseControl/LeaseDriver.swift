@@ -95,19 +95,44 @@ import Foundation
 /// helper answers. `shutDown()` releases first and only then tears the connection down, so a quit
 /// never relies on the helper's invalidation path alone.
 ///
-/// **`released` says what the driver is doing, not what the fans are.** It holds nothing and has
-/// nothing in flight; what the fans are doing is the next snapshot's to report. It is reached
-/// after an answered release, and also on paths where no answer is kept: a release asked for while
-/// acquiring whose request granted nothing, and an acquisition queued behind a release, which does
-/// not keep that release's answer. Even an answered release does not show the fans are automatic:
-/// the helper's `releaseLease` removes the lease and then awaits a restore that does not throw, so
-/// its reply means "accepted", not "done" (ADR 0015). So no renderer may read the fans as automatic
-/// from `released` alone (ADR 0015 D3; #498 gives the precise rule).
+/// **`released` says what the driver is doing, not what the fans are.** It holds no lease and
+/// renews none; what the fans are doing is the next snapshot's to report. An `apply` sent before
+/// it can still be in flight: Auto during an `apply` releases at once and leaves the `apply` to
+/// answer. It is reached after an answered release, and also on paths where no answer is kept: a
+/// release asked for while acquiring whose request granted nothing, and an acquisition queued
+/// behind a release, which does not keep that release's answer. Even an answered release does not
+/// show the fans are automatic: the helper's `releaseLease` removes the lease and then awaits a
+/// restore that does not throw, so its reply means "accepted", not "done" (ADR 0015). So no
+/// renderer reads the fans as automatic from `released`: only from a snapshot read after it (see
+/// "When a snapshot may show the fans automatic").
 ///
 /// A release the helper refused, or that went unanswered, with no `take` queued behind it, ends in
 /// `lost` with `LeaseLoss.Cause.releaseUnconfirmed`. That is a status line, true where it is
 /// emitted, and no claim depends on it. A `take` queued behind that release is acquired all the
 /// same: a second grant is the helper's to refuse, and the release's answer is not kept.
+///
+/// ## When a snapshot may show the fans automatic (ADR 0015 D2)
+///
+/// Every state change passes through `transition(to:)`, and the states in which the driver has
+/// stopped acting, `released`, `lost` and `refused`, set a read-timing floor there, chosen by an
+/// exhaustive switch. The floor is a ticket minted from the same epoch `beginSnapshotRead()` reads,
+/// so a read ticketed before it is older and one ticketed after it is not. It is published with
+/// the state, as one `LeaseDriverReport`, so a renderer never pairs a state with an older floor.
+/// `idle` sets none: the driver has never acted.
+///
+/// **The floor waits for every `apply` to answer (#498's S2).** An `apply` in flight under a lease
+/// whose release has answered can still land one target write after the restore: never a mode
+/// write, which the step ticket refuses, but `F<n>Tg` on an automatic fan, which ADR 0014
+/// calls reported harmless on Apple Silicon and untested on Intel. That is a hardware claim nobody
+/// has observed, so a stop with an `apply` unanswered publishes `noRead`, and the floor is minted
+/// when the last `apply` has answered, as a new report with the same state. A read sent after that
+/// answer is, on ADR 0015's assumption about two connections, served after that `apply` finished.
+///
+/// **Minting cannot change what `observe(_:readWith:)` decides.** Each mint advances the epoch by
+/// one, and a ticket is the epoch when it was taken, so a ticket is at or past a mint exactly when
+/// it was taken after that mint, however many other mints there are. The grant's
+/// `leaseJudgedFrom` and the first `apply`'s `fansJudgedFrom` keep that meaning beside the
+/// floor's. And the floor is minted only where nothing is held, where `observe` judges nothing.
 ///
 /// ## A snapshot is judged only on what it could show
 ///
@@ -186,7 +211,13 @@ public actor LeaseDriver {
     private let releaseBound: Duration
 
     private var current: LeaseDriverState = .idle
+    /// Which reads may show a fan automatic, as last published with `current`.
+    private var evidence: LeaseDriverReport.AutomaticEvidence = .anyRead
     private var observers: [UUID: AsyncStream<LeaseDriverState>.Continuation] = [:]
+    private var reportObservers: [UUID: AsyncStream<LeaseDriverReport>.Continuation] = [:]
+    /// How many `apply` calls have been sent and not answered, under any lease. An `apply` is left
+    /// to answer when its lease ends (#419), so this can be non-zero in any state.
+    private var appliesUnanswered = 0
 
     private var acquisition: Acquisition?
     private var acquiring: Task<Lease?, Never>?
@@ -303,6 +334,26 @@ public actor LeaseDriver {
         }
     }
 
+    /// The state now, with which reads may show a fan automatic beside it (ADR 0015 D2).
+    public var report: LeaseDriverReport {
+        LeaseDriverReport(state: current, automaticEvidence: evidence)
+    }
+
+    /// The same, as a stream that starts with the value now: one element for each change of the
+    /// state, and one when the evidence changes with the state unchanged, as it does when the last
+    /// unanswered `apply` answers after the driver stopped acting. What a renderer that claims
+    /// Automatic follows; `stateUpdates()` is for consumers that need the state alone.
+    nonisolated public func reportUpdates() -> AsyncStream<LeaseDriverReport> {
+        AsyncStream { continuation in
+            let token = UUID()
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                Task { await self.unsubscribeReports(token) }
+            }
+            Task { await self.subscribeReports(continuation, as: token) }
+        }
+    }
+
     // MARK: - What a user does
 
     /// Takes control of `target`'s fans at its speeds: a deliberate user action, and the only
@@ -402,8 +453,13 @@ public actor LeaseDriver {
     // MARK: - Snapshots from the read connection
 
     /// When a snapshot was asked for, as the driver counts it. Only the driver mints one.
-    public struct SnapshotTicket: Sendable, Hashable {
+    ///
+    /// `Comparable` for ordering only: a ticket is less than another when it was taken before a
+    /// moment the other was taken after. The count itself stays in this file.
+    public struct SnapshotTicket: Sendable, Hashable, Comparable {
         fileprivate let epoch: UInt64
+
+        public static func < (lhs: Self, rhs: Self) -> Bool { lhs.epoch < rhs.epoch }
     }
 
     /// Take immediately before sending `snapshot` on the read connection, and hand back with it.
@@ -502,7 +558,7 @@ extension LeaseDriver {
                     phase: .applying(pending.target, queued: nil))))
         startHeartbeat(for: lease.id, every: interval, from: requestedAt)
         startHealthWatch(for: lease.id)
-        Task { await self.runApplies(pending.target, under: lease.id) }
+        scheduleApplies(pending.target, under: lease.id)
         return nil
     }
 
@@ -550,23 +606,60 @@ extension LeaseDriver {
         case .confirmed(let confirmed):
             guard target != confirmed else { return }
             transition(to: .held(held.with(.applying(target, queued: nil))))
-            Task { await self.runApplies(target, under: held.lease.id) }
+            scheduleApplies(target, under: held.lease.id)
         }
     }
 
+    /// Starts `runApplies` on a task of its own, its first `apply` counted unanswered **now**, in
+    /// the turn that decided to send it, not when the task starts. Between the two the actor can
+    /// run other jobs, a snapshot judged lost (`observe(_:readWith:)`) among them; a stop counted
+    /// only at the task's start would set its floor and then send the `apply` (#498's S2). Both
+    /// places that schedule an `apply`, the grant and a confirmed lease's re-`apply`, come here.
+    ///
+    /// **No test orders that gap.** Default actors run equal-priority jobs in the order enqueued,
+    /// and every loss from the driver's own tasks suspends first, so only a higher-priority job
+    /// enqueued during the scheduling turn overtakes the task, which a suite cannot place there.
+    private func scheduleApplies(_ first: LeaseTarget, under leaseID: UUID) {
+        appliesUnanswered += 1
+        Task { await self.runApplies(first, under: leaseID) }
+    }
+
     /// The one `apply` in flight under `leaseID`, then whatever was queued behind it.
+    ///
+    /// **Every `apply` is counted once before it is sent, and uncounted once when it answers.** The
+    /// first by `scheduleApplies`; a queued one in the turn that takes it from the queue. Each
+    /// answer is uncounted before anything acts on it, so a loss it causes, and that loss's floor,
+    /// see it answered. The loop sends before it can return, so no count is left behind.
     private func runApplies(_ first: LeaseTarget, under leaseID: UUID) async {
         var sending = first
         while true {
+            let failure: (any Error)?
             do {
                 try await control.apply(sending.settings, leaseID: leaseID)
+                failure = nil
             } catch {
-                lose(leaseID, .apply(HelperFailure(error)))
+                failure = error
+            }
+            applyAnswered()
+            if let failure {
+                lose(leaseID, .apply(HelperFailure(failure)))
                 return
             }
             guard let next = applyAccepted(sending, under: leaseID) else { return }
+            appliesUnanswered += 1
             sending = next
         }
+    }
+
+    /// An `apply` answered, whatever it answered. When it was the last one unanswered and the
+    /// driver has stopped acting with no read yet admitted, the floor is minted now and published
+    /// with the state unchanged (#498's S2; see "When a snapshot may show the fans automatic").
+    private func applyAnswered() {
+        appliesUnanswered -= 1
+        guard appliesUnanswered == 0, case .noRead = evidence, Self.hasStoppedActing(current)
+        else { return }
+        evidence = .readFrom(mintFloor())
+        publishReport()
     }
 
     /// Records an accepted `apply`, and returns the target queued behind it, if any.
@@ -828,10 +921,43 @@ extension LeaseDriver {
 
 extension LeaseDriver {
 
+    /// The one place every state change passes through. Entering a state in which the driver has
+    /// stopped acting sets the read-timing floor, **before** anything is published, so the report
+    /// published with the state carries the floor set for it (ADR 0015 D2).
     private func transition(to state: LeaseDriverState) {
         guard state != current else { return }
         current = state
+        if Self.hasStoppedActing(state) {
+            // An `apply` still unanswered may write after this; see "When a snapshot may show the
+            // fans automatic". `applyAnswered()` mints the floor when the last one answers.
+            evidence = appliesUnanswered == 0 ? .readFrom(mintFloor()) : .noRead
+        }
         for continuation in observers.values { continuation.yield(state) }
+        publishReport()
+    }
+
+    /// Whether the driver has stopped acting in `state`: it holds nothing and is not acquiring or
+    /// releasing. The states that set a floor. Exhaustive, with no `default:`, so a state added
+    /// later has to be decided here.
+    private static func hasStoppedActing(_ state: LeaseDriverState) -> Bool {
+        switch state {
+        case .released, .lost, .refused:
+            return true
+        case .idle, .acquiring, .held, .releasing:
+            return false
+        }
+    }
+
+    /// A ticket no read has been given yet: the first read ticketed after this is at or past it,
+    /// and every read ticketed before it is older.
+    private func mintFloor() -> SnapshotTicket {
+        epoch &+= 1
+        return SnapshotTicket(epoch: epoch)
+    }
+
+    private func publishReport() {
+        let report = report
+        for continuation in reportObservers.values { continuation.yield(report) }
     }
 
     private func subscribe(
@@ -843,6 +969,17 @@ extension LeaseDriver {
 
     private func unsubscribe(_ token: UUID) {
         observers[token] = nil
+    }
+
+    private func subscribeReports(
+        _ continuation: AsyncStream<LeaseDriverReport>.Continuation, as token: UUID
+    ) {
+        reportObservers[token] = continuation
+        continuation.yield(report)
+    }
+
+    private func unsubscribeReports(_ token: UUID) {
+        reportObservers[token] = nil
     }
 }
 

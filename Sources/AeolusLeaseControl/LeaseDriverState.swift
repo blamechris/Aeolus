@@ -36,9 +36,10 @@ public enum LeaseDriverState: Sendable, Hashable {
     /// The app asked for the fans back and the helper has not answered.
     case releasing
 
-    /// The driver holds nothing and has nothing in flight, after a release. What the fans are doing
-    /// is the next snapshot's to report: this says nothing about them, and nothing about whether
-    /// the helper answered (`LeaseDriver`, "Release"; ADR 0015).
+    /// The driver holds no lease and renews none, after a release. An `apply` sent before it may
+    /// still be unanswered (Auto during an `apply` leaves it to answer). What the fans are doing is
+    /// the next snapshot's to report: this says nothing about them, and nothing about whether the
+    /// helper answered (`LeaseDriver`, "Release"; ADR 0015).
     case released
 
     /// Control ended without the app asking for it to, could not be shown to have begun, or was
@@ -158,7 +159,8 @@ public struct LeaseLoss: Sendable, Hashable {
         /// The app released the lease, and the helper refused the release or did not answer it.
         /// Nothing then says the helper let the fans go: it can still hold them until its
         /// connection-invalidation backstop or the lease's TTL ends the lease. A status line, true
-        /// where it is emitted; no claim depends on it (ADR 0015 D3).
+        /// where it is emitted; no claim depends on it: Automatic waits for a snapshot read after
+        /// it that lists no lease (ADR 0015 D1).
         case releaseUnconfirmed(HelperFailure)
     }
 }

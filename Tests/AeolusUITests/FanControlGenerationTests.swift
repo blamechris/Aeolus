@@ -53,7 +53,8 @@ struct FanControlGenerationTests {
         let mixed = Fixtures.Screen(
             inputs: FanControlPresentation.Inputs(
                 controlSource: .helperSnapshot(activeLease: lease), thermalEmergency: emergency,
-                renderedSnapshot: older, driver: driver),
+                renderedSnapshot: older, renderedReadTicket: nil,
+                driver: driver, automaticEvidence: .anyRead),
             rows: rows)
         let presentation = try Fixtures.present(0, on: mixed)
 
@@ -83,14 +84,17 @@ struct FanControlGenerationTests {
                 return Fixtures.Screen(
                     inputs: FanControlPresentation.Inputs(
                         controlSource: .helperSnapshot(activeLease: nil),
-                        thermalEmergency: .inactive, renderedSnapshot: nil, driver: driver),
+                        thermalEmergency: .inactive, renderedSnapshot: nil, renderedReadTicket: nil,
+                        driver: driver, automaticEvidence: .anyRead),
                     rows: rows)
             case .betweenSnapshots:
                 let shown = Support.snapshot(fans: [cleared])
                 return Fixtures.Screen(
                     inputs: FanControlPresentation.Inputs(
                         controlSource: .helperSnapshot(activeLease: Fixtures.theirs),
-                        thermalEmergency: .inactive, renderedSnapshot: shown, driver: driver),
+                        thermalEmergency: .inactive, renderedSnapshot: shown,
+                        renderedReadTicket: nil,
+                        driver: driver, automaticEvidence: .anyRead),
                     rows: SnapshotReadings.fans(in: shown))
             case .emergency:
                 return Fixtures.screen(

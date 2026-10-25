@@ -1,3 +1,4 @@
+import AeolusLeaseControl
 import AeolusXPC
 import Combine
 import Foundation
@@ -138,9 +139,9 @@ public final class PollingViewModel: ObservableObject {
     private var loopTask: Task<Void, Never>?
     private var watchTask: Task<Void, Never>?
 
-    /// The snapshot on screen and when its reply arrived — what the authority watch judges the
-    /// source's licence against. `nil` whenever no snapshot's claims are on screen.
-    private var rendered: (snapshot: SystemSnapshot, receivedAt: Date)?
+    /// The snapshot on screen, when its reply arrived, and its read's ticket, as one value: what
+    /// the authority watch judges the source's licence against. `nil` with no claims on screen.
+    private var rendered: RenderedSnapshot?
 
     /// The snapshot whose claims are on screen, or `nil` when none are: what
     /// `FanControlPresentation` judges a lease against. `render` assigns it after `fans`,
@@ -151,6 +152,10 @@ public final class PollingViewModel: ObservableObject {
     /// the snapshot on screen; not `private(set) var`, whose key path a dynamic cast can still make
     /// writable (SR-5218). `internal`, because nothing outside this module reads it.
     var renderedSnapshot: SystemSnapshot? { rendered?.snapshot }
+
+    /// The driver's ticket for the read that brought `renderedSnapshot`, which the presentation
+    /// compares with its floor (ADR 0015 D2); `nil` beside none. Get-only, like `renderedSnapshot`.
+    var renderedReadTicket: LeaseDriver.SnapshotTicket? { rendered?.ticket }
 
     /// The direct read whose results may still go on screen: the one the current refresh loop's
     /// tick is awaiting, or `nil` when there is none. Each read takes a new token, and `stop()`
@@ -296,12 +301,11 @@ public final class PollingViewModel: ObservableObject {
     /// `internal`, for the suite, which drives it through a held clock rather than by calling it.
     func reassessAuthority() {
         switch snapshots.authority() {
-        case .fresh(let snapshot, let receivedAt):
+        case .fresh(let snapshot, let receivedAt, let ticket):
             guard directRead == nil else { return }
-            if let rendered, rendered.receivedAt == receivedAt, rendered.snapshot == snapshot {
-                return
-            }
-            render(snapshot, receivedAt: receivedAt)
+            let shown = RenderedSnapshot(snapshot: snapshot, receivedAt: receivedAt, ticket: ticket)
+            if rendered == shown { return }
+            render(shown)
         case .readDirectly(let why), .awaitHelper(let why):
             guard case .helperSnapshot = controlSource else { return }
             withdrawControlClaims(why)
@@ -318,8 +322,8 @@ public final class PollingViewModel: ObservableObject {
     /// rather than only reachable through `Fanctl.List`/`Fanctl.Watch`'s command wiring.
     func tick() async {
         switch snapshots.authority() {
-        case .fresh(let snapshot, let receivedAt):
-            render(snapshot, receivedAt: receivedAt)
+        case .fresh(let snapshot, let receivedAt, let ticket):
+            render(RenderedSnapshot(snapshot: snapshot, receivedAt: receivedAt, ticket: ticket))
         case .awaitHelper(let why):
             withdrawControlClaims(why)
             phase = .waitingForHelper
@@ -338,19 +342,20 @@ public final class PollingViewModel: ObservableObject {
     }
 
     /// Puts one snapshot on screen: fans, sensors, the emergency and the lease, all from it.
-    private func render(_ snapshot: SystemSnapshot, receivedAt: Date) {
+    private func render(_ shown: RenderedSnapshot) {
+        let snapshot = shown.snapshot
         phase = .polling
         fans = SnapshotReadings.fans(in: snapshot)
         sensors = SnapshotReadings.sensors(in: snapshot, labelSource: labelSource)
         thermalEmergency = snapshot.isThermalEmergencyActive ? .active : .inactive
         controlSource = .helperSnapshot(activeLease: snapshot.activeLease)
-        lastUpdated = receivedAt
-        rendered = (snapshot, receivedAt)
+        lastUpdated = shown.receivedAt
+        rendered = shown
         phase = .ready
     }
 
     /// Every control claim on screen becomes unknown, before anything is read: see this
-    /// type's documentation.
+    /// type's documentation. The snapshot on screen goes, and its read's ticket with it.
     private func withdrawControlClaims(_ why: ControlNotTracked) {
         fans = fans.map { $0.untracked(why) }
         thermalEmergency = .unknown

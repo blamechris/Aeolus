@@ -335,7 +335,7 @@ enum SnapshotTestSupport {
     /// The snapshot `authority` licenses, or `nil` when it licenses none.
     @MainActor
     static func freshSnapshot(_ source: HelperSnapshotSource) -> SystemSnapshot? {
-        guard case .fresh(let snapshot, _) = source.authority() else { return nil }
+        guard case .fresh(let snapshot, _, _) = source.authority() else { return nil }
         return snapshot
     }
 

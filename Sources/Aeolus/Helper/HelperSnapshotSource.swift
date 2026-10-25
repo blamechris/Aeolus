@@ -1,3 +1,4 @@
+import AeolusLeaseControl
 import AeolusXPC
 import AeolusXPCClient
 import Foundation
@@ -33,12 +34,12 @@ import Foundation
 /// one only when none exists, and a loop that is waiting for a reply when its last consumer
 /// leaves finishes that wait before it ends.
 ///
-/// **Nothing here cancels a request.** `stop()` and `retrySoon()` cancel only the pause between
-/// requests. A request outstanding at `stop()` is left to finish, and its answer is **kept**: it
-/// is a real reply, stamped when it arrived, and the freshness bound decides whether anything
-/// may render it later. A `start()` that arrives while it is outstanding does not send another;
-/// the loop that sent it carries on once it is answered. Each request also runs in its own
-/// unstructured task, so even a cancelled loop could not cancel it.
+/// **Nothing here cancels a request.** `stop()`, `retrySoon()` and `readSoon()` cancel only the
+/// pause between requests. A request outstanding at `stop()` is left to finish, and its answer
+/// is **kept**: it is a real reply, stamped when it arrived, and the freshness bound decides
+/// whether anything may render it later. A `start()` that arrives while it is outstanding does
+/// not send another; the loop that sent it carries on once it is answered. Each request also
+/// runs in its own unstructured task, so even a cancelled loop could not cancel it.
 ///
 /// That is #419's rule for the read side. `HelperClient` keeps a cancelled caller's sequenced
 /// message in flight with its deadline running (`InFlightMessages`), so a view that cancelled
@@ -97,7 +98,16 @@ import Foundation
 ///
 /// In a build with a helper the source reports each read to the lease driver through a
 /// `HelperSnapshotObserver`: the ticket before the request's task exists, and every successful
-/// reply after it is recorded. See that type for why, and for what is judged.
+/// reply after it is recorded. See that type for why, and for what is judged. The ticket is kept
+/// beside the reply it was taken for, and `.fresh` carries it, so a consumer can tell whether the
+/// snapshot was read after the driver last stopped acting (ADR 0015 D2). The source holds no
+/// policy about it: it neither compares tickets nor withholds a snapshot for one.
+///
+/// ## A read soon after the driver stops acting
+///
+/// Automatic is claimed only from a snapshot read after the driver stopped acting, and the next
+/// ordinary read can be a minute away. `readSoon()` cuts an ordinary pause, by the path a settled
+/// interval change takes, so the user's own Auto reads selected within about one round trip.
 @MainActor
 public final class HelperSnapshotSource {
 
@@ -105,7 +115,9 @@ public final class HelperSnapshotSource {
     public enum Authority: Sendable, Hashable {
         /// A snapshot from this handshaken episode, within its bound. `receivedAt` is this
         /// process's wall clock when the reply arrived, for a "last updated" label only.
-        case fresh(SystemSnapshot, receivedAt: Date)
+        /// `readWith` is the lease driver's ticket for the read that brought it, taken before the
+        /// request was sent, or `nil` from a source with no observer.
+        case fresh(SystemSnapshot, receivedAt: Date, readWith: LeaseDriver.SnapshotTicket?)
         /// Nothing may be claimed about control, and the consumer reads the SMC itself:
         /// ADR 0006's fallback.
         case readDirectly(ControlNotTracked)
@@ -138,7 +150,9 @@ public final class HelperSnapshotSource {
     }
 
     private enum Answer {
-        case received(SystemSnapshot, arrivedAt: ContinuousClock.Instant, wallClock: Date)
+        case received(
+            SystemSnapshot, arrivedAt: ContinuousClock.Instant, wallClock: Date,
+            ticket: LeaseDriver.SnapshotTicket?)
         case failed(detail: String)
         case contradicted(detail: String)
     }
@@ -167,11 +181,14 @@ public final class HelperSnapshotSource {
     private var loop: Task<Void, Never>?
     /// The request in flight, while one is. Nothing in this type cancels it.
     private var outstanding: Task<SystemSnapshot, any Error>?
-    /// The pause between two requests: the only task `stop()`, `retrySoon()` and a settled
-    /// interval change cancel.
+    /// The pause between two requests: the only task `stop()`, `retrySoon()`, `readSoon()` and a
+    /// settled interval change cancel.
     private var pause: Task<Void, Never>?
     /// The wait for the refresh interval to hold still, while one is running.
     private var intervalSettle: Task<Void, Never>?
+    /// Whether `readSoon()` found no pause to cut while the loop was running, so the pause after
+    /// the cycle under way is skipped. See `readSoon()`.
+    private var readOwed = false
     private var healthWatch: Task<Void, Never>?
 
     /// A source for a process with no helper to read: `authority()` is always
@@ -293,11 +310,11 @@ public final class HelperSnapshotSource {
             return .readDirectly(.snapshotRequestFailed(detail: detail))
         case .contradicted(let detail):
             return .readDirectly(.snapshotContradicted(detail: detail))
-        case .received(let snapshot, let arrivedAt, let wallClock):
+        case .received(let snapshot, let arrivedAt, let wallClock, let ticket):
             guard arrivedAt.duration(to: now()) < freshnessBound else {
                 return .awaitHelper(.snapshotStale)
             }
-            return .fresh(snapshot, receivedAt: wallClock)
+            return .fresh(snapshot, receivedAt: wallClock, readWith: ticket)
         }
     }
 
@@ -392,8 +409,9 @@ public final class HelperSnapshotSource {
     private func run(_ reader: any HelperSnapshotReading) async {
         while demand > 0 {
             // The driver's ticket, taken before the request's task exists (#479): a ticket taken
-            // after the send would be younger than the read it vouches for.
-            let judgement = await observer?.readWillBeSent()
+            // after the send would be younger than the read it vouches for. It is kept beside this
+            // read's reply, and only this read's (ADR 0015 D2).
+            let read = await observer?.readWillBeSent()
             guard demand > 0 else { break }
             let sentIn = episode
             // Unstructured, so that it inherits no cancellation from this loop.
@@ -401,12 +419,19 @@ public final class HelperSnapshotSource {
             outstanding = request
             let result = await request.result
             outstanding = nil
-            record(result, sentIn: sentIn)
-            if let judgement, case .success(let snapshot) = result {
-                await judgement(snapshot)
+            record(result, sentIn: sentIn, ticket: read?.ticket)
+            if let read, case .success(let snapshot) = result {
+                await read.judgement(snapshot)
             }
 
             guard demand > 0 else { break }
+            // `readSoon()` found no pause to cut during this cycle: skip the one after it, once,
+            // unless the cycle failed and a backoff has begun.
+            if readOwed, consecutiveFailures == 0 {
+                readOwed = false
+                continue
+            }
+            readOwed = false
             let pacing = pacing
             let wait = nextPause()
             // A cancelled pause throws, and that is simply the pause ending early.
@@ -415,19 +440,26 @@ public final class HelperSnapshotSource {
             await pause.value
             self.pause = nil
         }
+        readOwed = false
         loop = nil
     }
 
-    /// Stores one answer with the episode its request was sent in. A reply is stamped here,
-    /// on arrival, with this object's own clock.
-    private func record(_ result: Result<SystemSnapshot, any Error>, sentIn: UInt64) {
+    /// Stores one answer with the episode its request was sent in and the ticket taken before it
+    /// was sent. A reply is stamped here, on arrival, with this object's own clock.
+    private func record(
+        _ result: Result<SystemSnapshot, any Error>, sentIn: UInt64,
+        ticket: LeaseDriver.SnapshotTicket?
+    ) {
         switch result {
         case .success(let snapshot):
             if let contradiction = Self.contradiction(in: snapshot) {
                 latest = (.contradicted(detail: contradiction), sentIn)
                 consecutiveFailures += 1
             } else {
-                latest = (.received(snapshot, arrivedAt: now(), wallClock: Date()), sentIn)
+                latest = (
+                    .received(snapshot, arrivedAt: now(), wallClock: Date(), ticket: ticket),
+                    sentIn
+                )
                 consecutiveFailures = 0
             }
         case .failure(let error):
@@ -477,4 +509,38 @@ public final class HelperSnapshotSource {
     /// Whether an interval change is still waiting to hold still. `false` once its cut has been
     /// made, so the suite can wait for the cut rather than for a number of turns.
     var isWaitingForTheIntervalToSettle: Bool { intervalSettle != nil }
+}
+
+// MARK: - A read soon after the driver stops acting
+
+extension HelperSnapshotSource {
+
+    /// Something the next snapshot is evidence of has just happened: the lease driver stopped
+    /// acting, and Automatic waits for a read ticketed after that (ADR 0015 D2). An **ordinary**
+    /// pause ends now, by the cut a settled interval change makes, so the next request goes out at
+    /// once.
+    ///
+    /// - **A request in flight is left alone**, and no second one is sent beside it (#419). Its
+    ///   ticket may predate the moment this is about, so the pause after it is skipped instead,
+    ///   once: the next request goes out as soon as it is answered. So is the pause after a ticket
+    ///   being taken, for the same reason. That holds for a backoff's retry too, so a floor minted
+    ///   while the retry is out is read at once when the retry succeeds; if it fails, the backoff's
+    ///   next pause runs (`run()` skips only after a cycle that did not fail).
+    /// - **A backoff's pause is left alone.** A failing helper is not asked again sooner for it,
+    ///   and the failure count is not touched: `retrySoon()` is what ends a backoff.
+    /// - **The interval's debounce is untouched.** A wait for the slider to rest goes on, and its
+    ///   cut lands as before (`refreshIntervalDidChange()`).
+    /// - With no loop running there is nothing to cut: the next `start()` reads at once.
+    ///
+    /// Called on the main actor by the model that follows the driver's reports
+    /// (`LeaseStateModel`), never by the driver: the source holds no reference to it.
+    func readSoon() {
+        guard loop != nil else { return }
+        if let pause {
+            guard consecutiveFailures == 0 else { return }
+            pause.cancel()
+        } else {
+            readOwed = true
+        }
+    }
 }
