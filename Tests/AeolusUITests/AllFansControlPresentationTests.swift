@@ -399,7 +399,11 @@ struct AllFansControlPresentationTests {
     }
 
     /// **Mutation (M10a):** delete the `allSatisfy { ... == .enabled }` guard. Run: red for
-    /// `.aFanDisabled`. Each other guard, deleted, is red for its own argument.
+    /// `.aFanDisabled`. **Mutation (G-repeat):** delete the guard that each reported fan is
+    /// reported once. Run: red for `.aRepeatedFan` only. **Mutation (G-set):** delete the guard that
+    /// the snapshot's fans are the fans on screen. Run: red for `.anExtraFanInTheSnapshot` only:
+    /// `.aFanMissingFromTheSnapshot` is refused again by the per-fan lookup, which finds no state
+    /// for the missing fan.
     @Test("Nothing is sent unless every fan can be given a speed", arguments: Refusal.allCases)
     func failsClosed(_ refusal: Refusal) throws {
         let offered = Support.snapshot(fans: [Fans.offered(0), Fans.offered(1)])

@@ -130,6 +130,11 @@ struct FanControlGenerationTests {
     /// `canRelease` follows the driver and nothing else: true while it is acquiring or holding a
     /// lease over the fan, under every affordance, hidden included.
     ///
+    /// Each rule's screen reaches its own rule, with its exact reason, under every driver state.
+    ///
+    /// **Mutation (RX):** in `affordance`, return `.disabled(.betweenSnapshots)` for
+    /// `.nothingOnScreen`. Run: red here for `.nothingOnScreen` under every driver state, where the
+    /// assertion this replaced, `!= .enabled`, passed; and in `FanControlAffordanceTests`.
     /// **Mutation (CR):** in `init(reading:given:)`, compute `canRelease` as
     /// `affordance == .enabled && Self.canRelease(...)`. Run: red for `.acquiring` and `.held`
     /// under every rule but `.enabled`.

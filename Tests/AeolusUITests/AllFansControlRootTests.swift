@@ -183,8 +183,8 @@ struct AllFansControlRootTests {
     /// points without `await`, so an `async` entry point does not compile there.
     /// **Mutation (M7′, "the verbs on the caller's task"):** as M7, and in `LeaseDriver.take`'s
     /// first arm run the acquisition inline (`await acquire(id, after: previous)`) instead of on
-    /// `acquiring`'s task. Run: red, see the PR's mutation table: the parked acquire is answered
-    /// with `CancellationError`, and the driver reports the acquire unanswered.
+    /// `acquiring`'s task. Run: red at `!early`: the parked acquire is answered with
+    /// `CancellationError`, and the driver reports the acquire unanswered.
     @Test("A take from a cancelled caller still acquires and applies (#419)")
     func aCancelledCallerCancelsNothing() async throws {
         let scene = await CompositionScene()
@@ -309,7 +309,8 @@ struct AllFansControlRootTests {
     /// entry point is given reaches anything.
     ///
     /// **Mutation (M8b, "Monitor gets a driver"):** in `AppComposition.init`, give `.absent` the
-    /// `.embedded` arm's body. Run: red at `connected == 0` and at the acquire.
+    /// `.embedded` arm's body. Run: red at the affordance, at `!sent`, at `connected == 0` and at
+    /// the lease state.
     @Test("The Monitor build hides the control, and nothing is sent")
     func theMonitorBuildSendsNothing() async throws {
         var connected = 0
@@ -337,13 +338,16 @@ struct AllFansControlRootTests {
         #expect(!presentation.percentsAreEnabled)
         #expect(!presentation.automaticIsEnabled)
 
+        // Releases first and the take last: a release after it would mark a take still in
+        // flight to be given back on arrival, and the driver would then send nothing at all, so
+        // `!sent` could not see a driver that should not exist.
         let actions = AllFansControlActions(composition: root)
-        for percent in FanSpeedPercent.allCases { actions.choose(percent, on: polling) }
         actions.chooseAutomatic()
-        let target = try Fans.target(.hundred, fans: [0])
-        root.take(target)
-        root.adjust(target)
         root.selectAutomatic()
+        for percent in FanSpeedPercent.allCases { actions.choose(percent, on: polling) }
+        let target = try Fans.target(.hundred, fans: [0])
+        root.adjust(target)
+        root.take(target)
 
         let sent = await Support.eventually(turns: 2_000) { await !ledger.entries.isEmpty }
         #expect(!sent, "nothing reached a control connection")
