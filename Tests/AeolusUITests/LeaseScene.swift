@@ -127,9 +127,9 @@ struct LeaseScene: Sendable {
     /// promise that the driver has handled it, and `settle()` is none either (#519): in 40 runs of
     /// `AeolusUITests` in the release configuration, 13 of 200 reads of `driver.report` after
     /// that entry and `settle()` still said `noRead`. In every one of the 13 the floor was
-    /// published within a millisecond after, and none was missing for good. This waits on the
-    /// published report itself, forwarded from `reportUpdates()`, as `firstReport(since:where:)`
-    /// does.
+    /// published moments later (a wait on the ledger begun just after the read ended within
+    /// 516 µs), and none was missing for good. This waits on the published report itself,
+    /// forwarded from `reportUpdates()`, as `firstReport(since:where:)` does.
     ///
     /// **It ends at either outcome.** A driver that never mints publishes nothing, so no event can
     /// end the wait; the bound does, and the caller's `#require` is a red with a message rather
