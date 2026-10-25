@@ -50,14 +50,14 @@ import Foundation
 ///
 /// SwiftUI cancels a `.task` when its view goes away, and a `.task(id:)` each time its id
 /// changes, so a view that owned a driver await would cancel calls the driver means to finish. So
-/// the driver is held only inside `private` members here, and nothing a view can reach on this
-/// type is `async`: every entry point is synchronous and starts its own unstructured `Task`, which
-/// a caller's cancellation does not reach. That much the compiler holds: a view's action is
-/// synchronous, and could not call an `async` entry point without a task of its own. That a member
-/// added later stays synchronous is documented here and not enforced.
+/// the driver is held only inside `private` members here, and no entry point is `async`: each is
+/// synchronous and starts its own unstructured `Task`, which a caller's cancellation does not
+/// reach. That much the compiler holds: a view's action is synchronous, and could not call an
+/// `async` entry point without a task of its own. That a member added later stays synchronous is
+/// documented here and not enforced.
 ///
-/// The one thing here that can be awaited is the suite's `latestDriverCall`. It waits for a call
-/// to have run and holds no `Task`, so it cannot cancel one; awaiting it reaches no driver verb.
+/// `DriverCall.finished()`, through the suite's `latestDriverCall`, is awaitable from anywhere in
+/// this module, but it holds no `Task`, so it cancels nothing; awaiting it reaches no driver verb.
 ///
 /// This is the app's half of #419's choice, that the UI never cancels a sequenced verb it means
 /// to send again. The driver's half is that it never cancels `acquireLease` or `apply` itself
@@ -224,11 +224,10 @@ final class AppComposition {
     /// The last call `take(_:)`, `adjust(_:)` or `selectAutomatic()` started on the driver, or
     /// `nil` if none has: **a seam for the suite**, which nothing in the app reads.
     ///
-    /// **Why (#500).** A call reaches the driver only once the main actor runs its task, and a test
-    /// that clicks and then waits only on other actors can go on before that. In release-config
-    /// runs, Auto's task had not started when the test answered the release it was meant to
-    /// precede. So a test that must know a click has reached the driver waits on this
-    /// (`CompositionScene.click(_:)`). Always `nil` in a build with no helper.
+    /// **Why (#500).** In release-config runs, the pre-PR shape (a click, then `settle()`) was red
+    /// at `!reacquired`; bare clicks with no `settle()` were green in 10 of 10. Why the `settle()`
+    /// shape is the red one was not established. A test that must know a click has reached the
+    /// driver waits on this (`CompositionScene.click(_:)`). Always `nil` with no helper.
     var latestDriverCall: DriverCall? { latestCall }
 
     private func started(_ task: Task<Void, Never>) {

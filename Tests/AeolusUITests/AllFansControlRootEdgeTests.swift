@@ -76,9 +76,10 @@ extension AllFansControlRootTests {
     /// is answered, so the take and Auto both reach the driver while it is releasing, as the
     /// clicks they stand for would.
     ///
-    /// **Mutation (M500a, "settle instead of the wait"):** replace each `scene.click { … }`
-    /// and the `#expect` after it with the bare click followed by `await scene.lease.settle()`, as
-    /// before #500. Run, release config with testability, whole `AeolusUITests`: red at
+    /// **Mutation (M500a, "the shape before #500"):** replace each `scene.click { … }`, and the
+    /// `#expect` read after it, with the bare click followed by `await scene.lease.settle()`. It
+    /// removes the wait, the post-click reads and the click helper together, so it is not evidence
+    /// for the wait alone. Run, release config with testability, whole `AeolusUITests`: red at
     /// `!reacquired` in 8 of 10 runs. A race, so a rate; the fixed test was green in 12 of 12.
     @Test("Auto while releasing cancels a take queued behind the release")
     func autoWhileReleasingCancelsAQueuedTake() async throws {
@@ -98,7 +99,7 @@ extension AllFansControlRootTests {
         #expect(control.affordance == .enabled)
         #expect(control.automaticIsEnabled)
         try await scene.click { actions.choose(.seventyFive, on: window.polling) }
-        #expect(await scene.lease.driver.state == .releasing, "the take is queued behind it")
+        #expect(await scene.lease.driver.state == .releasing, "the release is still unanswered")
         try await scene.click { actions.chooseAutomatic() }
         #expect(await scene.lease.driver.state == .releasing)
 
@@ -131,12 +132,33 @@ extension AllFansControlRootTests {
         try await Self.published(on: scene) { $0 == .releasing }
 
         try await scene.click { actions.choose(.seventyFive, on: window.polling) }
-        #expect(await scene.lease.driver.state == .releasing, "the take is queued behind it")
+        #expect(await scene.lease.driver.state == .releasing, "the release is still unanswered")
         await scene.lease.helper.answerParked(.release)
 
         try #require(
             await Support.eventually { await scene.lease.entries.acquires.count == 2 })
         await window.close()
+        await scene.finish()
+    }
+
+    // MARK: - The suite's seam
+
+    /// `DriverCall` keeps only its ordinal and a closure that waits on the call's task, never the
+    /// task itself, so nothing that holds the handle can cancel the call (#419).
+    ///
+    /// **Mutation (M500d, "the handle keeps the task"):** add `private let task: Task<Void, Never>`
+    /// to `AppComposition.DriverCall`, set in its init. Run, debug: red at the labels and at
+    /// `!holdsATask`, in 3 of 3 runs.
+    @Test("The root's driver-call handle stores no Task")
+    func theDriverCallHandleStoresNoTask() async throws {
+        let scene = await CompositionScene()
+        try await scene.click { scene.root.selectAutomatic() }
+        let call = try #require(scene.root.latestDriverCall)
+
+        let children = Mirror(reflecting: call).children
+        #expect(children.map(\.label) == ["ordinal", "wait"])
+        let holdsATask = children.contains { $0.value is Task<Void, Never> }
+        #expect(!holdsATask, "the handle stores no Task")
         await scene.finish()
     }
 }
