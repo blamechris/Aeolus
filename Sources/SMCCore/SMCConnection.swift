@@ -396,9 +396,19 @@ public actor SMCConnection {
     ///
     /// The interface generation reaches the decode by one route: `read(_:)` turns it into the
     /// value's `byteOrder`, which is `nil` exactly when the generation is unknown. Until #531
-    /// the generation was also passed in beside the value. That was a second answer to the same
-    /// question, and no test off hardware could pin it. The one route left is pinned on a
-    /// connection that is never opened; see `SMCConnectionKeyCountGenerationFlowTests`.
+    /// the generation was also passed in beside the value, a second answer to the same question
+    /// that no test could pin.
+    ///
+    /// Only part of that route is pinned. On a connection that is never opened,
+    /// `SMCConnectionKeyCountGenerationFlowTests` pins two things: `read(_:)` computes no byte
+    /// order without a generation, observed through its zero-length return, and this method
+    /// hands the declared type to `decodeKeyCount(value:)`. `SMCConnectionKeyCountDecodeTests`
+    /// and `SMCConnectionKeyCountFallbackTests` pin how the decode uses `byteOrder`.
+    ///
+    /// **Not pinned, on hardware or off it:** that `byteOrder` survives `read(_:)`'s non-empty
+    /// return, and this method's hand-off, when the generation is unknown. Both run only after
+    /// `READ_BYTES` returns bytes, which only IOKit does, and `Mac16,5`'s generation is always
+    /// known. Substituting an order at either point leaves every test green; see #539.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
         return try Self.decodeKeyCount(value: value)

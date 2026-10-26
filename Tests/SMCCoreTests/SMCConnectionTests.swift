@@ -370,7 +370,7 @@ struct SMCConnectionKeyCountFallbackTests {
     }
 
     /// The fallback is for an unknown generation only, and `byteOrder == nil` is how an
-    /// unknown generation reaches it (see `SMCConnectionKeyCountGenerationFlowTests`). The
+    /// unknown generation reaches it: `read(_:)` sets it, as `SMCValue.byteOrder` documents. The
     /// same captured bytes that decode to 3385 above are refused once an order is attached,
     /// in either direction, so the guess can never stand in for a resolved decode.
     @Test("A #KEY whose byte order was resolved is refused, even with the captured bytes")

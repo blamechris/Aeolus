@@ -225,8 +225,9 @@ struct SMCConnectionKeyCountDecodeTests {
 
     /// The generation-undetermined branch moved into the same function, so it is pinned here
     /// too: with no byte order, `scalar()` declines and the `ui32` fallback answers. An unknown
-    /// generation reaches this function only as `byteOrder == nil`; see
-    /// `SMCConnectionKeyCountGenerationFlowTests` for where `read(_:)` sets it.
+    /// generation reaches this function only as `byteOrder == nil`, which `read(_:)` sets.
+    /// `SMCConnectionKeyCountGenerationFlowTests` pins part of that route; #539 records the
+    /// part nothing pins.
     @Test("With no generation, a ui32 #KEY still decodes through the big-endian fallback")
     func undeterminedGenerationUsesTheFallback() throws {
         let value = SMCValue(
