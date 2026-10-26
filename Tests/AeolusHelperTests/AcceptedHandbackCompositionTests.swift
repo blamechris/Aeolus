@@ -22,6 +22,8 @@ struct AcceptedHandbackCompositionTests {
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         log: RecordedLog = RecordedLog()
     ) -> HelperComposition<ControlStateGatePlane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: ControlStateGatePlane(
                 ScriptedControlPlane(
@@ -34,6 +36,7 @@ struct AcceptedHandbackCompositionTests {
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { log.append($0, $1) }),

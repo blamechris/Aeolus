@@ -30,12 +30,15 @@ struct HelperWatchdogCompositionTests {
         ticks: ManualWatchdogTicks,
         journal: TeardownJournal
     ) -> HelperComposition<Plane> {
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         HelperComposition(
             plane: plane,
             snapshotProvider: provider,
             criticalSensors: .mac16x5,
             roundTrips: roundTrips,
             watchdogTicks: ticks,
+            clock: TestClock(),
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,
@@ -91,11 +94,13 @@ struct HelperWatchdogCompositionTests {
     @Test("The composed watchdog reads the gate monitor the composition holds")
     func theWatchdogReadsTheMonitorTheCompositionHolds() {
         let monitor = GateWaitMonitor()
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let given = HelperComposition(
             plane: Self.scriptedPlane(), snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5, roundTrips: idleRoundTrips(),
-            watchdogTicks: ManualWatchdogTicks(), gateMonitor: monitor, log: Self.helperLog,
-            leaseLog: LeaseFixture.log, safetyLog: Self.safetyLog,
+            watchdogTicks: ManualWatchdogTicks(), clock: TestClock(), gateMonitor: monitor,
+            log: Self.helperLog, leaseLog: LeaseFixture.log, safetyLog: Self.safetyLog,
             teardown: TeardownSeams(
                 sources: RecordingSignalSources(), terminate: TeardownJournal().terminate))
         #expect(given.watchdog.gateMonitor === monitor)
