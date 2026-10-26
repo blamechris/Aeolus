@@ -6,12 +6,16 @@ import Testing
 
 @testable import AeolusLeaseControl
 
-/// What `LeaseDriverPublisher.stream(of:add:remove:)` does when a stream ends (#514). Nothing in
-/// the other suites reads either half, so a later edit could drop either and leave them green.
+/// What `LeaseDriverPublisher.stream(of:add:remove:)` does when a stream ends (#514, #526).
+/// Nothing in the other suites reads either half, so a later edit could drop either and leave
+/// them green.
 ///
-/// 1. **A stream that ends leaves.** Its termination handler takes the observer out of the
-///    driver's publisher, on the driver's actor. Without that, every ended stream's continuation
+/// 1. **A stream that ends leaves**, whether it ends after its observer is registered or before.
+///    Its termination handler takes the observer out of the driver's publisher, on the driver's
+///    actor, once the registration has run. Without that, every ended stream's continuation
 ///    stays registered, and every later transition yields to it.
+///    `aCancelledReaderRemovesItsObserver()` ends streams that have registered.
+///    `droppedStreamsLeaveNoObserver(_:)` drops streams as they are made, so many end first.
 /// 2. **The handler holds the driver weakly.** The driver holds the observer, and the observer
 ///    holds the handler, so a strong capture would make a cycle that keeps the driver alive while
 ///    its streams are open.
@@ -22,16 +26,18 @@ import Testing
 /// property, so there is no count to call. `observerCounts(of:)` reads them by reflection, from
 /// inside the driver's actor; `LeaseDriver.runningHeartbeat` notes that reflection reaches a
 /// private property from any module. It adds no access to the driver's code, and **it fails
-/// closed**: a renamed property makes the count `nil`, and every test requires one before it
-/// claims anything, so a rename is a red here and never a count of zero.
+/// closed**: a renamed property makes the count `nil`, and every test that reads a count requires
+/// one before it claims anything, so a rename is a red there and never a count of zero.
+/// `theDriverIsHeldWeakly()` reads no count.
 ///
 /// ## The waits
 ///
-/// Both positive waits (an observer leaving, a driver being freed) are steps counted, not time:
-/// `pollWithinSteps(_:)` sleeps one short step at a time for at most `patience` of them. Nothing
-/// can announce either event, so there is no event to wait on, and a fixed number of actor hops
-/// would prove only an absence (`LeaseScene.settle()` says the same). A mutant that never does
-/// either is a red after `patience` steps, not a hang; a runner's stall costs one step.
+/// The positive waits (an observer leaving, a driver being freed, a driver held by its test
+/// alone) are steps counted, not time: `pollWithinSteps(_:)` and `untilOnlyTheCallerHolds(_:)`
+/// sleep one short step at a time for at most `patience` of them. Nothing can announce any of
+/// these, so there is no event to wait on, and a fixed number of actor hops would prove only an
+/// absence (`LeaseScene.settle()` says the same). A mutant that never does one is a red after
+/// `patience` steps, not a hang; a runner's stall costs one step.
 @Suite(
     "LeaseDriver — a stream that ends leaves, and the driver is held weakly",
     .timeLimit(.minutes(1)))
@@ -42,12 +48,13 @@ struct LeaseDriverStreamTerminationTests {
     /// subscribed, and the scene's own observers must still be published to.
     ///
     /// **Mutation (P5, no removal):** in `LeaseDriverPublisher.stream(of:add:remove:)`, delete the
-    /// `Task { await remove(driver, token) }` line. Run: red at `left == before` and at `after ==
-    /// before`, with the two ended streams' observers still registered; the other test stays
-    /// green. The same two assertions go red when the token handed to `remove` is a fresh `UUID()`
-    /// (P5b), and when `stateUpdates()`'s or `reportUpdates()`'s own `remove` closure in
-    /// `LeaseDriver.swift` does nothing (W2, W1), so the driver's wiring is pinned as well as the
-    /// handler.
+    /// `await remove(driver, token)` line from the handler's task. Run: red at `left == before`, a
+    /// `#require`, so the test ends there after `patience` steps (about 4 s here), with the two
+    /// ended streams' observers still registered. `droppedStreamsLeaveNoObserver(_:)` goes red
+    /// too, and `theDriverIsHeldWeakly()` stays green. The same assertion goes red when the token
+    /// handed to `remove` is a fresh `UUID()` (P5b), and when `stateUpdates()`'s or
+    /// `reportUpdates()`'s own `remove` closure in `LeaseDriver.swift` does nothing (W2, W1), so
+    /// the driver's wiring is pinned as well as the handler.
     @Test("Cancelling a stream's reader removes its observer, and a later transition adds none")
     func aCancelledReaderRemovesItsObserver() async throws {
         let scene = await LeaseScene()
@@ -72,7 +79,7 @@ struct LeaseDriverStreamTerminationTests {
             await Self.observerCounts(of: scene.driver) == before
         }
         let left = try #require(await Self.observerCounts(of: scene.driver), Self.noSeam)
-        #expect(
+        try #require(
             left == before, "the cancelled readers' observers are still registered: \(left)")
 
         // A later transition, through the observers that stayed. The scene's own are among them,
@@ -89,7 +96,14 @@ struct LeaseDriverStreamTerminationTests {
     ///
     /// **Mutation (P6, strong capture):** in `stream(of:add:remove:)`, replace the handler
     /// `{ [weak driver] _ in guard let driver else { return } ... }` with `{ [driver] _ in ... }`.
-    /// Run: red at `freed`, after `patience` steps; the other test stays green.
+    /// Run: red at `freed`, after `patience` steps; the other two tests stay green.
+    ///
+    /// **Mutation (M2, a registration that outlives `add`):** in `stream(of:add:remove:)`, have
+    /// the registration's task sleep for an hour after `add`
+    /// (`try? await Task.sleep(for: .seconds(3_600))`). The handler holds that task, and the task
+    /// holds the driver. Run: red at `freed`; the other two tests go red too, at `left == before`
+    /// and at `quiet`. So a registration's task that still held the driver after `add` is a red
+    /// here.
     ///
     /// **The streams are open on purpose.** With the readers cancelled, and their observers gone,
     /// before the driver was let go, P6 stayed green: the driver was freed. The cycle runs
@@ -102,6 +116,112 @@ struct LeaseDriverStreamTerminationTests {
         #expect(
             freed, "the driver is still alive after \(Self.patience) steps, with its streams open")
         for reader in subscribed.readers { reader.cancel() }
+    }
+
+    /// Streams dropped as soon as they are made, `churned` of each kind. A stream that is dropped
+    /// ends at once, often before the task that registers its observer has run. Every observer
+    /// must be gone once every task the streams started has ended.
+    ///
+    /// **Two ways to drop them** (`Churn`). Dropped where they are made, each stream's two tasks
+    /// are started one after the other from this test's task. Made on a task at `.low` and dropped
+    /// here, the registrations are started from that task and the removals from this one. Each
+    /// found the leak where the other did not. Before #526's fix, at 5,000 of each kind:
+    ///
+    /// | Build | Runs red | Dropped where made | Dropped above the maker's priority |
+    /// |---|---|---|---|
+    /// | debug | 10 of 10 | red in 10, with 98 to 457 of a kind left | red in 8 |
+    /// | release | 10 of 10 | red in 10, with 235 to 351 of a kind left | red in 1 |
+    /// | debug, pool of one thread | 5 of 5 | red in none | red in 5 |
+    /// | release, pool of one thread | 5 of 5 | red in none | red in 5 |
+    ///
+    /// The pool of one thread is `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`. The fix passed the same
+    /// runs: 10 of 10 in each build, and 5 of 5 in each on one thread.
+    ///
+    /// **When to count.** Nothing announces that a dropped stream's registration has run, and a
+    /// count taken before it ran would read the baseline on code that leaks. So the count waits
+    /// until this test's reference is the driver's only strong one (`untilOnlyTheCallerHolds(_:)`).
+    /// The tasks that register and remove each hold the driver strongly until they end, and the
+    /// termination handler holds it weakly, so that is when every one of them has ended. Nothing
+    /// is left to change the count then, so it is read once, not polled. Anything else that held
+    /// the driver would run the wait out: a red at `quiet` (M2 shows it), never a count read early.
+    ///
+    /// **Mutation (M1, unordered removal):** in `stream(of:add:remove:)`, delete
+    /// `await registration.value` from the handler's task. Run: red at `after == before` in 5 of
+    /// 5 debug runs, dropped where made in all 5 and above the maker's priority in 4; the other
+    /// two tests stay green.
+    @Test(
+        "Streams dropped as soon as they are made leave no observer, however their tasks run",
+        arguments: Churn.allCases)
+    func droppedStreamsLeaveNoObserver(_ churn: Churn) async throws {
+        let clock = HandWoundClock()
+        var driver = LeaseDriver(
+            control: FakeLeaseHelper(clock: clock, ledger: LeaseLedger()),
+            holderDescription: LeaseScene.holder, clock: clock)
+        let before = try #require(await Self.observerCounts(of: driver), Self.noSeam)
+
+        switch churn {
+        case .droppedWhereMade:
+            for _ in 0..<Self.churned {
+                _ = driver.stateUpdates()
+                _ = driver.reportUpdates()
+            }
+        case .droppedAboveTheirMakersPriority:
+            await Self.dropStreams(madeAt: .low, of: driver)
+        }
+        let quiet = await Self.untilOnlyTheCallerHolds(&driver)
+        try #require(
+            quiet, "a dropped stream's task still holds the driver after \(Self.patience) steps")
+
+        let after = try #require(await Self.observerCounts(of: driver), Self.noSeam)
+        #expect(
+            after == before,
+            """
+            dropped streams left \(after.states - before.states) of \(Self.churned) state \
+            observers and \(after.reports - before.reports) of \(Self.churned) report observers \
+            registered
+            """)
+    }
+
+    // MARK: - Churning streams
+
+    /// How `droppedStreamsLeaveNoObserver(_:)` makes its streams and drops them.
+    enum Churn: CaseIterable, Sendable, CustomTestStringConvertible {
+        /// Each stream is dropped by the statement that makes it, in the test's own task.
+        case droppedWhereMade
+        /// The streams are made on a task at `.low`, and dropped in the test's task, which Swift
+        /// Testing ran at `.medium` here.
+        case droppedAboveTheirMakersPriority
+
+        var testDescription: String {
+            switch self {
+            case .droppedWhereMade: "dropped where made"
+            case .droppedAboveTheirMakersPriority: "dropped above their maker's priority"
+            }
+        }
+    }
+
+    /// How many streams of each kind `droppedStreamsLeaveNoObserver(_:)` makes and drops.
+    static let churned = 5_000
+
+    /// `churned` streams of each kind of `driver`'s.
+    struct Streams: Sendable {
+        let states: [AsyncStream<LeaseDriverState>]
+        let reports: [AsyncStream<LeaseDriverReport>]
+    }
+
+    /// Makes `churned` streams of each kind on a task at `priority`, and drops them in the
+    /// caller's task. They come over in a stream, whose iteration ends when the caller is
+    /// cancelled, so the wait for them is not a wait on a task's value.
+    static func dropStreams(madeAt priority: TaskPriority, of driver: LeaseDriver) async {
+        let (made, maker) = AsyncStream.makeStream(of: Streams.self)
+        Task(priority: priority) {
+            maker.yield(
+                Streams(
+                    states: (0..<churned).map { _ in driver.stateUpdates() },
+                    reports: (0..<churned).map { _ in driver.reportUpdates() }))
+            maker.finish()
+        }
+        for await streams in made { _ = streams }
     }
 
     // MARK: - Counting the observers
@@ -196,5 +316,14 @@ struct LeaseDriverStreamTerminationTests {
             do { try await Task.sleep(for: step) } catch { break }
         }
         return await holds()
+    }
+
+    /// Whether, within `patience` steps of `step`, `driver` came to be held by its caller alone.
+    static func untilOnlyTheCallerHolds(_ driver: inout LeaseDriver) async -> Bool {
+        for _ in 0..<patience {
+            if isKnownUniquelyReferenced(&driver) { return true }
+            do { try await Task.sleep(for: step) } catch { break }
+        }
+        return isKnownUniquelyReferenced(&driver)
     }
 }

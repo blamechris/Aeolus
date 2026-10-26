@@ -39,8 +39,9 @@ import Foundation
 /// - **An observer starts with the value now.** Adding one registers it and yields it the value
 ///   it is handed in one synchronous step on the driver's actor. No change can come between the
 ///   two, so its first element is the value at registration, and the next is the next change.
-/// - **A stream that ends leaves.** `stream(of:add:remove:)` removes its observer, on the
-///   driver's actor, once the stream has terminated.
+/// - **A stream that ends leaves**, whether it ends before its observer is registered or after.
+///   `stream(of:add:remove:)` removes its observer, on the driver's actor, once the stream has
+///   terminated and the registration has run.
 struct LeaseDriverPublisher {
 
     private var stateObservers: [UUID: AsyncStream<LeaseDriverState>.Continuation] = [:]
@@ -97,15 +98,34 @@ struct LeaseDriverPublisher {
         @Sendable (isolated LeaseDriver, AsyncStream<Element>.Continuation, UUID) -> Void
 
     /// A stream of `driver`'s, whose observer `add` registers on the driver's actor and `remove`
-    /// takes away there once the stream has terminated.
+    /// takes away there once the stream has terminated and the registration has run.
     ///
     /// The registration is a task of its own, because the driver's streams are asked for from
     /// outside its actor (`stateUpdates()` and `reportUpdates()` are `nonisolated`). `add`
     /// registers and yields the value now in one step, so whichever turn it runs in, the stream
     /// starts with the value then and misses no change after it.
     ///
+    /// **The removal waits for the registration (#526).** The removal is a task too, started by
+    /// the termination handler, and a stream can end before its registration has run: a stream
+    /// dropped as soon as it is made does. Two tasks reach the driver's actor in no set order, so
+    /// a removal that went first found nothing to remove, and the registration then added an
+    /// observer that nothing would take away. So the removal awaits the registration's task
+    /// before it removes. The observer is added once and taken away once, whichever comes first,
+    /// the stream's end or the registration. It is an order and not a check of whether the stream
+    /// has ended, because `AsyncStream`'s `cancel()` runs the handler before it marks the stream
+    /// terminated.
+    ///
+    /// The handler is set after the registration's task is made, so that it can name the task.
+    /// Nothing can end the stream before the handler is set: this closure runs inside
+    /// `AsyncStream`'s initialiser, before anyone holds the stream, and nothing here calls
+    /// `finish()`.
+    ///
     /// The termination handler holds the driver weakly. The driver holds the observer, and the
-    /// observer holds this handler, so a strong reference would be a cycle.
+    /// observer holds this handler, so a strong reference would be a cycle. The handler also holds
+    /// the registration's task. That task holds the driver until it ends, as the registration did
+    /// before, and a task that has ended holds nothing it captured, so the cycle does not form
+    /// through it either: `theDriverIsHeldWeakly()` frees a driver whose every registration has
+    /// ended, with its streams open.
     static func stream<Element: Sendable>(
         of driver: LeaseDriver, add: @escaping Registration<Element>,
         remove: @escaping @Sendable (isolated LeaseDriver, UUID) -> Void
@@ -113,11 +133,14 @@ struct LeaseDriverPublisher {
         // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let token = UUID()
+            let registration = Task { await add(driver, continuation, token) }
             continuation.onTermination = { [weak driver] _ in
                 guard let driver else { return }
-                Task { await remove(driver, token) }
+                Task {
+                    await registration.value
+                    await remove(driver, token)
+                }
             }
-            Task { await add(driver, continuation, token) }
         }
     }
 }
