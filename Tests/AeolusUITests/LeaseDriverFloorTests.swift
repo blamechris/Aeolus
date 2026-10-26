@@ -109,6 +109,8 @@ struct LeaseDriverFloorTests {
         #expect(floor.state == .released, "the state did not move")
         #expect(!floor.automaticEvidence.admits(during), "a read before the apply answered")
         #expect(floor.automaticEvidence.admits(after))
+        let current = await scene.driver.report
+        #expect(current == floor, "the driver's report is the one it published: \(current)")
         #expect(
             Array(await scene.entries.dropFirst(answered)).states.isEmpty,
             "the evidence moved alone: no state was published again")

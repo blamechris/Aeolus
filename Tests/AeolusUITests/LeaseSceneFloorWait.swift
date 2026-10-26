@@ -31,7 +31,8 @@ extension LeaseScene {
         /// `ceiling` of wall-clock time passed, in fewer than `patience` steps.
         case ceiling
 
-        /// The waiting task was cancelled, as a suite's time limit does.
+        /// The waiting task was cancelled, as a suite's time limit does. Neither racer reached
+        /// a verdict, so this is the one end that does not depend on which of them was quicker.
         case cancelled
     }
 
@@ -83,8 +84,10 @@ extension LeaseScene {
     /// `#require` (#521). It is read on `ContinuousClock`, never on the scene's hand-wound
     /// `clock`, which does not move on its own, and it is checked between steps, so one step in
     /// flight can overrun it by exactly the stall that step is measuring and by no more. A stall
-    /// that did spend it would cost a correct driver nothing: the last look at the ledger still
-    /// finds a floor that was published meanwhile.
+    /// that spends it costs a correct driver nothing once the floor is in the ledger: the last
+    /// look finds any floor published by the time the wait ends. One of 50 s or more between the
+    /// answer's entry in the ledger and the driver's mint could return `nil` for a correct
+    /// driver. That is negligible, and not nothing.
     func firstFloor(since mark: Int) async -> LeaseDriverReport? {
         await awaitFloor(since: mark).report
     }
@@ -96,20 +99,29 @@ extension LeaseScene {
         step: Duration = LeaseScene.floorStep, ceiling: Duration = LeaseScene.floorCeiling
     ) async -> FloorWait {
         let ledger = self.ledger
-        let end = await withTaskGroup(of: FloorWaitEnd.self) { group in
+        let end = await withTaskGroup(of: FloorWaitEnd?.self) { group in
             group.addTask {
                 await ledger.waitFor {
                     Array($0.dropFirst(mark)).reports.contains { $0.automaticEvidence.isFloor }
                 }
-                // `waitFor` also returns when the task is cancelled.
-                return Task.isCancelled ? .cancelled : .published
+                // `waitFor` also returns when the task is cancelled, with no floor to show for it.
+                return Task.isCancelled ? nil : .published
             }
             group.addTask {
                 await Self.spendPatience(patience, step: step, ceiling: ceiling)
             }
-            let first = await group.next() ?? .cancelled
+            // The first verdict ends the wait. A racer that was cancelled gives none, so when the
+            // waiting task is cancelled both are silent and the wait is `cancelled`, whichever
+            // of them stopped first.
+            var verdict: FloorWaitEnd?
+            for await racer in group {
+                if let racer {
+                    verdict = racer
+                    break
+                }
+            }
             group.cancelAll()
-            return first
+            return verdict ?? .cancelled
         }
         let report = Array(await ledger.entries.dropFirst(mark)).reports.first {
             $0.automaticEvidence.isFloor
@@ -117,15 +129,15 @@ extension LeaseScene {
         return FloorWait(report: report, end: end)
     }
 
-    /// Sleeps `patience` steps of `step`, or until `ceiling` of wall-clock time has passed or the
-    /// task is cancelled, and says which. Never ends on the ledger: that is the other half of the
-    /// race in `awaitFloor(since:patience:step:ceiling:)`.
+    /// Sleeps `patience` steps of `step`, or until `ceiling` of wall-clock time has passed, and
+    /// says which; `nil` if the task is cancelled first. Never ends on the ledger: that is the
+    /// other half of the race in `awaitFloor(since:patience:step:ceiling:)`.
     private static func spendPatience(
         _ patience: Int, step: Duration, ceiling: Duration
-    ) async -> FloorWaitEnd {
+    ) async -> FloorWaitEnd? {
         let began = ContinuousClock.now
         for _ in 0..<patience {
-            do { try await Task.sleep(for: step) } catch { return .cancelled }
+            do { try await Task.sleep(for: step) } catch { return nil }
             if ContinuousClock.now - began >= ceiling { return .ceiling }
         }
         return .patience
