@@ -126,8 +126,8 @@ enum AvailabilityFixture {
     /// `UnreadModeAvailabilityTests`' reconciliation cases lose their refused handback when the
     /// pass runs out before it reads fan 0. No caller drives a wait the composition bounds by
     /// sleeping on that clock (a contended examination gate, an unlock that polls, § 4's
-    /// acknowledgement), and `TestClock`'s sleep jumps to its deadline, so one that starts to
-    /// wants a `ManualClock`. A scenario about time passes its own clock and moves it.
+    /// acknowledgement), and `TestClock`'s sleep jumps to its deadline, so a caller that starts
+    /// to do so wants a `ManualClock`. A scenario about time passes its own clock and moves it.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
