@@ -128,19 +128,24 @@ import Foundation
 ///   actor. `HelperClientAccessTests` records the attempt.
 /// - **The health signal** — `currentHealth`, `observers`, `publish`, `observe`,
 ///   `stopObserving` — is the one slice that could own its state outright in a type of its
-///   own rather than borrowing this actor's, so it is the one that would widen nothing. It is
-///   worth about twenty-five lines against an overage past two hundred and fifty, in exchange
-///   for an indirection on the path that reports whether this client can see the helper at
-///   all. Not worth doing for a line count; worth reconsidering on its own merits if the
-///   signal grows.
+///   own rather than borrowing this actor's, so it is the one that would widen nothing. When
+///   this was written (#268) it was worth about twenty-five lines, against a file of 665 lines,
+///   some 265 past the 400-line `file_length` warning, in exchange for an indirection on the
+///   path that reports whether this client can see the helper at all. Not worth doing for a
+///   line count; worth reconsidering on its own merits if the signal grows.
 ///
 ///   It grew by three lines in #532, from twenty-seven to thirty, counting `healthUpdates()`,
 ///   the stream, which that figure included though the list above does not name it. The five
-///   members listed are the same seventeen lines. #534 asked whether that growth warranted
-///   reconsidering the split, and it did not: the three lines order a removal after a
-///   registration, so they are about the stream's end and not about the state or who reads it,
-///   and the case against the indirection stands as it was. What would reopen it is a new field
-///   or reader among the five, or the stream growing again.
+///   members listed are the same seventeen lines. #534 noted that the growth went unremarked
+///   here; it did not take the split question up. The three lines are about the state and who
+///   reaches it, not only about the stream's end: they exist because `observers` is this
+///   actor's state and `healthUpdates()`, which registers and removes observers, is
+///   `nonisolated`. So each reaches it through a task, and two tasks reach the actor in no set
+///   order. That is the merit of the alternative this bullet names. A type that owned the
+///   observers and the value now under a lock could register in the stream's builder and
+///   remove in its termination handler, both synchronously, and the race the three lines order
+///   would not exist (#541). The five are not the signal's only readers: `health` reads
+///   `currentHealth` too.
 ///
 /// The threshold is not this file's problem in particular either. Over thirty files in the tree
 /// are past it, ten-odd of them under `Sources`, and **four of those are longer than this

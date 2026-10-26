@@ -70,11 +70,13 @@ struct HelperClientHealthStreamTests {
     /// and remove each hold the client strongly until they end, and the termination handler holds
     /// it weakly, so today that is when every one of them has ended.
     ///
-    /// **The test does not rest on that (#534).** A removal task that held the client weakly
-    /// would be correct code, and it would end that wait with its removals still queued. So the
-    /// count is then polled for until it reaches `joined`, within the same budget, and only
-    /// then asserted. A budget that runs out is a recorded issue, and the assertion reads the
-    /// count that is left, so a leak is a red either way. See R3 below.
+    /// **The count no longer rests on the removal tasks' capture; the wait still orders it after
+    /// every registration (#534).** The registration tasks hold the client strongly until they
+    /// end, so the wait cannot end before they have run. A removal task that held the client
+    /// weakly would be correct code, and it would end that wait with its removals still queued.
+    /// So the count is then polled for until it reaches `joined`, within the same budget, and
+    /// only then asserted. A budget that runs out is a recorded issue, and the assertion reads
+    /// the count that is left, so a leak is a red either way. See R3 below.
     ///
     /// **Mutation (M1, unordered removal):** in `HelperClient.healthUpdates()`, delete
     /// `await registration.value` from the handler's task. Run: red at `after == joined` in 20 of
@@ -201,7 +203,8 @@ struct HelperClientHealthStreamTests {
     /// How many streams `droppedStreamsLeaveNoObserver(_:)` makes and drops.
     static let churned = 5_000
 
-    /// The budget of both waits. A correct client ends either wait at its first poll once the
+    /// The budget of all three waits: the two in `droppedStreamsLeaveNoObserver(_:)` and the one
+    /// in `theClientIsHeldWeakly()`. A correct client ends each wait at its first poll once the
     /// tasks have run, so this bounds only how long a mutant takes to go red. It is not
     /// `waitUntil`'s 5 s default because, in a full debug run of this target on the development
     /// machine, each test here took about 3.5 s, against a few milliseconds when this suite runs
