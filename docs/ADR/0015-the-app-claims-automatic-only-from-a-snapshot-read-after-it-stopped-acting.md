@@ -243,8 +243,9 @@ and it fails closed.
   for `connectionDidInvalidate` (`TeardownRegistrationGapTests`), and by a source scan for every
   teardown (`TeardownCountTripwireTests`). The third: `HandbackBesideAnotherLeaseTests` holds the
   restatement of a fan mid-handback beside the next lease, and `LeaseViewTripwireTests` scans
-  `activeLeaseView()` for an `await` after its first read of lease-core state. The scans catch an
-  accidental suspension, not an adversarial spelling.
+  `activeLeaseView()` for an `await` after its first read of the lease table, the registers, or
+  the actor's own accessors over them. The scans catch an accidental suspension, not an
+  adversarial spelling: a read through a helper method above an `await` passes them.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed

@@ -13,7 +13,9 @@ import Testing
 /// the whole snapshot. Two such mutations left all 1543 helper tests green before this suite.
 ///
 /// **The anchor is the first read of lease-core state, wherever it falls**: `table`, `registers`,
-/// `sleep`, `fansAeolusIsAccountableFor` or `machineWideRestoresInFlight`, bare or after `self.`.
+/// `sleep`, `machineWideRestoresInFlight`, or one of the actor's own accessors over the registers
+/// (`fansAeolusIsAccountableFor`, `fansMidHandback`, `fansWithUnconfirmedHandbacks`,
+/// `fansWithAbandonedHandbacks`), bare or after `self.`.
 /// Everything from there to the end of the body must hold no `await`. The `await`s above it, the
 /// sweep of lapsed leases and § 3's read of `emergencyRestores`, are allowed, and § 3's comes first
 /// on purpose (`LeaseAccountability.restoresAwaitingConfirmation` says why). Anchoring on the first
@@ -37,15 +39,29 @@ struct LeaseViewTripwireTests {
     /// `Task.sleep` and a member of something else (`x.table`) out of it.
     private static let leaseCoreRead =
         #"(?<![\w.])(?:self\.)?"#
-        + #"(?:table|registers|sleep|fansAeolusIsAccountableFor|machineWideRestoresInFlight)\b"#
+        + #"(?:table|registers|sleep|machineWideRestoresInFlight|fansAeolusIsAccountableFor"#
+        + #"|fansMidHandback|fansWithUnconfirmedHandbacks|fansWithAbandonedHandbacks)\b"#
+
+    /// A read of the lease table, or of the handback registers, by this actor: the same lookbehind,
+    /// so `handbackRegisters.` or `x.table.` does not count as one.
+    private static func ownRead(of name: String) -> String {
+        #"(?<![\w.])(?:self\.)?"# + name + #"\."#
+    }
 
     /// **Mutation (M-view):** add `await Task.yield()` after `let shown = table.all.first`. Run:
     /// red. **Mutation (M-view2):** read `fansAeolusIsAccountableFor` and the three registers into
     /// locals first, then `await Task.yield()`, then `let shown = table.all.first`, and pass the
-    /// locals. Run: red. Both were green across the whole suite before this test. **Mutation:** the
+    /// locals. Run: red. Both were green across the whole suite before this test. **Mutation
+    /// (M-view3):** M-view2's hazard through the accessors, `let midEarly = fansMidHandback` and
+    /// `let unconfirmedEarly = fansWithUnconfirmedHandbacks` above the `await`, passed as
+    /// `handbacksInFlight:` and `unconfirmedHandbacks:`. Run: red; green before the accessors were
+    /// named here, across the whole suite. **Mutation:** the
     /// same `await`, spelled `try? await Task.sleep(for: .zero)`, then `await` and `Task.yield()`
     /// on two lines, then `await (Task.yield())`. Run: red, each. **Mutation (this suite's own):**
     /// replace `leaseCoreRead` with a pattern nothing matches. Run: red on the `#require`.
+    /// **Mutation (MR):** read the three registers in the view through a computed
+    /// `handbackRegisters { registers }`. Run: red on the reads-both check; a plain substring
+    /// match for `registers.` passed it.
     @Test("activeLeaseView() does not suspend between its first lease-core read and its return")
     func theViewDoesNotSuspendAfterItsFirstRead() throws {
         let code = Scan.normalised(try Scan.leaseCoreWithoutAnyComment())
@@ -58,7 +74,9 @@ struct LeaseViewTripwireTests {
         let region = view.body[first.lowerBound...]
 
         #expect(
-            region.contains("table.") && region.contains("registers."),
+            region.range(of: Self.ownRead(of: "table"), options: .regularExpression) != nil
+                && region.range(of: Self.ownRead(of: "registers"), options: .regularExpression)
+                    != nil,
             """
             activeLeaseView() does not read both the lease table and the handback registers \
             after its first lease-core read: \(region). Read through a helper outside the region, \
