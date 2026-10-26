@@ -387,24 +387,59 @@ public actor SMCConnection {
     ///   fallback shape. See that function's documentation for the justification and for
     ///   why `verifyKeyCountCrossCheck()` still catches a wrong guess.
     ///
-    /// The decoded value — resolved or guessed — is sanity-bounded by
-    /// `validatePlausibleKeyCount(_:)` before it is returned: every caller of this method —
-    /// `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both allocate and
-    /// iterate on this value — inherits the bound automatically rather than needing to
-    /// apply it themselves.
+    /// The decoded value — resolved or guessed — is converted to an `Int` without trapping and
+    /// sanity-bounded by `validatePlausibleKeyCount(_:)` before it is returned: every caller
+    /// of this method — `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both
+    /// allocate and iterate on this value — inherits the bound automatically rather than
+    /// needing to apply it themselves. Everything after the read lives in
+    /// `decodeKeyCount(value:generation:)`; see that function for the conversion.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
+        return try Self.decodeKeyCount(value: value, generation: generation)
+    }
 
+    /// Everything `keyCount()` does after its one `READ_BYTES`: decode `#KEY`, convert it to an
+    /// `Int`, and sanity-bound it.
+    ///
+    /// The firmware declares `#KEY`'s type, and `scalar()` decodes whatever it declares. A
+    /// `flt` can decode to NaN, ±infinity or a fraction, and a fixed-point type (`fpe2`,
+    /// `fp78`, `sp78`, `ioft`) to a fraction. A `ui64` or `si64` of 2^63 − 512 or more decodes
+    /// to 2^63 or above, because `Double` rounds it up. `Int(_: Double)` traps on
+    /// all of those except the fraction, which it silently truncates. A trap here would end
+    /// the root helper (through `ReadOnlyFanAuthority` and `readAll()`) and `fanctl` on a
+    /// firmware value they should refuse, before `validatePlausibleKeyCount(_:)` could see
+    /// it. `Int(exactly:)` returns `nil` for every one of them, and the value is refused as
+    /// `SMCError.unrepresentableKeyCount`. Refusing the fraction is deliberate: no key count is
+    /// fractional, and truncating one would fabricate a count nothing declared.
+    ///
+    /// Pure and synchronous, and deliberately not private, for the same reason as
+    /// `validatePlausibleKeyCount(_:)`. `SMCConnection` has no scripted transport, so this is
+    /// the seam through which a test can hand `#KEY` a value no real Mac has produced. See
+    /// `SMCConnectionKeyCountDecodeTests`.
+    static func decodeKeyCount(
+        value: SMCValue, generation: SMCInterfaceGeneration?
+    ) throws -> Int {
         let decoded: Int
         if let scalar = try value.scalar() {
-            decoded = Int(scalar)
-        } else if generation == nil, let fallback = Self.decodeKeyCountFallback(value: value) {
+            guard let whole = Int(exactly: scalar) else {
+                logger.fault(
+                    """
+                    #KEY (\(value.type.fourCharString, privacy: .public)) decoded to \
+                    \(scalar, privacy: .public), which is not a whole number within Int's \
+                    range. Refusing it rather than converting it, since the conversion would \
+                    trap or truncate. See SMCError.unrepresentableKeyCount.
+                    """
+                )
+                throw SMCError.unrepresentableKeyCount(type: value.type, bytes: value.bytes)
+            }
+            decoded = whole
+        } else if generation == nil, let fallback = decodeKeyCountFallback(value: value) {
             decoded = fallback
         } else {
             throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
         }
 
-        return try Self.validatePlausibleKeyCount(decoded)
+        return try validatePlausibleKeyCount(decoded)
     }
 
     /// Decodes `#KEY` directly as big-endian, bypassing

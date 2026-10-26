@@ -373,6 +373,9 @@ func describeDumpError(_ error: Error) -> String {
         return "\(key) byte order undetectable (SMC interface generation unknown)"
     case .implausibleKeyCount(let declared):
         return "#KEY decoded to an implausible value (\(declared))"
+    case .unrepresentableKeyCount(let type, let bytes):
+        return "#KEY (\(type.fourCharString), raw bytes \(hexString(bytes))) did not decode "
+            + "to a whole number within Int's range"
     }
 }
 
