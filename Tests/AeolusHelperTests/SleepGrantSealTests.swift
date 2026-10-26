@@ -29,8 +29,14 @@ struct SleepGrantSealTests {
     private typealias Fixture = AvailabilityFixture
 
     /// The daemon's wiring over firmware whose restores park by scope, with § 4 observed.
+    ///
+    /// `clock` defaults to a `ManualClock()` nobody advances, for the reason
+    /// `SystemPowerTests.composed` gives (#411): § 4's acknowledgement budget sleeps on it, and
+    /// so does nothing else here. The two cases that rest on a 50 ms budget firing pass the wall
+    /// clock and say so. The declined-seal case's 30 s budget is meant never to answer, which a
+    /// clock nobody moves guarantees and a wall clock stalled past 30 s does not.
     private static func composed(
-        fanCount: Int, budget: Duration
+        fanCount: Int, budget: Duration, clock: some MonotonicClock = ManualClock()
     ) -> (HelperComposition<ScopeParkingPlane>, ScriptedPowerObserver) {
         let observer = ScriptedPowerObserver()
         var modes: [String: Result<SensorReading, SensorReadFailure>] = [:]
@@ -40,6 +46,7 @@ struct SleepGrantSealTests {
             snapshotProvider: fanProvider(fanCount: fanCount, extraKeys: modes),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
             powerObserver: observer,
             acknowledgementBudget: budget,
             log: Fixture.helperLog,
@@ -158,7 +165,10 @@ struct SleepGrantSealTests {
     /// the snapshot says `.releaseInProgress`.
     @Test("A keystone parked across its wake still refuses a grant after the wake")
     func aKeystoneThatOutlivesItsWakeStillRefusesAGrant() async throws {
-        let (helper, observer) = Self.composed(fanCount: 1, budget: .milliseconds(50))
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the restore is parked, and a stall only makes it fire sooner.
+        let (helper, observer) = Self.composed(
+            fanCount: 1, budget: .milliseconds(50), clock: SystemMonotonicClock())
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
         await helper.plane.park(.everyFan)
@@ -205,7 +215,10 @@ struct SleepGrantSealTests {
     /// `.everyFan` `do`/`catch`. Run: red — the sweep is parked with the gate open.
     @Test("A sweep parked across its wake refuses a grant over a fan it does not cover")
     func aSweepThatOutlivesItsWakeRefusesAGrantOverAnotherFan() async throws {
-        let (helper, observer) = Self.composed(fanCount: 2, budget: .milliseconds(50))
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the restore is parked, and a stall only makes it fire sooner.
+        let (helper, observer) = Self.composed(
+            fanCount: 2, budget: .milliseconds(50), clock: SystemMonotonicClock())
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
         _ = try await helper.leases.acquireLease(

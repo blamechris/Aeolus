@@ -74,8 +74,11 @@ struct UnconfirmedHandbackTests {
         let observer = ScriptedPowerObserver()
         let witness = AcknowledgementWitness()
         let log = RecordedLog()
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), fanCount: 2,
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), fanCount: 2,
             safetyLog: log)
         observer.whenAcknowledging { [leases = helper.leases] in
             await witness.record(leaseCount: leases.leaseCount)
@@ -150,8 +153,11 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
@@ -210,8 +216,11 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedThenRefusingRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()

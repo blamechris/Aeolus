@@ -65,10 +65,27 @@ struct SystemPowerTests {
     /// Generic over the plane so the wedged-firmware test composes the *same* wiring rather
     /// than a paraphrase of it — the argument `HelperRestorerTests` makes at length, and the
     /// one that matters most for a mechanism whose entire content is an ordering.
+    ///
+    /// **`clock` defaults to a `ManualClock()` nobody advances**
+    /// ([#411](https://github.com/blamechris/Aeolus/issues/411)). § 4 races its handback against
+    /// a sleep of `budget` on this clock, and the composition also hands it to reconciliation's
+    /// 5 s budget and the lease TTL. On the system clock a runner stall longer than `budget`
+    /// inside a healthy handback lets the budget answer the system first, which is exactly what
+    /// `sleepHandsTheFansBackBeforeAllowingThePowerChange` asserts never happens. A `TestClock`
+    /// would be worse, not better: its sleep jumps to the deadline, so the budget would answer
+    /// at once on every sleep. A `ManualClock`'s sleep parks until the test moves it and ends
+    /// when the budget task is cancelled, so the budget fires only where a test says so.
+    ///
+    /// A test whose claim is that the budget fires over a wedged handback passes a short
+    /// `budget` **and** `clock: SystemMonotonicClock()`, and says so where it does: its bound
+    /// is real time, and a stall only makes it fire sooner. `reconciliationBudget` is for one
+    /// of those that also brings up, `SleepCycleAccumulationTests`.
     static func composed<Plane: FanControlPlane>(
         plane: Plane,
         observer: any SystemPowerObserving,
         budget: Duration = SystemPowerLimits.acknowledgementBudget,
+        clock: some MonotonicClock = ManualClock(),
+        reconciliationBudget: Duration = ReconciliationLimits.budget,
         fanCount: Int = 1,
         safetyLog: RecordedLog
     ) -> HelperComposition<Plane> {
@@ -77,6 +94,8 @@ struct SystemPowerTests {
             snapshotProvider: fanProvider(fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
+            reconciliationBudget: reconciliationBudget,
             powerObserver: observer,
             acknowledgementBudget: budget,
             log: helperLog,
@@ -201,8 +220,11 @@ struct SystemPowerTests {
         let plane = WedgedRestorePlane(Self.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
         let helper = Self.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
@@ -254,8 +276,11 @@ struct SystemPowerTests {
         let plane = ThreadBlockingRestorePlane(Self.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
+        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
         let helper = Self.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
@@ -611,11 +636,15 @@ struct SystemPowerTests {
     @Test("A helper composed with no power observer says so at fault level")
     func aMissingPowerObserverIsAFaultRatherThanASilentReturn() async throws {
         let log = RecordedLog()
+        // Built by hand to have no observer, on `composed`'s frozen clock: nothing here is timed,
+        // and a composition that names its clock is one a copied test cannot leave on the wall
+        // clock by accident (#411).
         let helper = HelperComposition(
             plane: Self.machine(),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: ManualClock(),
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))
