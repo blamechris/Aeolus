@@ -73,8 +73,9 @@ struct HelperClientAccessTests {
     ///
     /// All eight, because unlike the connection session there is no line to draw here: this
     /// *is* the client's state, and each of the eight is an input to a guard that reads it.
-    /// The eighth is a `let` whose object is the state: `inFlight` holds every message in
-    /// flight, and is the only thing that starts and ends their deadlines.
+    /// Three are `let`s whose object is the state: `inFlight` holds every message in flight, and
+    /// is the only thing that starts and ends their deadlines, and `healthSignal` and
+    /// `healthStreams` hold the health signal and its observers (#541).
     ///
     /// - `connection`, `negotiatedReply` and `handshake` are what "is there a live,
     ///   handshaken connection" is answered from. A sibling file that could write
@@ -89,10 +90,14 @@ struct HelperClientAccessTests {
     ///   an interruption too, so it is the only thing separating "the helper restarted under
     ///   me" from "nothing ever answered". Set to `true` from elsewhere, this client invents
     ///   a helper it never spoke to.
-    /// - `currentHealth` is what `publish` compares against before yielding, and assigning it
-    ///   directly skips both the comparison and the observers: the signal would report a
-    ///   state nothing had been told about, which is `CLAUDE.md` rule 6 in the one place this
-    ///   target exists to serve it. `observers` is the registry that yield walks.
+    /// - `healthSignal` holds the value `health` reports, which `publish` compares against
+    ///   before yielding, and the observers it yields to, under a lock of its own (#541). It is
+    ///   the only thing that publishes, and its type is not `Sendable`, so only this actor can
+    ///   use it. A sibling file holding it could set the value without the comparison, or yield
+    ///   a health nothing had happened to: the signal would report a state nothing had been told
+    ///   about, which is `CLAUDE.md` rule 6 in the one place this target exists to serve it.
+    ///   `healthStreams` is its subscribing half, which the `nonisolated` `healthUpdates()`
+    ///   reaches; it registers and removes observers and publishes nothing.
     /// - `inFlight` decides when each message's deadline starts, and answers every message
     ///   still in flight when a connection is discarded (#413). A sibling file holding it could
     ///   settle a message the helper has not answered, which starts the deadline of the
@@ -119,8 +124,8 @@ struct HelperClientAccessTests {
         "var handshake: Task<HelloReply, Error>?",
         "var hasEverHandshaken = false",
         "var generation: UInt64 = 0",
-        "var currentHealth: HelperConnectionHealth = .idle",
-        "var observers: [UUID: AsyncStream<HelperConnectionHealth>.Continuation] = [:]",
+        "let healthSignal: HealthSignal",
+        "let healthStreams: HealthSignal.Streams",
         "let inFlight: InFlightMessages",
     ]
 

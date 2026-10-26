@@ -110,7 +110,7 @@ struct HelperClientHealthStreamTests {
     func droppedStreamsLeaveNoObserver(_ churn: Churn) async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         var client = harness.client()
-        let before = try #require(await Self.observerCount(of: client), Self.noSeam)
+        let before = try #require(Self.observerCount(of: client), Self.noSeam)
 
         // The witness: a stream held open across the churn. Its first element is yielded in the
         // step that registers it, so once it arrives the count must have risen by one. That is
@@ -118,7 +118,7 @@ struct HelperClientHealthStreamTests {
         var witness = client.healthUpdates().makeAsyncIterator()
         let first = await witness.next()
         try #require(first == .idle, "the witness opened with \(String(describing: first))")
-        let joined = try #require(await Self.observerCount(of: client), Self.noSeam)
+        let joined = try #require(Self.observerCount(of: client), Self.noSeam)
         try #require(
             joined == before + 1, "the count did not see the witness: \(before), then \(joined)")
 
@@ -140,9 +140,9 @@ struct HelperClientHealthStreamTests {
         // still queued when it ends. So the count is polled for, and then read once more below.
         try await waitUntil(
             "every dropped stream's observer has been removed", timeout: Self.patience
-        ) { await Self.observerCount(of: client) == joined }
+        ) { Self.observerCount(of: client) == joined }
 
-        let after = try #require(await Self.observerCount(of: client), Self.noSeam)
+        let after = try #require(Self.observerCount(of: client), Self.noSeam)
         #expect(
             after == joined,
             """
@@ -182,6 +182,40 @@ struct HelperClientHealthStreamTests {
         // Open until the wait is over, for the reason `droppedStreamsLeaveNoObserver` gives.
         withExtendedLifetime(subscribed.updates) {}
     }
+
+    /// Health streams made and held, then dropped, `held` of them, with the count read straight
+    /// after each step and nothing awaited in between. Every observer must be registered by the
+    /// time the streams have been made, and every one gone by the time they have been dropped.
+    ///
+    /// This is #541's contract, and the churn test cannot see it. A registration or a removal
+    /// left to a task would still be correct in the end, and the churn test, which polls, would
+    /// pass it. Here nothing waits: the test function is synchronous, and the count is read under
+    /// `HealthSignal`'s lock without a hop (`observerCount(of:)`), so no task gets a turn between
+    /// a step and its count on a pool of one thread.
+    @Test(
+        "A health stream registers in the step that makes it and leaves in the step that drops it")
+    func aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt() throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let client = harness.client()
+        let before = try #require(Self.observerCount(of: client), Self.noSeam)
+
+        do {
+            let streams = (0..<Self.held).map { _ in client.healthUpdates() }
+            let joined = try #require(Self.observerCount(of: client), Self.noSeam)
+            #expect(
+                joined == before + Self.held,
+                "with \(Self.held) streams just made and held, \(joined) observers are registered")
+            withExtendedLifetime(streams) {}
+        }
+
+        let left = try #require(Self.observerCount(of: client), Self.noSeam)
+        #expect(
+            left == before,
+            "with every stream just dropped, \(left - before) of \(Self.held) are still registered")
+    }
+
+    /// How many streams `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` holds.
+    static let held = 1_000
 
     // MARK: - Churning streams
 
@@ -233,13 +267,18 @@ struct HelperClientHealthStreamTests {
 
     static let noSeam = Comment(
         rawValue:
-            "the observer count cannot be read: `HelperClient.observers` was renamed or retyped,"
-            + " and this suite reads it by name")
+            "the observer count cannot be read: `HelperClient.healthStreams` was renamed or"
+            + " retyped, and this suite reads it by name")
 
     /// How many observers `client` holds now, or `nil` if reflection does not find them.
-    static func observerCount(of client: isolated HelperClient) -> Int? {
-        let observers = Mirror(reflecting: client).descendant("observers")
-        return (observers as? [UUID: AsyncStream<HelperConnectionHealth>.Continuation])?.count
+    ///
+    /// **Synchronous, and off the client's actor.** The observers are under `HealthSignal`'s lock
+    /// (#541), so reading them needs no hop. A read that hopped would also give any task a mutant
+    /// left queued a turn to run before the count is taken, which is the one thing
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` must not allow.
+    static func observerCount(of client: HelperClient) -> Int? {
+        let streams = Mirror(reflecting: client).descendant("healthStreams")
+        return (streams as? HealthSignal.Streams)?.observerCount
     }
 
     // MARK: - Letting the client go

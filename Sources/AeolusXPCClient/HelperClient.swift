@@ -85,19 +85,20 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **258 of its lines are code**; the rest is the reasoning around them, and the
-/// rule counts comment lines. The seventeen since this section was written are the clock the
+/// purpose. **239 of its lines are code**; the rest is the reasoning around them, and the
+/// rule counts comment lines. Seventeen were added after this section was written: the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
 /// was still in flight, the refusal to send on a connection already given up, and the suite's
 /// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
-/// owns its state outright and so widens nothing here. Three more make a health stream's
-/// removal wait for its registration (#532), and they put the actor's body three lines over
-/// SwiftLint's 250-line `type_body_length` warning. That one is not suppressed either, for the
-/// reason this paragraph ends on. The count of code lines in the file, 229 when this section was
-/// written, did not move when the section was added — the file grew by fifty-odd lines and by
-/// none of the thing the threshold is worth measuring, which is the whole argument in one
-/// measurement. Neither warning is suppressed, deliberately — no `swiftlint:disable`, no
+/// owns its state outright and so widens nothing here. Three more made a health stream's
+/// removal wait for its registration (#532), and put the actor's body at 253 lines, three over
+/// SwiftLint's 250-line `type_body_length` warning. That took the file to 258 code lines. #541
+/// then gave the health signal's state a type of its own (`HealthSignal`, below), which took the
+/// file to 239 and the actor's body to 234. The count of code lines in the file, 229 when this
+/// section was written, did not move when the section was added — the file grew by fifty-odd
+/// lines and by none of the thing the threshold is worth measuring, which is the whole argument
+/// in one measurement. Neither warning is suppressed, deliberately — no `swiftlint:disable`, no
 /// `file_length` or `type_body_length` override in `.swiftlint.yml` — because a file, or a body,
 /// that grew by two hundred lines of *logic* should draw exactly the attention this one drew.
 ///
@@ -127,25 +128,25 @@ import Foundation
 ///   is that a generation travels with its connection instead of being read back off the
 ///   actor. `HelperClientAccessTests` records the attempt.
 /// - **The health signal** — `currentHealth`, `observers`, `publish`, `observe`,
-///   `stopObserving` — is the one slice that could own its state outright in a type of its
-///   own rather than borrowing this actor's, so it is the one that would widen nothing. When
+///   `stopObserving` — was the one slice that could own its state outright in a type of its
+///   own rather than borrowing this actor's, so it was the one that would widen nothing. When
 ///   this was written (#268) it was worth about twenty-five lines, against a file of 665 lines,
 ///   some 265 past the 400-line `file_length` warning, in exchange for an indirection on the
 ///   path that reports whether this client can see the helper at all. Not worth doing for a
 ///   line count; worth reconsidering on its own merits if the signal grows.
 ///
-///   It grew by three lines in #532, from twenty-seven to thirty, counting `healthUpdates()`,
-///   the stream, which that figure included though the list above does not name it. The five
-///   members listed are the same seventeen lines. #534 noted that the growth went unremarked
-///   here; it did not take the split question up. The three lines are about the state and who
-///   reaches it, not only about the stream's end: they exist because `observers` is this
-///   actor's state and `healthUpdates()`, which registers and removes observers, is
-///   `nonisolated`. So each reaches it through a task, and two tasks reach the actor in no set
-///   order. That is the merit of the alternative this bullet names. A type that owned the
-///   observers and the value now under a lock could register in the stream's builder and
-///   remove in its termination handler, both synchronously, and the race the three lines order
-///   would not exist (#541). The five are not the signal's only readers: `health` reads
-///   `currentHealth` too.
+///   It grew by three lines in #532, which made a stream's removal wait for its registration.
+///   #534 noted that the growth went unremarked here; it did not take the split question up.
+///   Those three lines existed because `observers` was this actor's state and
+///   `healthUpdates()`, which registers and removes observers, is `nonisolated`, so each reached
+///   it through a task, and two tasks reach the actor in no set order. That was the merit, and
+///   #541 took it: `HealthSignal` owns the value now and the observers under a lock, so a
+///   stream registers in its builder and leaves in its termination handler, both synchronously,
+///   and the race the three lines ordered cannot happen. The indirection is the cost #268
+///   weighed, paid for the race rather than for a line count. It widened nothing:
+///   `healthSignal` and `healthStreams` are `private`, held so by `HelperClientAccessTests`; the
+///   signal's publishing half is not `Sendable`, so only this actor publishes; and `publish(_:)`
+///   stays here as the one way the health changes, which `health` reads.
 ///
 /// The threshold is not this file's problem in particular either. Over thirty files in the tree
 /// are past it, ten-odd of them under `Sources`, and **four of those are longer than this
@@ -186,8 +187,12 @@ public actor HelperClient {
     /// being classified — libxpc fires the interruption handler on its own thread, so by the
     /// time a failed message is being explained, the reply may already be gone.
     private var hasEverHandshaken = false
-    private var currentHealth: HelperConnectionHealth = .idle
-    private var observers: [UUID: AsyncStream<HelperConnectionHealth>.Continuation] = [:]
+
+    /// The connection's health, and its observers, under a lock of their own (#541). Published to
+    /// only by `publish(_:)`, on this actor. See `HealthSignal`.
+    private let healthSignal: HealthSignal
+    /// The half of `healthSignal` that only subscribes, which `healthUpdates()` reaches.
+    private let healthStreams: HealthSignal.Streams
 
     /// Which connection object a handler is talking about.
     ///
@@ -258,6 +263,9 @@ public actor HelperClient {
         self.clientDescription = clientDescription
         self.deadlines = deadlines
         self.inFlight = InFlightMessages(clock: clock)
+        let healthSignal = HealthSignal(startingWith: .idle)
+        self.healthSignal = healthSignal
+        self.healthStreams = healthSignal.streams
     }
 
     // MARK: - What a caller may ask about the connection
@@ -272,7 +280,7 @@ public actor HelperClient {
 
     /// The connection's health right now. See `HelperConnectionHealth` — this is ADR 0006's
     /// switch for the app.
-    public var health: HelperConnectionHealth { currentHealth }
+    public var health: HelperConnectionHealth { healthSignal.current }
 
     /// Which connection this client is on, for a suite that has to name one.
     ///
@@ -297,45 +305,24 @@ public actor HelperClient {
     /// combine a first read with a stream to know where it stands. Buffers unboundedly by
     /// default and the values are seven cases, so a slow consumer costs nothing that matters.
     ///
-    /// **A stream that ends leaves, whether it ends before its observer is registered or
-    /// after (#532).** The registration and the removal are each a task, because this function
-    /// is `nonisolated` and the observers are the actor's. A stream can end before its
-    /// registration has run, as one dropped as soon as it is made does, and two tasks reach the
-    /// actor in no set order. So a removal that went first found nothing to remove, and the
-    /// registration then added an observer that nothing would take away. `LeaseDriver`
-    /// subscribes once per lease and ends the subscription with the lease, so that could leave
-    /// one observer behind for each short lease. The removal therefore awaits the registration's
-    /// task before it removes, and the observer is added once and taken away once, whichever
-    /// comes first. It is an order and not a check of whether the stream has ended, because
-    /// `AsyncStream`'s `cancel()` runs the handler before it marks the stream terminated.
-    /// `LeaseDriverPublisher.stream(of:add:remove:)` does the same, for the same reason (#526).
+    /// **A stream that ends leaves**, whether it ends at once or after a long read. The
+    /// observer is registered in the step that makes the stream and removed in the step that ends
+    /// it, both under `HealthSignal`'s lock, with no task between (#541). `LeaseDriver`
+    /// subscribes once per lease and ends the subscription with the lease, so an observer left
+    /// behind would be one per short lease.
     ///
-    /// The handler is set after the registration's task is made, so that it can name the task.
-    /// Nothing can end the stream before then: this closure runs inside `AsyncStream`'s
-    /// initialiser, before anyone holds the stream, and nothing in this client calls `finish()`.
+    /// Before #541 the registration and the removal were each a task, because this function is
+    /// `nonisolated` and the observers were the actor's. Two tasks reach the actor in no set
+    /// order, so a stream that ended before its registration ran left an observer that nothing
+    /// would take away (#532), and #533 made the removal wait for the registration. Now there is
+    /// no task, and no order to keep.
+    ///
+    /// Nothing a stream holds reaches this client: its termination handler holds the observers
+    /// weakly, and nothing else. A strong reference to this client there would be a retain cycle
+    /// that kept a connection-owning actor alive for as long as anyone forgot to end the stream.
+    /// `HelperClientHealthStreamTests` frees a client whose health stream is still open.
     nonisolated public func healthUpdates() -> AsyncStream<HelperConnectionHealth> {
-        AsyncStream { continuation in
-            let token = UUID()
-            let registration = Task { await self.observe(continuation, as: token) }
-            // `[weak self]`, because this client holds the continuation and the
-            // continuation holds this closure: capturing strongly is a retain cycle that
-            // keeps a connection-owning actor alive for as long as anyone forgets to end
-            // the stream. The closure also holds the registration's task, which holds this
-            // client until it ends, and a task that has ended holds nothing it captured, so the
-            // cycle does not form through it either. `HelperClientHealthStreamTests` frees a
-            // client whose health stream is still open.
-            continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                // This task holds `self` strongly until the removal has run. That is what once made
-                // it valid for `HelperClientHealthStreamTests` to read its count a single time, as
-                // soon as the test held the client alone: no removal could still be queued then.
-                // The test now polls for the count, so it no longer depends on this capture (#534).
-                Task {
-                    await registration.value
-                    await self.stopObserving(token)
-                }
-            }
-        }
+        healthStreams.updates()
     }
 
     // MARK: - The two gates
@@ -798,22 +785,9 @@ public actor HelperClient {
 
     // MARK: - The health signal
 
+    /// The one way this client's health changes, and only ever on this actor.
     private func publish(_ health: HelperConnectionHealth) {
-        guard health != currentHealth else { return }
-        currentHealth = health
-        for continuation in observers.values { continuation.yield(health) }
-    }
-
-    private func observe(
-        _ continuation: AsyncStream<HelperConnectionHealth>.Continuation,
-        as token: UUID
-    ) {
-        observers[token] = continuation
-        continuation.yield(currentHealth)
-    }
-
-    private func stopObserving(_ token: UUID) {
-        observers[token] = nil
+        healthSignal.publish(health)
     }
 
 }
