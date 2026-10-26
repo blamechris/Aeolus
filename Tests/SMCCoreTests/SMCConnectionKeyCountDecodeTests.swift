@@ -3,7 +3,7 @@ import Testing
 
 @testable import SMCCore
 
-/// `SMCConnection.decodeKeyCount(value:generation:)` is everything `keyCount()` does after its
+/// `SMCConnection.decodeKeyCount(value:)` is everything `keyCount()` does after its
 /// one `READ_BYTES`. `SMCConnection` has no scripted transport, so this is the seam that lets a
 /// test hand `#KEY` a value no real Mac has produced, the same way
 /// `SMCConnectionKeyCountFallbackTests` drives `decodeKeyCountFallback(value:)`.
@@ -75,6 +75,12 @@ struct SMCConnectionKeyCountDecodeTests {
         Reply(
             name: "ui64 2^63", type: .ui64,
             bytes: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], decodesTo: twoToThe63),
+        // 2^63 − 512 is the smallest value Double rounds up to 2^63: it sits exactly halfway
+        // between 2^63 − 1024 and 2^63, and the tie goes to 2^63, whose significand is even.
+        // `representableEdges` holds the value one below it.
+        Reply(
+            name: "ui64 2^63 − 512, the smallest value that rounds up to 2^63", type: .ui64,
+            bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00], decodesTo: twoToThe63),
         Reply(
             name: "ui64 max", type: .ui64,
             bytes: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], decodesTo: 2 * twoToThe63),
@@ -93,7 +99,7 @@ struct SMCConnectionKeyCountDecodeTests {
         #expect(
             throws: SMCError.unrepresentableKeyCount(type: reply.type, bytes: reply.bytes)
         ) {
-            _ = try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern)
+            _ = try SMCConnection.decodeKeyCount(value: reply.value)
         }
     }
 
@@ -112,7 +118,90 @@ struct SMCConnectionKeyCountDecodeTests {
     func minusOneReachesThePlausibilityBound(_ reply: Reply) throws {
         #expect(reply.isDecodedValue(try reply.value.scalar()))
         #expect(throws: SMCError.implausibleKeyCount(declared: -1)) {
-            _ = try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern)
+            _ = try SMCConnection.decodeKeyCount(value: reply.value)
+        }
+    }
+
+    /// One scripted reply that converts to a whole `Int`, and the `Int` it must convert to.
+    /// `declared` is written out as a literal, not derived from `reply.decodesTo`, so the
+    /// assertion does not compare a number to itself.
+    struct Edge: Sendable, CustomTestStringConvertible {
+        let reply: Reply
+        let declared: Int
+
+        var testDescription: String { reply.name }
+    }
+
+    /// 2^63 − 1024, the largest `Double` below 2^63, and so the largest value
+    /// `Int(exactly:)` can return from a decoded scalar. `Int.max` itself has no `Double`.
+    static let largestDoubleBelowTwoToThe63: Double = 9_223_372_036_854_774_784
+
+    /// The representable side of both edges of `Int`'s range. Each converts to a whole `Int`,
+    /// so it must reach `validatePlausibleKeyCount(_:)` and be refused there as
+    /// `implausibleKeyCount`, carrying the converted value, never as
+    /// `unrepresentableKeyCount`. A conversion guard written one step too tight at either end
+    /// would refuse these as unrepresentable, and these turn red on the error's case.
+    static let representableEdges: [Edge] = [
+        // −2^63 is Int.min exactly, and a Double holds it exactly.
+        Edge(
+            reply: Reply(
+                name: "si64 Int64.min, −2^63 exactly", type: .si64,
+                bytes: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], decodesTo: -twoToThe63),
+            declared: Int.min),
+        Edge(
+            reply: Reply(
+                name: "flt −2^63 exactly", type: .flt, bytes: [0xDF, 0x00, 0x00, 0x00],
+                decodesTo: -twoToThe63),
+            declared: Int.min),
+        // 2^63 − 513 is the largest ui64 that stays below 2^63 through Double: it is 511 from
+        // 2^63 − 1024 and 513 from 2^63, so it rounds down.
+        Edge(
+            reply: Reply(
+                name: "ui64 2^63 − 513, which rounds down to 2^63 − 1024", type: .ui64,
+                bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD, 0xFF],
+                decodesTo: largestDoubleBelowTwoToThe63),
+            declared: 9_223_372_036_854_774_784),
+        Edge(
+            reply: Reply(
+                name: "si64 2^63 − 513, which rounds down to 2^63 − 1024", type: .si64,
+                bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD, 0xFF],
+                decodesTo: largestDoubleBelowTwoToThe63),
+            declared: 9_223_372_036_854_774_784),
+    ]
+
+    @Test(
+        "A #KEY at either representable edge of Int converts and is refused as implausible",
+        arguments: representableEdges)
+    func representableEdgeReachesThePlausibilityBound(_ edge: Edge) throws {
+        #expect(edge.reply.isDecodedValue(try edge.reply.value.scalar()))
+        #expect(throws: SMCError.implausibleKeyCount(declared: edge.declared)) {
+            _ = try SMCConnection.decodeKeyCount(value: edge.reply.value)
+        }
+    }
+
+    /// A non-numeric declared type has no count in it, and that is the error, whether or not
+    /// the byte order was resolved. Each type appears twice, once with an order and once
+    /// without: before #531 both reported `integerByteOrderUndetectable`, which `fanctl`
+    /// describes as "SMC interface generation unknown". The bytes are `#KEY`'s own
+    /// `Mac16,5` bytes, so a decode that ignored the declared type would find a count in them.
+    static let nonNumeric: [SMCValue] = [SMCKeyType.hex, .ch8, .unknown(0x7A7A_7A7A)]
+        .flatMap { type in
+            [SMCByteOrder.bigEndian, nil].map { order in
+                SMCValue(
+                    key: SMCKey.keyCount, type: type, bytes: [0x00, 0x00, 0x0D, 0x39],
+                    byteOrder: order)
+            }
+        }
+
+    @Test(
+        "A #KEY declaring a non-numeric type is refused as non-numeric, whatever its byte order",
+        arguments: nonNumeric)
+    func nonNumericTypeIsRefusedAsNonNumeric(_ value: SMCValue) {
+        #expect(!value.type.isNumeric)
+        #expect(
+            throws: SMCError.nonNumericKeyCount(type: value.type, bytes: [0x00, 0x00, 0x0D, 0x39])
+        ) {
+            _ = try SMCConnection.decodeKeyCount(value: value)
         }
     }
 
@@ -131,16 +220,19 @@ struct SMCConnectionKeyCountDecodeTests {
     @Test("A whole, plausible #KEY value still decodes", arguments: wholeCounts)
     func wholeCountDecodes(_ reply: Reply) throws {
         #expect(reply.isDecodedValue(try reply.value.scalar()))
-        #expect(try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern) == 3385)
+        #expect(try SMCConnection.decodeKeyCount(value: reply.value) == 3385)
     }
 
     /// The generation-undetermined branch moved into the same function, so it is pinned here
-    /// too: with no byte order, `scalar()` declines and the `ui32` fallback answers.
+    /// too: with no byte order, `scalar()` declines and the `ui32` fallback answers. An unknown
+    /// generation reaches this function only as `byteOrder == nil`, which `read(_:)` sets.
+    /// `SMCConnectionKeyCountGenerationFlowTests` pins part of that route; #539 records the
+    /// part nothing pins.
     @Test("With no generation, a ui32 #KEY still decodes through the big-endian fallback")
     func undeterminedGenerationUsesTheFallback() throws {
         let value = SMCValue(
             key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39], byteOrder: nil)
-        #expect(try SMCConnection.decodeKeyCount(value: value, generation: nil) == 3385)
+        #expect(try SMCConnection.decodeKeyCount(value: value) == 3385)
     }
 
     @Test("With no generation and no fallback for the declared type, the decode refuses")
@@ -148,7 +240,7 @@ struct SMCConnectionKeyCountDecodeTests {
         let value = SMCValue(
             key: SMCKey.keyCount, type: .flt, bytes: [0x45, 0x53, 0x90, 0x00], byteOrder: nil)
         #expect(throws: SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)) {
-            _ = try SMCConnection.decodeKeyCount(value: value, generation: nil)
+            _ = try SMCConnection.decodeKeyCount(value: value)
         }
     }
 }

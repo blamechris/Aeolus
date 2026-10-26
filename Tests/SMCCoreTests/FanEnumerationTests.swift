@@ -80,6 +80,30 @@ struct SMCFanEnumerationTests {
         }
     }
 
+    /// A fraction is inside the plausible range and is still not a fan count. Until #531 it
+    /// was rounded: 0.25 to no fans, 0.5 to one, 1.5 to two and 2.75 to three. It is refused
+    /// now, by the rule `SMCConnection.decodeKeyCount(value:)` applies to `#KEY`, and the
+    /// declared value travels with the error unchanged, so a report shows what the firmware
+    /// sent. Under the old rounding none of these throws: 0.25 is an empty enumeration, and
+    /// the others enumerate, with any fan past the one fixture reported unavailable.
+    @Test(
+        "A fractional FNum is refused, never rounded into a count",
+        arguments: [0.25, 0.5, 1.5, 2.75])
+    func fractionalFanCountIsRefused(declared: Double) async {
+        let provider = FakeSensorProvider(
+            keyedResults: machine(fanCount: declared, fans: [FanFixture(actual: 1343.07)]))
+
+        let error = await #expect(throws: SMCFanEnumerationError.self) {
+            try await SMCFanEnumeration.enumerate(provider: provider)
+        }
+        guard case .implausibleFanCount(let reported) = error else {
+            Issue.record(
+                "expected .implausibleFanCount for \(declared), got \(String(describing: error))")
+            return
+        }
+        #expect(reported == declared)
+    }
+
     /// The bound is a ceiling, not a strict one: a machine declaring exactly
     /// `maxPlausibleFanCount` fans is trusted. Asserted so a future off-by-one that tightens
     /// the guard into rejecting the boundary value is a failure rather than a silent
