@@ -386,10 +386,19 @@ enum LeaseFixture {
     /// The real `StartupReconciliation` over `plane`, wired exactly as the composition root
     /// wires it: the same restorer type, the same `.panicRestore` writer for the
     /// machine-wide verb.
+    ///
+    /// **`clock` defaults to a frozen `TestClock()`**
+    /// ([#411](https://github.com/blamechris/Aeolus/issues/411)). `reconcile()` is the only
+    /// method that reads it, against a 5 s budget, so on the system clock a runner stall longer
+    /// than the budget runs the pass out and it takes its keystone path: the #407 failure. No
+    /// caller that takes this default reconciles today, as the grant-time and handback seams
+    /// never consult the clock; the default is frozen so that one that starts to cannot
+    /// inherit the stall. A case about the deadline passes a `TestClock` it moves itself, as
+    /// `StartupReconciliationReadBackTests.anExhaustedBudgetReadsNothingBack` does.
     static func reconciliation<Plane: FanControlPlane>(
         over plane: Plane,
         enumeration: some FanEnumerating = ScriptedFanEnumeration(),
-        clock: some MonotonicClock = SystemMonotonicClock(),
+        clock: some MonotonicClock = TestClock(),
         budget: Duration = ReconciliationLimits.budget,
         log: SafetyLog = SafetyLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
     ) -> StartupReconciliation<Plane> {
@@ -453,6 +462,11 @@ enum LeaseFixture {
     /// machine that goes blind *while a sighting is unexpired* is refused only after the
     /// sighting ages out, and demonstrating that needs time to pass without wall time
     /// passing.
+    ///
+    /// Its default stays the system clock, unlike the composition and reconciliation fixtures
+    /// (#411). The cache runs no pass, and its one bound is the 1 s age: a stall past it costs
+    /// one more read of the same scripted answer, which only a read count can see, and every
+    /// suite that counts reads passes a clock of its own or holds the read in flight.
     static func cache(
         over plane: ScriptedControlPlane,
         clock: any MonotonicClock = SystemMonotonicClock()
