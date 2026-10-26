@@ -85,18 +85,20 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **255 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **258 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. The seventeen since this section was written are the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
 /// was still in flight, the refusal to send on a connection already given up, and the suite's
 /// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
-/// owns its state outright and so widens nothing here. The figure, 229 then, did not move when
-/// this section was added — the file grew by fifty-odd lines and by none of the thing the
-/// threshold is worth measuring, which is the whole argument in one measurement. The warning
-/// is deliberately **not** suppressed — no `swiftlint:disable`, no `file_length` override in
-/// `.swiftlint.yml` — because a file that grew by two hundred lines of *logic* should draw
-/// exactly the attention this one drew.
+/// owns its state outright and so widens nothing here. Three more make a health stream's
+/// removal wait for its registration (#532), and they put the actor's body three lines over
+/// SwiftLint's 250-line `type_body_length` warning, which is not suppressed either, for the
+/// reason below. The figure, 229 then, did not move when this section was added — the file grew by
+/// fifty-odd lines and by none of the thing the threshold is worth measuring, which is the whole
+/// argument in one measurement. The warning is deliberately **not** suppressed — no
+/// `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that grew by
+/// two hundred lines of *logic* should draw exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -279,19 +281,42 @@ public actor HelperClient {
     ///
     /// Yields the current value immediately on subscription, so a subscriber never has to
     /// combine a first read with a stream to know where it stands. Buffers unboundedly by
-    /// default and the values are four cases, so a slow consumer costs nothing that matters.
+    /// default and the values are seven cases, so a slow consumer costs nothing that matters.
+    ///
+    /// **A stream that ends leaves, whether it ends before its observer is registered or
+    /// after (#532).** The registration and the removal are each a task, because this function
+    /// is `nonisolated` and the observers are the actor's. A stream can end before its
+    /// registration has run, as one dropped as soon as it is made does, and two tasks reach the
+    /// actor in no set order. So a removal that went first found nothing to remove, and the
+    /// registration then added an observer that nothing would take away. `LeaseDriver`
+    /// subscribes once per lease and ends the subscription with the lease, so that could leave
+    /// one observer behind for each short lease. The removal therefore awaits the registration's
+    /// task before it removes, and the observer is added once and taken away once, whichever
+    /// comes first. It is an order and not a check of whether the stream has ended, because
+    /// `AsyncStream`'s `cancel()` runs the handler before it marks the stream terminated.
+    /// `LeaseDriverPublisher.stream(of:add:remove:)` does the same, for the same reason (#526).
+    ///
+    /// The handler is set after the registration's task is made, so that it can name the task.
+    /// Nothing can end the stream before then: this closure runs inside `AsyncStream`'s
+    /// initialiser, before anyone holds the stream, and nothing in this client calls `finish()`.
     nonisolated public func healthUpdates() -> AsyncStream<HelperConnectionHealth> {
         AsyncStream { continuation in
             let token = UUID()
+            let registration = Task { await self.observe(continuation, as: token) }
             // `[weak self]`, because this client holds the continuation and the
             // continuation holds this closure: capturing strongly is a retain cycle that
             // keeps a connection-owning actor alive for as long as anyone forgets to end
-            // the stream.
+            // the stream. The closure also holds the registration's task, which holds this
+            // client until it ends, and a task that has ended holds nothing it captured, so the
+            // cycle does not form through it either. `HelperClientHealthStreamTests` frees a
+            // client whose health stream is still open.
             continuation.onTermination = { [weak self] _ in
                 guard let self else { return }
-                Task { await self.stopObserving(token) }
+                Task {
+                    await registration.value
+                    await self.stopObserving(token)
+                }
             }
-            Task { await self.observe(continuation, as: token) }
         }
     }
 
