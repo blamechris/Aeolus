@@ -60,8 +60,8 @@ public enum SensorReadFailure: Error, Sendable, Hashable {
     /// fabricated zero-valued reading; see `SMCSensorProvider.read(keys:)`.
     case unknownKey(String)
     /// The key is recognised but reading it failed. `reason` is the provider's own
-    /// human-readable description (e.g. an `SMCError`'s), carried for diagnostics only —
-    /// never parsed or matched on by a caller.
+    /// human-readable description (for the SMC, an `SMCError`'s `readableDescription`),
+    /// carried for diagnostics only — never parsed or matched on by a caller.
     case readFailed(reason: String)
     /// The provider produced a value but it does not decode to a usable reading — for
     /// example a non-numeric SMC type, or a scalar decode that itself failed.
@@ -281,28 +281,54 @@ public struct SMCSensorProvider: SensorProvider {
     /// Converts one `SMCKeyReadOutcome` into the provider-agnostic `SensorReadOutcome`
     /// vocabulary — see `SensorReadFailure` for why this does not simply pass `SMCError`
     /// through.
-    private func sensorResult(
+    ///
+    /// Every reason is `SMCError.readableDescription` text or names the declared type, never
+    /// `String(describing:)` of an `SMCError`. The reason is what `fanctl list`, `fanctl watch`
+    /// and the app print beside the key.
+    ///
+    /// Internal rather than `private` so it is directly unit-testable via `@testable import`:
+    /// `SMCConnection` has no scripted transport, so `read(keys:)` cannot hand this a failure
+    /// or an unresolved byte order without hardware that produces one.
+    func sensorResult(
         for key: SMCKey, _ outcome: SMCKeyReadOutcome
     ) -> Result<SensorReading, SensorReadFailure> {
         switch outcome.result {
         case .failure(.keyNotFound(let missingKey)):
             return .failure(.unknownKey(missingKey.rawValue))
         case .failure(let error):
-            return .failure(.readFailed(reason: String(describing: error)))
+            return .failure(.readFailed(reason: error.readableDescription))
         case .success(let value):
             do {
                 guard let scalar = try value.scalar() else {
-                    return .failure(
-                        .notDecodable(reason: "\(value.type.fourCharString) is not numeric"))
+                    return .failure(.notDecodable(reason: Self.undecodedReason(for: value)))
                 }
                 return .success(
                     SensorReading(
                         key: key.rawValue, value: scalar, kind: Self.kind(for: key),
                         providerIdentifier: identifier))
             } catch {
-                return .failure(.notDecodable(reason: String(describing: error)))
+                return .failure(.notDecodable(reason: SMCError.readableDescription(of: error)))
             }
         }
+    }
+
+    /// Why `value.scalar()` returned `nil`. That has two causes, and they need different words.
+    ///
+    /// - The declared type is not a number (`ch8*`, `hex_`, `{fds`, `{jst`, or a code this
+    ///   project does not know). No byte order would change that.
+    /// - The declared type is a number, but its byte order is firmware-declared per key and
+    ///   was never resolved, because the SMC interface generation could not be detected. That
+    ///   applies to the six plain integers, `flt` and `ioft`; see `SMCValue.scalar()`. Calling
+    ///   such a value "not numeric" would send whoever reads it after the wrong fault.
+    ///
+    /// Keyed on the declared type (`CLAUDE.md` rule 9), not on `value.byteOrder`: on a Mac
+    /// whose generation is unknown, every key's `byteOrder` is `nil`, the non-numeric ones
+    /// included, and those are still not numeric.
+    static func undecodedReason(for value: SMCValue) -> String {
+        guard value.type.isNumeric else {
+            return "\(value.type.fourCharString) is not numeric"
+        }
+        return SMCError.byteOrderUndetectableDescription(of: value.type.fourCharString)
     }
 
     /// Classifies a key's physical kind using only the fan-key naming convention
