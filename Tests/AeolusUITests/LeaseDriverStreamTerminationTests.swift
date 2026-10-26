@@ -6,29 +6,31 @@ import Testing
 
 @testable import AeolusLeaseControl
 
-/// What `LeaseDriverPublisher.stream(of:add:remove:)` does when a stream ends (#514, #526).
-/// Nothing in the other suites reads either half, so a later edit could drop either and leave
-/// them green.
+/// What a lease driver's stream does in the steps that make it and end it (#514, #526, #541).
+/// Nothing in the other suites reads any of it, so a later edit could break it and leave them
+/// green.
 ///
-/// 1. **A stream that ends leaves**, whether it ends after its observer is registered or before.
-///    Its termination handler takes the observer out of the driver's publisher, on the driver's
-///    actor, once the registration has run. Without that, every ended stream's continuation
-///    stays registered, and every later transition yields to it.
-///    `aCancelledReaderRemovesItsObserver()` ends streams that have registered.
-///    `droppedStreamsLeaveNoObserver(_:)` drops streams as they are made, so many end first.
-/// 2. **The handler holds the driver weakly.** The driver holds the observer, and the observer
-///    holds the handler, so a strong capture would make a cycle that keeps the driver alive while
-///    its streams are open.
+/// 1. **A stream that ends leaves**, whether it ends at once or after a long read. Its
+///    termination handler takes the observer out of the driver's publisher, under the
+///    publisher's lock. Without that, every ended stream's continuation stays registered, and
+///    every later transition yields to it. `aCancelledReaderRemovesItsObserver()` ends streams
+///    that have been read. `droppedStreamsLeaveNoObserver(_:)` drops thousands as they are made.
+/// 2. **It joins and leaves synchronously (#541):** registered by the time the call that makes it
+///    returns, and gone by the time whatever drops it returns.
+///    `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()`.
+/// 3. **Nothing a stream holds reaches the driver.** The driver holds the observer, and the
+///    observer holds the handler, so a handler that held the driver would make a cycle that keeps
+///    the driver alive while its streams are open. `theDriverIsHeldWeakly()`.
 ///
 /// ## How the observers are counted
 ///
-/// The publisher's dictionaries are `private`, and the driver's publisher is a `private`
-/// property, so there is no count to call. `observerCounts(of:)` reads them by reflection, from
-/// inside the driver's actor; `LeaseDriver.runningHeartbeat` notes that reflection reaches a
-/// private property from any module. It adds no access to the driver's code, and **it fails
-/// closed**: a renamed property makes the count `nil`, and every test that reads a count requires
-/// one before it claims anything, so a rename is a red there and never a count of zero.
-/// `theDriverIsHeldWeakly()` reads no count.
+/// The driver's `streams` is a `private` property, so there is no count to call on the driver.
+/// `observerCounts(of:)` reads it by reflection and asks it for its counts
+/// (`LeaseDriverPublisher.Streams.observerCounts`, which is there for this suite);
+/// `LeaseDriver.runningHeartbeat` notes that reflection reaches a private property from any
+/// module. It adds no access to the driver's code, and **it fails closed**: a renamed or retyped
+/// property makes the count `nil`, and every test that reads a count requires one before it
+/// claims anything, so a rename is a red there and never a count of zero.
 ///
 /// ## The waits
 ///
@@ -47,14 +49,16 @@ struct LeaseDriverStreamTerminationTests {
     /// tasks that are cancelled. The count of observers must fall back to what the scene alone
     /// subscribed, and the scene's own observers must still be published to.
     ///
-    /// **Mutation (P5, no removal):** in `LeaseDriverPublisher.stream(of:add:remove:)`, delete the
-    /// `await remove(driver, token)` line from the handler's task. Run: red at `left == before`, a
-    /// `#require`, so the test ends there after `patience` steps (about 4 s here), with the two
-    /// ended streams' observers still registered. `droppedStreamsLeaveNoObserver(_:)` goes red
-    /// too, and `theDriverIsHeldWeakly()` stays green. The same assertion goes red when the token
-    /// handed to `remove` is a fresh `UUID()` (P5b), and when `stateUpdates()`'s or
-    /// `reportUpdates()`'s own `remove` closure in `LeaseDriver.swift` does nothing (W2, W1), so
-    /// the driver's wiring is pinned as well as the handler.
+    /// **Mutation (P5, no removal):** in `Followers.stream()` in `LeaseDriverPublisher.swift`,
+    /// make the termination handler's body `_ = self` in place of the removal. Run, debug: red at
+    /// `left == before`, a `#require`, in 3 of 3, so the test ends there after `patience` steps,
+    /// with the two ended streams' observers still registered. Both cases of
+    /// `droppedStreamsLeaveNoObserver(_:)` and `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()`
+    /// go red too, and `theDriverIsHeldWeakly()` stays green.
+    ///
+    /// Before #541 the same assertion also went red when the token handed to `remove` was a fresh
+    /// `UUID()` (P5b), and when `stateUpdates()`'s or `reportUpdates()`'s `remove` closure did
+    /// nothing (W2, W1). Those closures are gone: the token never leaves `Followers.stream()`.
     @Test("Cancelling a stream's reader removes its observer, and a later transition adds none")
     func aCancelledReaderRemovesItsObserver() async throws {
         let scene = await LeaseScene()
@@ -94,16 +98,24 @@ struct LeaseDriverStreamTerminationTests {
 
     /// A driver that nothing holds is freed while a reader still follows each of its streams.
     ///
-    /// **Mutation (P6, strong capture):** in `stream(of:add:remove:)`, replace the handler
-    /// `{ [weak driver] _ in guard let driver else { return } ... }` with `{ [driver] _ in ... }`.
-    /// Run: red at `freed`, after `patience` steps; the other two tests stay green.
+    /// **Mutation (P6, a handler that holds the driver):** give `Followers.stream()` a parameter
+    /// `holding anchor: (any Sendable)?` that the termination handler captures strongly, pass it
+    /// through `Streams.stateUpdates(holding:)` and `reportUpdates(holding:)`, and have the
+    /// driver's `stateUpdates()` and `reportUpdates()` pass `self`. Run, debug: red at `freed` in
+    /// 3 of 3; every other test here stays green. Before #541 the handler named the driver, and
+    /// the same red came from writing its `[weak driver]` as `[driver]`.
     ///
-    /// **Mutation (M2, a registration that outlives `add`):** in `stream(of:add:remove:)`, have
-    /// the registration's task sleep for an hour after `add`
-    /// (`try? await Task.sleep(for: .seconds(3_600))`). The handler holds that task, and the task
-    /// holds the driver. Run: red at `freed`; the other two tests go red too, at `left == before`
-    /// and at `quiet`. So a registration's task that still held the driver after `add` is a red
-    /// here.
+    /// **Mutation (P6F, the same on a stream that has already ended):** P6, and
+    /// `continuation.finish()` after the handler is set. The handler runs inside the stream's
+    /// initialiser and lets go of the driver, so the driver is freed however the handler holds it.
+    /// Run, debug: red in 3 of 3 at the count `subscribeAndLetGo()` checks, with no observer
+    /// registered. `aCancelledReaderRemovesItsObserver()` and the join-and-leave test go red too,
+    /// at their counts after subscribing. The first elements still arrive, because the
+    /// registration yields them before the stream is finished, so waiting for them does not show
+    /// that the streams are open.
+    ///
+    /// M2, a registration task that outlived its registration, was a red here before #541. There
+    /// is no registration task now.
     ///
     /// **The streams are open on purpose.** With the readers cancelled, and their observers gone,
     /// before the driver was let go, P6 stayed green: the driver was freed. The cycle runs
@@ -119,13 +131,13 @@ struct LeaseDriverStreamTerminationTests {
     }
 
     /// Streams dropped as soon as they are made, `churned` of each kind. A stream that is dropped
-    /// ends at once, often before the task that registers its observer has run. Every observer
-    /// must be gone once every task the streams started has ended.
+    /// ends at once. Every observer must be gone once every stream has been dropped.
     ///
-    /// **Two ways to drop them** (`Churn`). Dropped where they are made, each stream's two tasks
-    /// are started one after the other from this test's task. Made on a task at `.low` and dropped
-    /// here, the registrations are started from that task and the removals from this one. Each
-    /// found the leak where the other did not. Before #526's fix, at 5,000 of each kind:
+    /// **Two ways to drop them** (`Churn`). Before #541 each stream started two tasks, one to
+    /// register and one to remove. Dropped where they are made, both were started one after the
+    /// other from this test's task. Made on a task at `.low` and dropped here, the registrations
+    /// were started from that task and the removals from this one. Each found the leak where the
+    /// other did not. Before #526's fix, at 5,000 of each kind:
     ///
     /// | Build | Runs red | Dropped where made | Dropped above the maker's priority |
     /// |---|---|---|---|
@@ -137,37 +149,31 @@ struct LeaseDriverStreamTerminationTests {
     /// The pool of one thread is `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`. The fix passed the same
     /// runs: 10 of 10 in each build, and 5 of 5 in each on one thread.
     ///
-    /// **When to count.** Nothing announces that a dropped stream's registration has run, and a
-    /// count taken before it ran would read the baseline on code that leaks. So the count first
-    /// waits until this test's reference is the driver's only strong one
-    /// (`untilOnlyTheCallerHolds(_:)`). The tasks that register and remove each hold the driver
-    /// strongly until they end, and the termination handler holds it weakly, so today that is when
-    /// every one of them has ended. Anything else that held the driver would run the wait out: a
-    /// red at `quiet` (M2 shows it), never a count read early.
+    /// **When to count.** Before #541, nothing announced that a dropped stream's registration had
+    /// run, so the count first waits until this test's reference is the driver's only strong one
+    /// (`untilOnlyTheCallerHolds(_:)`): the tasks that registered and removed each held the
+    /// driver until they ended. #534 added the poll after it, so that a removal task that held the
+    /// driver weakly, which would be correct code, could not end that wait with its removals still
+    /// queued. A poll that runs out fails the assertion, which also reads the count that is left
+    /// and names the budget.
     ///
-    /// **The count no longer rests on the removal tasks' capture; the wait still orders it after
-    /// every registration (#534).** The registration tasks hold the driver strongly until they
-    /// end, so the wait cannot end before they have run. A removal task that held the driver
-    /// weakly would be correct code, and it would end that wait with its removals still queued.
-    /// So the count is then polled for until it equals `before`, within `patience` steps, and
-    /// only then asserted. A poll that runs out fails the assertion, which also reads the count
-    /// that is left and names the budget, so a leak is a red either way. See R3 below.
+    /// Since #541 nothing is queued, and both end at their first check. They stay, so that a later
+    /// design whose tasks hold the driver is counted after them. They do not wait for a task that
+    /// holds only the publisher's observers: M1 below is counted before any of its tasks has run on
+    /// a pool of one thread, and this test passes it there.
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` is what catches it.
     ///
-    /// **Mutation (M1, unordered removal):** in `stream(of:add:remove:)`, delete
-    /// `await registration.value` from the handler's task. Run: red at `after == before` in 5 of
-    /// 5 debug runs, dropped where made in all 5 and above the maker's priority in 4; the other
-    /// two tests stay green. Run again with the poll (#534), debug, 5 runs on the default pool and
-    /// 5 on one thread: red in 10 of 10, each test taking about 4 to 5 s, because the poll runs
-    /// its `patience` steps out.
+    /// **Mutation (M1, #526's unordered tasks, put back):** in `Followers.stream()`, wrap the
+    /// registration in `Task { … }`, and the termination handler's removal in another. Run, debug,
+    /// on the default pool: red at `drained && after == before` in 5 of 5, dropped where made in
+    /// all 5 and above the maker's priority in 4, and
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` red in 5 of 5. On a pool of one
+    /// thread: this test green in 5 of 5, and the join-and-leave test red in 5 of 5.
     ///
-    /// **Mutation (R3, a removal task that holds the driver weakly, which is correct code):** in
-    /// `stream(of:add:remove:)`, make the handler's task `Task { [weak driver] in`, and take the
-    /// driver out of it with `guard let driver else { return }` after `await registration.value`.
-    /// The wait for the driver to be held by the test alone then ends with removals still queued.
-    /// On a pool of one thread, before the poll: red at `after == before` in 1 of 15 debug runs
-    /// and 4 of 10 release runs, each with all 5,000 observers of each kind counted. With the
-    /// poll: green in 10 of 10 debug runs and 10 of 10 release runs. M1 is the leak the poll must
-    /// still catch; R3 is the false failure it must not raise.
+    /// Before #541, M1 was deleting `await registration.value` from the handler's task: red here
+    /// in 5 of 5 debug runs, and with the poll in 10 of 10, on the default pool and on one thread.
+    /// R3, a removal task that held the driver weakly, was green with the poll in 10 of 10 debug
+    /// and 10 of 10 release runs. R3 has no counterpart now: there is no removal task.
     @Test(
         "Streams dropped as soon as they are made leave no observer, however their tasks run",
         arguments: Churn.allCases)
@@ -214,11 +220,22 @@ struct LeaseDriverStreamTerminationTests {
     /// after each step and nothing awaited in between. Every observer must be registered by the
     /// time the streams have been made, and every one gone by the time they have been dropped.
     ///
-    /// This is #541's contract, and the churn test cannot see it. A registration or a removal
-    /// left to a task would still be correct in the end, and the churn test, which polls, would
-    /// pass it. Here nothing waits: the test function is synchronous, and the count is read under
-    /// the publisher's lock without a hop (`observerCounts(of:)`), so no task gets a turn between
-    /// a step and its count on a pool of one thread.
+    /// This is #541's contract, and the churn test does not see all of it: a removal left to a
+    /// task is correct in the end, and the churn test, which polls, passes it. Here nothing
+    /// waits. The test function is synchronous, and the count is read under the publisher's lock
+    /// without a hop (`observerCounts(of:)`), so on a pool of one thread no task gets a turn
+    /// between a step and its count. On the default pool a mutant's tasks can run on other
+    /// threads in the meantime, so a red there is likely and not certain.
+    ///
+    /// **Mutation (M3, a removal left to a task, which is correct in the end):** in
+    /// `Followers.stream()`, wrap the termination handler's removal in `Task { … }`. Run, debug:
+    /// red at `left == before` in 5 of 5 on the default pool and 3 of 3 on one thread. Every other
+    /// test in this suite stays green.
+    ///
+    /// **Mutation (M2, a registration left to a task):** wrap the registration in `Task { … }`.
+    /// Run, debug: red at the count after the streams are made in 5 of 5 on the default pool and
+    /// 3 of 3 on one thread. `droppedStreamsLeaveNoObserver(_:)` goes red too, dropped where made,
+    /// in 5 of 5 on the default pool, and stays green on one thread.
     @Test("A stream registers in the step that makes it and leaves in the step that drops it")
     func aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt() throws {
         let clock = HandWoundClock()
@@ -351,8 +368,13 @@ struct LeaseDriverStreamTerminationTests {
     }
 
     /// Makes a driver over a fake helper, subscribes to both its streams, waits until each has the
-    /// value now (so each observer is registered), and returns without the driver: this function
-    /// holds the last strong reference, and its frame ends here.
+    /// value now, checks that each observer is registered, and returns without the driver: this
+    /// function holds the last strong reference, and its frame ends here.
+    ///
+    /// **The count is checked, not only the first elements.** A stream yields its first element
+    /// as it registers, so a stream ended at once still hands it over. Its handler would have run
+    /// by then, and the cycle a strong capture makes would be broken, so `theDriverIsHeldWeakly()`
+    /// would pass on a handler that holds the driver strongly (P6F).
     ///
     /// The driver is idle, so it has started no task that would hold it.
     static func subscribeAndLetGo() async -> Subscribed {
@@ -366,6 +388,11 @@ struct LeaseDriverStreamTerminationTests {
             Self.read(driver.reportUpdates(), into: received, at: clock) { .report($0) },
         ]
         await received.waitFor { !$0.states.isEmpty && !$0.reports.isEmpty }
+        let registered = Self.observerCounts(of: driver)
+        #expect(
+            registered == ObserverCounts(states: 1, reports: 1),
+            "\(String(describing: registered)) are registered, so a strong capture would make no cycle"
+        )
         return Subscribed(driver: driver, readers: readers)
     }
 

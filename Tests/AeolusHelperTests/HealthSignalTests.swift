@@ -17,6 +17,15 @@ struct HealthSignalTests {
 
     /// A new observer's first element is the last value published, a value equal to the one now
     /// is not published again, and a new client's first is its own `health`.
+    ///
+    /// **Mutation (V1, a value that is never stored):** in `HealthObservers.store(_:)`, delete
+    /// `state.current = health`. Run, debug: red here at `signal.current` and at both reads after
+    /// it, in 3 of 3, and in five tests of `HelperClientConnectionTests`.
+    ///
+    /// **Mutation (D1, no comparison):** in `HealthObservers.store(_:)`, delete the `guard` that
+    /// returns `nil` for the value now. Run, debug: red here at "the repeated value was not sent
+    /// again" in 3 of 3, and in
+    /// `HelperClientConnectionTests.theHealthStreamFollowsTheConnection()`.
     @Test("A new observer starts with the last value published, and an unchanged one is not sent")
     func aNewObserverStartsWithTheValueNow() async {
         let signal = HealthSignal(startingWith: .idle)
@@ -51,9 +60,12 @@ struct HealthSignalTests {
     /// than two. It cannot prove that the first element was the value at the instant of
     /// registration, only that whatever came first was followed by every later value in order.
     ///
-    /// **Mutation (V2, the first value yielded outside the lock):** in `HealthObservers.stream()`,
-    /// register and read the value now under the lock, and yield it after the lock is released.
-    /// See the PR for how often a run caught it; a pool of one thread cannot interleave the two.
+    /// **What it does not catch (V2, the first value yielded outside the lock):** in
+    /// `HealthObservers.stream()`, register and read the value now under the lock, and yield it
+    /// after the lock is released. Run, debug: green in 10 of 10. The window is the few
+    /// instructions between the release and the yield, and nothing here can make a publication
+    /// land in it. That the first value is yielded under the lock is argued in `HealthSignal`'s
+    /// header, and no test pins it. V1 above is red here in 3 of 3.
     @Test("A registration racing a run of publications is handed each later value, in order")
     func aRegistrationRacingPublicationsGetsEveryLaterValueInOrder() async {
         let owner = Owner()

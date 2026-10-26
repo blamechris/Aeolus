@@ -19,10 +19,11 @@ struct LeaseDriverPublisherTests {
     /// A new observer's first element is the last report published, after a change of state and
     /// after a change of the evidence alone, and a fresh driver's first is its own report.
     ///
-    /// **Mutation (V1, an evidence change that is not stored):** in
-    /// `LeaseDriverPublisher.publishEvidenceChange(_:)`, yield `report` to the report observers
-    /// without storing it as the value now. Run: red at "after an evidence change", where the
-    /// new report stream starts with the evidence before it.
+    /// **Mutation (V1, a value that is never stored):** in `Followers.store(_:)`, delete
+    /// `state.current = value`. Run, debug: red at "after a change of state" and at each first
+    /// element checked after it, in 3 of 3. #513's `aTurnOfChangesIsPublishedWhole()` goes red too,
+    /// at "in order" and at its state stream, because its subscribers start with the report from
+    /// before the lease.
     @Test("A new observer starts with the last report published, and a new driver with its own")
     func aNewObserverStartsWithTheReportNow() async throws {
         let start = LeaseDriverReport.idle
@@ -65,11 +66,16 @@ struct LeaseDriverPublisherTests {
     /// first element was the value at the instant of registration, only that whatever came first
     /// was followed by every later value and nothing earlier.
     ///
-    /// **Mutation (V2, the first value yielded outside the lock):** in `Followers.stream()`,
-    /// read the value now and register under the lock, and yield the value after the lock is
-    /// released. A publication can then take the lock between the two, find the new observer, and
-    /// yield it the next value ahead of its first. See the PR for how often a run caught it; a
-    /// pool of one thread cannot interleave the two at all.
+    /// **What it does not catch (V2, the first value yielded outside the lock):** in
+    /// `Followers.stream()`, register and read the value now under the lock, and yield it after
+    /// the lock is released. A publication could then take the lock between the two, find the new
+    /// observer, and yield it the next value ahead of its first. Run, debug: green in 10 of 10.
+    /// The window is the few instructions between the release and the yield, and nothing here can
+    /// make a publication land in it. That the first value is yielded under the lock is argued in
+    /// `LeaseDriverPublisher`'s header, and no test pins it.
+    ///
+    /// What it does catch, run in debug: P1 (`.bufferingNewest(1)` in `Followers.stream()`), red in
+    /// 3 of 3 with every stream broken, as #513's test is; and V1 above, red in 2 of 3.
     @Test("A registration racing a run of publications is handed an unbroken run of them")
     func aRegistrationRacingPublicationsGetsAnUnbrokenRun() async {
         let owner = Owner()

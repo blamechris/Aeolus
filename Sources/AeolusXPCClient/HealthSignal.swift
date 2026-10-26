@@ -52,6 +52,11 @@ import os
 /// `AsyncStream` call the termination handler from inside its own lock: `cancel()`, `finish()`
 /// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
 /// inside the stream's.
+///
+/// **No test pins this yield's place.** Moving it after the lock is released (V2) left
+/// `HealthSignalTests` green in 10 of 10 debug runs: the window it opens is a few
+/// instructions wide, and no test can make a publication land in it. It is kept under the lock
+/// on the argument above.
 struct HealthSignal {
 
     private let observers: HealthObservers

@@ -5,17 +5,20 @@ import Testing
 @testable import AeolusHelper
 @testable import AeolusXPCClient
 
-/// What `HelperClient.healthUpdates()` does when a stream ends (#532). `LeaseDriver` subscribes
-/// once per lease and cancels the subscription when the lease ends, so this runs once per lease.
+/// What `HelperClient.healthUpdates()` does in the steps that make a stream and end it (#532,
+/// #541). `LeaseDriver` subscribes once per lease and cancels the subscription when the lease
+/// ends, so this runs once per lease.
 ///
-/// 1. **A stream that ends leaves**, whether it ends after its observer is registered or before.
-///    Its termination handler takes the observer out of `observers`, on the client's actor, once
-///    the registration has run. Without that order, a stream that ended first kept its
-///    observer for good, and every later change of health was yielded to it.
-///    `droppedStreamsLeaveNoObserver(_:)` drops streams as they are made, so many end first.
-/// 2. **The handler holds the client weakly.** The client holds the observer, and the observer
-///    holds the handler, so a strong capture would make a cycle that keeps a connection-owning
-///    actor alive while any of its streams is open. `theClientIsHeldWeakly()`.
+/// 1. **A stream that ends leaves**, whether it ends at once or after a long read. Its
+///    termination handler takes the observer out of the client's `HealthSignal`, under its lock.
+///    Without that, an ended stream kept its observer for good, and every later change of health
+///    was yielded to it. `droppedStreamsLeaveNoObserver(_:)` drops thousands as they are made.
+/// 2. **It joins and leaves synchronously (#541):** registered by the time `healthUpdates()`
+///    returns, and gone by the time whatever drops it returns.
+///    `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()`.
+/// 3. **Nothing a stream holds reaches the client.** The client holds the observer, and the
+///    observer holds the handler, so a handler that held the client would make a cycle that keeps
+///    a connection-owning actor alive while any of its streams is open. `theClientIsHeldWeakly()`.
 ///
 /// No connection is made here. A stream of the health signal reaches the actor and nothing past
 /// it, so the harness's listener is never dialled; it is there because it is how this target
@@ -23,11 +26,12 @@ import Testing
 ///
 /// ## How the observers are counted
 ///
-/// `observers` is `private` and the actor has no count to call. `observerCount(of:)` reads the
-/// dictionary by reflection, from inside the client's actor. That adds nothing to the client:
-/// `HelperClientAccessTests` pins every non-private member of this actor, and a test-only
-/// property would be a member of the privilege boundary's actor that exists for one suite.
-/// **It fails closed**: a renamed or retyped `observers` makes the count `nil`, and every read
+/// `healthStreams` is `private` and the actor has no count to call. `observerCount(of:)` reads it
+/// by reflection and asks it for its count (`HealthSignal.Streams.observerCount`, which is there
+/// for this suite). That adds nothing to the client: `HelperClientAccessTests` pins every
+/// non-private member of this actor, and a test-only property would be a member of the privilege
+/// boundary's actor that exists for one suite. **It fails closed**: a renamed or retyped
+/// `healthStreams` makes the count `nil`, and every read
 /// here is a `#require`, so a rename is a red and never a count of zero. Each test that reads a
 /// count also reads one that must be non-zero first, so a seam that read the wrong thing could
 /// not pass by reading nothing.
@@ -44,15 +48,14 @@ import Testing
 struct HelperClientHealthStreamTests {
 
     /// Streams dropped as soon as they are made, `churned` of them. A stream that is dropped ends
-    /// at once, often before the task that registers its observer has run. Every observer must
-    /// be gone once every task the streams started has ended, and a stream held open throughout
-    /// (the witness) must still be registered.
+    /// at once. Every observer must be gone once every stream has been dropped, and a stream held
+    /// open throughout (the witness) must still be registered.
     ///
-    /// **Two ways to drop them** (`Churn`), as in `LeaseDriverStreamTerminationTests`. Dropped
-    /// where they are made, each stream's two tasks are started one after the other from this
-    /// test's task. Made on a task at `.low` and dropped here, the registrations are started from
-    /// that task and the removals from this one. Each found the leak where the other did not.
-    /// Before #532's fix, at 5,000 streams:
+    /// **Two ways to drop them** (`Churn`), as in `LeaseDriverStreamTerminationTests`. Before #541
+    /// each stream started two tasks, one to register and one to remove. Dropped where they are
+    /// made, both were started one after the other from this test's task. Made on a task at `.low`
+    /// and dropped here, the registrations were started from that task and the removals from this
+    /// one. Each found the leak where the other did not. Before #532's fix, at 5,000 streams:
     ///
     /// | Build | Runs red | Dropped where made | Dropped above the maker's priority |
     /// |---|---|---|---|
@@ -64,46 +67,37 @@ struct HelperClientHealthStreamTests {
     /// The pool of one thread is `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`. The fix passed the same
     /// forty runs. Release is `-c release -Xswiftc -enable-testing`.
     ///
-    /// **When to count.** Nothing announces that a dropped stream's registration has run, and a
-    /// count taken before it ran would read the baseline on code that leaks. So the count first
-    /// waits until this test's reference is the client's only strong one. The tasks that register
-    /// and remove each hold the client strongly until they end, and the termination handler holds
-    /// it weakly, so today that is when every one of them has ended.
+    /// **When to count.** Before #541, nothing announced that a dropped stream's registration had
+    /// run, so the count first waits until this test's reference is the client's only strong one:
+    /// the tasks that registered and removed each held the client until they ended. #534 added
+    /// the poll after it, so that a removal task that held the client weakly, which would be
+    /// correct code, could not end that wait with its removals still queued. A budget that runs
+    /// out is a recorded issue, and the assertion reads the count that is left.
     ///
-    /// **The count no longer rests on the removal tasks' capture; the wait still orders it after
-    /// every registration (#534).** The registration tasks hold the client strongly until they
-    /// end, so the wait cannot end before they have run. A removal task that held the client
-    /// weakly would be correct code, and it would end that wait with its removals still queued.
-    /// So the count is then polled for until it reaches `joined`, within the same budget, and
-    /// only then asserted. A budget that runs out is a recorded issue, and the assertion reads
-    /// the count that is left, so a leak is a red either way. See R3 below.
+    /// Since #541 nothing is queued, and both waits end at their first check. They stay, so that a
+    /// later design whose tasks hold the client is counted after them. They do not wait for a
+    /// task that holds only the signal's observers: M1 below is counted before any of its tasks
+    /// has run on a pool of one thread, and this test passes it there.
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` is what catches it.
     ///
-    /// **Mutation (M1, unordered removal):** in `HelperClient.healthUpdates()`, delete
-    /// `await registration.value` from the handler's task. Run: red at `after == joined` in 20 of
-    /// 20 debug runs, dropped where made in all 20 and above the maker's priority in 3, and in 10
-    /// of 10 release runs, dropped where made in all 10. On a pool of one thread, debug, red in
-    /// 10 of 10, above the maker's priority in all 10. `theClientIsHeldWeakly()` stays green.
-    /// Run again with the poll (#534), debug, 5 runs on the default pool and 5 on one thread: red
-    /// in 10 of 10, each test taking about 20 s, because the poll runs its 20 s budget out.
+    /// **Mutation (M1, #532's unordered tasks, put back):** in `HealthObservers.stream()`, wrap
+    /// the registration in `Task { … }`, and the termination handler's removal in another. Run,
+    /// debug, on the default pool: red at `after == joined` in 5 of 5, dropped where made in all 5
+    /// and above the maker's priority in 2, each after the 20 s budget;
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` red in 5 of 5. On a pool of one
+    /// thread: this test green in 5 of 5, and the join-and-leave test red in 5 of 5.
     ///
-    /// **Mutation (R3, a removal task that holds the client weakly, which is correct code):** in
-    /// `healthUpdates()`, make the handler's task `Task { [weak self] in` and its last line
-    /// `await self?.stopObserving(token)`. The wait for the client to be held by the test alone
-    /// then ends with removals still queued. On a pool of one thread, before the poll: red at
-    /// `after == joined` in 7 of 15 debug runs, each with 5,001 observers counted (the witness
-    /// and every churned stream), and in none of 10 release runs. With the poll: green in 10 of
-    /// 10 debug runs and 10 of 10 release runs. M1 is the leak the poll must still catch; R3 is
-    /// the false failure it must not raise.
+    /// Before #541, M1 was deleting `await registration.value` from the handler's task: red here
+    /// in 20 of 20 debug and 10 of 10 release runs, and with the poll in 10 of 10, on the default
+    /// pool and on one thread. R3, a removal task that held the client weakly, was green with the
+    /// poll in 10 of 10 debug and 10 of 10 release runs, and M3, a `Task.yield()` in place of the
+    /// order, was red in 20 of 20 debug runs. Neither has a counterpart now: there is no task.
     ///
-    /// **Mutation (M3, a yield for the order):** replace that line with `await Task.yield()`.
-    /// Run, debug: red at `after == joined` in 20 of 20, dropped where made, with 3 to 52 left.
-    /// On a pool of one thread it passed 20 of 20, so a yield is not an order this test can rely
-    /// on the one-thread pool to catch.
-    ///
-    /// **Mutation (M4, a removal that takes every observer):** in `stopObserving(_:)`, replace
-    /// `observers[token] = nil` with `observers.removeAll()`. Run, debug: red at `after == joined`
-    /// in 6 of 6, in both ways, with the witness gone. A count of the churned streams alone would
-    /// have passed it.
+    /// **Mutation (M4, a removal that takes every observer):** in `HealthObservers.stream()`,
+    /// make the termination handler `$0.observers.removeAll()` in place of removing its own
+    /// token. Run, debug: red at `after == joined` in 3 of 3, in both ways, with the witness gone.
+    /// A count of the churned streams alone would have passed it, as the join-and-leave test,
+    /// which has no witness, does.
     @Test(
         "Health streams dropped as they are made leave no observer, however their tasks run",
         arguments: Churn.allCases)
@@ -161,18 +155,22 @@ struct HelperClientHealthStreamTests {
     /// observer the client holds, so it exists only while that observer is registered. A test
     /// that ended the stream before letting the client go would free it either way.
     ///
-    /// **Mutation (M2, strong capture):** in `healthUpdates()`, replace the handler's
-    /// `{ [weak self] _ in guard let self else { return } ... }` with `{ [self] _ in ... }`. Run,
-    /// debug: red in 3 of 3 here, at the wait, after its 20 s budget. Both cases of
+    /// **Mutation (M2, a handler that holds the client):** give `HealthObservers.stream()` a
+    /// parameter `holding anchor: (any Sendable)?` that the termination handler captures
+    /// strongly, pass it through `Streams.updates(holding:)`, and have `healthUpdates()` pass
+    /// `self`. Run, debug: red in 3 of 3 here, at the wait, after its 20 s budget. Both cases of
     /// `droppedStreamsLeaveNoObserver(_:)` go red too, at its wait for the client to be held by
-    /// the test alone, because the witness's handler now holds it.
+    /// the test alone, because the witness's handler now holds it. Before #541 the handler named
+    /// the client, and the same red came from writing its `[weak self]` as `[self]`.
     ///
-    /// **Mutation (M2F, a strong capture on a stream that has already ended):** M2, and
-    /// `continuation.finish()` as the last statement of `healthUpdates()`'s closure. The handler
-    /// has run by the time the stream is handed out, so the cycle is gone and the client is freed
-    /// whichever way it was captured. Run, debug: red in 3 of 3, at the `.idle` that
-    /// `subscribeAndLetGo()` requires. Without that requirement, this test stayed green in 3 of
-    /// 3 and only the churn test's witness check was red.
+    /// **Mutation (M2F, the same on a stream that has already ended):** M2, and
+    /// `continuation.finish()` after the handler is set. The handler runs inside the stream's
+    /// initialiser and lets go of the client, so the client is freed however the handler holds
+    /// it. Run, debug: red in 3 of 3, at the count `subscribeAndLetGo()` requires, with 0
+    /// observers registered. Before that count was required, this test stayed green in 3 of 3:
+    /// the `.idle` it also requires still arrives, because the registration yields it before the
+    /// stream is finished. Before #541 the `.idle` was enough, since a registration that ran after
+    /// the stream had ended yielded nothing.
     @Test("A client that nothing holds is freed while a health stream is open")
     func theClientIsHeldWeakly() async throws {
         let subscribed = try await Self.subscribeAndLetGo()
@@ -187,11 +185,22 @@ struct HelperClientHealthStreamTests {
     /// after each step and nothing awaited in between. Every observer must be registered by the
     /// time the streams have been made, and every one gone by the time they have been dropped.
     ///
-    /// This is #541's contract, and the churn test cannot see it. A registration or a removal
-    /// left to a task would still be correct in the end, and the churn test, which polls, would
-    /// pass it. Here nothing waits: the test function is synchronous, and the count is read under
-    /// `HealthSignal`'s lock without a hop (`observerCount(of:)`), so no task gets a turn between
-    /// a step and its count on a pool of one thread.
+    /// This is #541's contract, and the churn test does not see all of it: a removal left to a
+    /// task is correct in the end, and the churn test, which polls, passes it. Here nothing
+    /// waits. The test function is synchronous, and the count is read under `HealthSignal`'s lock
+    /// without a hop (`observerCount(of:)`), so on a pool of one thread no task gets a turn
+    /// between a step and its count. On the default pool a mutant's tasks can run on other
+    /// threads in the meantime, so a red there is likely and not certain.
+    ///
+    /// **Mutation (M3, a removal left to a task, which is correct in the end):** in
+    /// `HealthObservers.stream()`, wrap the termination handler's removal in `Task { … }`. Run,
+    /// debug: red at `left == before` in 3 of 5 on the default pool and 3 of 3 on one thread. Every
+    /// other test in this suite stays green.
+    ///
+    /// **Mutation (M2R, a registration left to a task):** wrap the registration in `Task { … }`.
+    /// Run, debug: red at the count after the streams are made in 4 of 5 on the default pool and
+    /// 3 of 3 on one thread. `droppedStreamsLeaveNoObserver(_:)` goes red too, dropped where made,
+    /// in 5 of 5 on the default pool, and stays green on one thread.
     @Test(
         "A health stream registers in the step that makes it and leaves in the step that drops it")
     func aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt() throws {
@@ -289,20 +298,26 @@ struct HelperClientHealthStreamTests {
         let updates: AsyncStream<HelperConnectionHealth>.Iterator
     }
 
-    /// Makes a client, opens a health stream and reads its first element (so its observer is
-    /// registered), and returns without the client: this function holds the last strong
+    /// Makes a client, opens a health stream, reads its first element, requires its observer to
+    /// be registered, and returns without the client: this function holds the last strong
     /// reference, and its frame ends here.
     ///
     /// **The first element must be `.idle`**, as the witness's is in
-    /// `droppedStreamsLeaveNoObserver(_:)`. A stream that had already ended would answer `nil`:
-    /// its handler would have run and the cycle a strong capture makes would be broken, so
-    /// `theClientIsHeldWeakly()` would pass on a handler that holds the client strongly.
+    /// `droppedStreamsLeaveNoObserver(_:)`, **and the observer must be registered.** A stream that
+    /// had already ended would have run its handler, and the cycle a strong capture makes would be
+    /// broken, so `theClientIsHeldWeakly()` would pass on a handler that holds the client
+    /// strongly. Since #541 such a stream still answers `.idle`, which its registration yielded
+    /// before it ended, so only the count tells it apart (M2F).
     static func subscribeAndLetGo() async throws -> Subscribed {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         let client = harness.client()
         var updates = client.healthUpdates().makeAsyncIterator()
         let first = await updates.next()
         try #require(first == .idle, "the stream opened with \(String(describing: first))")
+        let registered = try #require(Self.observerCount(of: client), Self.noSeam)
+        try #require(
+            registered == 1,
+            "\(registered) observers are registered, so a strong capture would make no cycle")
         return Subscribed(client: client, updates: updates)
     }
 }
