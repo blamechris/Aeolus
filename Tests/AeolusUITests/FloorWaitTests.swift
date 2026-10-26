@@ -48,8 +48,9 @@ struct FloorWaitTests {
     /// A floor in the ledger stops the sleeper: the wait does not sit out its patience after the
     /// ledger has what it waited for. Counted in steps, not timed: a sleeper that is cancelled
     /// when the floor ends the wait has slept through no step (none, in 200 waits of a probe, and
-    /// in 400 of 400 waits in #524's final review, including at a load average around 50), and
-    /// one that is not has slept through all 3,000, which is three seconds at the least. A false
+    /// none in 400 of #529's review at a load average near 10; #527 reports the same at a load
+    /// average around 50, not re-measured), and one that is not has slept through all 3,000,
+    /// which is three seconds at the least. A false
     /// red would need the sleeper to complete all 3,000 steps between the ledger's racer
     /// returning and the waiting task cancelling it: implausible, not impossible.
     ///
@@ -58,8 +59,9 @@ struct FloorWaitTests {
     ///
     /// **Mutation (E1′, "a published floor leaves the sleeper running"):** in `awaitFloor`,
     /// `if verdict != .published { group.cancelAll() }`. Run: red here at `wait.slept < patience`,
-    /// after the 3,000 steps (the test alone took 5.5 to 5.9 s in the runs measured, and the
-    /// suite 9.1 to 9.8 s). **(E1, "no one is cancelled"):** delete
+    /// after the 3,000 steps: about 6 s for the test and 10 s for the suite (5.5 to 6.0 s and 9.1
+    /// to 10.2 s in the runs measured), set by a step cost near 2 ms here. **(E1, "no one is
+    /// cancelled"):** delete
     /// `group.cancelAll()`. Run: the same here, and the three tests whose wait the sleeper ends
     /// never return, so they are red at the suite's time limit; the run takes 63.8 s.
     @Test("A floor in the ledger stops the sleeper")
@@ -108,19 +110,21 @@ struct FloorWaitTests {
     /// test below at `waited >= ceiling`, and in the cancellation test at `end == .cancelled`.
     /// **Mutation (K0, "the counter is not written, and a published floor leaves the sleeper
     /// running"):** E1′ (above) in `awaitFloor`, and in `spendPatience` delete
-    /// `slept.set(done + 1)`. Run: red here at `wait.slept == 20` and in no other test; without
-    /// that check the suite is green, 9 tests of 9. **(K1):** the same, with `slept.set(done)`
-    /// for the deleted line. **(Either counter edit alone, `group.cancelAll()` as it was):** the
-    /// same.
+    /// `slept.set(done + 1)`. Run: red here at `wait.slept == patience` and in no other test;
+    /// without that check the suite is green, 9 tests of 9. **(K1):** the same, with
+    /// `slept.set(done)` for the deleted line. **(Either counter edit alone,
+    /// `group.cancelAll()` as it was):** the same.
     @Test("With no floor, the wait ends when its patience is spent")
     func thePatienceEndsTheWait() async {
         let scene = await LeaseScene()
         let mark = await scene.mark()
 
-        let wait = await scene.awaitFloor(since: mark, patience: 20, ceiling: .seconds(1_000))
+        let patience = 20
+        let wait = await scene.awaitFloor(
+            since: mark, patience: patience, ceiling: .seconds(1_000))
 
         #expect(wait.end == .patience, "\(wait)")
-        #expect(wait.slept == 20, "\(wait)")
+        #expect(wait.slept == patience, "\(wait)")
         #expect(wait.report == nil, "\(wait)")
         await scene.finish()
     }
