@@ -76,6 +76,20 @@ public enum SMCError: Error, Sendable, Equatable {
     /// ~957-million-element allocation and loop) — this case is what stands between a
     /// byte-order regression and that outcome. Carries the offending decoded value.
     case implausibleKeyCount(declared: Int)
+    /// `#KEY` decoded to a value that is not a whole number within `Int`'s range: NaN,
+    /// ±infinity, a fraction, or a magnitude of 2^63 or more.
+    ///
+    /// The firmware declares `#KEY`'s type, so this is reachable from a `flt` declaration (all
+    /// four kinds), and from a `ui64` or `si64` of 2^63 − 512 or more, which rounds to 2^63 or
+    /// above on its way through `Double`. Never observed: `#KEY` is a `ui32` on `Mac16,5`, and
+    /// no `ui32` can produce it.
+    ///
+    /// Distinct from `implausibleKeyCount`, which is a whole number outside the plausible
+    /// range. This value never became a whole number, so it cannot be carried as one. The
+    /// declared type and raw bytes are carried instead, and they reproduce the decode exactly.
+    /// A `Double` payload would break this enum's `Equatable` conformance for NaN, because
+    /// `.nan != .nan`, and NaN is one of the values this case exists to report.
+    case unrepresentableKeyCount(type: SMCKeyType, bytes: [UInt8])
 
     /// `true` when the firmware answered with `0x82` — named `SmcBadCommand` in Intel-era
     /// documentation, on the assumption that namespace carries over (see the type comment).
