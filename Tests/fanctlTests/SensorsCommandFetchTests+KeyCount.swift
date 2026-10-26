@@ -20,6 +20,7 @@ extension SensorsCommandFetchTests {
         arguments: [
             SMCError.unrepresentableKeyCount(type: .flt, bytes: [0x7F, 0xC0, 0x00, 0x00]),
             .implausibleKeyCount(declared: 957_153_280),
+            .nonNumericKeyCount(type: .hex, bytes: [0x00, 0x00, 0x0D, 0x39]),
         ])
     func refusedKeyCountIsDescribed(_ refusal: SMCError) async {
         let provider = FakeSensorProvider(allError: refusal)

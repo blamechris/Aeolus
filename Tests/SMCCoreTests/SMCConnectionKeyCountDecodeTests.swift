@@ -3,7 +3,7 @@ import Testing
 
 @testable import SMCCore
 
-/// `SMCConnection.decodeKeyCount(value:generation:)` is everything `keyCount()` does after its
+/// `SMCConnection.decodeKeyCount(value:)` is everything `keyCount()` does after its
 /// one `READ_BYTES`. `SMCConnection` has no scripted transport, so this is the seam that lets a
 /// test hand `#KEY` a value no real Mac has produced, the same way
 /// `SMCConnectionKeyCountFallbackTests` drives `decodeKeyCountFallback(value:)`.
@@ -93,7 +93,7 @@ struct SMCConnectionKeyCountDecodeTests {
         #expect(
             throws: SMCError.unrepresentableKeyCount(type: reply.type, bytes: reply.bytes)
         ) {
-            _ = try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern)
+            _ = try SMCConnection.decodeKeyCount(value: reply.value)
         }
     }
 
@@ -112,7 +112,33 @@ struct SMCConnectionKeyCountDecodeTests {
     func minusOneReachesThePlausibilityBound(_ reply: Reply) throws {
         #expect(reply.isDecodedValue(try reply.value.scalar()))
         #expect(throws: SMCError.implausibleKeyCount(declared: -1)) {
-            _ = try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern)
+            _ = try SMCConnection.decodeKeyCount(value: reply.value)
+        }
+    }
+
+    /// A non-numeric declared type has no count in it, and that is the error, whether or not
+    /// the byte order was resolved. Each type appears twice, once with an order and once
+    /// without: before #531 both reported `integerByteOrderUndetectable`, which `fanctl`
+    /// describes as "SMC interface generation unknown". The bytes are `#KEY`'s own
+    /// `Mac16,5` bytes, so a decode that ignored the declared type would find a count in them.
+    static let nonNumeric: [SMCValue] = [SMCKeyType.hex, .ch8, .unknown(0x7A7A_7A7A)]
+        .flatMap { type in
+            [SMCByteOrder.bigEndian, nil].map { order in
+                SMCValue(
+                    key: SMCKey.keyCount, type: type, bytes: [0x00, 0x00, 0x0D, 0x39],
+                    byteOrder: order)
+            }
+        }
+
+    @Test(
+        "A #KEY declaring a non-numeric type is refused as non-numeric, whatever its byte order",
+        arguments: nonNumeric)
+    func nonNumericTypeIsRefusedAsNonNumeric(_ value: SMCValue) {
+        #expect(!value.type.isNumeric)
+        #expect(
+            throws: SMCError.nonNumericKeyCount(type: value.type, bytes: [0x00, 0x00, 0x0D, 0x39])
+        ) {
+            _ = try SMCConnection.decodeKeyCount(value: value)
         }
     }
 
@@ -131,16 +157,18 @@ struct SMCConnectionKeyCountDecodeTests {
     @Test("A whole, plausible #KEY value still decodes", arguments: wholeCounts)
     func wholeCountDecodes(_ reply: Reply) throws {
         #expect(reply.isDecodedValue(try reply.value.scalar()))
-        #expect(try SMCConnection.decodeKeyCount(value: reply.value, generation: .modern) == 3385)
+        #expect(try SMCConnection.decodeKeyCount(value: reply.value) == 3385)
     }
 
     /// The generation-undetermined branch moved into the same function, so it is pinned here
-    /// too: with no byte order, `scalar()` declines and the `ui32` fallback answers.
+    /// too: with no byte order, `scalar()` declines and the `ui32` fallback answers. An unknown
+    /// generation reaches this function only as `byteOrder == nil`; see
+    /// `SMCConnectionKeyCountGenerationFlowTests` for where `read(_:)` sets it.
     @Test("With no generation, a ui32 #KEY still decodes through the big-endian fallback")
     func undeterminedGenerationUsesTheFallback() throws {
         let value = SMCValue(
             key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39], byteOrder: nil)
-        #expect(try SMCConnection.decodeKeyCount(value: value, generation: nil) == 3385)
+        #expect(try SMCConnection.decodeKeyCount(value: value) == 3385)
     }
 
     @Test("With no generation and no fallback for the declared type, the decode refuses")
@@ -148,7 +176,7 @@ struct SMCConnectionKeyCountDecodeTests {
         let value = SMCValue(
             key: SMCKey.keyCount, type: .flt, bytes: [0x45, 0x53, 0x90, 0x00], byteOrder: nil)
         #expect(throws: SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)) {
-            _ = try SMCConnection.decodeKeyCount(value: value, generation: nil)
+            _ = try SMCConnection.decodeKeyCount(value: value)
         }
     }
 }

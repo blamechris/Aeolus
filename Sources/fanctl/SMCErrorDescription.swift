@@ -50,5 +50,8 @@ func describeSMCError(_ error: Error) -> String {
     case .unrepresentableKeyCount(let type, let bytes):
         return "#KEY (\(type.fourCharString), raw bytes \(hexString(bytes))) did not decode "
             + "to a whole number within Int's range"
+    case .nonNumericKeyCount(let type, let bytes):
+        return "#KEY declares \(type.fourCharString) (raw bytes \(hexString(bytes))), which is "
+            + "not a numeric type, so it holds no key count"
     }
 }

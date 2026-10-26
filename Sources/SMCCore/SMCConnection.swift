@@ -382,7 +382,7 @@ public actor SMCConnection {
     ///   sensor reading on a machine with an undetectable generation, not just the
     ///   display-grade integers the fail-safe is scoped to (`docs/ARCHITECTURE.md` and
     ///   ADR 0003 both promise the control path is unaffected). This method therefore
-    ///   falls back to `decodeKeyCountFallback(bytes:)` for `#KEY` specifically, in this
+    ///   falls back to `decodeKeyCountFallback(value:)` for `#KEY` specifically, in this
     ///   enumeration layer rather than through the resolver — ADR 0003's own designated
     ///   fallback shape. See that function's documentation for the justification and for
     ///   why `verifyKeyCountCrossCheck()` still catches a wrong guess.
@@ -392,14 +392,24 @@ public actor SMCConnection {
     /// of this method — `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both
     /// allocate and iterate on this value — inherits the bound automatically rather than
     /// needing to apply it themselves. Everything after the read lives in
-    /// `decodeKeyCount(value:generation:)`; see that function for the conversion.
+    /// `decodeKeyCount(value:)`; see that function for the conversion.
+    ///
+    /// The interface generation reaches the decode by one route: `read(_:)` turns it into the
+    /// value's `byteOrder`, which is `nil` exactly when the generation is unknown. Until #531
+    /// the generation was also passed in beside the value. That was a second answer to the same
+    /// question, and no test off hardware could pin it. The one route left is pinned on a
+    /// connection that is never opened; see `SMCConnectionKeyCountGenerationFlowTests`.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
-        return try Self.decodeKeyCount(value: value, generation: generation)
+        return try Self.decodeKeyCount(value: value)
     }
 
     /// Everything `keyCount()` does after its one `READ_BYTES`: decode `#KEY`, convert it to an
     /// `Int`, and sanity-bound it.
+    ///
+    /// A `#KEY` that declares a non-numeric type is refused first, as
+    /// `SMCError.nonNumericKeyCount`. No byte order would turn that type into a count, so
+    /// whether the generation is known does not matter to it.
     ///
     /// The firmware declares `#KEY`'s type, and `scalar()` decodes whatever it declares. A
     /// `flt` can decode to NaN, ±infinity or a fraction, and a fixed-point type (`fpe2`,
@@ -409,16 +419,28 @@ public actor SMCConnection {
     /// the root helper (through `ReadOnlyFanAuthority` and `readAll()`) and `fanctl` on a
     /// firmware value they should refuse, before `validatePlausibleKeyCount(_:)` could see
     /// it. `Int(exactly:)` returns `nil` for every one of them, and the value is refused as
-    /// `SMCError.unrepresentableKeyCount`. Refusing the fraction is deliberate: no key count is
-    /// fractional, and truncating one would fabricate a count nothing declared.
+    /// `SMCError.unrepresentableKeyCount`.
+    ///
+    /// `scalar()` declines a numeric type only when the value's byte order was never resolved,
+    /// which `read(_:)` leaves `nil` exactly when the generation is unknown. Then
+    /// `decodeKeyCountFallback(value:)` gets its one chance, at a `ui32`, and anything it
+    /// refuses is `SMCError.integerByteOrderUndetectable`.
     ///
     /// Pure and synchronous, and deliberately not private, for the same reason as
     /// `validatePlausibleKeyCount(_:)`. `SMCConnection` has no scripted transport, so this is
     /// the seam through which a test can hand `#KEY` a value no real Mac has produced. See
     /// `SMCConnectionKeyCountDecodeTests`.
-    static func decodeKeyCount(
-        value: SMCValue, generation: SMCInterfaceGeneration?
-    ) throws -> Int {
+    static func decodeKeyCount(value: SMCValue) throws -> Int {
+        guard value.type.isNumeric else {
+            logger.fault(
+                """
+                #KEY declares \(value.type.fourCharString, privacy: .public), which is not a \
+                numeric type, so it has no key count to decode. See SMCError.nonNumericKeyCount.
+                """
+            )
+            throw SMCError.nonNumericKeyCount(type: value.type, bytes: value.bytes)
+        }
+
         let decoded: Int
         if let scalar = try value.scalar() {
             guard let whole = Int(exactly: scalar) else {
@@ -433,7 +455,7 @@ public actor SMCConnection {
                 throw SMCError.unrepresentableKeyCount(type: value.type, bytes: value.bytes)
             }
             decoded = whole
-        } else if generation == nil, let fallback = decodeKeyCountFallback(value: value) {
+        } else if let fallback = decodeKeyCountFallback(value: value) {
             decoded = fallback
         } else {
             throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
@@ -478,8 +500,18 @@ public actor SMCConnection {
     /// plain integers, which must keep declining per the fail-safe. Returns `nil` if either
     /// check fails, or if `bytes` is not the 4 bytes a `ui32` should be (defensive; not
     /// expected, since `SMCValue.scalar()` already validates width before this is reached).
+    ///
+    /// Also returns `nil` when `value.byteOrder` is set: the generation was known, so there
+    /// is nothing to guess, and a guess must never stand in for a resolved order. Inside
+    /// `decodeKeyCount(value:)` this is a second line, since `scalar()` decodes every `ui32`
+    /// whose order was resolved and this function is reached only when it was not. It is
+    /// here so this function keeps its own promise whoever calls it.
+    /// `SMCConnectionKeyCountFallbackTests` pins it directly.
     static func decodeKeyCountFallback(value: SMCValue) -> Int? {
-        guard value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4 else {
+        guard
+            value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4,
+            value.byteOrder == nil
+        else {
             return nil
         }
         let bytes = value.bytes

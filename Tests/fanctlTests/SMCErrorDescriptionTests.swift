@@ -46,6 +46,21 @@ struct SMCErrorDescriptionTests {
         #expect(description.contains("7fc00000"))
     }
 
+    /// Before #531 a non-numeric `#KEY` threw `integerByteOrderUndetectable` even when the
+    /// generation was known, and this function described it as "SMC interface generation
+    /// unknown". The description must name the declared type, say that it is not numeric,
+    /// and say nothing about the generation, which has nothing to do with it.
+    @Test("nonNumericKeyCount names the declared type as non-numeric, not the generation")
+    func nonNumericKeyCountIsSpecific() {
+        let description = describeSMCError(
+            SMCError.nonNumericKeyCount(type: .hex, bytes: [0x00, 0x00, 0x0D, 0x39]))
+        #expect(description.contains("#KEY"))
+        #expect(description.contains("hex_"))
+        #expect(description.contains("00000d39"))
+        #expect(description.contains("not a numeric type"))
+        #expect(!description.contains("generation"))
+    }
+
     /// Every case in the switch inside `describeSMCError(_:)` is exhaustive over
     /// `SMCError` at compile time — if a case were missing, this file would not build.
     /// What this test adds is the runtime guarantee the compiler cannot: every case
@@ -70,6 +85,7 @@ struct SMCErrorDescriptionTests {
             .integerByteOrderUndetectable(key: key),
             .implausibleKeyCount(declared: 957_153_280),
             .unrepresentableKeyCount(type: .flt, bytes: [0x7F, 0xC0, 0x00, 0x00]),
+            .nonNumericKeyCount(type: .hex, bytes: [0x00, 0x00, 0x0D, 0x39]),
         ]
         for error in cases {
             #expect(!describeSMCError(error).isEmpty)
