@@ -244,8 +244,9 @@ and it fails closed.
   teardown (`TeardownCountTripwireTests`). The third: `HandbackBesideAnotherLeaseTests` holds the
   restatement of a fan mid-handback beside the next lease, and `LeaseViewTripwireTests` scans
   `activeLeaseView()` for an `await` after its first read of the lease table, the registers, or
-  the actor's own accessors over them. The scans catch an accidental suspension, not an
-  adversarial spelling: a read through a helper method above an `await` passes them.
+  one of the four accessors over them that it names. The scans catch an accidental suspension,
+  not an adversarial spelling: a read above an `await` through a helper method, or through an
+  accessor the pattern does not name, passes them.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed

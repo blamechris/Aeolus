@@ -43,7 +43,7 @@ struct LeaseViewTripwireTests {
         + #"|fansMidHandback|fansWithUnconfirmedHandbacks|fansWithAbandonedHandbacks)\b"#
 
     /// A read of the lease table, or of the handback registers, by this actor: the same lookbehind,
-    /// so `handbackRegisters.` or `x.table.` does not count as one.
+    /// so a member of something else (`early.registers.`, `x.table.`) does not count as one.
     private static func ownRead(of name: String) -> String {
         #"(?<![\w.])(?:self\.)?"# + name + #"\."#
     }
@@ -55,13 +55,13 @@ struct LeaseViewTripwireTests {
     /// (M-view3):** M-view2's hazard through the accessors, `let midEarly = fansMidHandback` and
     /// `let unconfirmedEarly = fansWithUnconfirmedHandbacks` above the `await`, passed as
     /// `handbacksInFlight:` and `unconfirmedHandbacks:`. Run: red; green before the accessors were
-    /// named here, across the whole suite. **Mutation:** the
-    /// same `await`, spelled `try? await Task.sleep(for: .zero)`, then `await` and `Task.yield()`
-    /// on two lines, then `await (Task.yield())`. Run: red, each. **Mutation (this suite's own):**
-    /// replace `leaseCoreRead` with a pattern nothing matches. Run: red on the `#require`.
-    /// **Mutation (MR):** read the three registers in the view through a computed
-    /// `handbackRegisters { registers }`. Run: red on the reads-both check; a plain substring
-    /// match for `registers.` passed it.
+    /// named here, across the whole suite. **Mutation:** the same `await`, spelled
+    /// `try? await Task.sleep(for: .zero)`, then `await` and `Task.yield()` on two lines, then
+    /// `await (Task.yield())`. Run: red, each. **Mutation (this suite's own):** replace
+    /// `leaseCoreRead` with a pattern nothing matches. Run: red on the `#require`. **Mutation
+    /// (MR-member):** above the `await`, `let early = captureEarly()`, a helper returning a value
+    /// with a member named `registers`; after it, read `early.registers.abandonedHandbacks` and
+    /// the other two. Run: red on the reads-both check; a plain `contains("registers.")` passed it.
     @Test("activeLeaseView() does not suspend between its first lease-core read and its return")
     func theViewDoesNotSuspendAfterItsFirstRead() throws {
         let code = Scan.normalised(try Scan.leaseCoreWithoutAnyComment())
