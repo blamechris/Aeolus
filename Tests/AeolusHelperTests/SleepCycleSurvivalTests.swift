@@ -144,8 +144,9 @@ struct SleepCycleSurvivalTests {
         let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
+        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
             clock: SystemMonotonicClock(), fanCount: 2,

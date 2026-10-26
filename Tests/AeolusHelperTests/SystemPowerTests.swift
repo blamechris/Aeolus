@@ -76,10 +76,11 @@ struct SystemPowerTests {
     /// at once on every sleep. A `ManualClock`'s sleep parks until the test moves it and ends
     /// when the budget task is cancelled, so the budget fires only where a test says so.
     ///
-    /// A test whose claim is that the budget fires over a wedged handback passes a short
-    /// `budget` **and** `clock: SystemMonotonicClock()`, and says so where it does: its bound
-    /// is real time, and a stall only makes it fire sooner. `reconciliationBudget` is for one
-    /// of those that also brings up, `SleepCycleAccumulationTests`.
+    /// A test whose claim is that the budget fires over a wedged handback keeps this clock and
+    /// fires the budget itself, with `expireBudget(_:on:once:)`, once the restore is wedged.
+    /// Five such tests still pass `clock: SystemMonotonicClock()`, and each says what stall it
+    /// was probed with. `reconciliationBudget` is for one of those, `SleepCycleAccumulationTests`,
+    /// which also brings up.
     static func composed<Plane: FanControlPlane>(
         plane: Plane,
         observer: any SystemPowerObserving,
@@ -101,6 +102,27 @@ struct SystemPowerTests {
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) }))
+    }
+
+    /// Fires § 4's `budget` over a handback the test has wedged, on the `ManualClock` the graph
+    /// was composed with ([#411](https://github.com/blamechris/Aeolus/issues/411)).
+    ///
+    /// The budget's task starts **before** the handback. On the wall clock, a stall longer than
+    /// the budget after it starts and before the restore reaches the wedge lets the budget answer
+    /// before the case under test exists, and the test's own "this is the case under test" guard
+    /// goes red. #538's review showed it with a 300 ms stall at the top of
+    /// `WedgedRestorePlane.restoreToAutomatic`. Here the budget cannot fire until `wedged` holds.
+    /// The wait is the stall-tolerant poll, so a stall spends none of it. It also waits for the
+    /// budget's own sleep to be parked on `clock`, because a move made before that sleep starts
+    /// would only put its deadline further out.
+    static func expireBudget(
+        _ budget: Duration, on clock: ManualClock, once wedged: () async -> Bool,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        try await waitUntil(
+            "the handback to wedge with § 4's budget asleep",
+            { await wedged() && clock.sleepers == 1 }, sourceLocation: sourceLocation)
+        clock.advance(by: budget)
     }
 
     // MARK: - Sleep
@@ -203,7 +225,8 @@ struct SystemPowerTests {
     /// never returns on a wedged connection ([#68](https://github.com/blamechris/Aeolus/issues/68))
     /// parks its caller, and `BoundedFanRestorer` deliberately makes each attempt
     /// uncancellable, so nothing below § 4 can bound it. Five seconds in production; fifty
-    /// milliseconds here, because what is under test is the bound rather than its size.
+    /// milliseconds here, on a clock the test moves past it once the restore is wedged,
+    /// because what is under test is the bound rather than its size.
     ///
     /// The delivery is spawned rather than awaited, and that is the point rather than a
     /// convenience: the handback is still parked when this test finishes asserting, exactly as
@@ -220,16 +243,18 @@ struct SystemPowerTests {
         let plane = WedgedRestorePlane(Self.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is wedged: `expireBudget`'s reason.
+        let clock = ManualClock()
         let helper = Self.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        try await Self.expireBudget(
+            .milliseconds(50), on: clock, once: { await plane.restoreScopes == [.everyFan] })
         try await observer.didAcknowledge.wait()
 
         #expect(observer.acknowledgements == [.willSleep])
@@ -276,16 +301,18 @@ struct SystemPowerTests {
         let plane = ThreadBlockingRestorePlane(Self.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is wedged: `expireBudget`'s reason.
+        let clock = ManualClock()
         let helper = Self.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        try await Self.expireBudget(
+            .milliseconds(50), on: clock, once: { plane.restoreScopes == [.everyFan] })
         try await observer.didAcknowledge.wait()
 
         #expect(observer.acknowledgements == [.willSleep])

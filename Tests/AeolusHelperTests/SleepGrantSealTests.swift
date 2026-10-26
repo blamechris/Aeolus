@@ -32,9 +32,10 @@ struct SleepGrantSealTests {
     ///
     /// `clock` defaults to a `ManualClock()` nobody advances, for the reason
     /// `SystemPowerTests.composed` gives (#411): § 4's acknowledgement budget sleeps on it, and
-    /// so does nothing else here. The two cases that rest on a 50 ms budget firing pass the wall
-    /// clock and say so. The declined-seal case's 30 s budget is meant never to answer, which a
-    /// clock nobody moves guarantees and a wall clock stalled past 30 s does not.
+    /// so does nothing else here. The two cases that rest on the budget firing move their clock
+    /// past it themselves, once the restore is parked (`SystemPowerTests.expireBudget`). The
+    /// declined-seal case's 30 s budget is meant never to answer, which a clock nobody moves
+    /// guarantees and a wall clock stalled past 30 s does not.
     private static func composed(
         fanCount: Int, budget: Duration, clock: some MonotonicClock = ManualClock()
     ) -> (HelperComposition<ScopeParkingPlane>, ScriptedPowerObserver) {
@@ -118,7 +119,9 @@ struct SleepGrantSealTests {
         let parked: FanRestoreScope = leased ? .fan(0) : .everyFan
         await helper.plane.park(parked)
         let teardown = observing { await observer.deliver(starvedSleep) }
-        await yieldUntil("the starved teardown to park on its restore") {
+        // The stall-tolerant poll, not a yield count: a restore slow to reach the park must not
+        // spend the wait (#538's probe).
+        try await waitUntil("the starved teardown to park on its restore") {
             await helper.plane.parkedRestores == 1
         }
         #expect(await helper.plane.restoreScopes == [parked], "the teardown parked elsewhere")
@@ -135,6 +138,10 @@ struct SleepGrantSealTests {
             """)
 
         await helper.plane.releaseAll()
+        // Polled first, for the reason above: `finished` alone is a yield count.
+        try await waitUntil("the starved teardown to return once let through") {
+            await teardown.isFinished.isSet
+        }
         _ = try await finished("the starved teardown to return once let through", teardown)
         #expect(
             await Self.grants(asked, in: helper, because: "the starved teardown has returned"),
@@ -165,17 +172,19 @@ struct SleepGrantSealTests {
     /// the snapshot says `.releaseInProgress`.
     @Test("A keystone parked across its wake still refuses a grant after the wake")
     func aKeystoneThatOutlivesItsWakeStillRefusesAGrant() async throws {
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the restore is parked, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is parked: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let (helper, observer) = Self.composed(
-            fanCount: 1, budget: .milliseconds(50), clock: SystemMonotonicClock())
+            fanCount: 1, budget: .milliseconds(50), clock: clock)
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
         await helper.plane.park(.everyFan)
 
         let sleep = observing { try await observer.deliver(.willSleep) }
-        // Parked first, then acknowledged: the acknowledgement is a 50 ms wall-clock budget's.
-        await yieldUntil("the keystone to park") { await helper.plane.parkedRestores == 1 }
+        // Parked first, then acknowledged: the budget fires only once the keystone is parked.
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await helper.plane.parkedRestores == 1 })
         try await observer.didAcknowledge.wait()
         #expect(
             await helper.plane.restoreScopes == [.everyFan],
@@ -215,10 +224,11 @@ struct SleepGrantSealTests {
     /// `.everyFan` `do`/`catch`. Run: red — the sweep is parked with the gate open.
     @Test("A sweep parked across its wake refuses a grant over a fan it does not cover")
     func aSweepThatOutlivesItsWakeRefusesAGrantOverAnotherFan() async throws {
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the restore is parked, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is parked: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let (helper, observer) = Self.composed(
-            fanCount: 2, budget: .milliseconds(50), clock: SystemMonotonicClock())
+            fanCount: 2, budget: .milliseconds(50), clock: clock)
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
         _ = try await helper.leases.acquireLease(
@@ -226,8 +236,9 @@ struct SleepGrantSealTests {
         await helper.plane.park(.fan(0))
 
         let sleep = observing { try await observer.deliver(.willSleep) }
-        // Parked first, then acknowledged, for the reason the keystone test gives.
-        await yieldUntil("the sweep to park on fan 0") { await helper.plane.parkedRestores == 1 }
+        // Parked first, then acknowledged, as in the keystone test.
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await helper.plane.parkedRestores == 1 })
         try await observer.didAcknowledge.wait()
         #expect(
             await helper.plane.restoreScopes == [.fan(0)],
@@ -245,6 +256,11 @@ struct SleepGrantSealTests {
         }
 
         await helper.plane.releaseAll()
+        // Polled first: the keystone follows the sweep, and `finished` alone is a yield count
+        // a slow keystone can outrun (#538's probe).
+        try await waitUntil("the sweep and the keystone to return once let through") {
+            await sleep.isFinished.isSet
+        }
         _ = try await finished("the sweep and the keystone to return once let through", sleep)
         #expect(
             await helper.plane.restoreScopes == [.fan(0), .everyFan],

@@ -74,12 +74,12 @@ struct UnconfirmedHandbackTests {
         let observer = ScriptedPowerObserver()
         let witness = AcknowledgementWitness()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is wedged: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), fanCount: 2,
-            safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            fanCount: 2, safetyLog: log)
         observer.whenAcknowledging { [leases = helper.leases] in
             await witness.record(leaseCount: leases.leaseCount)
         }
@@ -92,7 +92,8 @@ struct UnconfirmedHandbackTests {
         #expect(await helper.leases.leaseCount == 1)
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
-        await yieldUntil("fan 0's restore to park") { await plane.restoreScopes == [.fan(0)] }
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await plane.restoreScopes == [.fan(0)] })
         try await observer.didAcknowledge.wait()
 
         #expect(
@@ -153,8 +154,9 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
+        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
             clock: SystemMonotonicClock(), safetyLog: log)
@@ -216,8 +218,9 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedThenRefusingRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
+        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
             clock: SystemMonotonicClock(), safetyLog: log)

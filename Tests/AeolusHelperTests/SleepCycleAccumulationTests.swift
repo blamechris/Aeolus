@@ -163,8 +163,9 @@ struct SleepCycleAccumulationTests {
         let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
+        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
         // That clock is also reconciliation's, and `bringUp()` runs the pass: a stall past its
         // 5 s budget would leave a fan unreconciled and put a keystone in `restoreScopes` before
         // the first cycle, and fan 0 unreconciled refuses every cycle's lease as blind. Nothing

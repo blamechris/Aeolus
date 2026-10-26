@@ -254,11 +254,12 @@ struct SleepOrderingTests {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is wedged: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
@@ -266,6 +267,8 @@ struct SleepOrderingTests {
             LeaseFixture.request(fans: [0]), from: ConnectionID())
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await plane.restoreScopes == [.fan(0)] })
         try await observer.didAcknowledge.wait()
 
         #expect(
@@ -299,17 +302,20 @@ struct SleepOrderingTests {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // Moved past the budget only once the restore is wedged: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
         #expect(await helper.leases.leaseCount == 0, "the fixture took a lease it should not")
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await plane.restoreScopes == [.everyFan] })
         try await observer.didAcknowledge.wait()
 
         #expect(
@@ -405,8 +411,9 @@ struct SleepOrderingTests {
     func aWedgeOnOneFanStillRecordsTheWholeLease() async throws {
         let plane = WedgedRestorePlane(SystemPowerTests.machine(fanCount: 2))
         let observer = ScriptedPowerObserver()
-        // The wall clock, opting out of `composed`'s frozen default (#411): the claim rests on the
-        // 50 ms budget firing while the handback is held, and a stall only makes it fire sooner.
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
+        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
             clock: SystemMonotonicClock(), fanCount: 2,
