@@ -237,10 +237,14 @@ and it fails closed.
   connection: the floor orders the read after them. It does rely on three helper facts, named
   under *Identity* and *Clearance*: a grant only into an empty table, every teardown beginning its
   fans' handbacks before it can suspend, and the lease and the handback registers read with no
-  suspension between them. Helper tests pin each (#516): the first in `LeaseContractTests`,
-  from another connection and from the holder's own; the second in behaviour for
-  `connectionDidInvalidate` (`TeardownRegistrationGapTests`) and, for every teardown, by a source
-  scan (`TeardownCountTripwireTests`); the third in `HandbackBesideAnotherLeaseTests`.
+  suspension between them. Helper tests pin each (#516). The first: `LeaseContractTests` refuses
+  a second lease from another connection and from the holder's own, and `LeaseBindingRaceTests`
+  scans `acquireLease` for an `await` between its marker and the insert. The second: in behaviour
+  for `connectionDidInvalidate` (`TeardownRegistrationGapTests`), and by a source scan for every
+  teardown (`TeardownCountTripwireTests`). The third: `HandbackBesideAnotherLeaseTests` holds the
+  restatement of a fan mid-handback beside the next lease, and `LeaseViewTripwireTests` scans
+  `activeLeaseView()` for an `await` after its first read of lease-core state. The scans catch an
+  accidental suspension, not an adversarial spelling.
 
 **Revisit when** the protocol is bumped and can carry a helper-minted generation; when the
 helper's lease-gated write proves leaky; when a target write on an automatic fan is observed
