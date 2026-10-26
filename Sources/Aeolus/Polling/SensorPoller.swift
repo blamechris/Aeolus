@@ -33,7 +33,7 @@ enum SensorPoller {
             readings = try await provider.readAll()
         } catch {
             throw PollingError.readFailed(
-                context: "enumerate sensors", reason: String(describing: error))
+                context: "enumerate sensors", reason: SMCError.readableDescription(of: error))
         }
 
         var seen: Set<String> = []
@@ -66,7 +66,7 @@ enum SensorPoller {
             outcomes = try await provider.read(keys: keys)
         } catch {
             throw PollingError.readFailed(
-                context: "refresh sensors", reason: String(describing: error))
+                context: "refresh sensors", reason: SMCError.readableDescription(of: error))
         }
 
         var outcomesByKey: [String: SensorReadOutcome] = [:]
