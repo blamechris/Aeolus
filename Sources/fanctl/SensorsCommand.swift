@@ -58,12 +58,15 @@ enum SensorsCommand {
             throw FanctlError.noSMC
         }
 
+        // `describeSMCError(_:)`, not `String(describing:)`: `readAll()` throws `SMCError`
+        // (a connection that will not open, a `#KEY` that is refused), and the default
+        // description of an enum case is exactly what `FanctlError` promises never to print.
         let readings: [SensorReading]
         do {
             readings = try await provider.readAll()
         } catch {
             throw FanctlError.connectionFailed(
-                context: "enumerate sensors", reason: String(describing: error))
+                context: "enumerate sensors", reason: describeSMCError(error))
         }
 
         let entries =
