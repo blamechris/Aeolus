@@ -58,7 +58,7 @@ struct LeaseDriverStreamTerminationTests {
     @Test("Cancelling a stream's reader removes its observer, and a later transition adds none")
     func aCancelledReaderRemovesItsObserver() async throws {
         let scene = await LeaseScene()
-        let before = try #require(await Self.observerCounts(of: scene.driver), Self.noSeam)
+        let before = try #require(Self.observerCounts(of: scene.driver), Self.noSeam)
 
         let received = LeaseLedger()
         let readers = [
@@ -69,23 +69,23 @@ struct LeaseDriverStreamTerminationTests {
         ]
         // Each has the value now, which is yielded in the step that registers the observer.
         await received.waitFor { !$0.states.isEmpty && !$0.reports.isEmpty }
-        let joined = try #require(await Self.observerCounts(of: scene.driver), Self.noSeam)
+        let joined = try #require(Self.observerCounts(of: scene.driver), Self.noSeam)
         try #require(
             joined == ObserverCounts(states: before.states + 1, reports: before.reports + 1),
             "the count did not see the two subscriptions: \(before), then \(joined)")
 
         for reader in readers { reader.cancel() }
         _ = await Self.pollWithinSteps {
-            await Self.observerCounts(of: scene.driver) == before
+            Self.observerCounts(of: scene.driver) == before
         }
-        let left = try #require(await Self.observerCounts(of: scene.driver), Self.noSeam)
+        let left = try #require(Self.observerCounts(of: scene.driver), Self.noSeam)
         try #require(
             left == before, "the cancelled readers' observers are still registered: \(left)")
 
         // A later transition, through the observers that stayed. The scene's own are among them,
         // so this ends only if they are still being published to.
         await scene.take(try LeaseScene.target([0: 3000]))
-        let after = try #require(await Self.observerCounts(of: scene.driver), Self.noSeam)
+        let after = try #require(Self.observerCounts(of: scene.driver), Self.noSeam)
         #expect(
             after == before,
             "after a later transition the scene is not the only one registered: \(after)")
@@ -176,7 +176,7 @@ struct LeaseDriverStreamTerminationTests {
         var driver = LeaseDriver(
             control: FakeLeaseHelper(clock: clock, ledger: LeaseLedger()),
             holderDescription: LeaseScene.holder, clock: clock)
-        let before = try #require(await Self.observerCounts(of: driver), Self.noSeam)
+        let before = try #require(Self.observerCounts(of: driver), Self.noSeam)
 
         switch churn {
         case .droppedWhereMade:
@@ -196,10 +196,10 @@ struct LeaseDriverStreamTerminationTests {
         // The copy is taken after the uniqueness check, which nothing repeats.
         let counted = driver
         let drained = await Self.pollWithinSteps {
-            await Self.observerCounts(of: counted) == before
+            Self.observerCounts(of: counted) == before
         }
 
-        let after = try #require(await Self.observerCounts(of: counted), Self.noSeam)
+        let after = try #require(Self.observerCounts(of: counted), Self.noSeam)
         #expect(
             drained && after == before,
             """
@@ -209,6 +209,49 @@ struct LeaseDriverStreamTerminationTests {
             \(Self.churned) report observers registered
             """)
     }
+
+    /// Streams made and held, then dropped, `held` of each kind, with the count read straight
+    /// after each step and nothing awaited in between. Every observer must be registered by the
+    /// time the streams have been made, and every one gone by the time they have been dropped.
+    ///
+    /// This is #541's contract, and the churn test cannot see it. A registration or a removal
+    /// left to a task would still be correct in the end, and the churn test, which polls, would
+    /// pass it. Here nothing waits: the test function is synchronous, and the count is read under
+    /// the publisher's lock without a hop (`observerCounts(of:)`), so no task gets a turn between
+    /// a step and its count on a pool of one thread.
+    @Test("A stream registers in the step that makes it and leaves in the step that drops it")
+    func aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt() throws {
+        let clock = HandWoundClock()
+        let driver = LeaseDriver(
+            control: FakeLeaseHelper(clock: clock, ledger: LeaseLedger()),
+            holderDescription: LeaseScene.holder, clock: clock)
+        let before = try #require(Self.observerCounts(of: driver), Self.noSeam)
+
+        do {
+            let streams = Streams(
+                states: (0..<Self.held).map { _ in driver.stateUpdates() },
+                reports: (0..<Self.held).map { _ in driver.reportUpdates() })
+            let joined = try #require(Self.observerCounts(of: driver), Self.noSeam)
+            #expect(
+                joined
+                    == ObserverCounts(
+                        states: before.states + Self.held, reports: before.reports + Self.held),
+                "with \(Self.held) of each kind just made and held, the count is \(joined)")
+            withExtendedLifetime(streams) {}
+        }
+
+        let left = try #require(Self.observerCounts(of: driver), Self.noSeam)
+        #expect(
+            left == before,
+            """
+            with every stream just dropped, \(left.states - before.states) of \(Self.held) state \
+            observers and \(left.reports - before.reports) of \(Self.held) report observers are \
+            still registered
+            """)
+    }
+
+    /// How many streams of each kind `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` holds.
+    static let held = 1_000
 
     // MARK: - Churning streams
 
@@ -262,20 +305,22 @@ struct LeaseDriverStreamTerminationTests {
 
     static let noSeam = Comment(
         rawValue:
-            "the observer count cannot be read: `LeaseDriver.publisher` or the publisher's observer"
-            + " dictionaries were renamed or retyped, and this suite reads them by name")
+            "the observer count cannot be read: `LeaseDriver.streams` was renamed or retyped, and"
+            + " this suite reads it by name")
 
     /// The observers `driver`'s publisher holds now, or `nil` if reflection does not find them.
-    static func observerCounts(of driver: isolated LeaseDriver) -> ObserverCounts? {
-        guard let publisher = Mirror(reflecting: driver).descendant("publisher") else { return nil }
-        let mirror = Mirror(reflecting: publisher)
+    ///
+    /// **Synchronous, and off the driver's actor.** The observers are under the publisher's lock
+    /// (#541), so reading them needs no hop. A read that hopped would also give any task a mutant
+    /// left queued a turn to run before the count is taken, which is the one thing
+    /// `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()` must not allow.
+    static func observerCounts(of driver: LeaseDriver) -> ObserverCounts? {
         guard
-            let states = mirror.descendant("stateObservers")
-                as? [UUID: AsyncStream<LeaseDriverState>.Continuation],
-            let reports = mirror.descendant("reportObservers")
-                as? [UUID: AsyncStream<LeaseDriverReport>.Continuation]
+            let streams = Mirror(reflecting: driver).descendant("streams")
+                as? LeaseDriverPublisher.Streams
         else { return nil }
-        return ObserverCounts(states: states.count, reports: reports.count)
+        let counts = streams.observerCounts
+        return ObserverCounts(states: counts.states, reports: counts.reports)
     }
 
     // MARK: - Following a stream

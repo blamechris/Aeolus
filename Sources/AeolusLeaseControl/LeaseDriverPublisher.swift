@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // Who follows a `LeaseDriver`, and the sending of its states and reports to them (#511).
 //
@@ -10,22 +11,32 @@ import Foundation
 
 /// Every observer of one `LeaseDriver`, and the publishing of its states and reports to them.
 ///
-/// ## Owned by the driver, and used only on its actor
+/// ## Two halves over one set of observers (#541)
 ///
-/// The driver keeps its one instance in a `private` stored property. So only `LeaseDriver.swift`
-/// can name it, and only on the driver's actor, to which an actor's stored properties are
-/// isolated. It is **not `Sendable`** (see the end of this file), so the compiler refuses a task
-/// that captures that instance to publish from anywhere else.
+/// The observers, and the value each kind of stream starts with, are held under a lock by
+/// `Followers`, which only this file can name. Two values reach them:
 ///
-/// **Every method is synchronous.** A publication runs to its end inside the turn of the driver's
-/// actor that asked for it, so no other job runs between a state and its report, or between one
-/// publication and the next. A suspension here, or a hop to another actor, would let a state go
-/// out apart from its floor, or let two publications swap (ADR 0015 D2).
+/// - **This publisher**, which publishes. The driver keeps its one instance in a `private`
+///   stored property, so only `LeaseDriver.swift` can name it, and only on the driver's actor, to
+///   which an actor's stored properties are isolated. It is **not `Sendable`** (see the end of this
+///   file), so the compiler refuses a task that captures that instance to publish from anywhere
+///   else.
+/// - **`Streams`**, which only subscribes. It is `Sendable`, so the driver's `nonisolated`
+///   `stateUpdates()` and `reportUpdates()` reach it without the actor. Nothing on it publishes,
+///   and nothing outside this file can make a publisher from it.
 ///
-/// The type is `internal`, so other code in the module can make an instance of its own. That
-/// instance is not the driver's: only closures written in `LeaseDriver.swift` can reach the
-/// driver's, so no subscriber of a driver is ever registered with another, and what another
-/// publishes reaches none of them.
+/// ## A stream joins and leaves synchronously
+///
+/// `Followers.stream()` registers the new observer, and yields it the value now, in the closure
+/// `AsyncStream` runs inside its initialiser. The stream's termination handler removes it. Both
+/// take the lock and neither starts a task, so a stream that ends has left by the time whatever
+/// ended it returns, whether it ended at once or after a long read.
+///
+/// Before #541 both were tasks that reached the observers on the driver's actor, because they
+/// were the actor's state and the streams are asked for from outside it. Nothing ordered the two
+/// tasks, so a stream that ended before its registration ran left an observer that nothing would
+/// take away (#526). #530 made the removal wait for the registration. With no task, there is no
+/// order to keep.
 ///
 /// ## What it keeps
 ///
@@ -36,117 +47,84 @@ import Foundation
 /// - **In order, and never coalesced.** Each publication is one `yield` to each observer, in the
 ///   order the driver asks, into a stream that buffers without bound. So an observer that is slow
 ///   to read still reads every element, in order.
-/// - **An observer starts with the value now.** Adding one registers it and yields it the value
-///   it is handed in one synchronous step on the driver's actor. No change can come between the
-///   two, so its first element is the value at registration, and the next is the next change.
-/// - **A stream that ends leaves**, whether it ends before its observer is registered or after.
-///   `stream(of:add:remove:)` removes its observer, on the driver's actor, once the stream has
-///   terminated and the registration has run.
+/// - **Every method that publishes is synchronous**, and runs on the driver's actor, since only
+///   the actor can reach this publisher. So a publication runs to its end inside the turn of the
+///   driver's actor that asked for it: no other job runs between a state and its report, or
+///   between one publication and the next. A suspension here, or a hop to another actor, would let
+///   a state go out apart from its floor, or let two publications swap (ADR 0015 D2). The yields
+///   are made after the lock is released, and the actor is what keeps two publications' yields
+///   apart.
+/// - **An observer starts with the value now.** Registering stores the observer and yields it the
+///   value now in one step under the lock, and a publication stores its value and takes the
+///   observers to yield to in one step under the same lock. So a registration is wholly before a
+///   publication or wholly after it. Before: the observer's first element is the value before,
+///   and the publication yields it the new one. After: its first is the new value, and the
+///   publication, which took its observers first, does not yield to it. Either way its first
+///   element is the value at registration, and the next is the next change.
+/// - **That value is the driver's report.** `LeaseDriver` starts its publisher with its own
+///   report, and every change of `current` or `evidence` is published in the turn that makes it.
+///   So between turns of the actor the value here is `LeaseDriver.report`, and a registration in
+///   the middle of a turn starts with the value before that turn's change, then gets the change.
+///
+/// ## The one yield made under the lock
+///
+/// The first value is yielded inside the lock, because a registration and a publication are two
+/// writers to one new stream. If the first value went out after the lock was released, a
+/// publication could take the lock in between, find the new observer, and yield it the next value
+/// ahead of its first. That yield cannot wake anything or call back: the stream is still inside
+/// `AsyncStream`'s initialiser, so it has no reader, and the yield appends to its buffer. Nor does
+/// `AsyncStream` call the termination handler from inside its own lock: `cancel()`, `finish()`
+/// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
+/// inside the stream's.
 struct LeaseDriverPublisher {
 
-    private var stateObservers: [UUID: AsyncStream<LeaseDriverState>.Continuation] = [:]
-    private var reportObservers: [UUID: AsyncStream<LeaseDriverReport>.Continuation] = [:]
+    private let states: Followers<LeaseDriverState>
+    private let reports: Followers<LeaseDriverReport>
+
+    /// The half of this publisher that only subscribes, for the driver's `nonisolated` streams.
+    let streams: Streams
+
+    /// A publisher whose streams start with `report` until the first publication.
+    init(startingWith report: LeaseDriverReport) {
+        let states = Followers(startingWith: report.state)
+        let reports = Followers(startingWith: report)
+        self.states = states
+        self.reports = reports
+        streams = Streams(states: states, reports: reports)
+    }
 
     // MARK: - Publishing
 
     /// A change of state: `report.state` to every state observer, then `report` to every report
     /// observer. `report` is the one the driver made for the state, with any floor it sets in it.
     func publishStateChange(_ report: LeaseDriverReport) {
-        for observer in stateObservers.values { observer.yield(report.state) }
-        for observer in reportObservers.values { observer.yield(report) }
+        for observer in states.store(report.state) { observer.yield(report.state) }
+        for observer in reports.store(report) { observer.yield(report) }
     }
 
     /// The evidence moved and the state did not, as it does when the last unanswered `apply`
     /// answers after the driver stopped acting or let go of a lease (ADR 0015 D5): `report` to
     /// every report observer, and nothing to the state observers, which have no new state to see.
     func publishEvidenceChange(_ report: LeaseDriverReport) {
-        for observer in reportObservers.values { observer.yield(report) }
-    }
-
-    // MARK: - Observers
-
-    /// Adds `observer` as `token`, and yields it `state`, the driver's state now.
-    mutating func addStateObserver(
-        _ observer: AsyncStream<LeaseDriverState>.Continuation, as token: UUID,
-        startingWith state: LeaseDriverState
-    ) {
-        stateObservers[token] = observer
-        observer.yield(state)
-    }
-
-    mutating func removeStateObserver(_ token: UUID) {
-        stateObservers[token] = nil
-    }
-
-    /// Adds `observer` as `token`, and yields it `report`, the driver's report now.
-    mutating func addReportObserver(
-        _ observer: AsyncStream<LeaseDriverReport>.Continuation, as token: UUID,
-        startingWith report: LeaseDriverReport
-    ) {
-        reportObservers[token] = observer
-        observer.yield(report)
-    }
-
-    mutating func removeReportObserver(_ token: UUID) {
-        reportObservers[token] = nil
+        for observer in reports.store(report) { observer.yield(report) }
     }
 
     // MARK: - Streams
 
-    /// Registers an observer as a token, and yields it the value now, on the driver's actor.
-    typealias Registration<Element: Sendable> =
-        @Sendable (isolated LeaseDriver, AsyncStream<Element>.Continuation, UUID) -> Void
+    /// The streams of one publisher's observers: `Sendable`, and able only to subscribe.
+    struct Streams: Sendable {
+        fileprivate let states: Followers<LeaseDriverState>
+        fileprivate let reports: Followers<LeaseDriverReport>
 
-    /// A stream of `driver`'s, whose observer `add` registers on the driver's actor and `remove`
-    /// takes away there once the stream has terminated and the registration has run.
-    ///
-    /// The registration is a task of its own, because the driver's streams are asked for from
-    /// outside its actor (`stateUpdates()` and `reportUpdates()` are `nonisolated`). `add`
-    /// registers and yields the value now in one step, so whichever turn it runs in, the stream
-    /// starts with the value then and misses no change after it.
-    ///
-    /// **The removal waits for the registration (#526).** The removal is a task too, started by
-    /// the termination handler, and a stream can end before its registration has run: a stream
-    /// dropped as soon as it is made does. Two tasks reach the driver's actor in no set order, so
-    /// a removal that went first found nothing to remove, and the registration then added an
-    /// observer that nothing would take away. So the removal awaits the registration's task
-    /// before it removes. The observer is added once and taken away once, whichever comes first,
-    /// the stream's end or the registration. It is an order and not a check of whether the stream
-    /// has ended, because `AsyncStream`'s `cancel()` runs the handler before it marks the stream
-    /// terminated.
-    ///
-    /// The handler is set after the registration's task is made, so that it can name the task.
-    /// Nothing can end the stream before the handler is set: this closure runs inside
-    /// `AsyncStream`'s initialiser, before anyone holds the stream, and nothing here calls
-    /// `finish()`.
-    ///
-    /// The termination handler holds the driver weakly. The driver holds the observer, and the
-    /// observer holds this handler, so a strong reference would be a cycle. The handler also holds
-    /// the registration's task. That task holds the driver until it ends, as the registration did
-    /// before, and a task that has ended holds nothing it captured, so the cycle does not form
-    /// through it either: `theDriverIsHeldWeakly()` frees a driver whose every registration has
-    /// ended, with its streams open.
-    static func stream<Element: Sendable>(
-        of driver: LeaseDriver, add: @escaping Registration<Element>,
-        remove: @escaping @Sendable (isolated LeaseDriver, UUID) -> Void
-    ) -> AsyncStream<Element> {
-        // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
-        AsyncStream(bufferingPolicy: .unbounded) { continuation in
-            let token = UUID()
-            let registration = Task { await add(driver, continuation, token) }
-            continuation.onTermination = { [weak driver] _ in
-                guard let driver else { return }
-                // This task holds `driver` strongly until the removal has run. That is what once
-                // made it valid for `LeaseDriverStreamTerminationTests` to read its count a single
-                // time, as soon as the test held the driver alone: no removal could still be
-                // queued then. The test now polls for the count, so it no longer depends on this
-                // capture (#534).
-                Task {
-                    await registration.value
-                    await remove(driver, token)
-                }
-            }
-        }
+        /// A stream of every state from the one now.
+        func stateUpdates() -> AsyncStream<LeaseDriverState> { states.stream() }
+
+        /// A stream of every report from the one now.
+        func reportUpdates() -> AsyncStream<LeaseDriverReport> { reports.stream() }
+
+        /// How many observers of each kind are registered now, for the suite. The suite reaches
+        /// a driver's instance by reflection, so this adds nothing to the driver.
+        var observerCounts: (states: Int, reports: Int) { (states.count, reports.count) }
     }
 }
 
@@ -154,3 +132,57 @@ struct LeaseDriverPublisher {
 /// it to publish from elsewhere is refused at compile time.
 @available(*, unavailable)
 extension LeaseDriverPublisher: Sendable {}
+
+/// The observers of one kind of stream, and the value a new one starts with, under one lock.
+///
+/// Private to this file, so a publisher and its `Streams` are the only ways to reach one.
+private final class Followers<Element: Sendable>: Sendable {
+
+    private struct State {
+        var current: Element
+        var observers: [UUID: AsyncStream<Element>.Continuation] = [:]
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+
+    init(startingWith value: Element) {
+        state = OSAllocatedUnfairLock(initialState: State(current: value))
+    }
+
+    /// A stream that starts with the value now, registered before this returns and removed by
+    /// the time whatever ends it returns.
+    ///
+    /// The termination handler is set after the observer is registered. Nothing can end the
+    /// stream between the two: this closure runs inside `AsyncStream`'s initialiser, before
+    /// anyone holds the stream, and nothing here calls `finish()`.
+    ///
+    /// The handler holds this object weakly. This object holds the observer, and the observer
+    /// holds the handler, so a strong reference would be a cycle that kept the observers alive
+    /// after their driver for as long as a stream stayed open. The handler holds nothing else, so
+    /// nothing a stream holds reaches the driver.
+    func stream() -> AsyncStream<Element> {
+        // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
+        AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            let token = UUID()
+            state.withLock { state in
+                state.observers[token] = continuation
+                continuation.yield(state.current)
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.state.withLock { $0.observers[token] = nil }
+            }
+        }
+    }
+
+    /// Stores `value` as the value now, and returns every observer registered before it, for the
+    /// publisher to yield `value` to once the lock is released.
+    func store(_ value: Element) -> [AsyncStream<Element>.Continuation] {
+        state.withLock { state in
+            state.current = value
+            return Array(state.observers.values)
+        }
+    }
+
+    /// How many observers are registered now.
+    var count: Int { state.withLock { $0.observers.count } }
+}
