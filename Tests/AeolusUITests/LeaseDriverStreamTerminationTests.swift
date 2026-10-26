@@ -391,8 +391,7 @@ struct LeaseDriverStreamTerminationTests {
         let registered = Self.observerCounts(of: driver)
         #expect(
             registered == ObserverCounts(states: 1, reports: 1),
-            "\(String(describing: registered)) are registered, so a strong capture would make no cycle"
-        )
+            "\(String(describing: registered)) registered, so a strong capture makes no cycle")
         return Subscribed(driver: driver, readers: readers)
     }
 
