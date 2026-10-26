@@ -144,6 +144,15 @@ struct DumpErrorDescriptionTests {
         #expect(description.contains("96"))
     }
 
+    @Test("unrepresentableKeyCount names the declared type and the raw bytes")
+    func unrepresentableKeyCountIsSpecific() {
+        let description = describeDumpError(
+            SMCError.unrepresentableKeyCount(type: .flt, bytes: [0x7F, 0xC0, 0x00, 0x00]))
+        #expect(description.contains("#KEY"))
+        #expect(description.contains("flt"))
+        #expect(description.contains("7fc00000"))
+    }
+
     /// Every case in the switch inside `describeDumpError(_:)` is exhaustive over
     /// `SMCError` at compile time — if a case were missing, this file would not build.
     /// What this test adds is the runtime guarantee the compiler cannot: every case
@@ -167,6 +176,7 @@ struct DumpErrorDescriptionTests {
             .truncatedReply(expected: 80, received: 40),
             .integerByteOrderUndetectable(key: key),
             .implausibleKeyCount(declared: 957_153_280),
+            .unrepresentableKeyCount(type: .flt, bytes: [0x7F, 0xC0, 0x00, 0x00]),
         ]
         for error in cases {
             #expect(!describeDumpError(error).isEmpty)
