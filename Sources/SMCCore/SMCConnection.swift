@@ -421,6 +421,10 @@ public actor SMCConnection {
     /// it. `Int(exactly:)` returns `nil` for every one of them, and the value is refused as
     /// `SMCError.unrepresentableKeyCount`.
     ///
+    /// **A fractional count is refused, never rounded.** No key count is fractional, and
+    /// rounding or truncating one would make up a count nothing declared. `SMCFanEnumeration`
+    /// refuses a fractional `FNum` by the same rule; until #531 it rounded one.
+    ///
     /// `scalar()` declines a numeric type only when the value's byte order was never resolved,
     /// which `read(_:)` leaves `nil` exactly when the generation is unknown. Then
     /// `decodeKeyCountFallback(value:)` gets its one chance, at a `ui32`, and anything it

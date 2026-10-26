@@ -125,6 +125,10 @@ enum SensorsCommand {
     /// Best-effort and silent on failure: this is diagnostic context (`keysDeclared` /
     /// `keysSkipped` in the JSON) for a hardware report, not something `fetch`'s
     /// success should ever depend on.
+    ///
+    /// A fractional value is reported as `nil`, not rounded. That is the rule
+    /// `SMCConnection.decodeKeyCount(value:)` applies to `#KEY` and `SMCFanEnumeration`
+    /// applies to `FNum`: a count nothing declared is not made up. Until #531 this rounded.
     private static func declaredKeyCount(provider: some SensorProvider) async -> Int? {
         guard let outcomes = try? await provider.read(keys: ["#KEY"]),
             let outcome = outcomes.first,
@@ -133,7 +137,7 @@ enum SensorsCommand {
         else {
             return nil
         }
-        return Int(exactly: reading.value.rounded())
+        return Int(exactly: reading.value)
     }
 }
 

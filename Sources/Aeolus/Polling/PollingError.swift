@@ -16,8 +16,9 @@ public enum PollingError: Error, Sendable, Hashable, CustomStringConvertible {
     /// those are `KeyedReading.Availability.unavailable`), e.g. the underlying
     /// `SMCConnection` could not be opened.
     case readFailed(context: String, reason: String)
-    /// `FNum` decoded to something outside the range this project trusts as a real fan
-    /// count — see `SMCFanEnumeration.maxPlausibleFanCount`, the same defence
+    /// `FNum` decoded to something this project does not trust as a real fan count: outside
+    /// the plausible range, or not a whole number — see
+    /// `SMCFanEnumeration.maxPlausibleFanCount`, the same defence
     /// `fanctl`'s `ListCommand` enumeration applies for the identical reason.
     case implausibleFanCount(Double)
 

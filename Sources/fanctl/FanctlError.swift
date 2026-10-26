@@ -38,7 +38,8 @@ enum FanctlError: Error, LocalizedError, Equatable {
     case connectionFailed(context: String, reason: String)
 
     /// `FNum` decoded to a value this project does not trust as a real fan count —
-    /// non-finite, negative, or outside `SMCFanEnumeration.maxPlausibleFanCount`. See
+    /// non-finite, negative, fractional, or outside
+    /// `SMCFanEnumeration.maxPlausibleFanCount`. See
     /// that constant for why this exists — the same defence `SMCConnection` applies to
     /// `#KEY` itself. Carries a rendering of the raw decoded value (via
     /// `Formatting.number`, which never traps on the same class of anomaly) rather than
@@ -80,9 +81,10 @@ enum FanctlError: Error, LocalizedError, Equatable {
             return "Could not \(context): \(reason)"
         case .implausibleFanCount(let decoded):
             return """
-                FNum decoded to \(decoded), which is outside the range fanctl trusts as \
-                a real fan count. This looks like a decode fault, not actual hardware — \
-                refusing to enumerate that many fans.
+                FNum decoded to \(decoded), which fanctl does not trust as a real fan \
+                count (a whole number from 0 to \(SMCFanEnumeration.maxPlausibleFanCount)). \
+                This looks like a decode fault, not actual hardware, so fanctl will not \
+                enumerate fans from it.
                 """
         case .keyNotFound(let key, let declaredCount):
             return keyFilterNotFoundMessage(key: key, declaredCount: declaredCount)
