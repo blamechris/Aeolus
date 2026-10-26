@@ -150,7 +150,7 @@ struct ListCommandFetchTests {
     // `nonFiniteFanCountIsRefusedWithoutTrapping` already covers a NaN FNum refusing
     // without trapping — but neither checks *what string* the classified case carries
     // for a non-finite decode. `FanctlError(_ error: SMCFanEnumerationError)` routes
-    // `.implausibleFanCount`'s payload through `Formatting.number(_:)`, and this is the
+    // `.implausibleFanCount`'s payload through `Formatting.exactNumber(_:)`, and this is the
     // only test asserting that payload renders "NaN" rather than a numeric string.
     @Test("A non-finite implausible FNum surfaces as .implausibleFanCount carrying \"NaN\"")
     func implausibleFanCountSurfacesClassifiedCase() async {
@@ -163,6 +163,24 @@ struct ListCommandFetchTests {
             try await ListCommand.fetch(provider: provider)
         }
         #expect(error == .implausibleFanCount("NaN"))
+    }
+
+    /// A fractional FNum is refused because it is not whole, so the message must show that it
+    /// is not. Rounded to two places, 1.9999999 would read "FNum decoded to 2.00", a whole
+    /// number inside the range fanctl trusts, and the user would have no way to see why it
+    /// was refused.
+    @Test("A refused fractional FNum is printed with its fraction, never rounded to look whole")
+    func fractionalFanCountMessageShowsTheFraction() async {
+        let provider = FakeSensorProvider(
+            keyedResults: ["FNum": .success(.fake(key: "FNum", value: 1.999_999_9))])
+
+        let error = await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+        #expect(error == .implausibleFanCount("1.9999999"))
+        let message = error?.errorDescription ?? ""
+        #expect(message.hasPrefix("FNum decoded to 1.9999999, which fanctl does not trust"))
+        #expect(!message.contains("2.00"))
     }
 
     @Test("An absent FNum key (not just FNum == 0) is treated as zero fans, not an error")

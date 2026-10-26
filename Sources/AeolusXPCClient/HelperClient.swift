@@ -93,12 +93,13 @@ import Foundation
 /// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
 /// owns its state outright and so widens nothing here. Three more make a health stream's
 /// removal wait for its registration (#532), and they put the actor's body three lines over
-/// SwiftLint's 250-line `type_body_length` warning, which is not suppressed either, for the
-/// reason below. The figure, 229 then, did not move when this section was added — the file grew by
-/// fifty-odd lines and by none of the thing the threshold is worth measuring, which is the whole
-/// argument in one measurement. The warning is deliberately **not** suppressed — no
-/// `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that grew by
-/// two hundred lines of *logic* should draw exactly the attention this one drew.
+/// SwiftLint's 250-line `type_body_length` warning. That one is not suppressed either, for the
+/// reason this paragraph ends on. The count of code lines in the file, 229 when this section was
+/// written, did not move when the section was added — the file grew by fifty-odd lines and by
+/// none of the thing the threshold is worth measuring, which is the whole argument in one
+/// measurement. Neither warning is suppressed, deliberately — no `swiftlint:disable`, no
+/// `file_length` or `type_body_length` override in `.swiftlint.yml` — because a file, or a body,
+/// that grew by two hundred lines of *logic* should draw exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -132,6 +133,14 @@ import Foundation
 ///   for an indirection on the path that reports whether this client can see the helper at
 ///   all. Not worth doing for a line count; worth reconsidering on its own merits if the
 ///   signal grows.
+///
+///   It grew by three lines in #532, from twenty-seven to thirty, counting `healthUpdates()`,
+///   the stream, which that figure included though the list above does not name it. The five
+///   members listed are the same seventeen lines. #534 asked whether that growth warranted
+///   reconsidering the split, and it did not: the three lines order a removal after a
+///   registration, so they are about the stream's end and not about the state or who reads it,
+///   and the case against the indirection stands as it was. What would reopen it is a new field
+///   or reader among the five, or the stream growing again.
 ///
 /// The threshold is not this file's problem in particular either. Over thirty files in the tree
 /// are past it, ten-odd of them under `Sources`, and **four of those are longer than this
@@ -312,6 +321,10 @@ public actor HelperClient {
             // client whose health stream is still open.
             continuation.onTermination = { [weak self] _ in
                 guard let self else { return }
+                // This task holds `self` strongly until the removal has run. That is what once made
+                // it valid for `HelperClientHealthStreamTests` to read its count a single time, as
+                // soon as the test held the client alone: no removal could still be queued then.
+                // The test now polls for the count, so it no longer depends on this capture (#534).
                 Task {
                     await registration.value
                     await self.stopObserving(token)

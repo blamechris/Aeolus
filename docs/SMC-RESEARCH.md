@@ -355,6 +355,15 @@ Two fans, `F0` and `F1`. Every fan key present on this machine:
 present on this machine. This does **not** prove the unlock sequence works — that requires
 a write and belongs to E4 — it only confirms the precondition holds.
 
+**`FNum`, the fan count, is not in the table above.** It was read separately on 2026-10-26 at
+06:47 UTC: `Mac16,5`, macOS 27.0.1 (26A434), repository `main` at `5a1d02c`,
+`fanctl dump --key FNum`, read selectors only, no helper. It is `ui8`, `dataSize` 1, attribute
+byte `0x80`, raw `02`: two fans. `docs/ARCHITECTURE.md` and ADR 0003 already record it as
+`ui8`, and this agrees. A `ui8` decodes to its single byte, so `FNum` cannot decode to a fraction
+on this machine. `SMCFanEnumeration` refuses a fractional `FNum` anyway rather than rounding it
+(#531). The only way to reach that refusal is a firmware that declares `FNum` as `flt` or a
+fixed-point type, and none has been recorded.
+
 `{fds` is absent, so there is **no fan descriptor struct to read names from** on this
 machine. Fan naming on Apple Silicon needs another source; this is direct input into E6
 (sensor catalog).

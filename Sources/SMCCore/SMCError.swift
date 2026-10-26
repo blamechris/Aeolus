@@ -65,6 +65,10 @@ public enum SMCError: Error, Sendable, Equatable {
     /// see `docs/ADR/0003-integer-byte-order.md` — and refusing to guess beats guessing.
     /// Distinct from `sizeMismatch`: the bytes are exactly the length the type declares,
     /// but this decoder does not know which order to read them in.
+    ///
+    /// Thrown only by `#KEY`'s decode, and only when its byte order was never resolved. A
+    /// `#KEY` that declares a non-numeric type is `nonNumericKeyCount` instead, whether or
+    /// not the generation is known: no byte order would make that type a count.
     case integerByteOrderUndetectable(key: SMCKey)
     /// `#KEY` decoded to a value outside `SMCConnection.maxPlausibleKeyCount`.
     ///
@@ -91,6 +95,16 @@ public enum SMCError: Error, Sendable, Equatable {
     /// A `Double` payload would break this enum's `Equatable` conformance for NaN, because
     /// `.nan != .nan`, and NaN is one of the values this case exists to report.
     case unrepresentableKeyCount(type: SMCKeyType, bytes: [UInt8])
+    /// `#KEY` declares a type that `SMCKeyType.isNumeric` says is not a number (`ch8*`,
+    /// `hex_`, `{fds`, `{jst`, or a code this project does not know), so it has no count to
+    /// decode.
+    ///
+    /// Before #531 this reported as `integerByteOrderUndetectable`, which `fanctl` describes
+    /// as "SMC interface generation unknown". That was wrong whenever the generation was
+    /// known, and beside the point when it was not. Never observed: `#KEY` is a `ui32` on
+    /// `Mac16,5`. The declared type and raw bytes are carried so a hardware report shows
+    /// what the firmware sent.
+    case nonNumericKeyCount(type: SMCKeyType, bytes: [UInt8])
 
     /// `true` when the firmware answered with `0x82` — named `SmcBadCommand` in Intel-era
     /// documentation, on the assumption that namespace carries over (see the type comment).
