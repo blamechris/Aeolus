@@ -136,6 +136,11 @@ struct LeaseDriverPublisher {
             let registration = Task { await add(driver, continuation, token) }
             continuation.onTermination = { [weak driver] _ in
                 guard let driver else { return }
+                // This task holds `driver` strongly until the removal has run. That is what once
+                // made it valid for `LeaseDriverStreamTerminationTests` to read its count a single
+                // time, as soon as the test held the driver alone: no removal could still be
+                // queued then. The test now polls for the count, so it no longer depends on this
+                // capture (#534).
                 Task {
                     await registration.value
                     await remove(driver, token)

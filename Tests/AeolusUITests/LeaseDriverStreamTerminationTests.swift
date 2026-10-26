@@ -138,17 +138,34 @@ struct LeaseDriverStreamTerminationTests {
     /// runs: 10 of 10 in each build, and 5 of 5 in each on one thread.
     ///
     /// **When to count.** Nothing announces that a dropped stream's registration has run, and a
-    /// count taken before it ran would read the baseline on code that leaks. So the count waits
-    /// until this test's reference is the driver's only strong one (`untilOnlyTheCallerHolds(_:)`).
-    /// The tasks that register and remove each hold the driver strongly until they end, and the
-    /// termination handler holds it weakly, so that is when every one of them has ended. Nothing
-    /// is left to change the count then, so it is read once, not polled. Anything else that held
-    /// the driver would run the wait out: a red at `quiet` (M2 shows it), never a count read early.
+    /// count taken before it ran would read the baseline on code that leaks. So the count first
+    /// waits until this test's reference is the driver's only strong one
+    /// (`untilOnlyTheCallerHolds(_:)`). The tasks that register and remove each hold the driver
+    /// strongly until they end, and the termination handler holds it weakly, so today that is when
+    /// every one of them has ended. Anything else that held the driver would run the wait out: a
+    /// red at `quiet` (M2 shows it), never a count read early.
+    ///
+    /// **The test does not rest on that (#534).** A removal task that held the driver weakly would
+    /// be correct code, and it would end that wait with its removals still queued. So the count is
+    /// then polled for until it equals `before`, within `patience` steps, and only then asserted.
+    /// A poll that runs out fails the assertion, which also reads the count that is left, so a leak
+    /// is a red either way. See R3 below.
     ///
     /// **Mutation (M1, unordered removal):** in `stream(of:add:remove:)`, delete
     /// `await registration.value` from the handler's task. Run: red at `after == before` in 5 of
     /// 5 debug runs, dropped where made in all 5 and above the maker's priority in 4; the other
-    /// two tests stay green.
+    /// two tests stay green. Run again with the poll (#534), debug, 5 runs on the default pool and
+    /// 5 on one thread: red in 10 of 10, each test taking about 4 to 5 s, because the poll runs
+    /// its `patience` steps out.
+    ///
+    /// **Mutation (R3, a removal task that holds the driver weakly, which is correct code):** in
+    /// `stream(of:add:remove:)`, make the handler's task `Task { [weak driver] in`, and take the
+    /// driver out of it with `guard let driver else { return }` after `await registration.value`.
+    /// The wait for the driver to be held by the test alone then ends with removals still queued.
+    /// On a pool of one thread, before the poll: red at `after == before` in 1 of 15 debug runs
+    /// and 4 of 10 release runs, each with all 5,000 observers of each kind counted. With the
+    /// poll: green in 10 of 10 debug runs and 10 of 10 release runs. M1 is the leak the poll must
+    /// still catch; R3 is the false failure it must not raise.
     @Test(
         "Streams dropped as soon as they are made leave no observer, however their tasks run",
         arguments: Churn.allCases)
@@ -172,9 +189,17 @@ struct LeaseDriverStreamTerminationTests {
         try #require(
             quiet, "a dropped stream's task still holds the driver after \(Self.patience) steps")
 
-        let after = try #require(await Self.observerCounts(of: driver), Self.noSeam)
+        // That wait is not an order on the removals: a removal that holds the driver weakly is
+        // still queued when it ends. So the counts are polled for, and then read once more below.
+        // The copy is taken after the uniqueness check, which nothing repeats.
+        let counted = driver
+        let drained = await Self.pollWithinSteps {
+            await Self.observerCounts(of: counted) == before
+        }
+
+        let after = try #require(await Self.observerCounts(of: counted), Self.noSeam)
         #expect(
-            after == before,
+            drained && after == before,
             """
             dropped streams left \(after.states - before.states) of \(Self.churned) state \
             observers and \(after.reports - before.reports) of \(Self.churned) report observers \
