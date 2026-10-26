@@ -120,6 +120,9 @@ import Foundation
 /// `lost` with `LeaseLoss.Cause.releaseUnconfirmed`. That is a status line, true where it is
 /// emitted, and no claim depends on it. A `take` queued behind that release is acquired all the
 /// same: a second grant is the helper's to refuse, and the release's answer is not kept.
+/// A release that fails on a kept connection (`replyNotDelivered`, or a non-Cocoa error that is no
+/// fault) does not stop the acquire: if the helper still holds the old lease it refuses, Auto from
+/// `refused` sends nothing, and the lease runs to its TTL (`Lease.defaultTimeToLive`, 30 s).
 ///
 /// ## When a snapshot may show a fan automatic (ADR 0015 D2 and D5)
 ///
