@@ -209,7 +209,12 @@ enum AvailabilityFixture {
 
         let leases = helper.leases
         let parked = Task { try? await leases.releaseLease(id: lease.id, from: connection) }
-        while await !helper.leases.fansMidHandback.contains(fan) { await Task.yield() }
+        // Bounded and cancellable: a registration that never comes is a named red, not a spin
+        // past `.timeLimit`. The `Task.yield()` loop this replaced never ended under a mutation
+        // that registered the fan only after its restore returned (#516's review).
+        try await waitUntil("fan \(fan)'s handback is registered as in flight") {
+            await helper.leases.fansMidHandback.contains(fan)
+        }
         return Task { _ = await parked.result }
     }
 }
