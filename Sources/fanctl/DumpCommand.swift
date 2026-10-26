@@ -52,7 +52,8 @@ extension Fanctl {
                 try await connection.open()
             } catch {
                 throw FanctlError.connectionFailed(
-                    context: "open a connection to the SMC", reason: describeSMCError(error))
+                    context: "open a connection to the SMC",
+                    reason: SMCError.readableDescription(of: error))
             }
 
             let declaredCount: Int
@@ -61,7 +62,7 @@ extension Fanctl {
             } catch {
                 throw FanctlError.connectionFailed(
                     context: "read #KEY, this machine's declared key count",
-                    reason: describeSMCError(error))
+                    reason: SMCError.readableDescription(of: error))
             }
 
             let generation = await connection.interfaceGeneration
@@ -110,7 +111,8 @@ extension Fanctl {
                     key = try await connection.key(at: index)
                 } catch {
                     entries.append(
-                        .forIndexFailure(index: index, description: describeSMCError(error)))
+                        .forIndexFailure(
+                            index: index, description: SMCError.readableDescription(of: error)))
                     continue
                 }
 
@@ -120,7 +122,8 @@ extension Fanctl {
                 } catch {
                     entries.append(
                         .forKeyInfoFailure(
-                            index: index, key: key, description: describeSMCError(error)))
+                            index: index, key: key,
+                            description: SMCError.readableDescription(of: error)))
                     continue
                 }
 
@@ -134,7 +137,8 @@ extension Fanctl {
                     entries.append(
                         .forFailedRead(
                             index: index, key: key, info: info,
-                            description: describeSMCError(error), generation: generation))
+                            description: SMCError.readableDescription(of: error),
+                            generation: generation))
                 }
             }
 
@@ -270,7 +274,7 @@ extension DumpEntry {
     /// clear, 52 keys on `Mac16,5`) or because it claims readable and `READ_BYTES`
     /// errors anyway (a further 52 keys). `SMCConnection.read(_:)` distinguishes these
     /// as `SMCError.notReadable` versus `SMCError.firmware`; `description` already
-    /// carries that distinction through `describeSMCError(_:)`.
+    /// carries that distinction through `SMCError.readableDescription(of:)`.
     static func forFailedRead(
         index: Int, key: SMCKey, info: SMCKeyInfo, description: String,
         generation: SMCInterfaceGeneration?
