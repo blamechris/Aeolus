@@ -209,7 +209,7 @@ extension SMCFanEnumeration {
             outcomes = try await provider.read(keys: keys)
         } catch {
             throw SMCFanEnumerationError.readFailed(
-                context: "read fan speeds", reason: String(describing: error))
+                context: "read fan speeds", reason: SMCError.readableDescription(of: error))
         }
 
         var outcomesByKey: [String: SensorReadOutcome] = [:]
@@ -244,7 +244,7 @@ extension SMCFanEnumeration {
             outcomes = try await provider.read(keys: [fanCountKey])
         } catch {
             throw SMCFanEnumerationError.readFailed(
-                context: "read \(fanCountKey)", reason: String(describing: error))
+                context: "read \(fanCountKey)", reason: SMCError.readableDescription(of: error))
         }
 
         guard let outcome = outcomes.first else {
