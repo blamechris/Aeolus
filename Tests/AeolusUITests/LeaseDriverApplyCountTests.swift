@@ -13,21 +13,25 @@ import Testing
 @Suite("LeaseDriver — every apply holds the floor back until it answers", .timeLimit(.minutes(1)))
 struct LeaseDriverApplyCountTests {
 
-    static func isFloor(_ evidence: LeaseDriverReport.AutomaticEvidence) -> Bool {
-        if case .readFrom = evidence { true } else { false }
-    }
-
     /// The first report published after `mark` with the driver `released`, waited for on the
     /// reports (`LeaseScene.firstReport(since:where:)`), never on the states.
     static func released(_ scene: LeaseScene, since mark: Int) async throws -> LeaseDriverReport {
         try #require(await scene.firstReport(since: mark) { $0.isReleased })
     }
 
-    /// Waits until the ledger shows a floor published after `mark`.
-    static func floorPublished(_ scene: LeaseScene, since mark: Int) async {
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(mark)).reports.contains { isFloor($0.automaticEvidence) }
-        }
+    /// The first floor published after `mark`, which the test requires
+    /// (`LeaseScene.firstFloor(since:)`): a driver that never publishes one is a red at the line
+    /// that called this, with the driver's report, rather than at the suite's time limit.
+    @discardableResult
+    static func floorPublished(
+        _ scene: LeaseScene, since mark: Int, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> LeaseDriverReport {
+        let published = await scene.firstFloor(since: mark)
+        let now = await scene.driver.report
+        return try #require(
+            published,
+            "no report with a floor followed the apply's answer; the driver's now: \(now)",
+            sourceLocation: sourceLocation)
     }
 
     /// Two leases' applies in flight at a stop: Auto during apply 1, a second lease and its
@@ -68,7 +72,7 @@ struct LeaseDriverApplyCountTests {
 
         let last = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await Self.floorPublished(scene, since: last)
+        try await Self.floorPublished(scene, since: last)
         #expect(await scene.driver.report.automaticEvidence.admits(during) == false)
         await scene.finish()
     }
@@ -97,7 +101,7 @@ struct LeaseDriverApplyCountTests {
 
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await Self.floorPublished(scene, since: answered)
+        try await Self.floorPublished(scene, since: answered)
         #expect(!(await scene.driver.report.automaticEvidence.admits(during)))
         await scene.finish()
     }
@@ -125,7 +129,7 @@ struct LeaseDriverApplyCountTests {
         var mark = await scene.mark()
         await scene.driver.selectAutomatic()
         let first = try await Self.released(scene, since: mark)
-        #expect(Self.isFloor(first.automaticEvidence), "nothing in flight, yet no floor: \(first)")
+        #expect(first.automaticEvidence.isFloor, "nothing in flight, yet no floor: \(first)")
 
         await scene.helper.script(.apply, .parked)
         await scene.driver.take(try LeaseScene.target([0: 3000]))
@@ -136,7 +140,7 @@ struct LeaseDriverApplyCountTests {
         #expect(second.automaticEvidence == .noRead, "an apply in flight: \(second)")
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await Self.floorPublished(scene, since: answered)
+        try await Self.floorPublished(scene, since: answered)
         await scene.finish()
     }
 
@@ -158,7 +162,7 @@ struct LeaseDriverApplyCountTests {
         #expect(stopped.automaticEvidence == .noRead, "\(stopped)")
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await Self.floorPublished(scene, since: answered)
+        try await Self.floorPublished(scene, since: answered)
         await scene.finish()
     }
 
@@ -181,7 +185,7 @@ struct LeaseDriverApplyCountTests {
         #expect(second.automaticEvidence == .noRead, "lease A's apply is unanswered: \(second)")
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await Self.floorPublished(scene, since: answered)
+        try await Self.floorPublished(scene, since: answered)
         await scene.finish()
     }
 }
