@@ -20,8 +20,9 @@ import Testing
 /// teardown path, and goes red on the mutation below too; this holds it in behaviour, for
 /// `connectionDidInvalidate`, whatever the spelling. Here the acquirer is parked in the bounds
 /// read, the last suspension before `acquireLease`'s marker, and is resumed inside the teardown's
-/// first job, so it runs at that job's first suspension. `TeardownGapFixture` says why that
-/// ordering is deterministic, and `theScheduleLandsTheAcquirerAtOneSuspension` holds it to that.
+/// first job, so it runs at that job's first suspension. That ordering is observed on the macOS
+/// 26 and 27 runtimes, not promised by any API (`TeardownGapFixture` says why), and
+/// `theScheduleLandsTheAcquirerAtOneSuspension` is what holds it.
 ///
 /// **The acquirer reads its fan before the dying lease is granted.** Asked once that lease held
 /// fan 0, the foreign-control step would exempt fan 0 as Aeolus's own, and in the gap

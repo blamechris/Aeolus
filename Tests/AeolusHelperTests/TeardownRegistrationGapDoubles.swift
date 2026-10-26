@@ -11,26 +11,31 @@ import os
 /// before `acquireLease`'s marker that is resumed **inside** a teardown's first job on the lease
 /// core, so it runs at that job's first suspension and at no later one.
 ///
-/// ## Why a task executor, and why a serial one
+/// ## Why a serial task executor, and why the ordering is observed rather than promised
 ///
 /// A resumed continuation is enqueued on the generic executor (the runtime's default
 /// `ResumeToExecutor`) and then hops to the actor its code is isolated to. A teardown that yields
-/// does the same. The two hops race on the global pool, so "the acquirer runs at the teardown's
-/// first suspension" is a probability, not an ordering. Measured on 2026-10-25 with a standalone
-/// model of this schedule (its source is in #516's pull request), the parked task missed the gap
-/// in 3 of 20,000 runs (release) and 7 of 20,000 (debug) when it was parked on an actor sharing
-/// the lease core's executor, and in 1,511 of 50,000 (release) when it was parked in nonisolated
-/// code.
+/// does the same, and the two hops race on the global pool. Measured on 2026-10-25 with a
+/// standalone model of this schedule (its source is in #516's pull request), the parked task
+/// missed the gap in 3 of 20,000 runs (release) and 7 of 20,000 (debug) when it was parked on an
+/// actor sharing the lease core's executor, and in 1,511 of 50,000 (release) when it was parked in
+/// nonisolated code.
 ///
-/// `OneLaneTaskExecutor` removes the race. Both tasks prefer it (SE-0417), so each one's
-/// generic-bound resumption is enqueued on one FIFO lane. The acquirer's is enqueued when the
-/// gate opens, inside the teardown's job and before anything in that job can suspend. The
-/// teardown's own resumption from a suspension can only be enqueued after it suspends, so it
-/// is behind the acquirer's. The same model then missed the gap in 0 of 200,000 runs, 100,000
-/// in each configuration. Nothing blocks a thread: the acquirer waits on a continuation, and
-/// the lane runs each job once, as an executor's own drain does.
+/// Both tasks here prefer `OneLaneTaskExecutor`, one serial `DispatchQueue`. The acquirer's
+/// resumption is enqueued on it when the gate opens, inside the teardown's job, and a teardown
+/// that yields has been seen to resume through it afterwards. The model then missed the gap in 0
+/// of 200,000 runs, 100,000 in each configuration, on macOS 27, and these tests have passed on
+/// CI's macOS 26 image.
 ///
-/// Both tasks are created with the same explicit priority, because a default actor runs
+/// **That ordering is observed, not promised.** SE-0417 says where a preferring task's
+/// generic-bound jobs run, not in what order; the first-in, first-out is this file's own queue,
+/// and where a yield enqueues its resumption is the runtime's choice and can change between
+/// versions. `TeardownRegistrationGapTests.theScheduleLandsTheAcquirerAtOneSuspension` is what
+/// holds it: on a runtime that stops producing it, that test goes red, rather than the gap test
+/// going quietly vacuous. Nothing blocks a thread: the acquirer waits on a continuation, and the
+/// lane runs each job once, as an executor's own drain does.
+///
+/// Both tasks are created with the same explicit priority, as a precaution: a default actor runs
 /// higher-priority jobs first.
 enum TeardownGapFixture {
 
@@ -114,10 +119,10 @@ final class OneLaneTaskExecutor: TaskExecutor {
 /// The bounds read `acquireLease` suspends on last before its marker, parking the first call it
 /// is given until `open()`.
 ///
-/// It reads the firmware **before** it parks, so the call has no hop left to make once it is
-/// released: the next thing the acquirer does after resuming is return to the lease core. A
-/// hop after the park would put a second suspension between the acquirer's resumption and its
-/// decision, and the teardown would win that one.
+/// It reads the firmware before it parks, as a precaution only, so that once released the call
+/// has nothing left to do but return to the lease core. Neither test depends on that order: with
+/// the park moved above the read, or a `Task.yield()` added after the park, the measuring test
+/// stays green and the gap test is still red under its mutation (#516's review, reproduced).
 ///
 /// Every later call reads through without parking: that is the holder's grant, which must not
 /// wait on the newcomer.
