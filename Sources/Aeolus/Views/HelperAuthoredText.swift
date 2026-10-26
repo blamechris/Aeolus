@@ -14,6 +14,11 @@ import Foundation
 ///   selection is persisted by it — and a cleaned key would be a different one. It is
 ///   **refused** instead unless `isDisplayableVerbatim(_:)` holds (`SnapshotReadings`).
 ///
+/// One text that is not the helper's goes through it too: a direct read's failure, in the
+/// "Refresh failed:" and "Last refresh failed:" lines (`PollingStatusDisplay.failureReason`).
+/// It can carry a type code the firmware declared, verbatim, and the same rules apply to it
+/// for the same reason (#544).
+///
 /// ## Why the app cleans what the helper already refused
 ///
 /// `AeolusXPCValidation` refuses Unicode Cc and Cf in a holder description at grant time, so a
