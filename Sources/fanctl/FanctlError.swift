@@ -42,7 +42,8 @@ enum FanctlError: Error, LocalizedError, Equatable {
     /// `SMCFanEnumeration.maxPlausibleFanCount`. See
     /// that constant for why this exists — the same defence `SMCConnection` applies to
     /// `#KEY` itself. Carries a rendering of the raw decoded value (via
-    /// `Formatting.number`, which never traps on the same class of anomaly) rather than
+    /// `Formatting.exactNumber`, which never traps on the same class of anomaly, and shows a
+    /// fraction in full rather than rounding 1.9999999 to "2.00") rather than
     /// an `Int`: the value that makes this case worth having at all — `NaN`,
     /// `Infinity`, or a magnitude that overflows `Int` outright — is often not
     /// representable as one.
@@ -107,7 +108,7 @@ extension FanctlError {
         case .readFailed(let context, let reason):
             self = .connectionFailed(context: context, reason: reason)
         case .implausibleFanCount(let declared):
-            self = .implausibleFanCount(Formatting.number(declared))
+            self = .implausibleFanCount(Formatting.exactNumber(declared))
         }
     }
 }
