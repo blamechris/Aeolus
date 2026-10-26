@@ -45,6 +45,11 @@ extension LeaseScene {
         let report: LeaseDriverReport?
 
         let end: FloorWaitEnd
+
+        /// How many steps the sleeper slept through before the wait ended. A wait a floor ends
+        /// must have stopped it: one that slept through its whole patience after the ledger had
+        /// the floor was not cancelled, and only a count shows that without a clock.
+        let slept: Int
     }
 
     /// The first report published after `mark` that carries a floor, once the ledger has one, or
@@ -85,8 +90,8 @@ extension LeaseScene {
     /// `clock`, which does not move on its own, and it is checked between steps, so one step in
     /// flight can overrun it by exactly the stall that step is measuring and by no more. A stall
     /// that spends it costs a correct driver nothing once the floor is in the ledger: the last
-    /// look finds any floor published by the time the wait ends. One of 50 s or more between the
-    /// answer's entry in the ledger and the driver's mint could return `nil` for a correct
+    /// look finds any floor in the ledger by the time the wait ends. One of 50 s or more between
+    /// the answer's entry in the ledger and the driver's mint could return `nil` for a correct
     /// driver. That is negligible, and not nothing.
     func firstFloor(since mark: Int) async -> LeaseDriverReport? {
         await awaitFloor(since: mark).report
@@ -99,6 +104,7 @@ extension LeaseScene {
         step: Duration = LeaseScene.floorStep, ceiling: Duration = LeaseScene.floorCeiling
     ) async -> FloorWait {
         let ledger = self.ledger
+        let slept = ResultBox<Int>()
         let end = await withTaskGroup(of: FloorWaitEnd?.self) { group in
             group.addTask {
                 await ledger.waitFor {
@@ -108,7 +114,7 @@ extension LeaseScene {
                 return Task.isCancelled ? nil : .published
             }
             group.addTask {
-                await Self.spendPatience(patience, step: step, ceiling: ceiling)
+                await Self.spendPatience(patience, step: step, ceiling: ceiling, slept: slept)
             }
             // The first verdict ends the wait. A racer that was cancelled gives none, so when the
             // waiting task is cancelled both are silent and the wait is `cancelled`, whichever
@@ -120,24 +126,27 @@ extension LeaseScene {
                     break
                 }
             }
+            // The other racer is left running if it is not cancelled, and the group waits for it.
             group.cancelAll()
             return verdict ?? .cancelled
         }
         let report = Array(await ledger.entries.dropFirst(mark)).reports.first {
             $0.automaticEvidence.isFloor
         }
-        return FloorWait(report: report, end: end)
+        return FloorWait(report: report, end: end, slept: slept.value ?? 0)
     }
 
     /// Sleeps `patience` steps of `step`, or until `ceiling` of wall-clock time has passed, and
     /// says which; `nil` if the task is cancelled first. Never ends on the ledger: that is the
-    /// other half of the race in `awaitFloor(since:patience:step:ceiling:)`.
+    /// other half of the race in `awaitFloor(since:patience:step:ceiling:)`. Counts the steps it
+    /// has slept through into `slept` as it goes.
     private static func spendPatience(
-        _ patience: Int, step: Duration, ceiling: Duration
+        _ patience: Int, step: Duration, ceiling: Duration, slept: ResultBox<Int>
     ) async -> FloorWaitEnd? {
         let began = ContinuousClock.now
-        for _ in 0..<patience {
+        for done in 0..<patience {
             do { try await Task.sleep(for: step) } catch { return nil }
+            slept.set(done + 1)
             if ContinuousClock.now - began >= ceiling { return .ceiling }
         }
         return .patience

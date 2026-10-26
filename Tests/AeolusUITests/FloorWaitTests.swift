@@ -45,6 +45,33 @@ struct FloorWaitTests {
         await scene.finish()
     }
 
+    /// A floor in the ledger stops the sleeper: the wait does not sit out its patience after the
+    /// ledger has what it waited for. Counted in steps, not timed, so that no stall can fail it:
+    /// a sleeper that is cancelled when the floor ends the wait has slept through no step (none,
+    /// in 200 waits of a probe), and one that is not has slept through all 3,000, which is three
+    /// seconds at the least.
+    ///
+    /// **Mutation (E1′, "a published floor leaves the sleeper running"):** in `awaitFloor`,
+    /// `if verdict != .published { group.cancelAll() }`. Run: red here at `wait.slept < patience`,
+    /// after the 3,000 steps, 6 to 10 seconds in two runs. **(E1, "no one is cancelled"):** delete
+    /// `group.cancelAll()`. Run: the same here, and the three tests whose wait the sleeper ends
+    /// never return, so they are red at the suite's time limit; the run takes 63.8 s.
+    @Test("A floor in the ledger stops the sleeper")
+    func aFloorStopsTheSleeper() async throws {
+        let scene = await LeaseScene()
+        let floor = try await Self.floorReport()
+        let mark = await scene.mark()
+        await scene.ledger.record(.report(floor), at: scene.clock.now)
+        let patience = 3_000
+
+        let wait = await scene.awaitFloor(
+            since: mark, patience: patience, step: .milliseconds(1), ceiling: .seconds(1_000))
+
+        #expect(wait.end == .published, "\(wait)")
+        #expect(wait.slept < patience, "the sleeper slept through its whole patience: \(wait)")
+        await scene.finish()
+    }
+
     /// Neither a floor from before the mark nor a report that carries none is the floor asked for.
     ///
     /// **Mutation (W2, "the mark is ignored"):** in `awaitFloor`, `dropFirst(0)` for
@@ -115,8 +142,9 @@ struct FloorWaitTests {
     ///
     /// **Mutation (B, "the last look only after a floor ended the wait"):** in `awaitFloor`,
     /// compute `report` only when `end == .published`. Run ten times: red here at
-    /// `wait.report == floor` in all ten, though that is not promised, and in the test below in
-    /// all ten.
+    /// `wait.report == floor` in 8 of the ten (10 of ten in an earlier set of mine, 7 of ten in a
+    /// reviewer's), which is not promised; red in the test below in all ten, every time it has
+    /// been run.
     @Test("A floor in the ledger is found when the patience was spent, too")
     func aFloorIsFoundAfterTheBound() async throws {
         let scene = await LeaseScene()
@@ -216,12 +244,12 @@ struct FloorWaitTests {
     /// time the test spends before and after the wait.
     ///
     /// **Mutation (W6, "the ceiling reaches the limit"):** set `LeaseScene.floorCeiling` to
-    /// `.seconds(60)`. Run: red at `floorCeiling <= margin`.
+    /// `.seconds(60)`. Run: red at `floorCeiling <= largestAllowedCeiling`.
     @Test("The scene's ceiling is below the suites' time limit, with a margin")
     func theCeilingIsBelowTheTimeLimit() {
-        let margin = Duration.seconds(55)
+        let largestAllowedCeiling = Duration.seconds(55)
         #expect(
-            LeaseScene.floorCeiling <= margin,
-            "\(LeaseScene.floorCeiling) is above \(margin), too near a 60 s limit")
+            LeaseScene.floorCeiling <= largestAllowedCeiling,
+            "\(LeaseScene.floorCeiling) is above \(largestAllowedCeiling), too near a 60 s limit")
     }
 }
