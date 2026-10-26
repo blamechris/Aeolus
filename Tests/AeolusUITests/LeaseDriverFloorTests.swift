@@ -78,7 +78,8 @@ struct LeaseDriverFloorTests {
     /// `.readFrom(mintFloor())` whatever `appliesUnanswered` is. Run: red at `.noRead`, and at
     /// `!admits(during)`.
     /// **Mutation (S2n, "the answer mints nothing"):** delete the body of `applyAnswered()` after
-    /// the decrement. Run: red at the wait for the floor's report, which never comes.
+    /// the decrement. Run: red at the floor's `#require`, once `LeaseScene.firstFloor(since:)`'s
+    /// patience is spent with no floor published.
     @Test("Auto during an apply sets no floor until the apply has answered")
     func anApplyInFlightHoldsTheFloorBack() async throws {
         let scene = await LeaseScene()
@@ -97,17 +98,19 @@ struct LeaseDriverFloorTests {
 
         let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            Array(entries.dropFirst(answered)).reports.contains {
-                if case .readFrom = $0.automaticEvidence { true } else { false }
-            }
-        }
-        let floor = try #require(Array(await scene.entries.dropFirst(answered)).reports.last)
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        let floor = try #require(
+            published,
+            "the apply answered, and no report with a floor was published; the driver's now: \(now)"
+        )
         let after = await scene.driver.beginSnapshotRead()
 
         #expect(floor.state == .released, "the state did not move")
         #expect(!floor.automaticEvidence.admits(during), "a read before the apply answered")
         #expect(floor.automaticEvidence.admits(after))
+        let current = await scene.driver.report
+        #expect(current == floor, "the driver's report is the one it published: \(current)")
         #expect(
             Array(await scene.entries.dropFirst(answered)).states.isEmpty,
             "the evidence moved alone: no state was published again")
@@ -128,12 +131,14 @@ struct LeaseDriverFloorTests {
         let lost = try #require(await scene.firstReport(since: mark) { $0.isLost })
         #expect(lost.automaticEvidence == .noRead, "\(lost)")
 
+        let answered = await scene.mark()
         await scene.helper.answerParked(.apply)
-        await scene.ledger.waitFor { entries in
-            entries.reports.last.map {
-                if case .readFrom = $0.automaticEvidence { true } else { false }
-            } ?? false
-        }
+        let published = await scene.firstFloor(since: answered)
+        let now = await scene.driver.report
+        try #require(
+            published != nil,
+            "the apply answered, and no report with a floor was published; the driver's now: \(now)"
+        )
         #expect(await scene.driver.report.state.isLost)
         await scene.finish()
     }
@@ -181,7 +186,7 @@ struct LeaseDriverFloorTests {
         // Bounded in turns, so a floor that never comes is a red and not a hung run.
         var ended = false
         for _ in 0..<10_000 {
-            if case .readFrom = await driver.report.automaticEvidence {
+            if await driver.report.automaticEvidence.isFloor {
                 ended = true
                 break
             }

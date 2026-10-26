@@ -195,7 +195,7 @@ struct AutomaticAfterAReadTests {
 
         await scene.lease.helper.answerParked(.apply)
         try #require(
-            await Support.settle { Self.isFloor(scene.root.leaseState.current.automaticEvidence) },
+            await Support.settle { scene.root.leaseState.current.automaticEvidence.isFloor },
             "the root published the floor the apply's answer minted")
         let sent = await Support.requestsReach(3, on: scene.reader)
         try #require(sent, "the root waited out the 60 s pause after the apply answered")
@@ -265,10 +265,6 @@ struct AutomaticAfterAReadTests {
                     false
                 }
             }, "the source holds the grant's read")
-    }
-
-    static func isFloor(_ evidence: LeaseDriverReport.AutomaticEvidence) -> Bool {
-        if case .readFrom = evidence { true } else { false }
     }
 
     /// A root whose source reads at a 60 s interval on the real pacing clock, handshaken, with its

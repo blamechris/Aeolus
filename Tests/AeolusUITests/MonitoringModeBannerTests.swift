@@ -89,7 +89,7 @@ struct MonitoringModeBannerTests {
     ) async throws {
         let source = scene.root.snapshots
         try #require(
-            await Support.settle { Reads.isFloor(scene.root.leaseState.current.automaticEvidence) },
+            await Support.settle { scene.root.leaseState.current.automaticEvidence.isFloor },
             "the root published the floor")
         // The first request was answered before the grant, the second is the grant's.
         let sent = await Support.requestsReach(3, on: scene.reader)

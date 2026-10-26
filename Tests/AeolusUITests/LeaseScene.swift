@@ -13,7 +13,8 @@ import os
 /// Every wait here is on the ledger or the clock, and none blocks a thread. A test whose driver
 /// never does what it waits for does not finish; the suites carry a one-minute time limit so that
 /// it fails instead, as the helper's suites do. One wait, `firstFloor(since:)`, also ends after a
-/// bounded number of short sleeps, which only a driver that never mints the floor spends.
+/// bounded number of short sleeps or a bounded wall-clock time, whichever comes first, which only
+/// a driver that never mints the floor spends.
 struct LeaseScene: Sendable {
 
     static let holder = "Aeolus.app 9.9.9"
@@ -113,55 +114,6 @@ struct LeaseScene: Sendable {
     ) async -> LeaseDriverReport? {
         await ledger.waitFor { Array($0.dropFirst(mark)).reports.contains { matches($0.state) } }
         return Array(await ledger.entries.dropFirst(mark)).reports.first { matches($0.state) }
-    }
-
-    /// How many steps of `floorStep` `firstFloor(since:)` sleeps through before it gives up.
-    static let floorPatience = 5_000
-
-    /// One step of `firstFloor(since:)`'s patience.
-    static let floorStep: Duration = .milliseconds(1)
-
-    /// The first report published after `mark` that carries a floor, once the ledger has one, or
-    /// `nil` if none has reached it within `floorPatience` steps of `floorStep`.
-    ///
-    /// **For the floor the last unanswered `apply`'s answer mints** (ADR 0015 D5). The fake writes
-    /// the answer to the ledger and only then returns to the driver, which mints on its own actor
-    /// and publishes the floor as a report with the state unchanged. So the answer's entry is no
-    /// promise that the driver has handled it, and `settle()` is none either (#519): in 40 runs of
-    /// `AeolusUITests` in the release configuration, 13 of 200 reads of `driver.report` after
-    /// that entry and `settle()` still said `noRead`. In every one of the 13 the floor was
-    /// published moments later (a wait on the ledger begun just after the read ended within
-    /// 516 µs), and none was missing for good. This waits on the published report itself,
-    /// forwarded from `reportUpdates()`, as `firstReport(since:where:)` does.
-    ///
-    /// **It ends at either outcome.** A driver that never mints publishes nothing, so no event can
-    /// end the wait; the patience does, and the caller's `#require` is a red with a message rather
-    /// than a red at the suite's time limit. A correct driver never spends it: its report ends the
-    /// wait as soon as the ledger has it.
-    ///
-    /// **The patience counts steps the waiter slept through, not elapsed time and not hops.** A
-    /// stall of the whole process spends one step however long it lasts, so a CI runner's pause
-    /// (#341's were 20 to 30 s) does not use the patience up, where a wall-clock bound of the same
-    /// size would be spent at once; the helper's `StallTolerantWait` counts only scheduled time
-    /// for the same reason. A pool too busy to wake the waiter on time makes each step longer
-    /// rather than using more of the patience. And a step is a timer, so a release build does not
-    /// shorten it, as it did the hops of `settle()`. A step took about 2 ms on the development
-    /// machine, so a driver that never mints is a red in about ten seconds there (#519's M3 and
-    /// mA, 9.9 s each).
-    func firstFloor(since mark: Int) async -> LeaseDriverReport? {
-        let isFloor: @Sendable (LeaseDriverReport) -> Bool = { report in
-            if case .readFrom = report.automaticEvidence { return true }
-            return false
-        }
-        let ledger = self.ledger
-        await firstOf(
-            { await ledger.waitFor { Array($0.dropFirst(mark)).reports.contains(where: isFloor) } },
-            {
-                for _ in 0..<Self.floorPatience {
-                    do { try await Task.sleep(for: Self.floorStep) } catch { return }
-                }
-            })
-        return Array(await ledger.entries.dropFirst(mark)).reports.first(where: isFloor)
     }
 
     /// The ledger now.
