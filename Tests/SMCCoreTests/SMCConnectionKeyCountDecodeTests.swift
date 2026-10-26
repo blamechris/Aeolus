@@ -75,6 +75,12 @@ struct SMCConnectionKeyCountDecodeTests {
         Reply(
             name: "ui64 2^63", type: .ui64,
             bytes: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], decodesTo: twoToThe63),
+        // 2^63 − 512 is the smallest value Double rounds up to 2^63: it sits exactly halfway
+        // between 2^63 − 1024 and 2^63, and the tie goes to 2^63, whose significand is even.
+        // `representableEdges` holds the value one below it.
+        Reply(
+            name: "ui64 2^63 − 512, the smallest value that rounds up to 2^63", type: .ui64,
+            bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00], decodesTo: twoToThe63),
         Reply(
             name: "ui64 max", type: .ui64,
             bytes: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], decodesTo: 2 * twoToThe63),
@@ -113,6 +119,63 @@ struct SMCConnectionKeyCountDecodeTests {
         #expect(reply.isDecodedValue(try reply.value.scalar()))
         #expect(throws: SMCError.implausibleKeyCount(declared: -1)) {
             _ = try SMCConnection.decodeKeyCount(value: reply.value)
+        }
+    }
+
+    /// One scripted reply that converts to a whole `Int`, and the `Int` it must convert to.
+    /// `declared` is written out as a literal, not derived from `reply.decodesTo`, so the
+    /// assertion does not compare a number to itself.
+    struct Edge: Sendable, CustomTestStringConvertible {
+        let reply: Reply
+        let declared: Int
+
+        var testDescription: String { reply.name }
+    }
+
+    /// 2^63 − 1024, the largest `Double` below 2^63, and so the largest value
+    /// `Int(exactly:)` can return from a decoded scalar. `Int.max` itself has no `Double`.
+    static let largestDoubleBelowTwoToThe63: Double = 9_223_372_036_854_774_784
+
+    /// The representable side of both edges of `Int`'s range. Each converts to a whole `Int`,
+    /// so it must reach `validatePlausibleKeyCount(_:)` and be refused there as
+    /// `implausibleKeyCount`, carrying the converted value, never as
+    /// `unrepresentableKeyCount`. A conversion guard written one step too tight at either end
+    /// would refuse these as unrepresentable, and these turn red on the error's case.
+    static let representableEdges: [Edge] = [
+        // −2^63 is Int.min exactly, and a Double holds it exactly.
+        Edge(
+            reply: Reply(
+                name: "si64 Int64.min, −2^63 exactly", type: .si64,
+                bytes: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], decodesTo: -twoToThe63),
+            declared: Int.min),
+        Edge(
+            reply: Reply(
+                name: "flt −2^63 exactly", type: .flt, bytes: [0xDF, 0x00, 0x00, 0x00],
+                decodesTo: -twoToThe63),
+            declared: Int.min),
+        // 2^63 − 513 is the largest ui64 that stays below 2^63 through Double: it is 511 from
+        // 2^63 − 1024 and 513 from 2^63, so it rounds down.
+        Edge(
+            reply: Reply(
+                name: "ui64 2^63 − 513, which rounds down to 2^63 − 1024", type: .ui64,
+                bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD, 0xFF],
+                decodesTo: largestDoubleBelowTwoToThe63),
+            declared: 9_223_372_036_854_774_784),
+        Edge(
+            reply: Reply(
+                name: "si64 2^63 − 513, which rounds down to 2^63 − 1024", type: .si64,
+                bytes: [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD, 0xFF],
+                decodesTo: largestDoubleBelowTwoToThe63),
+            declared: 9_223_372_036_854_774_784),
+    ]
+
+    @Test(
+        "A #KEY at either representable edge of Int converts and is refused as implausible",
+        arguments: representableEdges)
+    func representableEdgeReachesThePlausibilityBound(_ edge: Edge) throws {
+        #expect(edge.reply.isDecodedValue(try edge.reply.value.scalar()))
+        #expect(throws: SMCError.implausibleKeyCount(declared: edge.declared)) {
+            _ = try SMCConnection.decodeKeyCount(value: edge.reply.value)
         }
     }
 
