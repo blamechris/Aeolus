@@ -80,7 +80,8 @@ public enum SMCError: Error, Sendable, Equatable {
     /// ±infinity, a fraction, or a magnitude of 2^63 or more.
     ///
     /// The firmware declares `#KEY`'s type, so this is reachable from a `flt` declaration (all
-    /// four kinds), and from a `ui64` or `si64` of 2^63 − 512 or more, which rounds to 2^63 or
+    /// four kinds), from a fixed-point declaration (`fpe2`, `fp78`, `sp78`, `ioft`) whose value
+    /// has a fraction, and from a `ui64` or `si64` of 2^63 − 512 or more, which rounds to 2^63 or
     /// above on its way through `Double`. Never observed: `#KEY` is a `ui32` on `Mac16,5`, and
     /// no `ui32` can produce it.
     ///

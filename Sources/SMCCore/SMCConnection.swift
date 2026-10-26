@@ -402,8 +402,9 @@ public actor SMCConnection {
     /// `Int`, and sanity-bound it.
     ///
     /// The firmware declares `#KEY`'s type, and `scalar()` decodes whatever it declares. A
-    /// `flt` can decode to NaN, ±infinity or a fraction. A `ui64` or `si64` of 2^63 − 512 or
-    /// more decodes to 2^63 or above, because `Double` rounds it up. `Int(_: Double)` traps on
+    /// `flt` can decode to NaN, ±infinity or a fraction, and a fixed-point type (`fpe2`,
+    /// `fp78`, `sp78`, `ioft`) to a fraction. A `ui64` or `si64` of 2^63 − 512 or more decodes
+    /// to 2^63 or above, because `Double` rounds it up. `Int(_: Double)` traps on
     /// all of those except the fraction, which it silently truncates. A trap here would end
     /// the root helper (through `ReadOnlyFanAuthority` and `readAll()`) and `fanctl` on a
     /// firmware value they should refuse, before `validatePlausibleKeyCount(_:)` could see

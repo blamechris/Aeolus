@@ -44,7 +44,8 @@ struct SMCConnectionKeyCountDecodeTests {
     static let twoToThe63: Double = 9_223_372_036_854_775_808
 
     /// Every value here would have trapped `Int(_: Double)`, or, for the fraction, been
-    /// silently truncated by it. `flt` can carry all of them. Among the other declared types
+    /// silently truncated by it. `flt` can carry all of them, and a fixed-point type the
+    /// fraction (`fpe2` here). Among the other declared types
     /// only `ui64` and `si64` can reach 2^63: `ioft` tops out near 2.8e14, and the narrower
     /// integers and fixed-point types are far smaller still.
     static let unrepresentable: [Reply] = [
@@ -67,6 +68,10 @@ struct SMCConnectionKeyCountDecodeTests {
         Reply(
             name: "flt 3385.5, a fraction", type: .flt, bytes: [0x45, 0x53, 0x98, 0x00],
             decodesTo: 3385.5),
+        // fpe2 is unsigned 14.2 fixed point: 0x34E5 is 13541, a quarter of which is 3385.25.
+        Reply(
+            name: "fpe2 3385.25, a fixed-point fraction", type: .fpe2, bytes: [0x34, 0xE5],
+            decodesTo: 3385.25),
         Reply(
             name: "ui64 2^63", type: .ui64,
             bytes: [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], decodesTo: twoToThe63),
