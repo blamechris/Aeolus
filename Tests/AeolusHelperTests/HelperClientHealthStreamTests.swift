@@ -34,9 +34,10 @@ import Testing
 ///
 /// ## The waits
 ///
-/// Both waits are `waitUntil`, which polls at a fixed interval within a budget of run time, so a
+/// Every wait is `waitUntil`, which polls at a fixed interval within a budget of run time, so a
 /// runner's stall does not spend it and a mutant that never gets there is a red after the
-/// budget, not a hang. Nothing announces either event, so there is no event to wait on.
+/// budget, not a hang. Nothing announces any of the events, so there is no event to wait on. A
+/// timeout is recorded as an issue, so a wait that runs out fails the test whatever follows it.
 @Suite(
     "The XPC client's health stream: one that ends leaves, and the client is held weakly",
     .timeLimit(.minutes(1)))
@@ -64,17 +65,33 @@ struct HelperClientHealthStreamTests {
     /// forty runs. Release is `-c release -Xswiftc -enable-testing`.
     ///
     /// **When to count.** Nothing announces that a dropped stream's registration has run, and a
-    /// count taken before it ran would read the baseline on code that leaks. So the count waits
-    /// until this test's reference is the client's only strong one. The tasks that register and
-    /// remove each hold the client strongly until they end, and the termination handler holds it
-    /// weakly, so that is when every one of them has ended. Nothing is left to change the count
-    /// then, so it is read once, not polled.
+    /// count taken before it ran would read the baseline on code that leaks. So the count first
+    /// waits until this test's reference is the client's only strong one. The tasks that register
+    /// and remove each hold the client strongly until they end, and the termination handler holds
+    /// it weakly, so today that is when every one of them has ended.
+    ///
+    /// **The test does not rest on that (#534).** A removal task that held the client weakly
+    /// would be correct code, and it would end that wait with its removals still queued. So the
+    /// count is then polled for until it reaches `joined`, within the same budget, and only
+    /// then asserted. A budget that runs out is a recorded issue, and the assertion reads the
+    /// count that is left, so a leak is a red either way. See R3 below.
     ///
     /// **Mutation (M1, unordered removal):** in `HelperClient.healthUpdates()`, delete
     /// `await registration.value` from the handler's task. Run: red at `after == joined` in 20 of
     /// 20 debug runs, dropped where made in all 20 and above the maker's priority in 3, and in 10
     /// of 10 release runs, dropped where made in all 10. On a pool of one thread, debug, red in
     /// 10 of 10, above the maker's priority in all 10. `theClientIsHeldWeakly()` stays green.
+    /// Run again with the poll (#534), debug, 5 runs on the default pool and 5 on one thread: red
+    /// in 10 of 10, each test taking about 20 s, because the poll runs its 20 s budget out.
+    ///
+    /// **Mutation (R3, a removal task that holds the client weakly, which is correct code):** in
+    /// `healthUpdates()`, make the handler's task `Task { [weak self] in` and its last line
+    /// `await self?.stopObserving(token)`. The wait for the client to be held by the test alone
+    /// then ends with removals still queued. On a pool of one thread, before the poll: red at
+    /// `after == joined` in 7 of 15 debug runs, each with 5,001 observers counted (the witness
+    /// and every churned stream), and in none of 10 release runs. With the poll: green in 10 of
+    /// 10 debug runs and 10 of 10 release runs. M1 is the leak the poll must still catch; R3 is
+    /// the false failure it must not raise.
     ///
     /// **Mutation (M3, a yield for the order):** replace that line with `await Task.yield()`.
     /// Run, debug: red at `after == joined` in 20 of 20, dropped where made, with 3 to 52 left.
@@ -117,6 +134,12 @@ struct HelperClientHealthStreamTests {
             isKnownUniquelyReferenced(&client),
             "a dropped stream's task still holds the client, so the count would be read early")
 
+        // That wait is not an order on the removals: a removal that holds the client weakly is
+        // still queued when it ends. So the count is polled for, and then read once more below.
+        try await waitUntil(
+            "every dropped stream's observer has been removed", timeout: Self.patience
+        ) { await Self.observerCount(of: client) == joined }
+
         let after = try #require(await Self.observerCount(of: client), Self.noSeam)
         #expect(
             after == joined,
@@ -141,9 +164,16 @@ struct HelperClientHealthStreamTests {
     /// debug: red in 3 of 3 here, at the wait, after its 20 s budget. Both cases of
     /// `droppedStreamsLeaveNoObserver(_:)` go red too, at its wait for the client to be held by
     /// the test alone, because the witness's handler now holds it.
+    ///
+    /// **Mutation (M2F, a strong capture on a stream that has already ended):** M2, and
+    /// `continuation.finish()` as the last statement of `healthUpdates()`'s closure. The handler
+    /// has run by the time the stream is handed out, so the cycle is gone and the client is freed
+    /// whichever way it was captured. Run, debug: red in 3 of 3, at the `.idle` that
+    /// `subscribeAndLetGo()` requires. Without that requirement, this test stayed green in 3 of
+    /// 3 and only the churn test's witness check was red.
     @Test("A client that nothing holds is freed while a health stream is open")
     func theClientIsHeldWeakly() async throws {
-        let subscribed = await Self.subscribeAndLetGo()
+        let subscribed = try await Self.subscribeAndLetGo()
         try await waitUntil(
             "the client is freed with its health stream open", timeout: Self.patience
         ) { subscribed.client == nil }
@@ -220,11 +250,17 @@ struct HelperClientHealthStreamTests {
     /// Makes a client, opens a health stream and reads its first element (so its observer is
     /// registered), and returns without the client: this function holds the last strong
     /// reference, and its frame ends here.
-    static func subscribeAndLetGo() async -> Subscribed {
+    ///
+    /// **The first element must be `.idle`**, as the witness's is in
+    /// `droppedStreamsLeaveNoObserver(_:)`. A stream that had already ended would answer `nil`:
+    /// its handler would have run and the cycle a strong capture makes would be broken, so
+    /// `theClientIsHeldWeakly()` would pass on a handler that holds the client strongly.
+    static func subscribeAndLetGo() async throws -> Subscribed {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         let client = harness.client()
         var updates = client.healthUpdates().makeAsyncIterator()
-        _ = await updates.next()
+        let first = await updates.next()
+        try #require(first == .idle, "the stream opened with \(String(describing: first))")
         return Subscribed(client: client, updates: updates)
     }
 }
