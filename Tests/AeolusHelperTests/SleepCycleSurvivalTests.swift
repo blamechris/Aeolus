@@ -145,8 +145,9 @@ struct SleepCycleSurvivalTests {
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
         // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
-        // held. Probed only with #538's review stall, 300 ms at the top of the double's restore,
-        // which leaves it green; `SystemPowerTests.expireBudget` names the stall that was not.
+        // held. A 300 ms stall at the top of the double's restore leaves it green, but it is not
+        // stall-proof: a stall over 50 ms before the lease core records the fan mid-handback lets
+        // the budget answer first (#542).
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
             clock: SystemMonotonicClock(), fanCount: 2,

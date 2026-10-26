@@ -112,9 +112,20 @@ struct SystemPowerTests {
     /// before the case under test exists, and the test's own "this is the case under test" guard
     /// goes red. #538's review showed it with a 300 ms stall at the top of
     /// `WedgedRestorePlane.restoreToAutomatic`. Here the budget cannot fire until `wedged` holds.
-    /// The wait is the stall-tolerant poll, so a stall spends none of it. It also waits for the
-    /// budget's own sleep to be parked on `clock`, because a move made before that sleep starts
-    /// would only put its deadline further out.
+    ///
+    /// The wait is the stall-tolerant poll. A stall of the whole process (#341) spends none of
+    /// its 5 s. A delay confined to the handback's task does spend it, so one longer than 5 s
+    /// before the wedge fails here as a red wait, and never as a budget answering early.
+    ///
+    /// It also waits for the budget's own sleep to be parked on `clock`, because a move made
+    /// before that sleep starts would only put its deadline further out.
+    ///
+    /// **Mutation (E2b, #538's delta review):** delete `&& clock.sleepers == 1` below, and add
+    /// `try? await Task.sleep(for: .milliseconds(300))` as the first line of the budget task in
+    /// `SystemPowerResponder.allowSleepAfterHandback(_:)`. Run: red on all seven tests that call
+    /// this, at their own assertions (fault lines, refusals, the unconfirmed register). The
+    /// thread-blocking case ends on its time limit. With the delay alone and the clause kept,
+    /// all seven are green.
     static func expireBudget(
         _ budget: Duration, on clock: ManualClock, once wedged: () async -> Bool,
         sourceLocation: SourceLocation = #_sourceLocation
