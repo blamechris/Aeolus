@@ -66,18 +66,16 @@ extension AsyncSignal {
     /// `wait()`, for at most `ceiling` of scheduled waiting time: a runner stall is not counted
     /// (``parkCeiling``).
     ///
+    /// - Parameters:
+    ///   - ceiling: the scheduled waiting time after which the wait gives up.
+    ///   - clock: the time, and the sleeps. A test that must show a stall is not spent without
+    ///     stopping a process passes one that can come back late; every other caller takes the
+    ///     real one. There is one function and not a shipping forward over an injectable
+    ///     overload, so the body the doubles run is the body the tests drive.
     /// - Returns: `true` when the signal was sent, `false` when `ceiling` passed first. On `false`
     ///   the signal has been sent on the waiter's behalf, so every waiter on it goes on, and a
     ///   later one does not park for another ceiling: the signal is a latch, and it is open.
-    ///
-    /// This is the shipping entry point, on the real clock. `wait(atMost:clock:)` is the one it
-    /// calls, and exists so that a test can show a stall is not spent without stopping a process.
-    func wait(atMost ceiling: Duration) async throws -> Bool {
-        try await wait(atMost: ceiling, clock: SystemWaitClock())
-    }
-
-    /// The injectable overload. `clock` has no default, so a call without it can only mean the
-    /// one above.
+    /// - Throws: `CancellationError`, when the calling task is cancelled while it waits.
     ///
     /// The timer is `StallTolerantWait.poll` with a condition that never holds, so what counts as
     /// a stall, how it is added to the deadline and where it is capped are `waitUntil`'s and are
@@ -86,7 +84,9 @@ extension AsyncSignal {
     /// *every* waiter on the signal with `CancellationError`, which would turn one park's expiry
     /// into a thrown error in the others. The wait returning cancels the timer, which ends the
     /// poll's sleep.
-    func wait(atMost ceiling: Duration, clock: some WaitClock) async throws -> Bool {
+    func wait(
+        atMost ceiling: Duration, clock: some WaitClock = SystemWaitClock()
+    ) async throws -> Bool {
         let expired = CompletionFlag()
         let timer = Task {
             let outcome = try? await StallTolerantWait.poll(

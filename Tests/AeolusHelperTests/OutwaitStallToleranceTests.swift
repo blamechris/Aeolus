@@ -17,6 +17,13 @@ import Testing
 /// The work in each is `ObservableWork` whose flag the clock sets at a sleep the test chose, and
 /// not a task the scheduler finishes whenever it likes, so the order of "the stall, then the work
 /// finishing" is the clock's and cannot vary between runs.
+///
+/// Each outwait is one function with the real clock as the default for `clock:` (#551), so these
+/// tests drive the body every call site runs. **Mutation:** replace the body of
+/// `finishedBeforeCeiling` with the loop `9b1bfda^` had, or that of `revocationProgress`, leaving
+/// the signature. Run: red on the stall tests' own assertions, `value == 42` and
+/// `progress == .finished`, after the 10 s the old loop waits, and on the reverted outwait's
+/// stuck-work test, whose message the old text does not match.
 @Suite("The outwaits do not spend a runner stall", .timeLimit(.minutes(1)))
 struct OutwaitStallToleranceTests {
 

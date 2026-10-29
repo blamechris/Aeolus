@@ -14,9 +14,10 @@ import Testing
 /// microseconds and blocks no thread, where the `kill -STOP` that shows the fix end to end is run
 /// by hand, against a `swift test` process started for the purpose.
 ///
-/// What the real clock adds is covered where it already was: `ParkingCeilingTests` calls the
-/// shipping `wait(atMost:)` and the four doubles over it, and a park nobody releases gives up at
-/// its ceiling there.
+/// `wait(atMost:clock:)` is one function with the real clock as its default, so the body these
+/// tests drive is the body the four doubles run, and a reversion of it to one wall-clock sleep
+/// turns them red. What the real clock adds is covered where it already was: `ParkingCeilingTests`
+/// gives each double a park nobody releases, which gives up at its ceiling there.
 @Suite("A park's ceiling does not spend a runner stall", .timeLimit(.minutes(1)))
 struct ParkStallToleranceTests {
 
