@@ -182,9 +182,11 @@ struct HelperCommandFailure: Error, Equatable, Sendable {
 /// **The cap bounds bytes as well as characters**, as `FaultText.displayable` and the app's
 /// `HelperAuthoredText` do (#567): one grapheme cluster can carry any number of combining marks,
 /// so 200 characters alone can be hundreds of kilobytes on a terminal. The cut is
-/// `FaultDetailBounds.bounded(_:)` itself, the one both of those use, so the two caps, their 4:1
-/// ratio, the ellipsis counted inside them and the rule that a cut never splits a grapheme
-/// cluster are that type's and not a second copy here.
+/// `FaultDetailBounds.bounded(_:)` itself, which `HelperAuthoredText` calls too. `displayable`
+/// does its own strip and trim and calls `FaultDetailBounds.truncated`, the cut `bounded(_:)` is
+/// built on, so all three share one cut: the two caps, their 4:1 ratio, the ellipsis counted
+/// inside them and the rule that a cut never splits a grapheme cluster are `FaultDetailBounds`'s
+/// and not a second copy here.
 enum DisplayText {
     /// The longest cleaned text, in characters, ellipsis included. `FaultDetailBounds.maxLength`.
     static let maxLength = FaultDetailBounds.maxLength
