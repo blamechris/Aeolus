@@ -27,7 +27,7 @@ import Foundation
 /// clean and the escape is for the firmware's.
 ///
 /// **Applied where a line is emitted, not where a field is interpolated, and forced by a type.**
-/// `SafetyLog` and `HelperLog` each hold their way to the unified log as a `LogText
+/// `SafetyLog`, `HelperLog` and `LeaseLog` each hold their way to the unified log as a `LogText
 /// .EscapingSink`, a type whose only operation escapes the message before the closure inside it
 /// hears it. A per-field call would have to be remembered at every `\(detail)` and `\(reason)`,
 /// and the next line added would be the one that forgot; a delegating initialiser the compiler
@@ -85,6 +85,16 @@ extension LogText {
     ///
     /// The level travels untouched. `Level` is the log's own, so each log keeps the vocabulary
     /// of its levels and this type knows nothing of them.
+    ///
+    /// **Its definition is pinned by its source.** An edit that keeps one stored closure and
+    /// still lets a message through unescaped (a second initialiser, a factory that stores a
+    /// closure unwrapped, a `callAsFunction` that no longer escapes) is invisible to the
+    /// reflection tests, which see one child either way. `LogRouteTests.theEscapingSink
+    /// IsTheTextThatWasReviewed` compares this struct's text, whitespace and comments aside,
+    /// with the reviewed one, so changing it means changing that test too. It reads this
+    /// struct's body only: an `extension EscapingSink where Level == …` in another file can add
+    /// an overload of `callAsFunction` that skips the escape and is not seen, so a file that
+    /// extends this type is held by review.
     struct EscapingSink<Level: Sendable>: Sendable {
         private let sink: @Sendable (Level, String) -> Void
 

@@ -1,5 +1,5 @@
 // swiftlint:disable file_length
-// This file is exempt from `file_length` by design, not by neglect. `log` and `describe(_:)`
+// This file is exempt from `file_length` by design, not by neglect. `emit` and `describe(_:)`
 // are `private`, and `private` in Swift is file-scoped, so every lease-log line has to live
 // here. That is what keeps the Lease category's vocabulary fixed and reviewable: widening
 // them to `internal` so sibling files could reach them would let any file in `AeolusHelper`
@@ -31,17 +31,86 @@ import os
 /// character, bidirectional override or line separator. So it cannot forge a log line. It is
 /// still the client's own account of itself and the wording says so, exactly as
 /// `HelperLog` does for the handshake.
+///
+/// That validation covers a client's text and not the firmware's: `detail`, `unread` and an
+/// `error`'s description come from the firmware, so a line can quote text this module did not
+/// write and nothing has validated. Every line goes through `emit`, a `LogText.EscapingSink`,
+/// which writes each Cc, Cf, Zl and Zp scalar out as `\u{XXXX}` before the unified log hears
+/// it (#560), whoever the text came from. Nothing else in the type reaches the unified log.
 struct LeaseLog: Sendable {
 
-    private let log: Logger
+    /// How loud a line is.
+    ///
+    /// Four of `HelperLog.Level`'s five: this log writes nothing at `error`, and a level it
+    /// cannot name is a level no line here can be written at. `emit` hands the one value both
+    /// to the unified log, through `osLogType(for:)`, and to a test's sink, so the level a test
+    /// reads back is the level that was written.
+    enum Level: Sendable, Hashable, CaseIterable {
+        /// Not persisted by default: the ordinary traffic of a lease.
+        case debug
+        /// Not persisted by default: a refusal that is the mechanism working.
+        case info
+        /// Persisted, which is why most lines here are at it.
+        case notice
+        /// A safety mechanism decided the machine matters more than a client's claim, or a
+        /// restore did not take.
+        case fault
+    }
+
+    /// The one route every line takes, held as the one type that escapes (`LogText
+    /// .EscapingSink`, #560): anything that would break or hide a line is written out before
+    /// the unified log or a test's sink hears it. No `Logger` is stored, so a method has no
+    /// `log` to write to; a `Logger` built or an `os_log` called inline would still be a route,
+    /// and `LogRouteTests.leaseLogTakesTheOneRoute` counts both in this file and
+    /// `LogRouteTests.noOtherFileExtendsALogAndWritesToTheUnifiedLog` in any other file that
+    /// extends it. Neither is the control; the stored type is, and it is pinned by
+    /// `LogTextTests.shippingLeaseLogHoldsOnlyAnEscapingSink`.
+    ///
+    /// Every interpolation in this type was `privacy: .public`, so rendering a line into one
+    /// `String` and logging that `.public` discloses no more than the per-field form did. What
+    /// is stored can be shorter: the unified log truncates a dynamic string at about 1 KB,
+    /// where static format text did not count toward that limit (#571).
+    private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Lease") {
-        log = Logger(subsystem: subsystem, category: category)
+        let logger = Logger(subsystem: subsystem, category: category)
+        emit = LogText.EscapingSink { level, message in
+            logger.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
+        }
+    }
+
+    /// A log whose lines a test can read back, level included.
+    ///
+    /// Until #560 `LeaseLog` had no such seam, so what a lease line said, and at which level,
+    /// was a claim no test could check. The line is still written to the unified log, under
+    /// the subsystem the test names, exactly as `HelperLog.init(recording:)` does.
+    init(
+        subsystem: String = "dev.aeolus.AeolusHelper",
+        category: String = "Lease",
+        recording sink: @escaping @Sendable (Level, String) -> Void
+    ) {
+        let logger = Logger(subsystem: subsystem, category: category)
+        emit = LogText.EscapingSink { level, message in
+            logger.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
+            sink(level, message)
+        }
+    }
+
+    /// The unified log's type for each level: the one mapping, so a demoted fault is a red test
+    /// rather than a change nobody can observe. `Logger.notice` is `.default`.
+    static func osLogType(for level: Level) -> OSLogType {
+        switch level {
+        case .debug: .debug
+        case .info: .info
+        case .notice: .default
+        case .fault: .fault
+        }
     }
 
     /// § 4 closed the table for a sleep.
     func sealedForSleep() {
-        log.notice(
+        emit(
+            .notice,
             """
             No further manual control will be granted until this machine wakes: the system \
             is going to sleep and docs/SAFETY.md § 4 is handing every fan back.
@@ -64,7 +133,8 @@ struct LeaseLog: Sendable {
     /// set. A declined seal *is* evidence: it can only happen when a sleep was stamped before
     /// a wake that was answered first.
     func declinedASealItsWakeAlreadyAnswered() {
-        log.fault(
+        emit(
+            .fault,
             """
             A sleep was sealed too late to matter: its wake had already been answered, so the \
             will-sleep handler had not run by the time the machine came back. Every fan \
@@ -76,7 +146,8 @@ struct LeaseLog: Sendable {
 
     /// § 4 reopened the table after a wake. No fan was touched to do it.
     func unsealedAfterWake() {
-        log.notice(
+        emit(
+            .notice,
             """
             Manual control may be acquired again: the machine woke and the sleep window is \
             closed. Nothing was written to reopen it, and no previous lease came back.
@@ -90,11 +161,12 @@ struct LeaseLog: Sendable {
     /// `ConnectionID`. It is safe only while self-renewal is refused — see
     /// `ConnectionTombstones`.
     func evictedTombstone(_ connection: ConnectionID, capacity: Int) {
-        log.notice(
+        emit(
+            .notice,
             """
             Evicted the oldest connection tombstone \
-            (\(connection.logDescription, privacy: .public)) after \
-            \(capacity, privacy: .public) dead connections. That connection can no longer be \
+            (\(connection.logDescription)) after \
+            \(capacity) dead connections. That connection can no longer be \
             refused a late lease binding; the TTL is what bounds the consequence, and it \
             does so only while self-renewing leases are refused.
             """
@@ -104,10 +176,11 @@ struct LeaseLog: Sendable {
     /// The supervisor stopped. Only ever cancellation today, but a lease enforcer that went
     /// quiet without saying so would be the worst possible silent failure.
     func supervisorStopped(leasesOutstanding: Int) {
-        log.notice(
+        emit(
+            .notice,
             """
             The lease expiry supervisor stopped with \
-            \(leasesOutstanding, privacy: .public) lease(s) outstanding. Connection death \
+            \(leasesOutstanding) lease(s) outstanding. Connection death \
             remains an independent path back to automatic control; the TTL does not.
             """
         )
@@ -142,32 +215,35 @@ extension LeaseLog {
     func granted(
         _ connection: ConnectionID, holder: String, fans: Set<Int>, timeToLive: TimeInterval
     ) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) took manual control of \
-            fan(s) \(Self.describe(fans), privacy: .public) for \
-            \(Int(timeToLive), privacy: .public)s. Holder describes itself as \
-            "\(holder, privacy: .public)" — self-described, not verified. Expiry is enforced \
+            Connection \(connection.logDescription) took manual control of \
+            fan(s) \(Self.describe(fans)) for \
+            \(Int(timeToLive))s. Holder describes itself as \
+            "\(holder)" — self-described, not verified. Expiry is enforced \
             on the monotonic clock; nothing renews this lease but the client.
             """
         )
     }
 
     func renewed(_ connection: ConnectionID, timeToLive: TimeInterval) {
-        log.debug(
+        emit(
+            .debug,
             """
-            Connection \(connection.logDescription, privacy: .public) renewed its lease for \
-            another \(Int(timeToLive), privacy: .public)s.
+            Connection \(connection.logDescription) renewed its lease for \
+            another \(Int(timeToLive))s.
             """
         )
     }
 
     /// A restore happened, and this is which mechanism did it.
     func restored(fans: Set<Int>, because cause: FanRestoreCause) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Fan(s) \(Self.describe(fans), privacy: .public) returned to automatic control \
-            (\(Self.describe(cause), privacy: .public)).
+            Fan(s) \(Self.describe(fans)) returned to automatic control \
+            (\(Self.describe(cause))).
             """
         )
     }
@@ -180,11 +256,12 @@ extension LeaseLog {
     /// *other* line here is a client running out of claim; this is the line a user arrives
     /// with when they ask why their fan settings vanished.
     func revoked(_ connection: ConnectionID, fans: Set<Int>, because cause: FanRestoreCause) {
-        log.fault(
+        emit(
+            .fault,
             """
-            Connection \(connection.logDescription, privacy: .public) had its lease over \
-            fan(s) \(Self.describe(fans), privacy: .public) revoked whole \
-            (\(Self.describe(cause), privacy: .public)). It was not trimmed to a subset: a \
+            Connection \(connection.logDescription) had its lease over \
+            fan(s) \(Self.describe(fans)) revoked whole \
+            (\(Self.describe(cause))). It was not trimmed to a subset: a \
             client holding part of a lease it can no longer command would be told it has \
             control it does not have.
             """
@@ -224,11 +301,12 @@ extension LeaseLog {
     func abandonedHandback(
         fanAt index: Int, because cause: FanRestoreCause, after attempts: Int, error: any Error
     ) {
-        log.fault(
+        emit(
+            .fault,
             """
-            Fan \(index, privacy: .public) could not be returned to automatic control \
-            (\(Self.describe(cause), privacy: .public)) after \(attempts, privacy: .public) \
-            attempts: \(String(describing: error), privacy: .public). Aeolus has stopped \
+            Fan \(index) could not be returned to automatic control \
+            (\(Self.describe(cause))) after \(attempts) \
+            attempts: \(String(describing: error)). Aeolus has stopped \
             trying and will refuse manual control of this fan. It may still be under manual \
             control at a speed Aeolus is no longer tracking. Check the fan physically, and \
             see docs/RECOVERY.md.
@@ -250,9 +328,10 @@ extension LeaseLog {
     /// a fresh read reports the fan automatic, so that is what this line reports — at the
     /// instant of the read, which is all any read can say.
     func recoveredAbandonedHandback(fans: Set<Int>) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Fan(s) \(Self.describe(fans), privacy: .public), whose earlier handback Aeolus \
+            Fan(s) \(Self.describe(fans)), whose earlier handback Aeolus \
             gave up on, were handed back without being refused and have now read back under \
             automatic control. The durable refusal over them is lifted and manual control of \
             them may be taken again.
@@ -266,10 +345,11 @@ extension LeaseLog {
     /// automatic (#291); this line exists so a reader who sees the handback go through is not
     /// left believing the refusal lifted with it.
     func abandonedHandbackAcceptedUnconfirmed(fans: Set<Int>, because cause: FanRestoreCause) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
-            refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
+            Fan(s) \(Self.describe(fans)) were handed back without being \
+            refused this time (\(Self.describe(cause))), after an earlier \
             handback Aeolus gave up on. The write was accepted but not yet read back, so the \
             durable refusal over them stands until docs/SAFETY.md § 7's restore confirms it.
             """
@@ -283,9 +363,10 @@ extension LeaseLog {
     /// did not apply it, a write that has not settled, or another program — and one read
     /// cannot tell them apart.
     func abandonedHandbackStillUnconfirmed(fans: Set<Int>) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
+            Fan(s) \(Self.describe(fans)) were handed back without being \
             refused after an earlier handback Aeolus gave up on, but did not read back under \
             automatic control. The durable refusal over them stands.
             """
@@ -299,10 +380,11 @@ extension LeaseLog {
     /// sees it repeatedly is the evidence that the durable refusal is durable — which is the
     /// half of [#110](https://github.com/blamechris/Aeolus/issues/110) a client can see.
     func refusedAbandonedHandback(_ connection: ConnectionID, fans: Set<Int>) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for fan(s) \
-            \(Self.describe(fans), privacy: .public) that Aeolus could not return to \
+            Connection \(connection.logDescription) asked for fan(s) \
+            \(Self.describe(fans)) that Aeolus could not return to \
             automatic control. Refused: their mode is not what the helper last asked for, \
             and a lease over one would be claiming control nothing has confirmed.
             """
@@ -319,10 +401,11 @@ extension LeaseLog {
     /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md)'s keystone must never be
     /// gated on bookkeeping.
     func restoredWithoutSafetyRegistries(fans: Set<Int>, because cause: FanRestoreCause) {
-        log.fault(
+        emit(
+            .fault,
             """
-            Fan(s) \(Self.describe(fans), privacy: .public) were restored \
-            (\(Self.describe(cause), privacy: .public)) before the safety registries were \
+            Fan(s) \(Self.describe(fans)) were restored \
+            (\(Self.describe(cause))) before the safety registries were \
             bound. The restore ran; §3 and §5 were not told, so a fan may be left in a \
             registry it has already gone back to automatic from.
             """
@@ -336,10 +419,11 @@ extension LeaseLog {
         // `.notice` rather than `.info`, for the reason the doc comment above gives: `.info`
         // is not persisted by default, so the repeated-refusal evidence would not be there
         // when someone went looking for it. Same argument that promoted `refusedInFlightBinding`.
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for fans \
-            \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \
+            Connection \(connection.logDescription) asked for fans \
+            \(fans.sorted().map(String.init).joined(separator: ", ")) \
             while their restore to automatic is still in flight. Refused: a lease granted \
             now would be overwritten by that restore.
             """
@@ -351,10 +435,11 @@ extension LeaseLog {
     /// § 7's read-back lifted. Same level and reason as `refusedMidHandback`; a separate line
     /// because the restore is no longer in flight, and saying so would be false.
     func refusedLapsedExemption(_ connection: ConnectionID, fans: Set<Int>) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for fans \
-            \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \
+            Connection \(connection.logDescription) asked for fans \
+            \(fans.sorted().map(String.init).joined(separator: ", ")) \
             whose handback state changed while the request was being checked, so this \
             request never read them. Refused for now: a retry reads them fresh.
             """
@@ -378,10 +463,11 @@ extension LeaseLog {
     /// door in the way that matters most: a restart is the route out of a refused handback
     /// and is the wrong action here.
     func refusedUnconfirmedHandback(_ connection: ConnectionID, fans: Set<Int>) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for fan(s) \
-            \(Self.describe(fans), privacy: .public) whose return to automatic control the \
+            Connection \(connection.logDescription) asked for fan(s) \
+            \(Self.describe(fans)) whose return to automatic control the \
             helper stopped waiting for when the pre-sleep budget expired. Refused: the \
             restore is still outstanding and nothing has confirmed the fan's mode, so a \
             lease over it would be claiming control nothing has answered for. It may clear \
@@ -404,9 +490,10 @@ extension LeaseLog {
     /// them would make it impossible to tell, afterwards, whether a machine that refused
     /// every lease for a minute was too hot or merely blind.
     func refusedThermalEmergency(_ connection: ConnectionID) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) was refused manual \
+            Connection \(connection.logDescription) was refused manual \
             control: the thermal emergency override is latched. A revoked holder is not \
             silently re-granted — it asks again, and is refused until a fresh reading falls \
             a hysteresis margin below the ceiling.
@@ -420,9 +507,10 @@ extension LeaseLog {
     /// during a lease acquisition, and it is the only evidence that the race is real on a
     /// user's machine rather than only in a test.
     func refusedInFlightBinding(_ connection: ConnectionID) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) was invalidated while \
+            Connection \(connection.logDescription) was invalidated while \
             its acquireLease was in flight, so no lease was bound to it. Binding to a dead \
             connection would leave the TTL as the only path back to automatic control.
             """
@@ -436,9 +524,10 @@ extension LeaseLog {
     /// It says *build* rather than *machine* deliberately. A user reading `log show` after
     /// finding the fan slider inert needs to know that nothing about their Mac is wrong.
     func refusedNoWritePath(_ connection: ConnectionID) {
-        log.info(
+        emit(
+            .info,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            Connection \(connection.logDescription) asked for manual \
             control. Refused: this build has no SMC write path at all, so there is nothing a \
             lease could grant. Nothing is wrong with this machine — see docs/SAFETY.md.
             """
@@ -446,9 +535,10 @@ extension LeaseLog {
     }
 
     func refusedSelfRenewal(_ connection: ConnectionID) {
-        log.info(
+        emit(
+            .info,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for a \
+            Connection \(connection.logDescription) asked for a \
             self-renewing lease. Refused: restart plus startup reconciliation is the whole \
             of a self-renewing lease's safety story, and it is not hardware-verified yet \
             (ADR 0007).
@@ -472,12 +562,13 @@ extension LeaseLog {
         _ connection: ConnectionID, fans: Set<Int>,
         reason: ManualControlAvailability.Reason
     ) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
-            control of fan(s) \(Self.describe(fans), privacy: .public). Refused: \
-            \(reason.wireValue, privacy: .public). \
-            \(Self.whyNotGranted(reason), privacy: .public)
+            Connection \(connection.logDescription) asked for manual \
+            control of fan(s) \(Self.describe(fans)). Refused: \
+            \(reason.wireValue). \
+            \(Self.whyNotGranted(reason))
             """
         )
     }
@@ -504,10 +595,11 @@ extension LeaseLog {
     /// state rather than a client asking for the wrong thing, and it needs to be in the
     /// log a user reaches for after the fact.
     func refusedBlindTelemetry(_ connection: ConnectionID, detail: String) {
-        log.fault(
+        emit(
+            .fault,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
-            control while no critical temperature could be read (\(detail, privacy: .public)). \
+            Connection \(connection.logDescription) asked for manual \
+            control while no critical temperature could be read (\(detail)). \
             Refused: the thermal override is a precondition of a lease, not a peer of it, \
             and a lease granted now would pin fans with nothing watching them.
             """
@@ -526,12 +618,13 @@ extension LeaseLog {
     func refusedImplausibleBounds(
         _ connection: ConnectionID, fan: Int, failure: FanBoundsImplausibility, unread: String?
     ) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
-            control of fan \(fan, privacy: .public). Refused: boundsImplausible — \
-            \(failure.description, privacy: .public)\
-            \(unread.map { " (\($0))" } ?? "", privacy: .public). No target can be produced \
+            Connection \(connection.logDescription) asked for manual \
+            control of fan \(fan). Refused: boundsImplausible — \
+            \(failure.description)\
+            \(unread.map { " (\($0))" } ?? ""). No target can be produced \
             for a fan whose firmware bounds fail the plausibility gate, so no lease over it \
             is granted — see docs/SAFETY.md § 2.
             """
@@ -545,9 +638,10 @@ extension LeaseLog {
     /// working. A client that sees this and never sees the unseal line below is looking at a
     /// helper that heard a sleep and never heard the wake.
     func refusedSystemSleeping(_ connection: ConnectionID) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            Connection \(connection.logDescription) asked for manual \
             control while the machine is going to sleep. Refused: every fan has already been \
             handed back for this sleep, and a lease granted now would engage manual control \
             on a machine that is about to stop running this helper. Ask again after the wake.
@@ -561,9 +655,10 @@ extension LeaseLog {
     /// `.notice`, for `refusedMidHandback`'s reason: it clears itself when the restore returns,
     /// so a client seeing it repeatedly is watching a restore that does not.
     func refusedDuringMachineWideRestore(_ connection: ConnectionID) {
-        log.notice(
+        emit(
+            .notice,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            Connection \(connection.logDescription) asked for manual \
             control while a restore of every fan to automatic control is still running — \
             fanctl auto, fanctl reset --all, or the handback around a sleep. Refused: a lease \
             granted now could be undone by that restore. Ask again once it has finished.
@@ -572,9 +667,10 @@ extension LeaseLog {
     }
 
     func refusedConcurrentLease(_ connection: ConnectionID) {
-        log.info(
+        emit(
+            .info,
             """
-            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            Connection \(connection.logDescription) asked for manual \
             control while another connection holds it. Refused: one lease at a time.
             """
         )

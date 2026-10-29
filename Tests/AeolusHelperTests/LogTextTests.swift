@@ -133,12 +133,38 @@ struct LogTextTests {
 
     // MARK: - The shipping logs hold the sink and nothing else
 
-    /// Every other test builds `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the
-    /// composition and `StartupReconciliation` default to is read back by nothing, and a
+    /// What the three reflection tests below require of a log: it stores one child, an
+    /// `EscapingSink` of its own `Level`, and the sink stores one child, its closure.
+    ///
+    /// **A new stored property on any of the three logs, or on `EscapingSink`, is meant to turn
+    /// these red.** That is what they are for: the type is the control, so growing the state it
+    /// is built from is an edit a reviewer should be made to read, and a test that tolerated it
+    /// would be tolerating the first step of a bypass. Whoever adds one updates the count, here,
+    /// with the reason.
+    private func requireOnlyAnEscapingSink<Level: Sendable>(
+        in log: some Sendable, of level: Level.Type, named name: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let children = Array(Mirror(reflecting: log).children)
+        #expect(
+            children.count == 1, "\(name) stores something besides its sink: \(children)",
+            sourceLocation: sourceLocation)
+        let emit = try #require(
+            children.first?.value as? LogText.EscapingSink<Level>,
+            "\(name)'s shipping initialiser does not store an EscapingSink",
+            sourceLocation: sourceLocation)
+        #expect(
+            Mirror(reflecting: emit).children.count == 1,
+            "an EscapingSink holds something besides its closure", sourceLocation: sourceLocation)
+    }
+
+    /// Every test that reads lines builds `SafetyLog(recording:)`, so the shipping `SafetyLog()`
+    /// that the composition and `StartupReconciliation` default to is read back by nothing, and a
     /// conflicted merge or a tidy-up that gave it a closure of its own would leave the suite
-    /// green. The stored type is the control, and this is what pins the stored type: the log's
-    /// only child is an `EscapingSink`, and the sink's only child is its closure. Reflection,
-    /// because the type of a private property cannot be named from a test any other way.
+    /// green. (This test, and its two siblings, build the shipping one: they read no lines.)
+    /// The stored type is the control, and this is what pins the stored type: the log's only
+    /// child is an `EscapingSink`, and the sink's only child is its closure. Reflection, because
+    /// the type of a private property cannot be named from a test any other way.
     ///
     /// Building the log writes nothing: its initialiser makes a `Logger` and a closure, and
     /// `Logger.init` does not log.
@@ -152,24 +178,19 @@ struct LogTextTests {
     /// Logger(subsystem: "x", category: "y")`. Run: red on `children.count == 1` alone.
     /// **Mutation (E2):** give `EscapingSink` a second stored property and a factory that skips
     /// the escape, and have only the shipping `SafetyLog.init(subsystem:category:)` use it. Run:
-    /// red on `Mirror(reflecting: emit).children.count == 1`, here and in the `HelperLog` test
-    /// below, because the type itself grew.
+    /// red on `Mirror(reflecting: emit).children.count == 1`, here and in the `HelperLog` and
+    /// `LeaseLog` tests below, because the type itself grew.
     @Test("The shipping SafetyLog() stores one EscapingSink and nothing else")
     func shippingSafetyLogHoldsOnlyAnEscapingSink() throws {
-        let children = Array(Mirror(reflecting: SafetyLog()).children)
-        #expect(children.count == 1, "SafetyLog stores something besides its sink: \(children)")
-        let emit = try #require(
-            children.first?.value as? LogText.EscapingSink<SafetyLog.Level>,
-            "SafetyLog's shipping initialiser does not store an EscapingSink")
-        #expect(
-            Mirror(reflecting: emit).children.count == 1,
-            "an EscapingSink holds something besides its closure")
+        try requireOnlyAnEscapingSink(
+            in: SafetyLog(), of: SafetyLog.Level.self, named: "SafetyLog")
     }
 
     /// The same, for the shipping `HelperLog()`, which `AeolusHelperMain` builds and no test
     /// reads back. `HelperLogTests.everyLineTakesTheOneRoute` counts the places the *file*
     /// reaches `os_log`; this pins what the type *stores*. Neither sees an extension of
-    /// `HelperLog` in another file.
+    /// `HelperLog` in another file: `LogRouteTests.noOtherFileExtendsALogAndWritesToTheUnified
+    /// Log` does.
     ///
     /// **Mutation (T1):** in `HelperLog.swift`, declare `emit` as `@Sendable (Level, String) ->
     /// Void` and have each initialiser assign a closure that escapes inside. Run, against the
@@ -181,17 +202,32 @@ struct LogTextTests {
     /// count.
     /// **Mutation (E2):** as for `SafetyLog`, with only the shipping `HelperLog` initialiser using
     /// the non-escaping factory. Run: red on `Mirror(reflecting: emit).children.count == 1`, here
-    /// and in the `SafetyLog` test, and on the scan's `emit = LogText.EscapingSink {` count.
+    /// and in the `SafetyLog` and `LeaseLog` tests, and on the scan's `emit =
+    /// LogText.EscapingSink {` count.
     @Test("The shipping HelperLog() stores one EscapingSink and nothing else")
     func shippingHelperLogHoldsOnlyAnEscapingSink() throws {
-        let children = Array(Mirror(reflecting: HelperLog()).children)
-        #expect(children.count == 1, "HelperLog stores something besides its sink: \(children)")
-        let emit = try #require(
-            children.first?.value as? LogText.EscapingSink<HelperLog.Level>,
-            "HelperLog's shipping initialiser does not store an EscapingSink")
-        #expect(
-            Mirror(reflecting: emit).children.count == 1,
-            "an EscapingSink holds something besides its closure")
+        try requireOnlyAnEscapingSink(
+            in: HelperLog(), of: HelperLog.Level.self, named: "HelperLog")
+    }
+
+    /// The same, for the shipping `LeaseLog()`, which the composition builds and which no test
+    /// reads back: `LeaseTestDoubles` builds the recording-free test log, and the production
+    /// defaults of `LeaseAuthority`, `BoundedFanRestorer`, `HelperFanRestorer` and
+    /// `LeaseExpirySupervisor` build `LeaseLog()` itself. `LogRouteTests.leaseLogTakesTheOneRoute`
+    /// counts the places the *file* reaches the unified log; this pins what the type *stores*.
+    ///
+    /// **Mutation (T1):** in `LeaseLog.swift`, declare `emit` as `@Sendable (Level, String) ->
+    /// Void` and have each initialiser assign a closure that escapes inside. Run, against the
+    /// full suite: red on the `#require(… as? LogText.EscapingSink<LeaseLog.Level>)` here, and
+    /// on four expectations of `LogRouteTests.leaseLogTakesTheOneRoute`; nothing else. That
+    /// count depends on how the closure is written. The reflection check here is the one that
+    /// fires whatever the closure looks like.
+    /// **Mutation:** add `private let strayLogger = Logger(subsystem: "x", category: "y")` to
+    /// `LeaseLog`. Run: red on `children.count == 1` here and on that scan's `routes(in:) ==`.
+    @Test("The shipping LeaseLog() stores one EscapingSink and nothing else")
+    func shippingLeaseLogHoldsOnlyAnEscapingSink() throws {
+        try requireOnlyAnEscapingSink(
+            in: LeaseLog(), of: LeaseLog.Level.self, named: "LeaseLog")
     }
 
     // MARK: - SafetyLog
@@ -286,6 +322,49 @@ struct LogTextTests {
         log.panicRestoreRefused(connection: ConnectionID(), detail: hostile)
 
         #expect(lines.levels(containing: escaped).count == 4, "a quoted error was not escaped")
+        for scalar in ["\u{2028}", "\n", "\u{202E}"] {
+            #expect(
+                lines.levels(containing: scalar).isEmpty,
+                "U+\(String(scalar.unicodeScalars.first?.value ?? 0, radix: 16)) reached a line")
+        }
+    }
+
+    // MARK: - LeaseLog
+
+    /// `LeaseLog` holds its route as a `LogText.EscapingSink` (#560), so the lines that quote
+    /// text it did not write reach the unified log and a test's sink escaped: the description of
+    /// an error a restore threw, a sensor read's `detail`, what an unread fan bound said, and a
+    /// holder description. The validation of a client's description refuses all four categories
+    /// (#483), so a real one arrives clean; the row hands the log a hostile one anyway, because
+    /// the escape is the log's own and must not depend on a check made elsewhere.
+    ///
+    /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations, the count of
+    /// escaped lines and the three scalars. **Mutation:** make `LogText.escaped` return its
+    /// input. Run: red on the same two.
+    ///
+    /// This row reads back the *recording* `LeaseLog`, so it cannot see the shipping one. What
+    /// holds the shipping escape is the stored type, pinned by
+    /// `shippingLeaseLogHoldsOnlyAnEscapingSink`, plus `LogRouteTests.leaseLogTakesTheOneRoute`
+    /// for a `Logger` or `os_log` call written inline in `LeaseLog.swift`.
+    @Test("LeaseLog lines that quote a holder or an error escape it too")
+    func leaseLogLinesEscapeTheirQuotedText() {
+        let lines = RecordedLeaseLines()
+        let log = LeaseLog(
+            subsystem: "dev.aeolus.AeolusHelperTests", category: "LogText",
+            recording: { lines.append($0, $1) })
+        let hostile = "FNum declares \u{2028}a\nforged \u{202E}line"
+        let escaped = #"FNum declares \u{2028}a\u{000A}forged \u{202E}line"#
+        let connection = ConnectionID()
+
+        log.granted(connection, holder: hostile, fans: [0], timeToLive: 30)
+        log.abandonedHandback(
+            fanAt: 0, because: .leaseExpired, after: 3,
+            error: FakeProviderError(description: hostile))
+        log.refusedBlindTelemetry(connection, detail: hostile)
+        log.refusedImplausibleBounds(
+            connection, fan: 0, failure: .notMeasured, unread: hostile)
+
+        #expect(lines.levels(containing: escaped).count == 4, "a quoted string was not escaped")
         for scalar in ["\u{2028}", "\n", "\u{202E}"] {
             #expect(
                 lines.levels(containing: scalar).isEmpty,
