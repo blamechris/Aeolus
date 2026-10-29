@@ -146,13 +146,14 @@ struct LogTextTests {
     /// **Mutation (T1):** in `SafetyLog.swift`, declare `emit` as `@Sendable (Level, String) ->
     /// Void`, give `init(subsystem:category:)` main's `emit = { level, message in switch … }`
     /// and `init(recording:)` an `emit` closure that calls `sink(level, LogText.escaped(message))`.
-    /// Run: red on the `#require(… as? LogText.EscapingSink<SafetyLog.Level>)` alone, with every
-    /// other test in the suite green.
+    /// Run, against the full suite: red on the `#require(… as? LogText.EscapingSink<SafetyLog
+    /// .Level>)` alone, with every other test green.
     /// **Mutation:** add a second stored property to `SafetyLog`, `private let strayLogger =
-    /// Logger(subsystem: "x", category: "y")`. Run: red on `children.count == 1`.
+    /// Logger(subsystem: "x", category: "y")`. Run: red on `children.count == 1` alone.
     /// **Mutation (E2):** give `EscapingSink` a second stored property and a factory that skips
-    /// the escape, and have only the shipping `init(subsystem:category:)` use it. Run: red on
-    /// `Mirror(reflecting: emit).children.count == 1`.
+    /// the escape, and have only the shipping `SafetyLog.init(subsystem:category:)` use it. Run:
+    /// red on `Mirror(reflecting: emit).children.count == 1`, here and in the `HelperLog` test
+    /// below, because the type itself grew.
     @Test("The shipping SafetyLog() stores one EscapingSink and nothing else")
     func shippingSafetyLogHoldsOnlyAnEscapingSink() throws {
         let children = Array(Mirror(reflecting: SafetyLog()).children)
@@ -171,12 +172,16 @@ struct LogTextTests {
     /// `HelperLog` in another file.
     ///
     /// **Mutation (T1):** in `HelperLog.swift`, declare `emit` as `@Sendable (Level, String) ->
-    /// Void` and have each initialiser assign a closure. Run: red on the `#require(… as?
-    /// LogText.EscapingSink<HelperLog.Level>)` alone here.
+    /// Void` and have each initialiser assign a closure that escapes inside. Run, against the
+    /// full suite: red on the `#require(… as? LogText.EscapingSink<HelperLog.Level>)` here, and
+    /// on two expectations of `everyLineTakesTheOneRoute` (the declared type and the
+    /// `emit = LogText.EscapingSink {` count); nothing else.
     /// **Mutation:** add `private let strayLogger = Logger(subsystem: "x", category: "y")` to
-    /// `HelperLog`. Run: red on `children.count == 1`, and on the route scan's `Logger(` count.
+    /// `HelperLog`. Run: red on `children.count == 1` here, and on the route scan's `Logger(`
+    /// count.
     /// **Mutation (E2):** as for `SafetyLog`, with only the shipping `HelperLog` initialiser using
-    /// the non-escaping factory. Run: red on `Mirror(reflecting: emit).children.count == 1`.
+    /// the non-escaping factory. Run: red on `Mirror(reflecting: emit).children.count == 1`, here
+    /// and in the `SafetyLog` test, and on the scan's `emit = LogText.EscapingSink {` count.
     @Test("The shipping HelperLog() stores one EscapingSink and nothing else")
     func shippingHelperLogHoldsOnlyAnEscapingSink() throws {
         let children = Array(Mirror(reflecting: HelperLog()).children)
