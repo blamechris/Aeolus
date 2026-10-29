@@ -37,7 +37,8 @@ import Testing
 /// - Parameters:
 ///   - what: the call, as the failure should name it.
 ///   - timeout: how long the call may take, as scheduled waiting time. 15 s, which is what the
-///     deadlines used to give a failing call (10 to 15 s); it costs time only in a failing run.
+///     deadlines used to give a failing call (5 s gated, 10 s panic, 15 s handshake; 15 s is the
+///     longest); it costs time only in a failing run.
 ///   - sourceLocation: the caller's line, which a failed wait is recorded against.
 ///   - release: what to do once a call that did not come back has been cancelled.
 ///   - call: the call itself.
@@ -110,7 +111,14 @@ final class ClockBackstop: Sendable {
 
     private let task: Task<Void, Never>
 
-    init(running clock: ManualClock, after budget: Duration = .seconds(30)) {
+    /// The scheduled waiting time a harness lives before its backstop runs every deadline out.
+    ///
+    /// One figure for every harness that has a backstop, so that
+    /// `StallTolerantWaitTests.theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit` can hold it
+    /// against the limits those harnesses' suites carry and not a number restated beside it.
+    static let defaultBudget: Duration = .seconds(30)
+
+    init(running clock: ManualClock, after budget: Duration = ClockBackstop.defaultBudget) {
         task = Task {
             let outcome = try? await StallTolerantWait.poll(
                 timeout: budget, interval: .milliseconds(50), clock: SystemWaitClock(),

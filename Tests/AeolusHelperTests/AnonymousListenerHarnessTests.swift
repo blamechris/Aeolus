@@ -24,9 +24,18 @@ struct AnonymousListenerHarnessTests {
     /// the proof that the wait is counted there, records that it is about to move the hands, and
     /// moves them by exactly the deadline. The call must not have come back before that.
     ///
+    /// **The hands moved by exactly the deadline, and no other route moved them**
+    /// ([#589](https://github.com/blamechris/Aeolus/issues/589)). The clock is read before the call
+    /// and again the moment it returns, and the difference must be the deadline. The flag below is
+    /// set before the test's own advance, so it sees only a wait that ended earlier than that; a
+    /// test that dropped its advance would still return at the backstop, 30 s in, which moves the
+    /// hands an hour, and the difference says so.
+    ///
     /// **Mutation:** in `AnonymousListenerHarness.answer(of:)`, replace `on: clock` with
     /// `on: ContinuousClock()`. Run: red on the named wait, "the harness's reply deadline parked
     /// on its clock": nothing is parked there.
+    /// **Mutation:** delete this test's own `clock.advance(…)`, the one in `mover`. Run: red on the
+    /// clock's movement, an hour where the deadline was expected, after the backstop's 30 s.
     @Test("A reply nobody sends is given up on when the clock is moved past its deadline")
     func aReplyNobodySendsIsGivenUpOnWhenTheClockMoves() async throws {
         let gate = AsyncSignal()
@@ -50,13 +59,24 @@ struct AnonymousListenerHarnessTests {
             await moved.mark()
             clock.advance(by: AnonymousListenerHarness.replyDeadline)
         }
+        let start = clock.now
         let snapshot = await harness.payloadMessage { proxy, reply in
             proxy.snapshot(reply: reply)
         }
+        // Read before `mover` is awaited: the advance that ended the wait has been made by now,
+        // and one made after the wait ended is not what ended it.
+        let movedBy = clock.now - start
         try await mover.value
 
         #expect(snapshot.timedOut, "the wait ended with \(snapshot)")
         #expect(await moved.isSet, "the wait ended before the test moved the clock")
+        #expect(
+            movedBy == AnonymousListenerHarness.replyDeadline,
+            """
+            the wait ended with the clock moved by \(movedBy), not by the deadline of \
+            \(AnonymousListenerHarness.replyDeadline): the test's own advance did not end it, \
+            and the backstop (an hour) or an early end did
+            """)
         await gate.signal()
     }
 
