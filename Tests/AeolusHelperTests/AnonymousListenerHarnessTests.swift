@@ -21,28 +21,38 @@ struct AnonymousListenerHarnessTests {
     ///
     /// The snapshot parks in the authority, so its reply is withheld for as long as the test
     /// likes. A side task waits until the harness has parked the deadline on its clock, which is
-    /// the proof that the wait is counted there, records that it is about to move the hands, and
-    /// moves them by exactly the deadline. The call must not have come back before that.
+    /// the proof that the wait is counted there, and moves the hands by exactly the deadline. The
+    /// call must not have come back before that.
     ///
     /// **The hands moved by exactly the deadline, and no other route moved them**
     /// ([#589](https://github.com/blamechris/Aeolus/issues/589)). The clock is read before the call
-    /// and again the moment it returns, and the difference must be the deadline. The flag below is
-    /// set before the test's own advance, so it sees only a wait that ended earlier than that; a
-    /// test that dropped its advance would still return at the backstop, 30 s in, which moves the
-    /// hands an hour, and the difference says so.
+    /// and again the moment it returns, and the difference must be the deadline. That one read is
+    /// what holds both ways to go wrong. A wait that ended earlier than the test's advance has
+    /// seen the clock moved by less than the deadline, none at all if the test had not moved it
+    /// yet. A test that dropped its advance would still return at the backstop, 30 s in, which
+    /// moves the hands an hour. The read is taken before `mover` is awaited, because by then the
+    /// advance that ended the wait has been made, and one made after it ended is not what ended it.
+    /// There is no flag for the first case: the test once set one before its advance and read it
+    /// after `mover` was awaited, by which time `mover` had set it whatever had ended the wait, so
+    /// it could not fail ([#581](https://github.com/blamechris/Aeolus/issues/581), item 6).
     ///
     /// **Mutation:** in `AnonymousListenerHarness.answer(of:)`, replace `on: clock` with
     /// `on: ContinuousClock()`. Run: red on the named wait, "the harness's reply deadline parked
     /// on its clock": nothing is parked there.
     /// **Mutation:** delete this test's own `clock.advance(…)`, the one in `mover`. Run: red on the
     /// clock's movement, an hour where the deadline was expected, after the backstop's 30 s.
+    /// **Mutation (early end):** make `AnonymousListenerHarness.answer(of:)` park a sleeper with
+    /// `Task { try? await clock.sleep(for: Self.replyDeadline) }`, start a `Task` that sleeps 1 ms
+    /// of real time and calls `reply.expire()`, and `return await reply.waitForAnswer()`. Run:
+    /// red on the clock's movement alone, 0.0 s where 10.0 s was expected, one issue in each of
+    /// three runs. The named waits pass, the sleeper being parked. Against the flag this replaces,
+    /// the same mutation was red on the movement alone too: the flag never fired.
     @Test("A reply nobody sends is given up on when the clock is moved past its deadline")
     func aReplyNobodySendsIsGivenUpOnWhenTheClockMoves() async throws {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = AnonymousListenerHarness(authority: authority)
         let clock = harness.clock
-        let moved = CompletionFlag()
 
         let hello = await harness.payloadMessage { proxy, reply in
             proxy.hello(request: (try? helloPayload()) ?? Data(), reply: reply)
@@ -61,7 +71,6 @@ struct AnonymousListenerHarnessTests {
             ) {
                 clock.sleepers >= 1
             }
-            await moved.mark()
             clock.advance(by: AnonymousListenerHarness.replyDeadline)
         }
         let start = clock.now
@@ -74,7 +83,6 @@ struct AnonymousListenerHarnessTests {
         try await mover.value
 
         #expect(snapshot.timedOut, "the wait ended with \(snapshot)")
-        #expect(await moved.isSet, "the wait ended before the test moved the clock")
         #expect(
             movedBy == AnonymousListenerHarness.replyDeadline,
             """
