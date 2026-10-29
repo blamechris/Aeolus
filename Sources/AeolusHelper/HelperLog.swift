@@ -167,8 +167,8 @@ struct HelperLog: Sendable {
         )
     }
 
-    /// A message was refused. `detail` is never client-supplied text: every
-    /// `AeolusXPCFault` detail describes the violation rather than quoting the value.
+    /// A message was refused. It logs the fault's `wireCode`, never its detail, which can
+    /// quote text the firmware chose (`AeolusXPCFault.crossing(_:)`).
     func refusedMessage(_ connection: ConnectionID, message: String, fault: AeolusXPCFault) {
         info(
             """
