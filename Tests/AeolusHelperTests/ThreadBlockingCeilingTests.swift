@@ -29,6 +29,9 @@ import Testing
 /// "the blocked restore never came back", after the outwait's ten seconds.
 /// **Mutation:** in `blockThisThreadUntilReleased`, delete the `release()` after the guard. Run:
 /// red on the issue the second restore records at its own ceiling, outside the known issue.
+/// **Mutation (MG):** in `blockThisThreadUntilReleased`, delete the `Issue.record(…)` at the
+/// ceiling, and keep the `release()`. Run: red on "Known issue was not recorded": the restore
+/// comes back, and the block opened without saying so.
 @Suite("A thread-blocking double gives up at its ceiling", .timeLimit(.minutes(1)))
 struct ThreadBlockingCeilingTests {
 

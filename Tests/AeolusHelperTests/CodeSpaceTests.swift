@@ -12,7 +12,10 @@ import os
 /// **Two tests, two claims.** `aSiblingRunsBetweenRuns` holds that the sweep yields *at all*. It
 /// stays green when the yield is cut to one, after the first run, so it cannot hold "between
 /// runs" (#574). `aTickerGetsATurnBetweenRuns` holds that: a sibling that re-yields after every
-/// tick is let in once per run, so its ticks are counted against the runs.
+/// tick is let in once per run, so its ticks are counted against the runs. **It holds a yield at
+/// least every second run, not every run**: the threshold is `tickCount >= runCount / 2`. A yield
+/// on every second run is a survivor (below). Unmutated, the ticker ticks once for each of the
+/// 272 runs (272 of 272, three runs).
 ///
 /// **This holds the `AeolusHelperTests` copy of `CodeSpace` only.** The other three copies, in
 /// `AeolusUITests`, `IntegrationTests` and `fanctlTests`, are held to the same yield by being
@@ -27,6 +30,12 @@ import os
 /// **Mutation (periodic yield):** replace it with `if (start / runLength) % 16 == 0 { await
 /// Task.yield() }`. Run: red on `tickCount >= runCount / 2` alone (17 ticks across 272 runs);
 /// `ranBetweenRuns` stays green.
+/// **Mutation (every second run) survives:** replace it with `if (start / runLength) % 2 == 0 {
+/// await Task.yield() }`. Run: green, 136 ticks across 272 runs, which is the threshold exactly
+/// (three runs). `ranBetweenRuns` stays green too. A yield on every third run is red (`% 3`: 90
+/// ticks across 272 runs, three runs). Raising the threshold to `runCount` would close the
+/// survivor. It is left, as [#581](https://github.com/blamechris/Aeolus/issues/581) (item 4)
+/// judged that it trades flake margin for little; this suite did not measure that trade.
 @Suite("CodeSpace gives the pool back between runs")
 struct CodeSpaceTests {
 
@@ -78,6 +87,7 @@ struct CodeSpaceTests {
         let runCount = runs.withLock { $0 }
         // A sweep that yields between every run is let past by the ticker about once per run. One
         // yield, or one in sixteen, leaves it well under half; none leaves it at most one tick.
+        // A yield on every second run lands on half exactly, which passes: see the suite's doc.
         #expect(runCount > 1, "the sweep handed out \(runCount) runs: nothing to yield between")
         #expect(
             tickCount >= runCount / 2,

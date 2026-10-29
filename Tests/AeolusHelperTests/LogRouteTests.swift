@@ -30,15 +30,16 @@ struct LogRouteTests {
     ///
     /// What it does not see: a spelling outside those three (`NSLog`, `OSLog`'s own
     /// initialiser, another log type's method); a call on a receiver that is not a plain name,
-    /// one that ends in `)`, `]`, `?` or `!` (`quiet().fault(…)`, `self.loggers[0].fault(…)`,
-    /// `logger?.fault(…)`, `logger!.fault(…)`), because `loggerCall` needs a word character
-    /// before the dot and does not see a call on `)`; and an edit that changes a count and its
-    /// expectation together. A call on a typealias of `Logger` declared in another file
-    /// (`QuietSink(…).fault(…)`) is one of those: the name is not `Logger`, and the receiver
-    /// ends in `)`. `Logger` is matched as a token, so `os.Logger`, a typealias declared in this
-    /// file and an annotation are seen. This is the file that, until #560, no test read as
-    /// source: an in-file `SafetyLog` method that logged directly was caught only by a
-    /// recording test of that particular line.
+    /// for example one that ends in `)`, `]`, `?` or `!` (`quiet().fault(…)`,
+    /// `self.loggers[0].fault(…)`, `logger?.fault(…)`, `logger!.fault(…)`), or in anything else
+    /// that is not a word character (`` `log`.fault(… ``, `Wrapper<Logger>.fault(…)`,
+    /// `(try? make()).fault(…)`), because `loggerCall` needs a word character before the dot;
+    /// and an edit that changes a count and its expectation together. A call on a typealias of
+    /// `Logger` declared in another file (`QuietSink(…).fault(…)`) is one of the receiver shapes
+    /// above: the name is not `Logger`, and the receiver ends in `)`. `Logger` is matched as a
+    /// token, so `os.Logger`, a typealias declared in this file and an annotation are seen. This
+    /// is the file that, until #560, no test read as source: an in-file `SafetyLog` method that
+    /// logged directly was caught only by a recording test of that particular line.
     ///
     /// **Mutation (S1):** in `SafetyLog.degradedCycle`, add `Logger(subsystem: "x", category:
     /// "y").fault("\(provenance, privacy: .public)")`. Run, against the full suite: red on the
@@ -159,9 +160,9 @@ struct LogRouteTests {
     /// (`WatchdogLog.swift` is one, for good reason: it is a different log with a different
     /// vocabulary); an extension spelled so the declaration pattern misses it
     /// (`extension AeolusHelper.HelperLog`); a call through another log type's method; a call
-    /// on a receiver that is not a plain name, one that ends in `)`, `]`, `?` or `!`, which
-    /// `loggerCall` does not see (`quiet().fault(…)`, `logger?.fault(…)`); and every spelling
-    /// the in-file scans do not see.
+    /// on a receiver that is not a plain name, for example one that ends in `)`, `]`, `?` or `!`,
+    /// which `loggerCall` does not see (`quiet().fault(…)`, `logger?.fault(…)`), and the other
+    /// shapes the first scan lists; and every spelling the in-file scans do not see.
     ///
     /// It reads the home files by their relative path, so a probe that is *named*
     /// `HelperLog.swift` in another directory is still scanned. It also requires that the scan
