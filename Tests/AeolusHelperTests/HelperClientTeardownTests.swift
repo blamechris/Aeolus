@@ -388,6 +388,11 @@ struct HelperClientTeardownTests {
         #expect(harness.sessions.count == 1, "the panic path opened a second connection")
     }
 
+}
+
+// The suite continues here: its struct body is at SwiftLint's 250-line limit.
+extension HelperClientTeardownTests {
+
     // MARK: - Cancellation is not a teardown
 
     /// A **cancelled** caller does not cost the connection.
