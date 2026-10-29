@@ -52,8 +52,9 @@ struct SafetyLog: Sendable {
     /// initialisers below assign it; a shipping `init(subsystem:category:)` that assigned a
     /// closure of its own, as main's did before this, no longer compiles. Every test builds
     /// `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the composition and
-    /// `StartupReconciliation` default to is asserted by nothing, and a convention here would
-    /// have been checked by nothing either.
+    /// `StartupReconciliation` default to is read back by no test, and a convention here would
+    /// have been checked by nothing either. What pins the stored type is
+    /// `LogTextTests.shippingSafetyLogHoldsOnlyAnEscapingSink`.
     private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {

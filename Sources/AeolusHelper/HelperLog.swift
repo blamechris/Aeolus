@@ -38,8 +38,11 @@ struct HelperLog: Sendable {
 
     /// The one route every line takes, held as the one type that escapes (`LogText.EscapingSink`,
     /// #553): anything that would break or hide a line is written out before the unified log or
-    /// a test's sink hears it, and no `Logger` is stored, so no method here can write around it.
-    /// `HelperLogTests.everyLineTakesTheOneRoute` holds this file to the route.
+    /// a test's sink hears it. No `Logger` is stored, so a method has no `log` to write to; one
+    /// that called `os_log` or built a `Logger` inline would still be a route, and
+    /// `HelperLogTests.everyLineTakesTheOneRoute` counts both in this file. The stored type is
+    /// pinned by `LogTextTests.shippingHelperLogHoldsOnlyAnEscapingSink`. An extension of
+    /// `HelperLog` in another file is covered by neither.
     ///
     /// Every interpolation in this type is `privacy: .public`, so rendering a line into one
     /// `String` and logging that `.public` discloses exactly what the per-field form did. That

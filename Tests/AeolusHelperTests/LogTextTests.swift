@@ -131,6 +131,64 @@ struct LogTextTests {
             ])
     }
 
+    // MARK: - The shipping logs hold the sink and nothing else
+
+    /// Every other test builds `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the
+    /// composition and `StartupReconciliation` default to is read back by nothing, and a
+    /// conflicted merge or a tidy-up that gave it a closure of its own would leave the suite
+    /// green. The stored type is the control, and this is what pins the stored type: the log's
+    /// only child is an `EscapingSink`, and the sink's only child is its closure. Reflection,
+    /// because the type of a private property cannot be named from a test any other way.
+    ///
+    /// Building the log writes nothing: its initialiser makes a `Logger` and a closure, and
+    /// `Logger.init` does not log.
+    ///
+    /// **Mutation (T1):** in `SafetyLog.swift`, declare `emit` as `@Sendable (Level, String) ->
+    /// Void`, give `init(subsystem:category:)` main's `emit = { level, message in switch … }`
+    /// and `init(recording:)` an `emit` closure that calls `sink(level, LogText.escaped(message))`.
+    /// Run: red on the `#require(… as? LogText.EscapingSink<SafetyLog.Level>)` alone, with every
+    /// other test in the suite green.
+    /// **Mutation:** add a second stored property to `SafetyLog`, `private let strayLogger =
+    /// Logger(subsystem: "x", category: "y")`. Run: red on `children.count == 1`.
+    /// **Mutation (E2):** give `EscapingSink` a second stored property and a factory that skips
+    /// the escape, and have only the shipping `init(subsystem:category:)` use it. Run: red on
+    /// `Mirror(reflecting: emit).children.count == 1`.
+    @Test("The shipping SafetyLog() stores one EscapingSink and nothing else")
+    func shippingSafetyLogHoldsOnlyAnEscapingSink() throws {
+        let children = Array(Mirror(reflecting: SafetyLog()).children)
+        #expect(children.count == 1, "SafetyLog stores something besides its sink: \(children)")
+        let emit = try #require(
+            children.first?.value as? LogText.EscapingSink<SafetyLog.Level>,
+            "SafetyLog's shipping initialiser does not store an EscapingSink")
+        #expect(
+            Mirror(reflecting: emit).children.count == 1,
+            "an EscapingSink holds something besides its closure")
+    }
+
+    /// The same, for the shipping `HelperLog()`, which `AeolusHelperMain` builds and no test
+    /// reads back. `HelperLogTests.everyLineTakesTheOneRoute` counts the places the *file*
+    /// reaches `os_log`; this pins what the type *stores*. Neither sees an extension of
+    /// `HelperLog` in another file.
+    ///
+    /// **Mutation (T1):** in `HelperLog.swift`, declare `emit` as `@Sendable (Level, String) ->
+    /// Void` and have each initialiser assign a closure. Run: red on the `#require(… as?
+    /// LogText.EscapingSink<HelperLog.Level>)` alone here.
+    /// **Mutation:** add `private let strayLogger = Logger(subsystem: "x", category: "y")` to
+    /// `HelperLog`. Run: red on `children.count == 1`, and on the route scan's `Logger(` count.
+    /// **Mutation (E2):** as for `SafetyLog`, with only the shipping `HelperLog` initialiser using
+    /// the non-escaping factory. Run: red on `Mirror(reflecting: emit).children.count == 1`.
+    @Test("The shipping HelperLog() stores one EscapingSink and nothing else")
+    func shippingHelperLogHoldsOnlyAnEscapingSink() throws {
+        let children = Array(Mirror(reflecting: HelperLog()).children)
+        #expect(children.count == 1, "HelperLog stores something besides its sink: \(children)")
+        let emit = try #require(
+            children.first?.value as? LogText.EscapingSink<HelperLog.Level>,
+            "HelperLog's shipping initialiser does not store an EscapingSink")
+        #expect(
+            Mirror(reflecting: emit).children.count == 1,
+            "an EscapingSink holds something besides its closure")
+    }
+
     // MARK: - SafetyLog
 
     /// The site #553 names: `StartupReconciliation.reconcile()`'s enumeration `catch`, which
@@ -201,10 +259,13 @@ struct LogTextTests {
     /// and a test's sink escaped. Lines that quote a firmware-derived `reason` or a `detail` are
     /// the ones that can carry the text.
     ///
-    /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations. There is no
-    /// mutation of `HelperLog` alone that reddens only this test: the escape is not in
-    /// `HelperLog`, so `HelperLog` cannot lose it, and `everyLineTakesTheOneRoute` holds the
-    /// count of places it reaches `os_log`.
+    /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations.
+    ///
+    /// This row reads back the *recording* `HelperLog`, so it cannot see the shipping one.
+    /// What holds the shipping escape is the stored type, pinned by
+    /// `shippingHelperLogHoldsOnlyAnEscapingSink`, plus `everyLineTakesTheOneRoute` for a
+    /// `Logger` or `os_log` call written inline in `HelperLog.swift`. A `HelperLog` extension in
+    /// another file is covered by neither.
     @Test("HelperLog lines that quote an error escape it too")
     func helperLogLinesEscapeTheirQuotedText() {
         let lines = RecordedHelperLines()
