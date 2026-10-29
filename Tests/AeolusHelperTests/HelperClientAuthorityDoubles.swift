@@ -194,12 +194,17 @@ final class EmptyReplyListenerHarness {
     /// one grew a literal to match, and the two then drifted with nothing checking either. So
     /// there is no parameter. A test that genuinely needs a different bound has to add one,
     /// which is a visible change to this type rather than a number nobody reviews.
+    ///
+    /// The deadlines are counted on a `ManualClock` that nothing here moves, as the sibling
+    /// harness's are by default (#421): both tests that use this one assert a protocol violation
+    /// the peer answers at once, and neither is about a deadline a stalled runner could run out.
     func client() -> HelperClient {
         HelperClient(
             transport: .endpoint(listener.endpoint),
             pinning: UnenforcedClientPinning(),
             clientDescription: "test client",
-            deadlines: ClientListenerHarness.defaultDeadlines
+            deadlines: ClientListenerHarness.defaultDeadlines,
+            clock: ManualClock()
         )
     }
 }

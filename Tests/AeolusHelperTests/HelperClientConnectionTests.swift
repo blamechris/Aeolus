@@ -65,31 +65,31 @@ struct HelperClientConnectionTests {
     ///
     /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, take the proxy with bare
     /// `remoteObjectProxy` instead of `remoteObjectProxyWithErrorHandler`. Run: red — the
-    /// error handler never runs, so the call fails with `helperNeverAnswered` after the
-    /// deadline instead.
+    /// error handler never runs, so the call never comes back. Its deadline is on a clock
+    /// nothing moves (#421), so the wait for it fails and names it, and the cancelled call is
+    /// told `CancellationError` rather than `helperRestarted`.
     @Test("A message in flight when the helper dies is reported as a restart")
     func aMessageInFlightWhenTheHelperDiesIsARestart() async throws {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
-        // The gated verb is deliberately long: it has to stay parked while the helper is
-        // killed under it. The handshake is not asserted here and only has to succeed, so it
-        // takes the shipping bound rather than a tighter invention — see #250.
-        let client = harness.client(
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(10),
-                panicVerb: .seconds(10),
-                handshakeVerb: HelperClientDeadlines.handshakeVerb))
+        let client = harness.client()
 
         // The hello is answered without touching the authority, so by the time the
         // authority has been asked the message in flight is the gated verb and not the
         // handshake.
-        let parked = Task { try await client.snapshot() }
+        let parked = Task {
+            try await returnedOutcome(of: "the snapshot, with the helper killed under it") {
+                try await client.snapshot()
+            }
+        }
         try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
 
         harness.killHelperSideOfEveryConnection()
 
-        await #expect(throws: HelperClientError.helperRestarted) { _ = try await parked.value }
+        await #expect(throws: HelperClientError.helperRestarted) {
+            _ = try await parked.value.get()
+        }
         await gate.signal()
     }
 
@@ -111,16 +111,20 @@ struct HelperClientConnectionTests {
     /// that theirs had restarted.
     ///
     /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, take the proxy with bare
-    /// `remoteObjectProxy`, so nothing reports the transport failure. Run: red —
-    /// `helperNeverAnswered` after the deadline, which is the "it hung" answer this
-    /// expectation exists to exclude.
+    /// `remoteObjectProxy`, so nothing reports the transport failure. Run: red — the call never
+    /// comes back, which is the "it hung" answer this expectation exists to exclude. Its deadline
+    /// is on a clock nothing moves (#421), so the wait for it fails and names it instead of
+    /// running out at 5 s, and the cancelled call is told `CancellationError`.
     @Test("A helper refusing every connection is a prompt, honest error")
     func aRefusingHelperIsPromptAndNamesBothPossibilities() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         harness.isAdmitting = false
         let client = harness.client()
 
-        let error = await #expect(throws: HelperClientError.self) { try await client.snapshot() }
+        let refused = try await returnedOutcome(of: "the snapshot, with every connection refused") {
+            try await client.snapshot()
+        }
+        let error = #expect(throws: HelperClientError.self) { _ = try refused.get() }
 
         let unreachable = try #require(error)
         guard case .helperUnreachable = unreachable else {
@@ -167,7 +171,10 @@ struct HelperClientConnectionTests {
         harness.isAdmitting = false
         let client = harness.client()
 
-        let error = await #expect(throws: HelperClientError.self) { try await client.snapshot() }
+        let refused = try await returnedOutcome(of: "the snapshot, with every connection refused") {
+            try await client.snapshot()
+        }
+        let error = #expect(throws: HelperClientError.self) { _ = try refused.get() }
         let unreachable = try #require(error)
         let described = try #require(unreachable.errorDescription)
 
