@@ -124,8 +124,8 @@ func revocationProgress(
     note: (String) -> Void = StallTolerantWait.writeToStandardError,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws -> RevocationProgress? {
-    // The last look is the answer, so a timeout and a `nil` are the same fact: the poll's final
-    // evaluation found neither state.
+    // The poll's last evaluation is what `waitUntil` acted on, so `progress` is `nil` exactly
+    // when it recorded the timeout.
     var progress: RevocationProgress?
     try await outwait(
         "the revocation to finish or park on fan \(fan): it did neither", clock: clock,
@@ -149,9 +149,10 @@ func revocationProgress(
 /// `finished(_:_:within:)`'s contract with a clock in place of a yield count: a revocation a
 /// mutant never resumes cannot be cancelled — the outwait installs no handler, by design — so
 /// joining it would hang the run, and a yield count is a statement about the scheduler rather
-/// than about time. The clock is the wait's, so a runner that stops the test process for longer
-/// than `outwaitCeiling` does not turn a double that is about to return into one that never
-/// did (#547); the poll sleeps, so a `.timeLimit` that expires first ends it.
+/// than about time. A runner that stops the test process for longer than `outwaitCeiling` does
+/// not turn a double that is about to return into one that never did (#547). The poll only
+/// sleeps, so a `.timeLimit` that expires first cancels it; joining the task is the one
+/// uncancellable step, and it is reached only for work that has finished.
 @discardableResult
 func finishedBeforeCeiling<Value: Sendable>(
     _ description: String,
