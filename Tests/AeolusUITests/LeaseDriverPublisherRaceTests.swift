@@ -104,13 +104,13 @@ struct LeaseDriverPublisherRaceTests {
     /// finished is cancelled after `grace` and counted as `abandoned`, so a mutant that loses an
     /// element is a red and not a test that waits for it until the suite's time limit.
     ///
-    /// **Mutations (debug, 5 runs each, all red at `total.broken.isEmpty`):**
+    /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`):**
     /// - **V2, the first value yielded after the lock is released:** 177 to 286 of about 500,000
-    ///   to 560,000 streams broken in a run, each a change followed by the one before it.
+    ///   to 562,000 streams broken in a run, each a change followed by the one before it.
     /// - **C1, `Followers.store(_:)` taking the observers in one `withLock` section and setting
-    ///   the value in a second:** 20,224 to 21,686 of about 490,000 to 510,000, each a change
+    ///   the value in a second:** 19,864 to 22,518 of about 490,000 to 520,000, each a change
     ///   that skipped its successor.
-    /// - **C2, the same two sections with the value set first:** 15,646 to 17,776 of about
+    /// - **C2, the same two sections with the value set first:** 15,646 to 18,096 of about
     ///   490,000 to 525,000, each a change followed by itself.
     ///
     /// Unmutated, debug, a run registers about 490,000 to 500,000 streams, all but a few of them

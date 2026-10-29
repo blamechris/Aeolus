@@ -132,15 +132,15 @@ struct HealthSignalTests {
     /// finished is cancelled after `grace` and counted as `abandoned`, so a mutant that loses an
     /// element is a red and not a test that waits for it until the suite's time limit.
     ///
-    /// **Mutations (debug, 5 runs each, all red at `total.broken.isEmpty`):**
-    /// - **V2, the first value yielded after the lock is released:** 60 to 111 of about 350,000 to
+    /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`):**
+    /// - **V2, the first value yielded after the lock is released:** 60 to 237 of about 295,000 to
     ///   380,000 streams broken in a run, each a value followed by the one before it.
     /// - **C1, `HealthObservers.store(_:)` taking the observers in one `withLock` section and
-    ///   setting the value in a second:** 40,561 to 50,209 of about 260,000 to 285,000, each a
-    ///   value that skipped its successor. One run also left a stream waiting for an element that
+    ///   setting the value in a second:** 40,561 to 50,209 of about 259,000 to 292,000, each a
+    ///   value that skipped its successor. Two runs also left a stream waiting for an element that
     ///   never came, which `grace` cancelled and `abandoned` counted.
     /// - **C2, the same two sections with the value set first:** 14,158 to 20,643 of about
-    ///   280,000, each a value followed by itself.
+    ///   277,000 to 295,000, each a value followed by itself.
     ///
     /// Unmutated, debug, a run registers about 275,000 streams, about 229,000 of them counted
     /// mid-run (a lower bound: a registration at the cycle's first value is not counted), and none
