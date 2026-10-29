@@ -222,10 +222,14 @@ struct SMCRoundTripMonitorTests {
     /// `SMCConnection.roundTrips`, and that is checked by the compiler: without it, the
     /// synchronous read below does not compile.
     ///
-    /// **Mutation:** in `occupyForTesting`'s body here, delete the `release.wait(…)` line, so the
-    /// actor is free at once. Run: red on "the connection was not actually held".
-    /// **Mutation:** in `SMCRoundTripMonitor.bracket`, hold the lock across `body()`. Run: red on
-    /// "the stamp could not be read", after the read's three-second bound.
+    /// **Mutation:** in `occupyForTesting`'s body here, delete the `signalled(release, …)` line,
+    /// so the actor is free at once. Run: red on "the connection was not actually held".
+    /// **Mutation:** in `SMCRoundTripMonitor.run` (not `bracket`, which calls it: held there, the
+    /// lock is taken again inside `run` and the process traps), replace the last line,
+    /// `return try body()`,
+    /// with `return try state.withLockUnchecked { _ in try body() }`, so the stamp's lock is held
+    /// across the body. Run: red on "the stamp could not be read", after the read's three-second
+    /// bound.
     @Test("Reading the stamp does not enter the connection that is stamped")
     func theStampIsReadableWhileTheConnectionIsOccupied() async {
         let connection = SMCConnection()
@@ -235,12 +239,13 @@ struct SMCRoundTripMonitorTests {
         let probeFinished = OSAllocatedUnfairLock(initialState: false)
         let window = OSAllocatedUnfairLock(initialState: OccupiedWindow())
 
-        // Timed as well, so a driver that never ran frees the thread anyway.
+        // Bounded as well, so a driver that never ran frees the thread anyway. Counted in slices a
+        // stalled runner cannot spend (#421), not measured against the wall clock.
         let occupation = Task {
             await connection.occupyForTesting {
                 monitor.bracket(.open) {
                     entered.signal()
-                    _ = release.wait(timeout: .now() + .seconds(30))
+                    _ = signalled(release, within: 30)
                 }
             }
         }

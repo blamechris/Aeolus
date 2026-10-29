@@ -4,16 +4,17 @@ import Testing
 
 @testable import AeolusHelper
 
-/// A double that blocks a pool thread gives up at its ceiling and says so, instead of turning a
-/// red into a wedge ([#554](https://github.com/blamechris/Aeolus/issues/554)).
+/// `ThreadBlockingRestorePlane` gives up at its ceiling and says so, instead of wedging the
+/// process ([#554](https://github.com/blamechris/Aeolus/issues/554)).
 ///
-/// `ThreadBlockingRestorePlane` parks a cooperative-pool thread on a `DispatchSemaphore`, on
-/// purpose: that is what a restore stuck in a synchronous IOKit call does. A semaphore wait cannot
-/// be cancelled, so a suite's `.timeLimit` cannot end it, and on a pool too narrow to run the
-/// release the whole process stopped at 0% CPU (a pool of one, 12 minutes, in #545's measurement).
-/// The double now waits at most its ceiling, records an issue and goes on, as the doubles that
-/// park on an `AsyncSignal` do (`ParkingCeilingTests`, #451). This gives it a ceiling of a second
-/// and a restore nobody releases.
+/// The double parks a cooperative-pool thread on a `DispatchSemaphore`, on purpose: that is what a
+/// restore stuck in a synchronous IOKit call does. A semaphore wait cannot be cancelled, so a
+/// suite's `.timeLimit` cannot free the thread, and on a pool too narrow to run the release the
+/// whole process stopped at 0% CPU (a pool of one, 12 minutes, in #545's measurement). The double
+/// now waits at most its ceiling, records an issue and goes on. The real ceiling is 90 s, above
+/// the 60 s time limit of the suite that uses it (`threadBlockingCeiling` says why); this test
+/// gives it one second, the least a ceiling counted in whole seconds can be, and a restore nobody
+/// releases, so it costs a second.
 ///
 /// **What it holds.** The restore comes back, with an issue recorded for it, and the next restore
 /// does not wait out a ceiling of its own. The first is inside `withKnownIssue`, so the issue is
@@ -48,8 +49,9 @@ struct ThreadBlockingCeilingTests {
         #expect(returned, "the blocked restore never came back")
 
         let next = observing { try await plane.restoreToAutomatic(.everyFan) }
-        let nextReturned = try await finishedBeforeCeiling("a restore after the ceiling", next)
-        #expect(nextReturned != nil, "the plane went on blocking after its ceiling")
+        let nextReturned =
+            try await finishedBeforeCeiling("a restore after the ceiling", next) != nil
+        #expect(nextReturned, "the plane went on blocking after its ceiling")
         #expect(plane.restoreScopes == [.everyFan, .everyFan])
     }
 }

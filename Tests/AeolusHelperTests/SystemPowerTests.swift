@@ -250,13 +250,14 @@ struct SystemPowerTests {
     /// pool thread, and the budget's task and this test's own release both need another
     /// ([#554](https://github.com/blamechris/Aeolus/issues/554)). `docs/TESTING.md` has the run
     /// of the whole suite on a pool of one, which skips this test by name, and the bound that
-    /// keeps it from exhausting a pool of three. The plane's ceiling is what ends it red, rather
-    /// than wedged, where the pool is too narrow.
+    /// keeps it from exhausting a pool of three. Where the pool is too narrow the plane's 90 s
+    /// ceiling, which is above this suite's 60 s time limit, ends the process instead of
+    /// wedging it.
     ///
     /// **Mutation:** delete the `let budget = Task { … }` block and the `budget.cancel()` that
-    /// follows, from `SystemPowerResponder.allowSleepAfterHandback(_:)`. Run: red, at the plane's
-    /// 30 s ceiling and not on the suite's time limit: the restore is let through, the handback
-    /// acknowledges, and the fault line's expectation fails beside the issue the plane records.
+    /// follows, from `SystemPowerResponder.allowSleepAfterHandback(_:)`. Run: red on the suite's
+    /// time limit, at 60 s, before the plane's ceiling is reached: the acknowledgement never
+    /// comes, the wait is cancelled, and the `defer` releases the plane.
     @Test("The budget lands even when the restore blocks its thread instead of suspending")
     func theBudgetSurvivesARestoreThatBlocksItsThread() async throws {
         let plane = ThreadBlockingRestorePlane(Self.machine())

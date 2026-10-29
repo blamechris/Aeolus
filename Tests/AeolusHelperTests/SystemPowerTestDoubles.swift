@@ -252,11 +252,23 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
     }
 }
 
-/// How many seconds `ThreadBlockingRestorePlane` stays blocked if nothing releases it: a block
-/// that outlasts every release a passing run makes. The budget is 50 ms, and the failsafes of the
-/// other pool-holding tests (`theStampIsReadableWhileTheConnectionIsOccupied`'s, the watchdog's)
-/// are 30 s too. Only a test of the ceiling itself passes anything shorter.
-let threadBlockingCeiling = 30
+/// How many seconds `ThreadBlockingRestorePlane` stays blocked if nothing releases it: 90, which
+/// is longer than the 60 s `.timeLimit` of the only suite that uses it, on purpose.
+///
+/// The budget test takes 35 to 46 s of wall time in a CI debug run, almost all of it waiting for a
+/// pool thread behind the start-of-run backlog (38.7 s in run 40942348614; 15.0 s in the release
+/// step). A ceiling inside that would fail correct code on a slow run. So the ceiling is not what
+/// ends a red test; it is what ends the process when nothing else can:
+///
+/// - **A pool with a free thread** (a mutant that drops the budget, say): the time limit ends the
+///   test at 60 s. Its task is cancelled, the `defer` in the test releases the plane, and the
+///   ceiling is never reached.
+/// - **A pool with no free thread** (a pool of one): nothing can run to deliver the time limit
+///   or the release. The ceiling opens the block at 90 s on the blocked thread itself, records an
+///   issue, and the run goes on and ends, with the time limit recorded after it.
+///
+/// Only a test of the ceiling itself passes anything shorter.
+let threadBlockingCeiling = 90
 
 /// The firmware whose restore blocks a thread instead of suspending it.
 ///
@@ -295,12 +307,14 @@ let threadBlockingCeiling = 30
 ///   more therefore gets a thread for this test's budget and its release as soon as the shortest
 ///   of those other holds ends, however the rest of the suite is scheduled. A pool of one never
 ///   does: this test cannot run there.
-/// - **The block has a ceiling.** `ceiling` seconds of waiting, counted in slices that a stalled
-///   runner cannot spend (`SliceCountedWait`, #421). A block nobody releases opens at the ceiling,
-///   records an issue naming itself and goes on, so the run ends red where it used to wedge: a
-///   semaphore wait cannot be cancelled, so the suite's `.timeLimit` cannot end it. The sibling
-///   doubles do the same on their `AsyncSignal`s (#451, `ParkingCeilingTests`). The gate stays
-///   open afterwards, so a later restore does not wait out a ceiling of its own.
+/// - **The block has a ceiling, above the suite's time limit.** `ceiling` seconds of waiting,
+///   counted in slices that a stalled runner cannot spend (`SliceCountedWait`, #421); 90 by
+///   default, against a 60 s `.timeLimit` (see `threadBlockingCeiling`). A semaphore wait cannot
+///   be cancelled, so the time limit alone cannot free this thread: with a free pool thread it
+///   ends the test at 60 s and the test's `defer` releases the plane; with none, the block opens
+///   at the ceiling, records an issue naming itself and goes on, and the process ends instead of
+///   wedging. The gate stays open afterwards, so a later restore does not wait out a ceiling of
+///   its own.
 final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable {
 
     private let wrapped: ScriptedControlPlane
@@ -357,8 +371,8 @@ final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable
             """
             ThreadBlockingRestorePlane held a restore for \(ceiling) s and nobody let it through. \
             That is a release the test never made, or a pool with no thread left to make it. \
-            It has gone on, so that the run ends red instead of wedged: a semaphore wait cannot be \
-            cancelled, and the suite's time limit cannot end it.
+            It has gone on, so that the process ends instead of wedging: a semaphore wait cannot be \
+            cancelled, so the suite's time limit cannot free this thread by itself.
             """)
     }
 
