@@ -29,11 +29,14 @@ struct LogRouteTests {
     /// its own `Logger`, calls `os_log`, or logs through a second stored one changes a number.
     ///
     /// What it does not see: a spelling outside those three (`NSLog`, `OSLog`'s own
-    /// initialiser, another log type's method), and an edit that changes a count and its
-    /// expectation together. `Logger` is matched as a token, so `os.Logger`, a typealias and
-    /// an annotation are seen. This is the file that, until #560, no test read as source: an
-    /// in-file `SafetyLog` method that logged directly was caught only by a recording test of
-    /// that particular line.
+    /// initialiser, another log type's method); a call on a call result through a type name the
+    /// scan does not know (`QuietSink(…).fault(…)`, where `QuietSink` is a typealias of `Logger`
+    /// declared in another file: the name is not `Logger`, and `loggerCall` needs a word
+    /// character before the dot); and an edit that changes a count and its expectation
+    /// together. `Logger` is matched as a token, so `os.Logger`, a typealias declared in this
+    /// file and an annotation are seen. This is the file that, until #560, no test read as
+    /// source: an in-file `SafetyLog` method that logged directly was caught only by a
+    /// recording test of that particular line.
     ///
     /// **Mutation (S1):** in `SafetyLog.degradedCycle`, add `Logger(subsystem: "x", category:
     /// "y").fault("\(provenance, privacy: .public)")`. Run, against the full suite: red on the
@@ -102,7 +105,9 @@ struct LogRouteTests {
     /// initialiser assign a closure that escapes inside. Run, against the full suite: red on
     /// the `#require(… as? LogText.EscapingSink<LeaseLog.Level>)` in `LogTextTests`, and on
     /// four expectations here (the `osLogType(for:)` and `.public` count, the declared type, the
-    /// `emit = LogText.EscapingSink {` count, `sink(level, message)`); nothing else.
+    /// `emit = LogText.EscapingSink {` count, `sink(level, message)`); nothing else. How many
+    /// of those four fire depends on how the closure is written. The reflection check
+    /// (`as? LogText.EscapingSink`) is the one that fires whatever the closure looks like.
     /// **Not a mutation but a compile error:** assigning a bare closure to `emit` in
     /// `init(recording:)` is `cannot assign value of type '(_, _) -> ()' to type
     /// 'LogText.EscapingSink<LeaseLog.Level>'`.
@@ -151,8 +156,9 @@ struct LogRouteTests {
     /// What it does not see: a file that extends nothing and builds a `Logger` of its own
     /// (`WatchdogLog.swift` is one, for good reason: it is a different log with a different
     /// vocabulary); an extension spelled so the declaration pattern misses it
-    /// (`extension AeolusHelper.HelperLog`); a call through another log type's method; and every
-    /// spelling the in-file scans do not see.
+    /// (`extension AeolusHelper.HelperLog`); a call through another log type's method; a call
+    /// on a call result through a type name it does not know (a typealias of `Logger` declared in
+    /// a file that extends no log); and every spelling the in-file scans do not see.
     ///
     /// It reads the home files by their relative path, so a probe that is *named*
     /// `HelperLog.swift` in another directory is still scanned. It also requires that the scan
@@ -224,6 +230,12 @@ struct LogRouteTests {
     /// .escaped`, which the sweep in `LogTextTests` holds, or another type written beside
     /// `EscapingSink` that a log stores instead, which the reflection tests refuse.
     ///
+    /// It also does not see an `extension LogText.EscapingSink where Level == …` in another
+    /// file. That can add an overload of `callAsFunction` that skips the escape, with the suite
+    /// green, and `log show` then shows the raw line (the review of #565 ran it). This test
+    /// reads the struct's own body and nothing else; that class is held by review of any file
+    /// that extends the type.
+    ///
     /// **Mutation (E1):** #560's comment verbatim. `init(_:)` stores `{ level, message in
     /// sink(level, LogText.escaped(message)) }`, `callAsFunction` calls `sink(level, message)`,
     /// a private second initialiser and a `static func raw(_:)` store a closure unwrapped, and
@@ -253,9 +265,9 @@ struct LogRouteTests {
         #expect(
             body == reviewed,
             """
-            EscapingSink is no longer the reviewed text. It must keep one stored closure, exactly \
-            one initialiser that stores it as given, and a callAsFunction that hands the closure \
-            LogText.escaped(message). Found (whitespace removed): \(body)
+            EscapingSink is no longer the reviewed text. Updating `reviewed` is a safety review \
+            of the sink: re-check that callAsFunction escapes the message on every path before \
+            you change it.
             """)
     }
 

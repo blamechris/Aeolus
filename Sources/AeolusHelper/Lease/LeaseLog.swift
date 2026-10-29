@@ -67,7 +67,9 @@ struct LeaseLog: Sendable {
     /// `LogTextTests.shippingLeaseLogHoldsOnlyAnEscapingSink`.
     ///
     /// Every interpolation in this type was `privacy: .public`, so rendering a line into one
-    /// `String` and logging that `.public` discloses exactly what the per-field form did.
+    /// `String` and logging that `.public` discloses no more than the per-field form did. What
+    /// is stored can be shorter: the unified log truncates a dynamic string at about 1 KB,
+    /// where static format text did not count toward that limit (#571).
     private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Lease") {

@@ -219,7 +219,9 @@ struct LogTextTests {
     /// **Mutation (T1):** in `LeaseLog.swift`, declare `emit` as `@Sendable (Level, String) ->
     /// Void` and have each initialiser assign a closure that escapes inside. Run, against the
     /// full suite: red on the `#require(… as? LogText.EscapingSink<LeaseLog.Level>)` here, and
-    /// on four expectations of `LogRouteTests.leaseLogTakesTheOneRoute`; nothing else.
+    /// on four expectations of `LogRouteTests.leaseLogTakesTheOneRoute`; nothing else. That
+    /// count depends on how the closure is written. The reflection check here is the one that
+    /// fires whatever the closure looks like.
     /// **Mutation:** add `private let strayLogger = Logger(subsystem: "x", category: "y")` to
     /// `LeaseLog`. Run: red on `children.count == 1` here and on that scan's `routes(in:) ==`.
     @Test("The shipping LeaseLog() stores one EscapingSink and nothing else")
