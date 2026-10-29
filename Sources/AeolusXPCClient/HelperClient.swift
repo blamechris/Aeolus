@@ -85,7 +85,7 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **239 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **242 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. Seventeen were added after this section was written: the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
@@ -95,12 +95,14 @@ import Foundation
 /// removal wait for its registration (#532), and put the actor's body at 253 lines, three over
 /// SwiftLint's 250-line `type_body_length` warning. That took the file to 258 code lines. #541
 /// then gave the health signal's state a type of its own (`HealthSignal`, below), which took the
-/// file to 239 and the actor's body to 234. The count of code lines in the file, 229 when this
-/// section was written, did not move when the section was added — the file grew by fifty-odd
-/// lines and by none of the thing the threshold is worth measuring, which is the whole argument
-/// in one measurement. Neither warning is suppressed, deliberately — no `swiftlint:disable`, no
-/// `file_length` or `type_body_length` override in `.swiftlint.yml` — because a file, or a body,
-/// that grew by two hundred lines of *logic* should draw exactly the attention this one drew.
+/// file to 239 and the actor's body to 234. Three more are the latch a caller waiting on the
+/// handshake is cancelled out of (#576), which took them to 242 and 237. The count of code
+/// lines in the file, 229 when this section was written, did not move when the section was
+/// added — the file grew by fifty-odd lines and by none of the thing the threshold is worth
+/// measuring, which is the whole argument in one measurement. Neither warning is suppressed,
+/// deliberately — no `swiftlint:disable`, no `file_length` or `type_body_length` override in
+/// `.swiftlint.yml` — because a file, or a body, that grew by two hundred lines of *logic*
+/// should draw exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -338,6 +340,8 @@ public actor HelperClient {
     /// on a cold connection produce **one** `hello` and both wait for it. The second `hello`
     /// on a connection is refused by the helper — a connection has one negotiated identity —
     /// so "whoever gets there second loses" would be a race a correct caller could not avoid.
+    /// Each waits through a latch of its own, so a caller that is cancelled leaves at once and
+    /// the handshake carries on for the rest (#576; `handshakenConnection()`).
     ///
     /// `deadline` picks the message's bound out of this client's deadlines, which stay private
     /// to this file: a verb says which bound it needs and never holds the deadlines itself.
@@ -422,6 +426,33 @@ public actor HelperClient {
     }
 
     /// The current connection, with `hello` completed on it.
+    ///
+    /// ## A caller waits for the handshake; it does not own it
+    ///
+    /// The handshake is the connection's, and a caller only waits for it. Each caller waits
+    /// through a `PendingReply` of its own, which the handshake's outcome is relayed into, so a
+    /// cancelled caller is answered at once with `CancellationError` and nothing else moves: the
+    /// handshake runs on, `handshake` still names it, and a caller that arrives next joins it.
+    /// Awaiting the shared task's `value` directly, as this did until
+    /// [#576](https://github.com/blamechris/Aeolus/issues/576), is a wait cancellation cannot
+    /// reach, because the task is nobody's child: a cancelled caller stayed parked until the
+    /// `hello` was answered or ran out its `handshakeVerb` deadline.
+    ///
+    /// **A cancelled caller leaves `handshake` in place**, because the `hello` it names may still
+    /// be in flight. Clearing it would let the next caller send a second `hello` on this
+    /// connection, which the helper refuses, and a refused handshake takes its connection with it
+    /// (`performHandshake`): a teardown caused by a caller going away, which `translate(_:on:)`
+    /// refuses to allow for every other message. Only a caller handed the handshake's own outcome
+    /// clears it, exactly as every caller did before.
+    ///
+    /// **When the last waiter goes, the handshake still runs**, to its answer or to its own
+    /// deadline, as if someone were waiting. Cancelling it instead would end it without a
+    /// `HelloReply` on a connection whose peer may have recorded the `hello`, which costs the
+    /// connection: the same teardown by another door. So a handshake nobody waits for any more
+    /// leaves the connection handshaken for the next caller, or fails and takes it, exactly as it
+    /// would have with a caller there. Each relay ends when the handshake does, and the handshake
+    /// is bounded by its `hello`'s own deadline (`handshakeVerb`, counted from the `hello`'s turn,
+    /// `InFlightMessages`), so no relay outlives that deadline.
     private func handshakenConnection() async throws -> ConnectionGeneration {
         let live = try liveConnection()
         if negotiatedReply != nil { return live }
@@ -430,8 +461,12 @@ public actor HelperClient {
         let task =
             handshake ?? Task { try await self.performHandshake(generation: generation) }
         handshake = task
-        defer { if self.generation == generation { handshake = nil } }
-        _ = try await task.value
+        // `nil` is this caller's cancellation: the latch has no deadline, the handshake has.
+        let waiter = PendingReply<Result<HelloReply, Error>?>(ifNothingArrives: nil)
+        Task.detached(priority: Task.currentPriority) { waiter.deliver(await task.result) }
+        guard let outcome = await waiter.waitForAnswer() else { throw CancellationError() }
+        if self.generation == generation { handshake = nil }
+        _ = try outcome.get()
 
         // The connection this handshake ran on, not whatever is current now. If this client
         // gave it up in between — a `disconnect()`, or another message's cut-off, both of which

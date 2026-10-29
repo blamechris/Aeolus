@@ -417,8 +417,8 @@ public actor LeaseDriver {
     /// beat's cancelled renewal from being read as a loss, and an answer it already had from being
     /// counted.
     ///
-    /// **How long that takes:** at once, unless the replaced renewal is waiting on the connection's
-    /// handshake, which does not end on cancellation: up to `HelperClientDeadlines.handshakeVerb`.
+    /// **How long that takes:** at once: a renewal cancelled while it waits on the connection's
+    /// handshake leaves it immediately (#576).
     /// Call it from a task of its own, never from the main actor's own path.
     public func systemDidWake() async {
         guard case .held(let held) = current, let grant else { return }

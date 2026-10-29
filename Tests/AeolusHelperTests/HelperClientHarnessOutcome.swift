@@ -19,13 +19,15 @@ import Testing
 /// once with a `CancellationError` (`PendingReply`), so the test ends on its own assertions and
 /// not on its time limit.
 ///
-/// **A call that cancellation cannot free** is one parked behind the shared handshake: the verb
-/// waits for the handshake task with an `await` that does not hear its waiter's cancellation
-/// ([#576](https://github.com/blamechris/Aeolus/issues/576)). It comes back only when the
-/// handshake does, which is when the harness's backstop runs the `hello` deadline out (about 30 s
-/// in, as `helperNeverAnswered(after: 15.0 seconds)`), or when the test releases a `hello` it is
-/// holding. `release` is for the second: it runs once the call has been cancelled and before it
-/// is awaited, and releases what the test holds.
+/// **So is a call parked behind the shared handshake**, since
+/// [#576](https://github.com/blamechris/Aeolus/issues/576): it waits for the handshake through a
+/// `PendingReply` of its own, and leaves the handshake running when it goes. Before #576 it
+/// waited on the handshake task's `value`, which does not hear its waiter's cancellation, and came
+/// back only when the harness's backstop ran the `hello` deadline out, about 30 s in. `release`
+/// runs once the call has been cancelled and before it is awaited, and lets go of whatever the
+/// test was holding the call behind, such as a `hello`, so that is not left parked until the
+/// harness goes. A `call` that awaits another task's `value` is the one kind cancelling it cannot
+/// free, and when the wait runs out, `release` is how such a test ends it.
 ///
 /// The clock is not moved to release a parked call. Doing so would run out a deadline, and the
 /// call would come back with `helperNeverAnswered`, the very answer a caller of this is asking
@@ -41,7 +43,9 @@ import Testing
 ///   - call: the call itself.
 /// - Returns: the call's result or its error, and `CancellationError` if it was cancelled.
 /// - Throws: `CancellationError`, from the wait, when the test itself is cancelled; the call is
-///   cancelled first, so it does not outlive the test.
+///   cancelled first, so it does not outlive the test. That holds for every client call, which
+///   hears its cancellation wherever it waits, the shared handshake included since #576; a `call`
+///   that awaits another task's `value` does not hear it.
 func returnedOutcome<Value: Sendable>(
     of what: String,
     timeout: Duration = .seconds(15),
@@ -84,12 +88,14 @@ func returnedOutcome<Value: Sendable>(
 /// scheduled waiting time, so a client that never answers fails its test and cannot hang it
 /// ([#421](https://github.com/blamechris/Aeolus/issues/421)).
 ///
-/// A harness's deadlines are on a clock nothing moves, which is the point; but a verb waits for
-/// the shared handshake task with an `await` that cancellation does not end, and a `.timeLimit`
-/// is only a cancellation. A client that lost its `hello` would then park its test, and with it
-/// the run, for as long as the CI job allows. The wait here is `StallTolerantWait.poll`, which
-/// counts only time the waiter ran, so a stall is added to the 30 s; it is cancelled with the
-/// harness, and a test that finishes never reaches it.
+/// A harness's deadlines are on a clock nothing moves, which is the point; but then a call whose
+/// answer is lost stays parked, and in a test that awaits it directly the only other end is the
+/// suite's `.timeLimit`, a minute in, naming nothing. Before
+/// [#576](https://github.com/blamechris/Aeolus/issues/576) not even that: a verb waited for the
+/// shared handshake task with an `await` cancellation did not reach, so a client that lost its
+/// `hello` parked its test, and with it the run, for as long as the CI job allowed. The wait here
+/// is `StallTolerantWait.poll`, which counts only time the waiter ran, so a stall is added to the
+/// 30 s; it is cancelled with the harness, and a test that finishes never reaches it.
 ///
 /// **The stall allowance has a cap.** `poll` ends at its 50 s wall ceiling whatever it has
 /// compensated, so once a harness has lived through more than 20 s of stalls in total, the

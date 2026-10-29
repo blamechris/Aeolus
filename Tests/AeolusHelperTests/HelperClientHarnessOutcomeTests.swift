@@ -75,6 +75,14 @@ struct HelperClientHarnessOutcomeTests {
     /// exactly a client that has failed to give a call its answer. `withKnownIssue` is the
     /// assertion that the wait does record a failure, and it fails if none is recorded.
     ///
+    /// **The connection is handshaken first**, by a round trip that completes, so the call that
+    /// does not come back is the snapshot parked on its own reply and not a call still behind the
+    /// `hello`. Since #576 a call cancelled behind the `hello` leaves at once while the handshake
+    /// runs on. On a runner slow enough to spend the 200 ms wait before the `hello` is answered,
+    /// the health below is then read while the handshake is still in flight: CI run 40897877885
+    /// failed it, and with the `hello` reply delayed 500 ms it read `.idle` locally, then
+    /// `.handshaken` once the `hello` was answered.
+    ///
     /// **Mutation:** in `returnedOutcome`, delete the `task.cancel()`. Run: red on `error is
     /// CancellationError`, thirty seconds on, when the harness's backstop runs the parked call's
     /// deadline out and it comes back `helperNeverAnswered`.
@@ -86,6 +94,13 @@ struct HelperClientHarnessOutcomeTests {
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
         let client = harness.client()
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+        ) {
+            _ = try await client.acquireLease(
+                LeaseRequest(holderDescription: "test client", fanIndices: [0]))
+        }
+        #expect(await client.health == .handshaken)
 
         var outcome: Result<SystemSnapshot, any Error>?
         await withKnownIssue("the snapshot is held at the helper, which is the case under test") {
@@ -113,8 +128,9 @@ struct HelperClientHarnessOutcomeTests {
     /// its test instead of hanging it.
     ///
     /// A sleep is parked on a clock nothing else moves, for an hour; the backstop's budget is
-    /// 200 ms of scheduled time. Without it that sleep never ends, and neither would a verb
-    /// waiting on the shared handshake task, which a `.timeLimit` cannot cancel out of.
+    /// 200 ms of scheduled time. Without it that sleep never ends, and a client call whose answer
+    /// is lost ends only at its suite's `.timeLimit` (before #576, a verb behind the shared
+    /// handshake did not end even then).
     ///
     /// A second sleep, started after the backstop has fired, ends too: the client may be asked
     /// again.

@@ -351,8 +351,8 @@ final class AppComposition {
     // MARK: - Power, wake and session
 
     /// Routes each workspace event to the lifecycle, each on an unstructured task of its own, so
-    /// none waits behind another: a wake can wait up to `HelperClientDeadlines.handshakeVerb`
-    /// (`LeaseDriver.systemDidWake()`), and a logout must not wait behind it.
+    /// none waits behind another: a wake waits for the heartbeat it replaced to finish
+    /// (`LeaseDriver.systemDidWake()`, at once since #576), and a logout must not wait behind it.
     private static func observeWorkspace(
         _ center: NotificationCenter, for lifecycle: LeaseLifecycle
     ) -> [any NSObjectProtocol] {

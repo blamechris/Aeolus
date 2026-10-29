@@ -147,10 +147,10 @@ final class ClientListenerHarness {
     /// other time but the backstop's.
     ///
     /// **What it costs.** A client that fails to answer a call leaves it parked instead of failing
-    /// it at 5 s, and a wait on the shared handshake task cannot be cancelled out of, so a
-    /// `.timeLimit` would not end it. `ClockBackstop` runs every deadline out once the harness has
-    /// lived 30 s of scheduled time, and `returnedOutcome(of:_:)` asks sooner and by name. A test
-    /// whose claim is the deadline moves the clock itself and asserts the figure it was given.
+    /// it at 5 s, until a cancellation reaches it (the shared handshake's wait too, since #576) or
+    /// `ClockBackstop` runs every deadline out once the harness has lived 30 s of scheduled time.
+    /// `returnedOutcome(of:_:)` asks sooner, by name, and cancels the call. A test whose claim is
+    /// the deadline moves the clock itself and asserts the figure it was given.
     let clock: ManualClock
     private let backstop: ClockBackstop
 
