@@ -95,7 +95,14 @@ extension AeolusXPCFault {
     ///
     /// Quoting it is safe here and nowhere else in this vocabulary: the text is authored
     /// by the helper's own dependencies, not by a client, so there is no client-chosen
-    /// string steering a log line. `FaultText.displayable` still sanitises it at render.
+    /// string steering a log line. The helper's own refusal log prints only the fault's
+    /// `wireCode` (`HelperLog.refusedMessage`).
+    ///
+    /// Not every character of it is the helper's, though. An `SMCError` that names a type the
+    /// codec does not know spells the four bytes the firmware declared
+    /// (`SMCKeyType.unknown`), and those can be a line feed or a bidirectional control. So
+    /// `FaultText.displayable` sanitising it at render is load-bearing, not a second guard,
+    /// and a new renderer of a `.helperFailed` detail has to sanitise it too (#548).
     ///
     /// **Bounded, not refused, and bounded here rather than at render.**
     /// A description of an arbitrary `Error` has no ceiling by construction, and
