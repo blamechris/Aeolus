@@ -114,16 +114,15 @@ struct HelperClientTests {
     /// worth writing down because it is not the obvious one. Two `hello`s go out on one
     /// connection and the helper refuses the second with `invalidParameter`; that refusal is
     /// a failed handshake, so this client's own rule takes the connection down with it, and
-    /// the verb still in flight surfaces as `helperUnreachable(code: 4099)`. The message
-    /// count is the backstop assertion at 4 rather than 3.
+    /// the verb still in flight surfaces as `connectionAbandoned` (measured at #421; it was
+    /// `helperUnreachable(code: 4099)` before #413). The message count is the backstop
+    /// assertion at 4 rather than 3.
     @Test("Two verbs racing on a cold connection send one hello between them")
     func racingVerbsShareOneHandshake() async throws {
         let releaseHandshake = AsyncSignal()
         let harness = ClientListenerHarness(
             authority: RecordingFanAuthority(), holdingHandshakeReplies: releaseHandshake)
-        let client = harness.client(
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(30), panicVerb: .seconds(30), handshakeVerb: .seconds(30)))
+        let client = harness.client()
 
         let first = Task { try await client.snapshot() }
         try await waitUntil("the handshake reached the helper and is being held") {
@@ -166,16 +165,20 @@ struct HelperClientTests {
     /// the client allowed the entire cold start exactly what the helper budgets for
     /// reconciliation alone.
     ///
-    /// Asserted by making `handshakeVerb` impossibly small and `gatedVerb` generous, which
-    /// is the only arrangement in which the two are distinguishable without a peer that can
-    /// be made slow: the handshake must be what fails.
+    /// Asserted by making `handshakeVerb` tiny and `gatedVerb` generous, and by holding the
+    /// `hello` reply at the helper while the harness's clock is moved to the tiny bound (#421):
+    /// the handshake must be what fails, at the figure it was given. The expiry is the test's to
+    /// cause, so a stall cannot cause it for the wrong reason.
     ///
     /// **Mutation:** in `HelperClient.performHandshake(generation:)`, send within
-    /// `deadlines.gatedVerb` again. Run: red — `hello` and the snapshot both fit inside the
-    /// generous deadline, so `snapshot()` returns `.empty` and nothing is thrown.
+    /// `deadlines.gatedVerb` again. Run: red — the held `hello` is still inside the generous
+    /// deadline when the clock moves, so `snapshot()` never comes back, the wait for it fails,
+    /// and the cancelled call is told `CancellationError` rather than `helperNeverAnswered`.
     @Test("The handshake is sent within its own deadline, not a gated verb's")
     func theHandshakeIsSentWithinItsOwnDeadline() async throws {
-        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let releaseHandshake = AsyncSignal()
+        let harness = ClientListenerHarness(
+            authority: RecordingFanAuthority(), holdingHandshakeReplies: releaseHandshake)
         let handshakeDeadline = Duration.nanoseconds(1)
         // The handshake bound is the assertion and is therefore impossibly small. The other two
         // are the shipping values: the gated verb has to be *generous* for the arrangement to
@@ -187,9 +190,21 @@ struct HelperClientTests {
                 panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: handshakeDeadline))
 
-        await #expect(throws: HelperClientError.helperNeverAnswered(after: handshakeDeadline)) {
-            try await client.snapshot()
+        let snapshot = Task {
+            try await returnedOutcome(
+                of: "the snapshot whose hello is held",
+                afterCancelling: { await releaseHandshake.signal() },
+                { try await client.snapshot() })
         }
+        try await waitUntil("the hello is held at the helper and its deadline is running") {
+            harness.arrivals == ["hello"] && harness.clock.sleepers == 1
+        }
+        harness.clock.advance(by: handshakeDeadline)
+        await #expect(throws: HelperClientError.helperNeverAnswered(after: handshakeDeadline)) {
+            _ = try await snapshot.value.get()
+        }
+
+        await releaseHandshake.signal()
     }
 
     /// Refuse, never degrade — and name both sides' ranges, in both directions.
@@ -408,16 +423,22 @@ struct HelperClientTests {
     /// deleted, because the enclosing `.timeLimit` would eventually record something either
     /// way and the two are not the same failure.
     ///
+    /// The deadline is moved to, not waited for (#421): the test holds the snapshot at the helper,
+    /// waits until its deadline has parked on the harness's clock, and advances the clock by the
+    /// deadline. A stall can neither run it out early nor make the test wait for it.
+    ///
     /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, admit the message to `inFlight`
     /// `within: .seconds(600)` instead of `within: deadline`; the deadline has been started there,
-    /// at the message's turn, since #413. Run: red on the suite's time limit first, which is the
-    /// weaker kill; the expectation then fails on the `CancellationError` that the time limit's
-    /// cancellation hands the client, and the health on `.handshaken`. The expectation is on the
-    /// error value so that a deadline that never fires cannot pass as one that fired late.
+    /// at the message's turn, since #413. Run: red on the wait for the snapshot to come back, which
+    /// the clock's move to 250 ms does not release; the expectation then fails on the
+    /// `CancellationError` the cancelled call is told, and the health on `.handshaken`. The
+    /// expectation is on the error value so that a deadline that never fires cannot pass as one
+    /// that fired late.
     @Test("A message nobody answers becomes helperNeverAnswered")
     func aMessageNobodyAnswersHasItsOwnError() async throws {
         let gate = AsyncSignal()
-        let harness = ClientListenerHarness(authority: GatedSnapshotAuthority(gate: gate))
+        let authority = GatedSnapshotAuthority(gate: gate)
+        let harness = ClientListenerHarness(authority: authority)
         let deadline = Duration.milliseconds(250)
         // The gated verb's bound is the assertion, so it is short and explicit. The
         // handshake's is not asserted by anything here and must simply succeed, so it is the
@@ -431,8 +452,17 @@ struct HelperClientTests {
                 panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
+        let snapshot = Task {
+            try await returnedOutcome(of: "the snapshot the helper never answers") {
+                try await client.snapshot()
+            }
+        }
+        try await waitUntil("the snapshot is parked at the helper and its deadline is running") {
+            await authority.hasBeenAsked && harness.clock.sleepers == 1
+        }
+        harness.clock.advance(by: deadline)
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
-            try await client.snapshot()
+            _ = try await snapshot.value.get()
         }
 
         // The wedge, as ADR 0006 has to be able to read it. The connection handshook and
