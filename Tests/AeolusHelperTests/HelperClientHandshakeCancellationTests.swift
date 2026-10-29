@@ -42,8 +42,9 @@ struct HelperClientHandshakeCancellationTests {
     ///
     /// **Mutation:** in the cancelled branch of `handshakenConnection()`, call `task.cancel()`
     /// before throwing, so that cancelling a caller cancels the handshake. Run: red on the second
-    /// caller, which is handed the handshake's own `CancellationError` instead of a snapshot.
-    @Test("A caller cancelled behind an unanswered hello comes back, and the one beside it does not")
+    /// caller, which is handed the handshake's own `CancellationError` instead of a snapshot, and
+    /// on `health`, `negotiated` and `messageCount` (1: the `hello` alone).
+    @Test("A caller cancelled behind an unanswered hello comes back; the one beside it is served")
     func aCancelledCallerLeavesAndTheHandshakeServesTheOther() async throws {
         let releaseHandshake = AsyncSignal()
         let harness = ClientListenerHarness(
@@ -75,7 +76,7 @@ struct HelperClientHandshakeCancellationTests {
         #expect(harness.clock.now == frozenAt, "the clock moved, so a deadline may have freed it")
 
         await releaseHandshake.signal()
-        let answered = try await returnedOutcome(of: "the caller beside it, once hello is answered") {
+        let answered = try await returnedOutcome(of: "the second caller, once hello is answered") {
             try await second.value
         }
         #expect(throws: Never.self, "the handshake it shared did not serve it") {
@@ -116,7 +117,12 @@ struct HelperClientHandshakeCancellationTests {
     ///
     /// **Mutation:** in the cancelled branch of `handshakenConnection()`, clear `handshake` before
     /// throwing, as the `defer` it replaced did on every exit. Run: red on the late caller, which
-    /// sends a second `hello` and is refused, and on the arrivals, which hold two `hello`s.
+    /// sends a second `hello` and is refused with `invalidParameter` ("the handshake has already
+    /// completed on this connection"), on the arrivals, which hold two `hello`s, and on `health`.
+    ///
+    /// **Mutation:** the code before #576, as in the first test. Run: red on the wait for the
+    /// cancelled caller alone, at 15 s; the late caller, started after the `hello` was released to
+    /// end that wait, finds the handshake done.
     @Test("A caller arriving after the only waiter was cancelled joins the same hello")
     func aLateCallerJoinsTheHandshakeACancelledCallerLeft() async throws {
         let releaseHandshake = AsyncSignal()
@@ -166,8 +172,14 @@ struct HelperClientHandshakeCancellationTests {
     /// deadline is left running. Nothing the handshake started outlives its deadline.
     ///
     /// **Mutation:** in the cancelled branch of `handshakenConnection()`, call `task.cancel()`
-    /// before throwing. Run: red on `deadlinesRunning` and on `health`, which reads `.invalidated`:
-    /// the handshake ended with its last waiter and took the connection with it.
+    /// before throwing. Run: red on `deadlinesRunning` (0), `sleepers`, `health`, which reads
+    /// `.invalidated`, and the generation: the handshake ended with its last waiter and took the
+    /// connection with it. The wait for `.unresponsive` then fails as well.
+    ///
+    /// **Mutation:** the code before #576, as in the first test. Run: red on the wait for the
+    /// cancelled caller, at 15 s. That wait releases the `hello` to end it, so the handshake
+    /// succeeds, and what follows reads a handshaken connection instead: red on `health`,
+    /// `negotiated`, the wait for `.unresponsive` and the generation.
     @Test("A handshake whose only waiter was cancelled runs on to its own deadline")
     func aHandshakeWithNoWaiterRunsToItsDeadline() async throws {
         let releaseHandshake = AsyncSignal()
@@ -187,9 +199,11 @@ struct HelperClientHandshakeCancellationTests {
             { try await cancelled.value })
         #expect(throws: CancellationError.self) { _ = try left.get() }
 
-        #expect(await client.deadlinesRunning == 1, "the hello's deadline is no longer running")
+        let running = await client.deadlinesRunning
+        #expect(running == 1, "the hello's deadline is no longer running")
         #expect(harness.clock.sleepers == 1)
-        #expect(await client.health == .idle, "the caller's cancellation published a health")
+        let health = await client.health
+        #expect(health == .idle, "the caller's cancellation moved the health to \(health)")
         #expect(await client.currentGeneration == generation, "the connection was given up")
         #expect(await client.negotiated == nil)
 

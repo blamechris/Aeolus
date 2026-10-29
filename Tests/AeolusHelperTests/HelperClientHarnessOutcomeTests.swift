@@ -113,8 +113,9 @@ struct HelperClientHarnessOutcomeTests {
     /// its test instead of hanging it.
     ///
     /// A sleep is parked on a clock nothing else moves, for an hour; the backstop's budget is
-    /// 200 ms of scheduled time. Without it that sleep never ends, and neither would a verb
-    /// waiting on the shared handshake task, which a `.timeLimit` cannot cancel out of.
+    /// 200 ms of scheduled time. Without it that sleep never ends, and a client call whose answer
+    /// is lost ends only at its suite's `.timeLimit` (before #576, a verb behind the shared
+    /// handshake did not end even then).
     ///
     /// A second sleep, started after the backstop has fired, ends too: the client may be asked
     /// again.

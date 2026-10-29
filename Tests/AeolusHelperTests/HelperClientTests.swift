@@ -68,10 +68,11 @@ struct HelperClientTests {
     /// unchanged `AeolusXPCVersion`, so a client that relied on it would be relying on
     /// something it cannot check against a helper it has not yet spoken to.
     ///
-    /// **Mutation:** in `HelperClient.handshakenConnection()`, delete
-    /// `_ = try await task.value` — the handshake is still sent, and the verb no longer
-    /// waits for its reply, which is exactly what pipelining is. Run: red, and *not* on the
-    /// arrivals: the verb reaches the helper before the `hello` its task had not yet run,
+    /// **Mutation:** in `HelperClient.handshakenConnection()`, delete the wait for the
+    /// handshake — the `guard let outcome = await waiter.waitForAnswer()` line and the two after
+    /// it (`_ = try await task.value` before #576) — so the handshake is still sent, and the verb
+    /// no longer waits for its reply, which is exactly what pipelining is. Run: red, and *not* on
+    /// the arrivals: the verb reaches the helper before the `hello` its task had not yet run,
     /// so it is refused with `handshakeRequired` and this test fails on the thrown error
     /// before it compares anything. That is the D25 fallback the contract names, arriving
     /// as a caller-visible failure — which is the outcome this client's rule exists to
