@@ -23,7 +23,16 @@ import Testing
 /// lost its ceiling fails here after ten seconds of waiting, naming itself, and does not hang the
 /// suite. Time the whole test process spends stopped is not waiting
 /// ([#547](https://github.com/blamechris/Aeolus/issues/547)): a stall of more than ten seconds
-/// used to fail five of these, whose doubles had done nothing wrong.
+/// used to fail five of these, whose doubles had done nothing wrong. Nor is it for the ceilings
+/// themselves ([#549](https://github.com/blamechris/Aeolus/issues/549)): the two 30 s waits below
+/// are `wait(atMost:)` too, so a stall that landed between a timer's start and its read of
+/// `expired` is added to their deadline, up to the 50 s cap, and is not spent from it
+/// (`ParkStallToleranceTests`).
+///
+/// **Mutation:** in `wait(atMost:clock:)`, delete the timer's `signal()`, so that a park nobody
+/// releases never gives up. Run: red in every test here that parks. The wait comes back `nil`
+/// after `outwaitCeiling`, so `released == false` and `returned` fail, and the wait after the
+/// ceiling fails with it; `aGivenUpWaitDoesNotCancelTheOthers` hangs to the suite's `.timeLimit`.
 @Suite("A parking double gives up at its ceiling", .timeLimit(.minutes(1)))
 struct ParkingCeilingTests {
 
