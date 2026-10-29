@@ -108,6 +108,24 @@ struct FanctlExitCodeTests {
         }
     }
 
+    /// `message` is what `HelperCommandOutput.fail` hands to the terminal, so a line break in
+    /// it is a second line on standard error. A `.helperFailed` detail can carry U+2028 or
+    /// U+2029 from a firmware type code (#553).
+    ///
+    /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
+    /// .paragraphSeparator`. Run: red on both rows.
+    @Test(
+        "A helper fault's line or paragraph separator is not printed",
+        arguments: ["\u{2028}", "\u{2029}"])
+    func aSeparatorInAFaultDetailIsNotPrinted(_ separator: String) {
+        let fault = AeolusXPCFault.helperFailed(detail: "FNum declares \(separator)a")
+
+        let failure = HelperCommandFailure(classifying: fault, during: .beforeControl)
+
+        #expect(failure.message.contains("FNum declares a"))
+        #expect(!failure.message.contains(separator))
+    }
+
     /// Once a lease is held, any failure to keep it means this client can no longer say it
     /// holds the fans — rule 6 — so every error is `controlLost`.
     @Test("While holding a lease, every helper error is control lost")

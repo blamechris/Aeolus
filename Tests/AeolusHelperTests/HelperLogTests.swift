@@ -33,39 +33,47 @@ struct HelperLogTests {
         }
     }
 
-    /// `HelperLog.swift` calls its `Logger` exactly once, in `emit(_:_:)`, with the type from
-    /// `osLogType(for:)`. A line written straight to `log.fault(...)` would reach the unified
-    /// log at a level its sink never hears about, which is the divergence this file exists to
-    /// prevent.
+    /// `HelperLog.swift` reaches the unified log in exactly two places, one in each initialiser,
+    /// and each is inside the closure handed to a `LogText.EscapingSink` that `emit` stores.
+    /// A line written straight to a `Logger` would reach the unified log at a level its sink never
+    /// hears about, or unescaped (#553).
     ///
-    /// **The scan is of any receiver, not of the name `log`.** Its first form looked for `log.`
-    /// not preceded by a word character *or a dot*, so `self.log.notice(` walked past it (the
-    /// delta review of #349). It now counts every `<name>.<level>(` call, whatever comes before
-    /// the name, plus `os_log(` and every `Logger(` construction, so a second logger or a
-    /// qualified receiver is a failure too. `HelperLogLevel.swift`, which holds the mapping,
+    /// **The type is the control; this scan claims the accidents.** `emit` is an
+    /// `EscapingSink`, so a message cannot reach either closure unescaped, and no `Logger` is
+    /// stored, so a method has no `log` to write to. What the scan adds is the count: a second
+    /// stored logger, a qualified receiver (`self.log.notice(`), another `Logger(` or an
+    /// `os_log(` each change a number below. `HelperLogLevel.swift`, which holds the mapping,
     /// may write nothing at all.
     ///
-    /// **Mutation:** in `HelperLog.panicRestoreRefused`, replace `fault(` with `log.notice(` —
-    /// written straight to the `Logger`. Run: red here, and on the fault assertions in
-    /// `PanicVerbMachineWideRestoreTests` and `FanctlResetCorruptedStateTests`.
-    /// **Mutation:** in `HelperLog.teardownRestoreFailed`, replace `fault(` with
-    /// `self.log.notice(`. Run: red here.
-    /// **Mutation:** in `emit(_:_:)`, write `log.log(level: .default, …)` rather than taking the
-    /// type from `osLogType(for:)` — every line demoted while the sink still reads its level.
-    /// Run: red here only.
-    @Test("Every HelperLog line reaches the unified log through emit")
+    /// **Mutation:** add `private let strayLog = Logger(subsystem: "x", category: "y")` and make
+    /// `info(_:)` call `strayLog.log(…)`. Run: red on `levels ==` and the `Logger(` count here,
+    /// and on `children.count == 1` in `LogTextTests`'s shipping-`HelperLog` test; nothing else.
+    /// **Mutation:** make `fault(_:)` call `Logger(subsystem: "x", category: "y").fault("\(message,
+    /// privacy: .public)")`. Run: red on the `Logger(` count alone here (`loggerCall` needs a word
+    /// character before the dot, so it does not see a call on `)`), and on `HelperLog lines that
+    /// quote an error escape it too` in `LogTextTests`.
+    /// **Not mutations but compile errors**, which is the point of the stored type: assigning a
+    /// closure to `emit` in either initialiser, and reading a `log` from a method.
+    @Test("Every HelperLog line reaches the unified log through its escaping sink")
     func everyLineTakesTheOneRoute() throws {
         let code = try Self.strippedSource("HelperLog.swift")
         let levels = try Self.matches(of: Self.loggerCall, in: code)
 
         #expect(
-            levels == ["log.log("],
+            levels == ["log.log(", "log.log("],
             """
-            HelperLog.swift writes to a logger as \(levels), not once as log.log(level:). A \
-            line written around emit(_:_:) reaches the unified log at a level no sink sees.
+            HelperLog.swift writes to a logger as \(levels), not once per initialiser as \
+            log.log(level:) inside its EscapingSink. A line written around emit reaches the \
+            unified log unescaped, or at a level no sink sees.
             """)
-        #expect(code.contains("log.log(level: Self.osLogType(for: level)"))
-        #expect(code.contains("sink?(level, message)"), "emit does not hand the sink its level")
+        #expect(
+            try Self.matches(of: #"\blog\.log\(level: Self\.osLogType\(for: level\)"#, in: code)
+                .count == 2, "a log.log call does not take its type from osLogType(for:)")
+        #expect(code.contains("private let emit: LogText.EscapingSink<Level>"))
+        #expect(
+            try Self.matches(of: #"\bemit\s*=\s*LogText\.EscapingSink\s*\{"#, in: code).count == 2,
+            "an initialiser does not build its emit as a LogText.EscapingSink")
+        #expect(code.contains("sink(level, message)"), "emit does not hand the sink its level")
         #expect(
             try Self.matches(of: #"\bLogger\s*\("#, in: code).count == 2,
             "HelperLog.swift builds a Logger other than its two initialisers' one each")
@@ -75,7 +83,7 @@ struct HelperLogTests {
         #expect(
             try Self.matches(of: Self.loggerCall, in: vocabulary).isEmpty
                 && Self.matches(of: #"\b(Logger|os_log)\s*\("#, in: vocabulary).isEmpty,
-            "HelperLogLevel.swift writes to the unified log; only emit(_:_:) may")
+            "HelperLogLevel.swift writes to the unified log; only emit may")
     }
 
     /// The advertising line says what the plane said about writing, in both directions.

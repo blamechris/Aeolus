@@ -6,7 +6,33 @@ import Foundation
 /// different questions: that type decides *what* the helper said, this one decides what is
 /// safe to show a human afterwards. They were one file until adding a fault case pushed it
 /// past this repository's 400-line limit, and this is the seam that was already there.
-enum FaultText {
+public enum FaultText {
+
+    /// Whether the display rules remove `scalar`: Unicode general category Cc, Cf, Zl or Zp.
+    ///
+    /// **The one predicate for text from the far side of the boundary**, `public` so the app's
+    /// `HelperAuthoredText` and the helper's `LogText` use this definition rather than a copy
+    /// of it. Two copies had already disagreed: `displayable` removed Cc and Cf and kept
+    /// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which the app's copy removed
+    /// (#553). Core Text breaks a line on both, so a surviving one is a forged second line.
+    ///
+    /// - Cc and Cf: what turns one log line into two (`\n`) or reverses the reading order of
+    ///   the rest of it (U+202E RIGHT-TO-LEFT OVERRIDE, U+2066 LEFT-TO-RIGHT ISOLATE), and what
+    ///   shows nothing at all (U+200B ZERO WIDTH SPACE, U+00AD SOFT HYPHEN).
+    /// - Zl and Zp: the two line breaks the first pair do not contain, and the reason a
+    ///   predicate spelled `CharacterSet.controlCharacters`, which is Cc and Cf, cannot do this
+    ///   job. They are named by the scalar's own category here so all four are on the page.
+    ///
+    /// Not yet the rule of `AeolusXPCValidation` or of fanctl's `DisplayText`, which still
+    /// refuse or strip Cc and Cf alone. #483 is what moves them here.
+    public static func isRemovedFromDisplay(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// Longest run of helper-supplied free text this client will render, in characters.
     ///
@@ -32,11 +58,11 @@ enum FaultText {
     /// Makes free text from the far side of the boundary safe to put in a log line or a
     /// UI label, without discarding the fact that something arrived.
     ///
-    /// Control and format characters go, because those are what turn one log line into
-    /// two (`\n`) or reverse the reading order of the rest of it (U+202E). An empty or
-    /// entirely-unprintable string renders as a marker rather than as nothing at all, so
-    /// a reader can tell "the helper said something unprintable" from "the helper said
-    /// nothing".
+    /// Control, format and line-separator characters go (`isRemovedFromDisplay(_:)`), because
+    /// those are what turn one log line into two (`\n`, U+2028) or reverse the reading order of
+    /// the rest of it (U+202E). An empty or entirely-unprintable string renders as a marker
+    /// rather than as nothing at all, so a reader can tell "the helper said something
+    /// unprintable" from "the helper said nothing".
     ///
     /// Both caps apply, and the ellipsis is counted *inside* them rather than added past
     /// them, so a rendered string is never longer than the constant that named its ceiling.
@@ -46,17 +72,11 @@ enum FaultText {
         limit: Int = maxRenderedLength,
         byteLimit: Int = maxRenderedUTF8Bytes
     ) -> String {
-        // `CharacterSet.controlCharacters` is Unicode categories Cc **and Cf**, so this one
-        // predicate removes the bidi and formatting scalars as well as the C0/C1 controls —
-        // U+202E RIGHT-TO-LEFT OVERRIDE, U+2066 LEFT-TO-RIGHT ISOLATE, U+200B ZERO WIDTH
-        // SPACE and U+00AD SOFT HYPHEN are all members, verified on this platform. Spelled
-        // out because the name says "control" and reads as though it means Cc alone: a
-        // reviewer has already read it that way and reported the bidi overrides as
-        // unstripped. `renderingStripsControlCharacters` covers U+202E and U+200F among its
-        // arguments and is what would fail if any of that stopped being true.
-        let stripped = String(
-            text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
-        )
+        // Cc, Cf, Zl and Zp — `isRemovedFromDisplay(_:)`, which says what each removes and why.
+        // What fails if any of them stops being removed is `renderingStripsControlCharacters`,
+        // which covers U+202E, U+200F, U+2028 and U+2029 among its arguments, and
+        // `displayableRemovesEveryScalarOfTheFourCategories`, which walks the whole code space.
+        let stripped = String(text.unicodeScalars.filter { !isRemovedFromDisplay($0) })
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return unprintableMarker }
         guard trimmed.count > limit || trimmed.utf8.count > byteLimit else { return trimmed }

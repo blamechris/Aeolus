@@ -37,6 +37,24 @@ struct HelperAuthoredTextTests {
         #expect(survivors.isEmpty, "survived: \(survivors)")
     }
 
+    /// The app and `AeolusXPC` remove the same scalars, because the app asks `AeolusXPC`
+    /// (#553). Held as agreement over the whole code space rather than as a source check, so a
+    /// local copy of the predicate that someone later "fixes" for one renderer only is red.
+    ///
+    /// **Mutation (#553):** in `HelperAuthoredText.isRemoved`, return
+    /// `FaultText.isRemovedFromDisplay(scalar) && scalar != "\u{2029}"`. Run: red, naming
+    /// U+2029 (and `noRemovedScalarSurvives` is red beside it).
+    @Test("The app's predicate is AeolusXPC's, for every scalar")
+    func theAppAndAeolusXPCAgreeOnEveryScalar() {
+        let disagreements = (0...0x10FFFF).compactMap { value -> String? in
+            guard let scalar = Unicode.Scalar(value),
+                HelperAuthoredText.isRemoved(scalar) != FaultText.isRemovedFromDisplay(scalar)
+            else { return nil }
+            return String(format: "U+%04X", value)
+        }
+        #expect(disagreements.isEmpty, "disagree on: \(disagreements)")
+    }
+
     @Test("A right-to-left override is removed")
     func aBidiOverrideIsRemoved() {
         let cleaned = HelperAuthoredText.sanitised("fanctl\u{202E}lortnoc")
