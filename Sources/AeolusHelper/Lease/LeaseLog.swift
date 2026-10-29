@@ -26,8 +26,9 @@ import os
 /// records that fans went back to automatic.
 ///
 /// `holderDescription` is client-chosen text. It has been through
-/// `AeolusXPCValidation.validateHolderDescription(_:)` — bounded in characters and bytes,
-/// no control characters, no bidirectional overrides — so it cannot forge a log line. It is
+/// `AeolusXPCValidation.validateHolderDescription(_:)` — bounded in characters and bytes, and
+/// nothing in Unicode Cc, Cf, Zl or Zp (`FaultText.isRemovedFromDisplay`), so no control
+/// character, bidirectional override or line separator — so it cannot forge a log line. It is
 /// still the client's own account of itself and the wording says so, exactly as
 /// `HelperLog` does for the handshake.
 struct LeaseLog: Sendable {
