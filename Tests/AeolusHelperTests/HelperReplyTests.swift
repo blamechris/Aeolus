@@ -125,10 +125,10 @@ struct HelperReplyTests {
     /// (#553).
     ///
     /// The first expectation is the premise: if it fails, the route no longer reaches the
-    /// detail and this test is about nothing. The second is what `fanctl` prints.
+    /// detail and this test is about nothing. The rest are what `fanctl` prints.
     ///
     /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
-    /// .paragraphSeparator`. Run: red on the second expectation only.
+    /// .paragraphSeparator`. Run: red on the last two expectations, and green on the premise.
     @Test("A firmware type code with a line separator reaches fanctl without it")
     func aFirmwareTypeCodeWithALineSeparatorIsCleanedBeforeFanctlPrintsIt() throws {
         let declared = SMCKeyType(fourCharCode: 0xE280_A861)
