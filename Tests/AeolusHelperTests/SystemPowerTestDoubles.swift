@@ -292,8 +292,9 @@ let threadBlockingCeiling = 30
 ///   so at most one pool thread is ever held on a release that the pool has to deliver. Every
 ///   other test that holds a pool thread is released by a `Thread` or by a timeout (see
 ///   `docs/TESTING.md`), so it frees its thread without a pool thread to do it. A pool of two or
-///   more therefore always has a thread for this test's budget and its release, however the rest
-///   of the suite is scheduled. A pool of one has none: this test cannot run there.
+///   more therefore gets a thread for this test's budget and its release as soon as the shortest
+///   of those other holds ends, however the rest of the suite is scheduled. A pool of one never
+///   does: this test cannot run there.
 /// - **The block has a ceiling.** `ceiling` seconds of waiting, counted in slices that a stalled
 ///   runner cannot spend (`SliceCountedWait`, #421). A block nobody releases opens at the ceiling,
 ///   records an issue naming itself and goes on, so the run ends red where it used to wedge: a

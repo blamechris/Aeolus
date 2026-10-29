@@ -52,6 +52,7 @@ was read. What is *not* here suspends, which gives its thread back: `AsyncSignal
 | `HelperWatchdogCompositionTests.theWatchdogNeverEntersTheConnectionActor` | the same, through the same seam | the driver `Thread`'s `defer`, after two synchronous ticks; else a 30 s timed wait |
 | `SMCRoundTripMonitorTests` (five synchronous tests: the bracket, the sequence, the lock, the clearing, the suspending clock) | the test's own pool thread, in `signalled(_:within:)` / `observeInFlight` / `ParkedRoundTrip.waitUntilParked`, up to 10 s (3 s for a read) | a dedicated `Thread` signals the semaphore |
 | `SMCRoundTripMonitorTests.anAgeIsNeverNegativeUnderContention` | the test's own pool thread, reading the monitor in a loop, then a `DispatchSemaphore` | a writer `Thread` ends the loop and signals; the wait is 10 s |
+| `ThreadBlockingCeilingTests.threadBlockingRestorePlaneGivesUp` | the pool thread running a blocked restore, for the 1 s ceiling it is given | that ceiling |
 | `SliceCountedWaitTests` (four) | the test's own pool thread, in `Thread.sleep` (at most 0.3 s) and semaphore waits | their own timeouts; one is signalled by a `Thread` after 0.1 s |
 | `IntegrationTests` signed-fixture tests (`AdHocSignedFixtures.codesign`) | the test's own pool thread, in `Process.waitUntilExit()` on `/usr/bin/codesign` | `codesign` exiting |
 
