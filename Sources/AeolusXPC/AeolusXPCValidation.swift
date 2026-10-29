@@ -326,8 +326,10 @@ public enum AeolusXPCValidation {
         // Cc covers NUL, the C0 range and the newline that forges a log entry; Cf covers the
         // bidirectional overrides that rewrite a line without adding a visible character to
         // it; Zl and Zp are U+2028 and U+2029, which Core Text and most terminals break a
-        // line on. `CharacterSet.controlCharacters`, this guard's predicate until #483, is Cc
-        // and Cf alone and let those two through.
+        // line on. `CharacterSet.controlCharacters`, this guard's predicate until #483, let those
+        // two through, and reads Foundation's tables, which differ by macOS (on macOS 26 they
+        // also hold thousands of plane-14 scalars that are not Cc or Cf). The category is the
+        // standard library's: one table for this guard and for both renderers.
         guard !description.unicodeScalars.contains(where: FaultText.isRemovedFromDisplay) else {
             throw AeolusXPCFault.invalidParameter(
                 name: name,
