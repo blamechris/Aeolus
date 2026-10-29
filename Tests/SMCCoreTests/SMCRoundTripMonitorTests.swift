@@ -189,11 +189,30 @@ struct SMCRoundTripMonitorTests {
 
     // MARK: - ADR 0012 I2: the stamp is readable while the connection is held
 
+    /// What the thread that drives the held window saw.
+    private struct OccupiedWindow: Sendable {
+        var occupied = false
+        var reading: ThreadedReading?
+        var probe: Task<Void, Never>?
+        var probeRanWhileHeld = false
+    }
+
     /// The actor's executor is the cooperative pool, so holding the actor parks one of its
-    /// threads. This test therefore needs a second pool thread to run on, and it waits on none:
-    /// it polls with `Task.sleep`, reads from a dedicated thread, and a failsafe on a thread of
-    /// its own releases the held actor even if the pool is too narrow to schedule the rest. On a
-    /// pool of one, the test fails after the failsafe instead of hanging the process.
+    /// threads. That is the property this test is about, and it is the only thing it asks of the
+    /// pool: the window is driven, and the held actor released, by a `Thread` of its own, so
+    /// nothing here waits for a pool thread to become free
+    /// ([#554](https://github.com/blamechris/Aeolus/issues/554)).
+    ///
+    /// It used to poll with `Task.sleep` from the test's own task and release the actor from
+    /// that task, which needs a second pool thread. On a pool of one the occupation took the only
+    /// thread, the poll could not run to see it, and the run waited for the 30 s failsafe before
+    /// reporting that the connection "was never occupied". And a pool whose other threads were
+    /// held by tests like it would have waited for this one's release in vain. Now the driver
+    /// reads the stamp, queues the probe, waits out the window and frees the actor on its own
+    /// thread; the test's task only suspends on a continuation the driver resumes, and holds no
+    /// thread while it does. It passes on a pool of one (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`),
+    /// where the probe cannot run for want of a thread, so "the probe stayed queued" is true there
+    /// by construction and is only a claim on a pool of two or more.
     ///
     /// It asserts two things that must hold together. The actor really is held — a call that has
     /// to enter it stays queued — and the stamp is readable regardless. Without the first, the
@@ -202,58 +221,78 @@ struct SMCRoundTripMonitorTests {
     /// What actually stops the stamp's read from needing the actor is `nonisolated` on
     /// `SMCConnection.roundTrips`, and that is checked by the compiler: without it, the
     /// synchronous read below does not compile.
+    ///
+    /// **Mutation:** in `occupyForTesting`'s body here, delete the `release.wait(…)` line, so the
+    /// actor is free at once. Run: red on "the connection was not actually held".
+    /// **Mutation:** in `SMCRoundTripMonitor.bracket`, hold the lock across `body()`. Run: red on
+    /// "the stamp could not be read", after the read's three-second bound.
     @Test("Reading the stamp does not enter the connection that is stamped")
     func theStampIsReadableWhileTheConnectionIsOccupied() async {
         let connection = SMCConnection()
         let monitor = connection.roundTrips
+        let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         let probeFinished = OSAllocatedUnfairLock(initialState: false)
+        let window = OSAllocatedUnfairLock(initialState: OccupiedWindow())
 
-        // On a thread of its own, not the global queue: the global queue shares its workers with
-        // the cooperative pool this test is holding a thread of, so on a runner whose pool is
-        // exhausted by tests like this one the failsafe waits for the very thing it exists to
-        // free. A CI run of the liveness watchdog's pull request stopped for twenty minutes on
-        // exactly that, with this failsafe still queued (#324 is the same hazard).
-        Thread {
-            Thread.sleep(forTimeInterval: 30)
-            release.signal()
-        }.start()
-
+        // Timed as well, so a driver that never ran frees the thread anyway.
         let occupation = Task {
             await connection.occupyForTesting {
-                monitor.bracket(.open) { release.wait() }
+                monitor.bracket(.open) {
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + .seconds(30))
+                }
             }
         }
 
-        guard await poll(until: { monitor.inFlight() != nil }) else {
+        // The held window, on a thread of its own. Whatever happens inside it, the `defer` frees
+        // the actor and resumes the test, so a failure here is a failure and not a hung process.
+        await withCheckedContinuation { (windowEnded: CheckedContinuation<Void, Never>) in
+            Thread {
+                defer {
+                    release.signal()
+                    windowEnded.resume()
+                }
+                guard signalled(entered, within: 20) else { return }
+                window.withLock { $0.occupied = true }
+
+                // A call that has to enter the actor, queued behind the occupation.
+                let probe = Task {
+                    await connection.close()
+                    probeFinished.withLock { $0 = true }
+                }
+
+                // `roundTrips` is `nonisolated`: a synchronous read, with no `await`, while the
+                // actor is held. On a thread of its own so that a read which did block fails by
+                // timing out.
+                let reading = readStampOnAThread(connection.roundTrips, within: 3)
+
+                // The probe must still be waiting after a window in which a free actor would
+                // have run it. A window can only fail to catch a probe that was slow; it cannot
+                // invent one.
+                Thread.sleep(forTimeInterval: 0.25)
+                window.withLock {
+                    $0.reading = reading
+                    $0.probe = probe
+                    $0.probeRanWhileHeld = probeFinished.withLock { $0 }
+                }
+            }.start()
+        }
+
+        await occupation.value
+        let seen = window.withLock { $0 }
+        guard seen.occupied else {
             Issue.record("the connection was never occupied")
-            release.signal()
-            await occupation.value
             return
         }
+        await seen.probe?.value
 
-        // A call that has to enter the actor, queued behind the occupation.
-        let probe = Task {
-            await connection.close()
-            probeFinished.withLock { $0 = true }
-        }
-
-        // `roundTrips` is `nonisolated`: a synchronous read, with no `await`, while the actor is
-        // held. On a thread of its own so that a read which did block fails by timing out.
-        let reading = await readOnDedicatedThread(connection.roundTrips)
-
-        // The probe must still be waiting after a window in which a free actor would have run
-        // it. A window can only fail to catch a probe that was slow; it cannot invent one.
-        for _ in 0..<25 { try? await Task.sleep(for: .milliseconds(10)) }
-        let probeRanWhileHeld = probeFinished.withLock { $0 }
-
-        release.signal()
-        await occupation.value
-        await probe.value
-
-        #expect(reading != nil, "the stamp could not be read while the connection was occupied")
-        #expect(reading?.value?.operation == .open)
-        #expect(!probeRanWhileHeld, "the connection was not actually held while the stamp was read")
+        #expect(
+            seen.reading != nil, "the stamp could not be read while the connection was occupied")
+        #expect(seen.reading?.value?.operation == .open)
+        #expect(
+            !seen.probeRanWhileHeld, "the connection was not actually held while the stamp was read"
+        )
         #expect(probeFinished.withLock { $0 }, "the queued call never ran once the actor was free")
         #expect(connection.roundTrips.inFlight() == nil)
     }

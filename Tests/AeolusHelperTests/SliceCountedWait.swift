@@ -30,6 +30,8 @@ import Foundation
 /// for an `async` test is a cooperative-pool thread, and parks it for up to the budget. That is
 /// harmless only because every signaller there is a dedicated `Thread` that needs no pool thread
 /// to run; a wait on a semaphore that a pool task signals is #554's hazard, not a use of this.
+/// The one such wait is `ThreadBlockingRestorePlane`'s, which uses this as the ceiling that ends
+/// the hazard red instead of wedged; `docs/TESTING.md` lists every hold and the bound.
 enum SliceCountedWait {
 
     /// How long one wait lasts.
