@@ -38,9 +38,14 @@ import Testing
 /// 50 s cap. They used to measure it on the wall clock, and a runner that stopped the test
 /// process for longer than this (about 30 s in #439; tests that take milliseconds took 30 to 44 s
 /// in the two runs #547 is about) spent every wait in flight at once, so a double that had done
-/// nothing wrong read as one that had lost its ceiling. What compensation cannot tell is a stall
-/// from a slow hold, so a wait that really is stuck can run past the 10 s it was given, to the cap
-/// at most, and says in its issue how much stall it compensated.
+/// nothing wrong read as one that had lost its ceiling.
+///
+/// **A slow or stuck hold is not compensated.** The condition is a flag read and the 1 ms sleep
+/// returns on time, so a wait that really is stuck gives up at exactly this ceiling, and says so:
+/// "10.0 s of waiting (plus 0.0 s of runner stall compensated)". What compensation cannot tell
+/// from a stall is an iteration the process did not run for another reason: the OS descheduling
+/// it, or a cooperative pool with every thread blocked. Those are compensated as well, up to the
+/// cap, and the issue says how much.
 ///
 /// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
 /// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s
@@ -128,8 +133,8 @@ func revocationProgress(
     // when it recorded the timeout.
     var progress: RevocationProgress?
     try await outwait(
-        "the revocation to finish or park on fan \(fan): it did neither", clock: clock,
-        note: note, sourceLocation: sourceLocation
+        (event: "the revocation to finish or park on fan \(fan)", ifItTimesOut: "it did neither"),
+        clock: clock, note: note, sourceLocation: sourceLocation
     ) {
         if await work.isFinished.isSet {
             progress = .finished
@@ -178,8 +183,10 @@ func finishedBeforeCeiling<Value: Sendable>(
     // final look and a second one here would otherwise return a value beside a failure.
     var done = false
     try await outwait(
-        "\(description) to finish: something it awaits was never resumed", clock: clock,
-        note: note, sourceLocation: sourceLocation
+        (
+            event: "\(description) to finish",
+            ifItTimesOut: "something it awaits was never resumed"
+        ), clock: clock, note: note, sourceLocation: sourceLocation
     ) {
         done = await work.isFinished.isSet
         return done
@@ -190,16 +197,21 @@ func finishedBeforeCeiling<Value: Sendable>(
 
 /// The one budget both outwaits above are held to: `outwaitCeiling` of waiting, polled each
 /// millisecond, with `waitUntil`'s stall compensation and its cap.
+///
+/// `waiting.event` is what is waited for, and is all a passing wait's note says.
+/// `waiting.ifItTimesOut` is why a timeout is a failure, and goes into the issue a timeout records
+/// and nowhere else.
 private func outwait(
-    _ what: String,
+    _ waiting: (event: String, ifItTimesOut: String),
     clock: some WaitClock,
     note: (String) -> Void,
     sourceLocation: SourceLocation,
     _ condition: () async -> Bool
 ) async throws {
     try await waitUntil(
-        what, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock, note: note,
-        condition, sourceLocation: sourceLocation)
+        waiting.event, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock,
+        note: note, ifItTimesOut: waiting.ifItTimesOut, condition,
+        sourceLocation: sourceLocation)
 }
 
 /// § 5's cycles up to the terminal action, under `outwaitCeiling`.
