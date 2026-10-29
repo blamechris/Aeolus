@@ -38,10 +38,11 @@ struct LeaseDriverEvidencePublishTests {
     ///
     /// **Mutation (B, a deferred publish):** in `applyAnswered()`, replace the publish with
     /// `let answered = report; Task { self.publisher.publishEvidenceChange(answered) }`. Run,
-    /// debug: red in 5 of 5 at `raced.mismatches.isEmpty`, with 8 of 320 to 566 streams
-    /// mismatched in every run, one for each follower: the stream started with `noRead` where the
-    /// driver's `report` already carried the floor. Before this test, B was green on all 777 tests
-    /// of the package in 5 of 5 runs (the review that found it).
+    /// red at `raced.mismatches.isEmpty` in 5 of 5 debug runs and 3 of 3 release runs, with 6 to
+    /// 8 of 225 to 748 streams mismatched, about one for each follower: the stream started with
+    /// `noRead` where the driver's `report` already carried the floor. On a pool of one thread it
+    /// is green under B in 3 of 3 runs, and claims nothing there. Before this test, B was green
+    /// on all 777 tests of the package in 5 of 5 runs (the review that found it).
     @Test("A stream opened as the evidence moves alone starts with the driver's report")
     func aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone() async throws {
         let scene = await LeaseScene()
@@ -120,8 +121,8 @@ struct LeaseDriverEvidencePublishTests {
     }
 
     /// Opens a stream and reads the report in one turn, again and again, until the driver's
-    /// report carries a floor or the task is cancelled. Counts itself in `ready` after its first
-    /// comparison.
+    /// report carries a floor or the task is cancelled, yielding the pool between turns. Counts
+    /// itself in `ready` after its first comparison.
     static func compareNewStreams(with driver: LeaseDriver, ready: Counter) async -> Comparisons {
         var comparisons = Comparisons()
         var counted = false
@@ -145,6 +146,11 @@ struct LeaseDriverEvidencePublishTests {
                 ready.increment()
             }
             if report.automaticEvidence.isFloor { break }
+            // A turn on an idle actor can run without a suspension, so on a pool of one thread
+            // (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) this loop would never let the task that
+            // answers the `apply` run, and nothing could cancel it: the suite's time limit is
+            // delivered on the same pool.
+            await Task.yield()
         }
         return comparisons
     }
