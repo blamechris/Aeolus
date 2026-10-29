@@ -281,10 +281,18 @@ struct FanctlAutoClearanceTests {
     /// waits. A client whose deadline was on any other clock never parks one there, and the
     /// second wait names that.
     ///
+    /// **The clock moved by exactly the deadline** ([#589](https://github.com/blamechris/Aeolus/issues/589)).
+    /// It is read before the run and the moment the run returns, and the difference is the
+    /// figure the client was given. The message alone cannot tell the test's advance from the
+    /// harness's backstop, which runs every deadline out an hour at its 30 s: a test that dropped
+    /// its advance printed the same "did not answer within 2.0 seconds".
+    ///
     /// **Mutation:** put the cause before the first sentence in `AutoCommand.nothingSentMessage`
     /// (or drop "No restore request was sent."). Run: red on the prefix.
     /// **Mutation:** in `FanctlConnection.swift`, make `.harness` build its client on
     /// `ContinuousClock()`. Run: red on the second wait, naming the deadline that never parked.
+    /// **Mutation:** delete this test's `clock.advance(by: Self.hangDeadline)`. Run: red on the
+    /// clock's movement, an hour where 2 s was expected, after the backstop's 30 s.
     @Test("A first snapshot that times out sends nothing, and the message opens by saying so")
     func aFirstSnapshotThatTimesOutSendsNothingAndSaysSo() async throws {
         let signal = AsyncSignal()
@@ -306,10 +314,16 @@ struct FanctlAutoClearanceTests {
             }
             clock.advance(by: Self.hangDeadline)
         }
+        let start = clock.now
         let run = try await FanctlAutoTests.run(over: harness, deadlines: deadlines)
+        // Read before `runningOut` is awaited, as in `AnonymousListenerHarnessTests`.
+        let movedBy = clock.now - start
         try await runningOut.value
         await signal.signal()
 
+        #expect(
+            movedBy == Self.hangDeadline,
+            "the run ended with the clock moved by \(movedBy), not by \(Self.hangDeadline)")
         #expect(run.code == FanctlExitCode.failure.rawValue)
         #expect(await authority.restoreRequests == 0, "a restore was sent to a dropped connection")
         let session = try #require(harness.sessions.first)
