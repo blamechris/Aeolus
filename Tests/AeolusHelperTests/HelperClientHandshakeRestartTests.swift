@@ -19,7 +19,7 @@ import Testing
 /// `hello`'s reply at the helper (`HelloRepliesHeldInTurn`). The clock is the harness's frozen one
 /// (#421), so no deadline runs out unless a test moves it, and none does.
 @Suite("A caller whose handshake the dead helper answered", .timeLimit(.minutes(1)))
-struct HelperClientHandshakeAfterInterruptionTests {
+struct HelperClientHandshakeRestartTests {
 
     /// A late caller of the first handshake leaves the second one in the slot, so a third caller
     /// joins it rather than sending a third `hello`.
