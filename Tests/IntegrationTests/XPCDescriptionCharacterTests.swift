@@ -53,8 +53,9 @@ struct XPCDescriptionCharacterTests {
     }
 
     /// The class, not the two scalars above: every scalar in the four categories is refused, one
-    /// at a time so a failure names it, and every other scalar is accepted, in one pass with the
-    /// caps lifted. A guard that refused too much would pass the first half alone.
+    /// at a time so a failure names it, and every other scalar is accepted, a run of the code
+    /// space to a description with the caps lifted, so the sweep gives the pool back between runs
+    /// (`CodeSpace`, #570). A guard that refused too much would pass the first half alone.
     ///
     /// **One source of Unicode data, the standard library's.** `CharacterSet.controlCharacters`,
     /// this guard's predicate until #483, reads Foundation's tables, and those are not the same
@@ -73,28 +74,36 @@ struct XPCDescriptionCharacterTests {
     /// **Mutation:** the guard's predicate also refuses `.privateUse`. Run: red on the second
     /// half's `fault(…) == nil`; the first half stays green.
     @Test("Every scalar in Cc, Cf, Zl or Zp is refused in a description, and no other is")
-    func descriptionRefusesExactlyTheSharedRule() {
-        let scalars = (0...0x10FFFF).compactMap(Unicode.Scalar.init)
-        let refused = scalars.filter(Self.inTheFourCategories)
+    func descriptionRefusesExactlyTheSharedRule() async {
+        var refused: [Unicode.Scalar] = []
+        var admitted: [Unicode.Scalar] = []
+        var refusalOfOthers: AeolusXPCFault?
+        await CodeSpace.forEachRun { run in
+            let inTheRun = run.filter(Self.inTheFourCategories)
+            refused += inTheRun
+            admitted += inTheRun.filter { scalar in
+                let description = "a" + String(Character(scalar)) + "b"
+                return refusedDetail({
+                    try AeolusXPCValidation.validateHolderDescription(description)
+                }) != Self.characterRefusal
+            }
+
+            var rest = String.UnicodeScalarView()
+            rest.append("a")
+            rest.append(contentsOf: run.filter { !Self.inTheFourCategories($0) })
+            rest.append("b")
+            let text = String(rest)
+            refusalOfOthers =
+                refusalOfOthers
+                ?? fault(from: {
+                    try AeolusXPCValidation.validateDescription(
+                        text, name: "sweep", maxLength: .max, maxUTF8Bytes: .max)
+                })
+        }
         #expect(refused.count > 200)
         #expect(refused.contains("\u{2028}") && refused.contains("\u{2029}"))
-        let admitted = refused.filter { scalar in
-            let description = "a" + String(Character(scalar)) + "b"
-            return refusedDetail({ try AeolusXPCValidation.validateHolderDescription(description) })
-                != Self.characterRefusal
-        }
         #expect(
             admitted.isEmpty, "admitted: \(admitted.map { String(format: "U+%04X", $0.value) })")
-
-        var rest = String.UnicodeScalarView()
-        rest.append("a")
-        rest.append(contentsOf: scalars.filter { !Self.inTheFourCategories($0) })
-        rest.append("b")
-        let text = String(rest)
-        #expect(
-            fault(from: {
-                try AeolusXPCValidation.validateDescription(
-                    text, name: "sweep", maxLength: .max, maxUTF8Bytes: .max)
-            }) == nil)
+        #expect(refusalOfOthers == nil)
     }
 }
