@@ -26,7 +26,7 @@ import Testing
 /// used to fail five of these, whose doubles had done nothing wrong. Nor is it for the ceilings
 /// themselves ([#549](https://github.com/blamechris/Aeolus/issues/549)): the two 30 s waits below
 /// are `wait(atMost:)` too, so a stall that landed between a timer's start and its read of
-/// `expired` is added to their deadline, up to the 50 s cap, and is not spent from it
+/// the park's expiry is added to their deadline, up to the 50 s cap, and is not spent from it
 /// (`ParkStallToleranceTests`).
 ///
 /// **Mutation:** in `wait(atMost:clock:)`, delete the timer's `signal()`, so that a park nobody

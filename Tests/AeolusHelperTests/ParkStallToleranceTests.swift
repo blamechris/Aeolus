@@ -26,7 +26,7 @@ struct ParkStallToleranceTests {
     ///
     /// The stall lands on the third sleep and is 30 s; the clock sends the signal on the fifth.
     /// A ceiling that spent the stall would give up at the third sleep, signal on the park's
-    /// behalf, and have `wait(atMost:)` answer `false`.
+    /// behalf, and report the park as abandoned (`wasSignalled == false`).
     ///
     /// **Mutation:** in `wait(atMost:clock:)`, pass `budget: .wallTime` to the poll, so a late
     /// sleep is spent from the ceiling and not added to it. Run: red on `released`, which is

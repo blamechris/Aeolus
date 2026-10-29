@@ -73,11 +73,12 @@ enum ParkOutcome: Sendable, Equatable {
     /// earlier expiry on the same signal, whose latch is open.
     case signalled
 
-    /// `ceiling` of scheduled waiting time passed first, and the park sent the signal itself.
+    /// The ceiling, or the cap, ended the park first, and the park sent the signal itself.
     /// Carries what the poll spent, so the issue the double records can say it.
     case abandoned(StallTolerantWait.Expiry)
 
-    /// Whether the signal was sent rather than the park abandoned.
+    /// Whether the signal was sent rather than the park abandoned. For tests of the park
+    /// itself: a double matches `case .abandoned`, so it has the `Expiry` to record.
     var wasSignalled: Bool { self == .signalled }
 }
 
@@ -102,10 +103,10 @@ extension AsyncSignal {
     ///     real one. There is one function and not a shipping forward over an injectable
     ///     overload, so the body the doubles run is the body the tests drive.
     /// - Returns: ``ParkOutcome/signalled`` when the signal was sent, and
-    ///   ``ParkOutcome/abandoned(_:)`` when `ceiling` passed first, with what the poll spent. On
-    ///   `abandoned` the signal has been sent on the waiter's behalf, so every waiter on it goes
-    ///   on, and a later one does not park for another ceiling: the signal is a latch, and it is
-    ///   open.
+    ///   ``ParkOutcome/abandoned(_:)`` when the ceiling or the cap ended it, with what the poll
+    ///   spent. On `abandoned` the signal has been sent on the waiter's behalf, so every waiter
+    ///   on it goes on, and a later one does not park for another ceiling: the signal is a
+    ///   latch, and it is open.
     /// - Throws: `CancellationError`, when the calling task is cancelled while it waits.
     ///
     /// The timer is `StallTolerantWait.poll` with a condition that never holds, so what counts as
@@ -140,8 +141,9 @@ extension AsyncSignal {
 ///
 /// The time waited, the stall compensated and whether the cap ended the park are `waitUntil`'s
 /// wording (`Expiry.message(waitingFor:)`), so a park and a wait that gave up read alike. It takes
-/// the `Expiry` and not the ceiling the double was given, so a caller cannot print the constant:
-/// after a stall that ceiling is not how long the park was held, or why it ended.
+/// the `Expiry` and not the ceiling the double was given, so a caller cannot hand it the
+/// constant by accident: after a stall that ceiling is not how long the park was held, or why
+/// it ended.
 ///
 /// Called by the double itself, from inside the restore it held, so the issue lands on the test
 /// whose task the restore runs under.
