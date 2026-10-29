@@ -21,7 +21,8 @@ actor FakeSensorProvider: SensorProvider {
 
     private let availableValue: Bool
     private let keyedResults: [String: Result<SensorReading, SensorReadFailure>]
-    private let keysError: FakeProviderError?
+    private let keysError: (any Error)?
+    private let requestsBeforeKeysError: Int
     private let omittedKeys: Set<String>
 
     /// Every `read(keys:)` request this provider received, in order, as it was received.
@@ -30,7 +31,12 @@ actor FakeSensorProvider: SensorProvider {
     /// `keyedResults` holds canned outcomes by key; anything not listed answers
     /// `.unknownKey`, so an un-stubbed key fails visibly in a test rather than silently
     /// vanishing. `keysError` is thrown from `read(keys:)` instead of answering, for the
-    /// whole-request failure path.
+    /// whole-request failure path. It is a `FakeProviderError` where a test is about the
+    /// wrapping, and a real `SMCError` only where a test is about the words the user reads.
+    ///
+    /// `requestsBeforeKeysError` is how many `read(keys:)` requests answer normally before
+    /// `keysError` is thrown. The default, zero, throws from the first. Enumeration reads
+    /// `FNum` first, so one lets that read succeed and the fan-key read throw.
     ///
     /// `omittedKeys` are silently dropped from the response. That **deliberately violates**
     /// `SensorProvider.read(keys:)`'s one-outcome-per-requested-key contract: it is the only
@@ -41,13 +47,15 @@ actor FakeSensorProvider: SensorProvider {
         identifier: String = "fake",
         isAvailable: Bool = true,
         keyedResults: [String: Result<SensorReading, SensorReadFailure>] = [:],
-        keysError: FakeProviderError? = nil,
+        keysError: (any Error)? = nil,
+        requestsBeforeKeysError: Int = 0,
         omittedKeys: Set<String> = []
     ) {
         self.identifier = identifier
         self.availableValue = isAvailable
         self.keyedResults = keyedResults
         self.keysError = keysError
+        self.requestsBeforeKeysError = requestsBeforeKeysError
         self.omittedKeys = omittedKeys
     }
 
@@ -65,7 +73,7 @@ actor FakeSensorProvider: SensorProvider {
 
     func read(keys: [String]) async throws -> [SensorReadOutcome] {
         requests.append(keys)
-        if let keysError {
+        if let keysError, requests.count > requestsBeforeKeysError {
             throw keysError
         }
         return keys.compactMap { key in

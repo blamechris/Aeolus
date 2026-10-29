@@ -99,11 +99,11 @@ public enum SMCError: Error, Sendable, Equatable {
     /// `hex_`, `{fds`, `{jst`, or a code this project does not know), so it has no count to
     /// decode.
     ///
-    /// Before #531 this reported as `integerByteOrderUndetectable`, which `fanctl` describes
-    /// as "SMC interface generation unknown". That was wrong whenever the generation was
-    /// known, and beside the point when it was not. Never observed: `#KEY` is a `ui32` on
-    /// `Mac16,5`. The declared type and raw bytes are carried so a hardware report shows
-    /// what the firmware sent.
+    /// Before #531 this reported as `integerByteOrderUndetectable`, which
+    /// `readableDescription` describes as "SMC interface generation unknown". That was wrong
+    /// whenever the generation was known, and beside the point when it was not. Never
+    /// observed: `#KEY` is a `ui32` on `Mac16,5`. The declared type and raw bytes are carried
+    /// so a hardware report shows what the firmware sent.
     case nonNumericKeyCount(type: SMCKeyType, bytes: [UInt8])
 
     /// `true` when the firmware answered with `0x82` — named `SmcBadCommand` in Intel-era

@@ -1,5 +1,6 @@
 import AeolusXPC
 import Foundation
+import SMCCore
 import Testing
 
 @testable import AeolusHelper
@@ -102,5 +103,17 @@ struct HelperReplyTests {
         #expect(
             AeolusXPCFault.crossing(ShortError())
                 == .helperFailed(detail: "the SMC refused the key"))
+    }
+
+    /// An `SMCError` that reaches the crossing reads as SMCCore's readable text, not as an
+    /// enum dump (#544). No handler passes one today, so this is pinned at `crossing(_:)`
+    /// itself. **Mutation:** put `String(describing: error)` back in `crossing(_:)`. Run: red
+    /// here, with `connectionFailed(kernReturn: -536870212)`.
+    @Test("An SMCError crossing the boundary reads as SMCCore's readable text")
+    func crossingDescribesAnSMCErrorReadably() {
+        let detail = "connection to AppleSMC failed (kernel result -536870212)"
+        #expect(
+            AeolusXPCFault.crossing(SMCError.connectionFailed(kernReturn: -536_870_212))
+                == .helperFailed(detail: detail))
     }
 }

@@ -1,5 +1,6 @@
 import AeolusXPC
 import Foundation
+import SMCCore
 
 /// The answer to a message whose reply block is `(Data?, Error?) -> Void`.
 ///
@@ -87,14 +88,17 @@ extension AeolusXPCFault {
     /// `AeolusXPCFault` and passes through **unchanged** — which is the important half:
     /// this must never flatten a precise refusal into a generic one. Anything else came
     /// from a layer with its own vocabulary, in practice `SMCCore`, and becomes
-    /// `.helperFailed` carrying that layer's description.
+    /// `.helperFailed` carrying that layer's description: an `SMCError`'s readable text
+    /// (`SMCError.readableDescription(of:)`, #544), anything else's `String(describing:)`.
+    /// No handler passes a raw `SMCError` here today (#544's trace); this keeps one that
+    /// does from reaching a client as an enum dump.
     ///
     /// Quoting it is safe here and nowhere else in this vocabulary: the text is authored
     /// by the helper's own dependencies, not by a client, so there is no client-chosen
     /// string steering a log line. `FaultText.displayable` still sanitises it at render.
     ///
     /// **Bounded, not refused, and bounded here rather than at render.**
-    /// `String(describing:)` over an arbitrary `Error` has no ceiling by construction, and
+    /// A description of an arbitrary `Error` has no ceiling by construction, and
     /// this arm exists to catch errors nobody anticipated — including from layers E5 has yet
     /// to add. What it builds is embedded in `userInfo` by `asNSError()` and re-encoded by
     /// `NSXPCConnection`, so a ceiling that only applied when a label was drawn would apply
@@ -106,6 +110,7 @@ extension AeolusXPCFault {
     /// something did.
     static func crossing(_ error: Error) -> AeolusXPCFault {
         if let fault = error as? AeolusXPCFault { return fault }
-        return .helperFailed(detail: FaultDetailBounds.bounded(String(describing: error)))
+        return .helperFailed(
+            detail: FaultDetailBounds.bounded(SMCError.readableDescription(of: error)))
     }
 }
