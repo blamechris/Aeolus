@@ -20,7 +20,10 @@ import Testing
 /// issue is the expectation rather than a failure; the second is outside it, so an issue there
 /// fails the test. A restore that never comes back is not joined: `finishedBeforeCeiling` ends the
 /// wait at `outwaitCeiling` and records that, and the expectation after it fails. So a double that
-/// lost its ceiling fails here after ten seconds, naming itself, and does not hang the suite.
+/// lost its ceiling fails here after ten seconds of waiting, naming itself, and does not hang the
+/// suite. Time the whole test process spends stopped is not waiting
+/// ([#547](https://github.com/blamechris/Aeolus/issues/547)): a stall of more than ten seconds
+/// used to fail five of these, whose doubles had done nothing wrong.
 @Suite("A parking double gives up at its ceiling", .timeLimit(.minutes(1)))
 struct ParkingCeilingTests {
 

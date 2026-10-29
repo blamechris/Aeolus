@@ -95,7 +95,21 @@ extension AeolusXPCFault {
     ///
     /// Quoting it is safe here and nowhere else in this vocabulary: the text is authored
     /// by the helper's own dependencies, not by a client, so there is no client-chosen
-    /// string steering a log line. `FaultText.displayable` still sanitises it at render.
+    /// string steering a log line. The helper's own refusal log prints only the fault's
+    /// `wireCode` (`HelperLog.refusedMessage`).
+    ///
+    /// Not every character of it is the helper's, though, and that is true today, not only
+    /// for a raw `SMCError` one day. `SMCKeyType.readableName` names a type the codec does not
+    /// know by decoding the four declared bytes as UTF-8, so the name can carry a line feed or
+    /// a bidirectional control. `SMCSensorProvider.undecodedReason` and
+    /// `SMCError.readableDescription` both name a type that way. `snapshot` reaches this arm
+    /// with one when `FNum` declares such a type: enumeration throws
+    /// `SMCFanEnumerationError.readFailed` with that text, and `String(describing:)` puts it
+    /// in the detail. So sanitising the detail at render is load-bearing, not a second guard.
+    /// `FaultText.displayable` does it behind `errorDescription`, which `fanctl` prints.
+    /// `HelperAuthoredText.sanitised` does it in the app. A new renderer of a `.helperFailed`
+    /// detail has to sanitise it too (#548). `displayable` still keeps U+2028 and U+2029
+    /// (#553).
     ///
     /// **Bounded, not refused, and bounded here rather than at render.**
     /// A description of an arbitrary `Error` has no ceiling by construction, and
