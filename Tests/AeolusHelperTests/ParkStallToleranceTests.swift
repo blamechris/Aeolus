@@ -26,7 +26,7 @@ struct ParkStallToleranceTests {
     ///
     /// The stall lands on the third sleep and is 30 s; the clock sends the signal on the fifth.
     /// A ceiling that spent the stall would give up at the third sleep, signal on the park's
-    /// behalf, and have `wait(atMost:)` answer `false`.
+    /// behalf, and report the park as abandoned (`wasSignalled == false`).
     ///
     /// **Mutation:** in `wait(atMost:clock:)`, pass `budget: .wallTime` to the poll, so a late
     /// sleep is spent from the ceiling and not added to it. Run: red on `released`, which is
@@ -37,7 +37,8 @@ struct ParkStallToleranceTests {
         let base = VirtualWaitClock(lateness: { $0 == 3 ? .seconds(30) : .zero })
 
         let released = try await signal.wait(
-            atMost: parkCeiling, clock: ReleasingWaitClock(base, releasing: signal, atSleep: 5))
+            atMost: parkCeiling, clock: ReleasingWaitClock(base, releasing: signal, atSleep: 5)
+        ).wasSignalled
 
         #expect(released, "the ceiling expired on a stall, with a release five sleeps away")
         #expect(await base.elapsed > .seconds(30), "the stall really happened on the clock")
@@ -58,7 +59,7 @@ struct ParkStallToleranceTests {
         let signal = AsyncSignal()
         let clock = VirtualWaitClock(lateness: { _ in .seconds(1) })
 
-        let released = try await signal.wait(atMost: parkCeiling, clock: clock)
+        let released = try await signal.wait(atMost: parkCeiling, clock: clock).wasSignalled
 
         #expect(released == false, "the ceiling never expired on a park nobody released")
         let elapsed = await clock.elapsed
