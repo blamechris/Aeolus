@@ -178,15 +178,36 @@ struct HelperCommandFailure: Error, Equatable, Sendable {
 /// Unicode Cc, Cf, Zl and Zp: the set the helper refuses in a description, the app's
 /// `HelperAuthoredText` removes, and the helper's logs escape. This type stopped at Cc and Cf
 /// until #483, so U+2028 and U+2029, which a terminal breaks a line on, reached one.
+///
+/// **The cap bounds bytes as well as characters**, as `FaultText.displayable` and the app's
+/// `HelperAuthoredText` do (#567): one grapheme cluster can carry any number of combining marks,
+/// so 200 characters alone can be hundreds of kilobytes on a terminal. The cut is
+/// `FaultDetailBounds.bounded(_:)` itself, which `HelperAuthoredText` calls too. `displayable`
+/// does its own strip and trim and calls `FaultDetailBounds.truncated`, the cut `bounded(_:)` is
+/// built on, so all three share one cut: the two caps, their 4:1 ratio, the ellipsis counted
+/// inside them and the rule that a cut never splits a grapheme cluster are `FaultDetailBounds`'s
+/// and not a second copy here.
 enum DisplayText {
-    static let maxLength = 200
+    /// The longest cleaned text, in characters, ellipsis included. `FaultDetailBounds.maxLength`.
+    static let maxLength = FaultDetailBounds.maxLength
+
+    /// The same bound in UTF-8 bytes. `FaultDetailBounds.maxUTF8Bytes`.
+    static let maxUTF8Bytes = FaultDetailBounds.maxUTF8Bytes
+
+    /// Shown in place of text with nothing printable left in it.
+    static let unprintable = "(unprintable)"
 
     static func sanitised(_ text: String) -> String {
         let stripped = String(
             text.unicodeScalars.filter { !FaultText.isRemovedFromDisplay($0) })
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "(unprintable)" }
-        guard trimmed.count > maxLength else { return trimmed }
-        return String(trimmed.prefix(maxLength - 1)) + "…"
+        guard !trimmed.isEmpty else { return unprintable }
+        let bounded = FaultDetailBounds.bounded(trimmed)
+        // So dense that not one character fits inside the byte cap: `bounded` returns the
+        // ellipsis alone, which would read as "something long was cut" with nothing to show.
+        if bounded == FaultDetailBounds.truncationMarker, trimmed != bounded {
+            return unprintable
+        }
+        return bounded
     }
 }
