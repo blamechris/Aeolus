@@ -25,6 +25,42 @@ private struct FakeSensorProvider: SensorProvider {
     }
 }
 
+/// A `SensorProvider` that cancels the task reading it during its first read, and refuses a
+/// second one.
+///
+/// It is how a test cancels the loop at a point that does not depend on when a task gets
+/// scheduled: the cancellation lands inside tick 0, so the loop's next suspension point is the
+/// wait between ticks, and that wait is entered already cancelled. The refusal is what ends a
+/// loop that goes round again, so a regression is a failure and not a loop with no end.
+private final class CancellingSensorProvider: SensorProvider {
+    struct UnexpectedSecondRead: Error {}
+
+    let identifier = "fake-cancelling"
+    var isAvailable: Bool { get async { true } }
+
+    private let reads = OSAllocatedUnfairLock(initialState: 0)
+
+    var readCount: Int { reads.withLock { $0 } }
+
+    func readAll() async throws -> [SensorReading] { [] }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        let call = reads.withLock { count -> Int in
+            count += 1
+            return count
+        }
+        guard call == 1 else { throw UnexpectedSecondRead() }
+        withUnsafeCurrentTask { $0?.cancel() }
+        return keys.map { key in
+            SensorReadOutcome(
+                key: key,
+                result: .success(
+                    SensorReading(
+                        key: key, value: 42.0, kind: .unknown, providerIdentifier: identifier)))
+        }
+    }
+}
+
 /// An in-memory `LineSink`, lock-protected the same way `StandardOutputSink` protects the
 /// real file descriptor — `runSampleLoop` writes synchronously and this must be safe to read
 /// back from a different task than the one driving the loop.
@@ -141,32 +177,47 @@ struct RunSampleLoopTests {
     /// `Task.sleep`'s `catch is CancellationError { return }` promises. An unbounded
     /// `--count` (`nil`) is used so the only way this test's task ends is the cancellation
     /// itself, not exhausting a tick count.
+    ///
+    /// **The cancellation is delivered from inside tick 0's read, not after a pause**
+    /// ([#592](https://github.com/blamechris/Aeolus/issues/592)). This test used to start the
+    /// loop on a 10 s interval, `Task.sleep` 50 ms, and then cancel, which assumes the test's
+    /// task is running again within the 10 s. On `5034c41` (run 40946892305) the one-process run
+    /// was backed up and the test's 50 ms sleep took 38.8 s to come back: the loop's own 10 s
+    /// wait had ended, tick 1 was written, and `sink.lines.count` was 2. Nothing was wrong with
+    /// the loop. Now the provider cancels the task during the first read, so the loop writes
+    /// tick 0 and meets the cancellation at the wait, whenever the scheduler gets to it; the
+    /// interval never comes into it. A second read is refused, so a loop that carried on after
+    /// being cancelled fails here and does not run for ever.
+    ///
+    /// **Mutation:** in `runSampleLoop`, replace `return` in the `catch is CancellationError`
+    /// clause with `continue`. Run: red on `try await task.value`, which throws the provider's
+    /// `UnexpectedSecondRead`.
+    /// **Mutation:** delete the `catch is CancellationError` clause. Run: red on the same line,
+    /// which throws `CancellationError`.
     @Test("cancellation between ticks returns cleanly, without throwing")
     func cancellationBetweenTicksReturnsCleanly() async throws {
         let sink = CapturingSink()
+        let provider = CancellingSensorProvider()
         var options = CommandLineOptions()
         options.intervalSeconds = 10.0
         options.tickCount = nil
 
+        let tickState = TickState()
         let task = Task {
             try await runSampleLoop(
-                provider: FakeSensorProvider(),
+                provider: provider,
                 keys: ["F0Ac"],
                 options: options,
                 sink: sink,
                 continuousStart: ContinuousClock.now,
                 suspendingStart: SuspendingClock.now,
-                tickState: TickState())
+                tickState: tickState)
         }
-
-        // Give tick 0 time to run and the loop time to reach its (10-second) sleep before
-        // cancelling — cancelling before the first tick has run would prove nothing about
-        // cancellation *between* ticks specifically.
-        try await Task.sleep(nanoseconds: 50_000_000)
-        task.cancel()
 
         // Must not throw: a throw here is exactly the regression this test exists to catch.
         try await task.value
         #expect(sink.lines.count == 1)
+        #expect(provider.readCount == 1, "the loop read again after it was cancelled")
+        #expect(await tickState.tickCount() == 1)
     }
 }

@@ -128,7 +128,10 @@ struct HelperClientTests {
         let client = harness.client()
 
         let first = Task { try await client.snapshot() }
-        try await waitUntil("the handshake reached the helper and is being held") {
+        try await waitUntil(
+            "the handshake reached the helper and is being held",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"]
         }
 
@@ -199,7 +202,10 @@ struct HelperClientTests {
                 afterCancelling: { await releaseHandshake.signal() },
                 { try await client.snapshot() })
         }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1
         }
         harness.clock.advance(by: handshakeDeadline)
@@ -460,7 +466,10 @@ struct HelperClientTests {
                 try await client.snapshot()
             }
         }
-        try await waitUntil("the snapshot is parked at the helper and its deadline is running") {
+        try await waitUntil(
+            "the snapshot is parked at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
         harness.clock.advance(by: deadline)

@@ -50,7 +50,9 @@ struct HelperClientTeardownTests {
 
         await client.disconnect()
 
-        try await waitUntil("the helper was told its connection died") {
+        try await waitUntil(
+            "the helper was told its connection died", timeout: StallTolerantWait.deliveryBudget
+        ) {
             for call in await authority.calls {
                 if case .connectionDidInvalidate = call { return true }
             }
@@ -270,7 +272,10 @@ struct HelperClientTeardownTests {
                 try await client.snapshot()
             }
         }
-        try await waitUntil("the snapshot is parked at the helper and its deadline is running") {
+        try await waitUntil(
+            "the snapshot is parked at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
         harness.clock.advance(by: deadline)
@@ -322,7 +327,10 @@ struct HelperClientTeardownTests {
                 try await client.snapshot()
             }
         }
-        try await waitUntil("the snapshot is parked at the helper and its deadline is running") {
+        try await waitUntil(
+            "the snapshot is parked at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
         harness.clock.advance(by: deadline)
@@ -365,7 +373,9 @@ struct HelperClientTeardownTests {
         let client = harness.client()
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
         let restore = try await returnedOutcome(of: "the panic path, behind a parked verb") {
             try await client.restoreAllToAutomatic()
@@ -377,6 +387,11 @@ struct HelperClientTeardownTests {
         _ = try await parked.value
         #expect(harness.sessions.count == 1, "the panic path opened a second connection")
     }
+
+}
+
+// The suite continues here: its struct body is at SwiftLint's 250-line limit.
+extension HelperClientTeardownTests {
 
     // MARK: - Cancellation is not a teardown
 
@@ -428,7 +443,9 @@ struct HelperClientTeardownTests {
         #expect(await client.health == .handshaken)
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
         parked.cancel()
 
         // What the caller is *told* is a second assertion, and it needs its own mutation.
@@ -500,7 +517,9 @@ struct HelperClientTeardownTests {
         #expect(acquired == lease)
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") {
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAskedForSnapshot
         }
         parked.cancel()

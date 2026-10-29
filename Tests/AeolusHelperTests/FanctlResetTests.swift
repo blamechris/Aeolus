@@ -282,7 +282,10 @@ struct FanctlResetTests {
         // Bounded: the helper's invalidation handler hands off to a detached task, so the
         // event is ordered after `run()` returns but not synchronous with it. A `run()` that
         // never disconnected leaves this empty for the whole timeout.
-        try await waitUntil("the helper was told the connection went away") {
+        try await waitUntil(
+            "the helper was told the connection went away",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains {
                 if case .connectionDidInvalidate = $0 { return true }
                 return false
@@ -349,18 +352,14 @@ struct FanctlResetTests {
             """)
 
         // The precondition, so this cannot pass against a client that sent nothing at all —
-        // which produces the same `helperNeverAnswered` and the same text.
-        //
-        // A **bounded wait**, not an instantaneous read: the client gives up on its own
-        // deadline, so at the moment it returns there is no guarantee the message has been
-        // delivered *and* dispatched. Read straight after the timeout this raced, and failed
-        // under a full-suite run. It waits on the authority's own flag rather than on the
-        // arrival record, because the arrival is appended strictly upstream of the dispatch
-        // that sets the flag — waiting on the earlier event leaves the later one raced, which
-        // is the same window made smaller. What it must not become is a wait that *supplies*
-        // the condition, and it does not: a client that never sent the message leaves this
-        // false for the whole timeout and the wait records the issue itself.
-        try await waitUntil("the panic path reached the helper") { await authority.hasBeenAsked }
+        // which produces the same `helperNeverAnswered` and the same text. A **bounded wait**,
+        // not an instantaneous read: the client gives up on its own deadline, so the message
+        // may not be delivered *and* dispatched when it returns, and read straight after this
+        // raced under a full-suite run. It waits on the authority's own flag, since the arrival
+        // is recorded upstream of the dispatch that sets it, and never *supplies* the condition.
+        try await waitUntil(
+            "the panic path reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
         // Released so the parked helper task finishes rather than outliving the test.
         await gate.signal()

@@ -229,6 +229,49 @@ struct StallTolerantWaitTests {
             """)
     }
 
+    /// What a setup wait on a delivery is given reaches past the delivery it was missed by, and
+    /// stops inside the backstop and the ceiling ([#592](https://github.com/blamechris/Aeolus/issues/592)).
+    ///
+    /// Three relations, each of which a plausible edit breaks:
+    ///
+    /// - **Over twice the longest wait missed.** On `5034c41` (run 40946892305) the longest setup
+    ///   wait to give up had spent 5.0 s and had 7.5 s of stall compensated. A budget under twice
+    ///   that is a budget the next slow run also misses. The 5.0 and 7.5 are restated, since they
+    ///   are a measurement and no constant of the target.
+    /// - **Not over the backstop.** `ClockBackstop` runs every deadline of a harness out once it
+    ///   has lived `ClockBackstop.defaultBudget`. A delivery wait longer than that would still be
+    ///   waiting for a message after the client had been told its call timed out, and the failure
+    ///   would name the timeout and not the missing delivery.
+    /// - **Under the ceiling.** A wait ends at the ceiling whatever it has compensated, so a
+    ///   budget at or over it is one no stall can extend, and the ceiling is itself held under a
+    ///   minute above.
+    ///
+    /// **Mutation:** set `StallTolerantWait.deliveryBudget` to `.seconds(20)`. Run: red on the
+    /// first expectation only.
+    /// **Mutation:** set it to `.seconds(31)`. Run: red on the second only.
+    /// **Mutation:** set it to `.seconds(55)`. Run: red on the second and third.
+    @Test("A delivery wait reaches past the delivery it was missed by and fits the backstop")
+    func aDeliveryWaitFitsInsideTheBackstopAndTheTimeLimit() {
+        let budget = StallTolerantWait.deliveryBudget
+        let longestMissed = Duration.seconds(5) + .seconds(7.5)
+        #expect(
+            budget >= longestMissed * 2,
+            """
+            a delivery wait of \(budget) is under twice the \(longestMissed) the longest setup \
+            wait on 5034c41 had spent when it gave up
+            """)
+        #expect(
+            budget <= ClockBackstop.defaultBudget,
+            """
+            a delivery wait of \(budget) outlasts the backstop's \(ClockBackstop.defaultBudget), \
+            so a missing delivery would be reported after the client had been told its call \
+            timed out
+            """)
+        #expect(
+            budget < StallTolerantWait.ceiling,
+            "a delivery wait of \(budget) is ended by the ceiling of \(StallTolerantWait.ceiling)")
+    }
+
     // MARK: - Cancellation
 
     /// A cancelled wait ends with the cancellation. It is how a wait inside a test whose

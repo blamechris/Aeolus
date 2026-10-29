@@ -326,9 +326,10 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the handshake is held at the helper and its deadline is running") {
-            harness.arrivals == ["hello"] && harness.clock.sleepers == 1
-        }
+        try await waitUntil(
+            "the handshake is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
         harness.clock.advance(by: Self.peerLag)
         await releaseHandshake.signal()
 
@@ -379,9 +380,10 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot is parked in its authority and its deadline is running") {
-            await authority.hasBeenAskedForSnapshot && harness.clock.sleepers == 1
-        }
+        try await waitUntil(
+            "the snapshot is parked in its authority and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAskedForSnapshot && harness.clock.sleepers == 1 }
         harness.clock.advance(by: Self.peerLag)
         await releaseSnapshot.signal()
 

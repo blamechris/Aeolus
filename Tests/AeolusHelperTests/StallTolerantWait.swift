@@ -117,6 +117,33 @@ enum StallTolerantWait {
     /// How much stall a *passing* wait may compensate before it says so on standard error.
     static let noteThreshold: Duration = .seconds(1)
 
+    /// The scheduled waiting time a **setup** wait gives a message to cross the XPC boundary and
+    /// be acted on, or an event to reach the client
+    /// ([#592](https://github.com/blamechris/Aeolus/issues/592)).
+    ///
+    /// **Why the default 5 s is not enough.** Compensation adds back only an iteration that
+    /// overran by more than ``stallThreshold``. A runner that is busy rather than stopped delivers
+    /// a message late without any one 10 ms poll running 250 ms over, so a wait that needs a round
+    /// trip through the anonymous listener spends its 5 s in scheduled time and gives up with
+    /// "0.0 s of runner stall compensated" and nothing at the helper. Main failed that way on
+    /// `5034c41` (run 40946892305): 47 issues in 10 suites, the longest wait 5.0 s plus 7.5 s of
+    /// stall, and the helper side had received nothing.
+    ///
+    /// **When to pass it.** For a wait whose subject is the product having *done* something that
+    /// needs a hop to the other side ("is held at the helper", "is parked at the helper", "the
+    /// client has the reply in hand", "the client heard the helper die"), in a test whose
+    /// deadlines are counted on a clock only the test moves. The budget then carries no claim
+    /// about time: a longer one cannot make a wrong client pass, it only decides how long a
+    /// failing test takes to say so. A wait whose claim *is* a time keeps its own bound and a
+    /// `budget:` that says so (``WaitBudget/wallTime``).
+    ///
+    /// **Why 30 s.** Over twice the longest wait that was missed, and equal to the 30 s the
+    /// harness gives a lost reply (`ClockBackstop.defaultBudget`), so a precondition that is
+    /// never met is reported under its own name before the backstop runs the harness's deadlines
+    /// out. Under the 50 s ``ceiling`` and the 60 s of the shortest `.timeLimit`. The relations
+    /// are held by `StallTolerantWaitTests.aDeliveryWaitFitsInsideTheBackstopAndTheTimeLimit`.
+    static let deliveryBudget: Duration = .seconds(30)
+
     enum Outcome: Sendable, Equatable {
 
         /// The condition held, having compensated `compensated` of stall on the way.

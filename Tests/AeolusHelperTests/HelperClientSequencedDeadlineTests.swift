@@ -53,7 +53,8 @@ struct HelperClientSequencedDeadlineTests {
         let client = parked.client
         let snapshot = Task { try await client.snapshot() }
         try await waitUntil(
-            "the snapshot reached the helper behind the apply", timeout: .seconds(30)
+            "the snapshot reached the helper behind the apply",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             snapshotsArrived(at: parked.harness) == 2
         }
@@ -74,7 +75,8 @@ struct HelperClientSequencedDeadlineTests {
             running == 1, "\(running) deadlines are running behind a held apply",
             sourceLocation: sourceLocation)
         try await waitUntil(
-            "every running deadline has parked on the clock", timeout: .seconds(30),
+            "every running deadline has parked on the clock",
+            timeout: StallTolerantWait.deliveryBudget,
             { await parked.client.deadlinesRunning == parked.clock.sleepers },
             sourceLocation: sourceLocation)
     }
@@ -163,7 +165,9 @@ struct HelperClientSequencedDeadlineTests {
 
         #expect(await parked.client.health == .unresponsive)
         #expect(parked.clock.sleepers == 0, "a deadline outlived the connection it was on")
-        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+        try await waitUntil(
+            "the helper saw the connection go", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await parked.authority.invalidatedConnections.count == 1
         }
 
@@ -197,7 +201,8 @@ struct HelperClientSequencedDeadlineTests {
         let client = parked.client
         let renewal = Task { try await client.renewLease(id: Self.lease.id) }
         try await waitUntil(
-            "the renewal is held beside the apply, its deadline running", timeout: .seconds(30)
+            "the renewal is held beside the apply, its deadline running",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await parked.authority.hasBeenAskedToRenew && parked.clock.sleepers == 2
         }
@@ -213,7 +218,9 @@ struct HelperClientSequencedDeadlineTests {
         }
         Self.expectToldTheClientGaveUp(error, "the apply the discard ended")
         #expect(await parked.client.health == .unresponsive)
-        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+        try await waitUntil(
+            "the helper saw the connection go", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await parked.authority.invalidatedConnections.count == 1
         }
 
@@ -242,7 +249,7 @@ struct HelperClientSequencedDeadlineTests {
         let renewal = Task { try await client.renewLease(id: Self.lease.id) }
         try await waitUntil(
             "the renewal is held beside the apply, its own deadline running from its send",
-            timeout: .seconds(30)
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await parked.authority.hasBeenAskedToRenew && parked.clock.sleepers == 2
         }
@@ -318,7 +325,8 @@ struct HelperClientSequencedDeadlineTests {
 
         parked.clock.advance(by: Self.applyDeadline)
         try await waitUntil(
-            "the snapshot's turn came when the apply's deadline ran out", timeout: .seconds(30)
+            "the snapshot's turn came when the apply's deadline ran out",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             parked.clock.sleepers == 1
         }

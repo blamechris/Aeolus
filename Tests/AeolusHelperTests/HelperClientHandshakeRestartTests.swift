@@ -56,7 +56,10 @@ struct HelperClientHandshakeRestartTests {
             { try await first.value })
 
         let third = Task { try await client.snapshot() }
-        try await waitUntil("the third caller joined a handshake or started one") {
+        try await waitUntil(
+            "the third caller joined a handshake or started one",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await schedule.relays.started == 3
         }
         await secondHello.signal()
@@ -253,24 +256,34 @@ struct HelperClientHandshakeRestartTests {
             clock: harness.clock, holdingHandshakeRelays: { await relays.hold() })
 
         let first = Task { try await client.snapshot() }
-        try await waitUntil("the first hello is held at the helper, and its caller's relay too") {
+        try await waitUntil(
+            "the first hello is held at the helper, and its caller's relay too",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await relays.started == 1 && harness.arrivals == ["hello"]
                 && harness.clock.sleepers == 1
         }
         await firstHello.signal()
-        try await waitUntil("the first handshake was answered") {
+        try await waitUntil(
+            "the first handshake was answered", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await client.health == .handshaken
         }
 
         let generation = await client.currentGeneration
         harness.killHelperSideOfEveryConnection()
-        try await waitUntil("the client heard the helper die") {
+        try await waitUntil(
+            "the client heard the helper die", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await client.health == .interrupted
         }
         #expect(await client.currentGeneration == generation, "an interruption moved it")
 
         let second = Task { try await client.snapshot() }
-        try await waitUntil("the replacement's hello is held at the helper") {
+        try await waitUntil(
+            "the replacement's hello is held at the helper",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await relays.started == 2 && harness.sessions.count == 2
                 && harness.arrivals == ["hello", "hello→replied", "hello"]
                 && harness.clock.sleepers == 1
@@ -306,7 +319,10 @@ struct HelperClientHandshakeRestartTests {
             clock: harness.clock, holdingReceivedHelloReplies: { await replies.hold() })
 
         let first = Task { try await client.snapshot() }
-        try await waitUntil("the client has the first hello's reply in hand") {
+        try await waitUntil(
+            "the client has the first hello's reply in hand",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await replies.started == 1
         }
         #expect(harness.arrivals == ["hello", "hello→replied"])
@@ -316,7 +332,9 @@ struct HelperClientHandshakeRestartTests {
 
         let generation = await client.currentGeneration
         harness.killHelperSideOfEveryConnection()
-        try await waitUntil("the client heard the helper die") {
+        try await waitUntil(
+            "the client heard the helper die", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await client.health == .interrupted
         }
         #expect(await client.currentGeneration == generation, "an interruption moved it")

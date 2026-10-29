@@ -52,9 +52,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
-            harness.arrivals == ["hello"] && harness.clock.sleepers == 1
-        }
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
         let secondStarted = AsyncSignal()
         let second = Task { () -> SystemSnapshot in
             await secondStarted.signal()
@@ -131,9 +132,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
-            harness.arrivals == ["hello"] && harness.clock.sleepers == 1
-        }
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
         cancelled.cancel()
         let left = try await returnedOutcome(
             of: "the caller cancelled behind the held hello",
@@ -188,9 +190,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
-            harness.arrivals == ["hello"] && harness.clock.sleepers == 1
-        }
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
         let generation = await client.currentGeneration
         cancelled.cancel()
         let left = try await returnedOutcome(
@@ -208,6 +211,8 @@ struct HelperClientHandshakeCancellationTests {
         #expect(await client.negotiated == nil)
 
         harness.clock.advance(by: HelperClientDeadlines.handshakeVerb)
+        // The default budget, not `deliveryBudget` (#592): this wait is the claim, and a budget
+        // past the harness's backstop would let it run a late deadline out for the client.
         try await waitUntil("the handshake's deadline ran out and gave the connection up") {
             await client.health == .unresponsive
         }
