@@ -188,6 +188,6 @@ struct FanctlExitCodeTests {
         #expect(DisplayText.sanitised("fan\u{202E}ctl\nDENIED") == "fanctlDENIED")
         #expect(DisplayText.sanitised("\u{0}\u{7}") == "(unprintable)")
         let long = String(repeating: "a", count: 500)
-        #expect(DisplayText.sanitised(long).count == DisplayText.maxLength)
+        #expect(DisplayText.sanitised(long).count == 200)
     }
 }
