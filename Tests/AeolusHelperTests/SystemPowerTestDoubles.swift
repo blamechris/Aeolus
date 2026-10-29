@@ -371,8 +371,8 @@ final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable
             """
             ThreadBlockingRestorePlane held a restore for \(ceiling) s and nobody let it through. \
             That is a release the test never made, or a pool with no thread left to make it. \
-            It has gone on, so that the process ends instead of wedging: a semaphore wait cannot be \
-            cancelled, so the suite's time limit cannot free this thread by itself.
+            It has gone on, so that the process ends instead of wedging: a semaphore wait \
+            cannot be cancelled, so the suite's time limit cannot free this thread by itself.
             """)
     }
 
