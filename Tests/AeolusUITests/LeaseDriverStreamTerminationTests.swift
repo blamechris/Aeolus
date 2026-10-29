@@ -15,12 +15,19 @@ import Testing
 ///    publisher's lock. Without that, every ended stream's continuation stays registered, and
 ///    every later transition yields to it. `aCancelledReaderRemovesItsObserver()` ends streams
 ///    that have been read. `droppedStreamsLeaveNoObserver(_:)` drops thousands as they are made.
+///    A stream ends when its last holder drops it, or when the task reading it is cancelled
+///    while it waits on the stream. A reader cancelled while busy elsewhere has not ended it
+///    yet: the observer is removed at that reader's next `next()`, which returns `nil` at once.
+///    (Run on its own, a stream whose reader was cancelled during a blocking call had not
+///    terminated 0.1 s later, and had after the reader read again.)
 /// 2. **It joins and leaves synchronously (#541):** registered by the time the call that makes it
 ///    returns, and gone by the time whatever drops it returns.
 ///    `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()`.
-/// 3. **Nothing a stream holds reaches the driver.** The driver holds the observer, and the
-///    observer holds the handler, so a handler that held the driver would make a cycle that keeps
-///    the driver alive while its streams are open. `theDriverIsHeldWeakly()`.
+/// 3. **Nothing a stream holds reaches the driver, or the observers.** The driver holds the
+///    observers, and each observer holds the handler, so a handler that held the driver would make
+///    a cycle that keeps the driver alive while its streams are open, and one that held the
+///    observers a cycle that keeps them alive after the driver is gone. `theDriverIsHeldWeakly()`
+///    and `theObserversAreFreedWithTheirDriver()`.
 ///
 /// ## How the observers are counted
 ///
@@ -130,6 +137,42 @@ struct LeaseDriverStreamTerminationTests {
         for reader in subscribed.readers { reader.cancel() }
     }
 
+    /// The observers a driver's publisher holds are freed with the driver, while a reader still
+    /// follows each of its streams.
+    ///
+    /// `theDriverIsHeldWeakly()` cannot see this. The termination handler of a stream names the
+    /// observers, not the driver, so a handler that held the observers strongly would make a cycle
+    /// (the set holds each observer, each observer holds its handler, the handler holds the set)
+    /// that leaves the driver free and keeps the set, and everything in it, for as long as a
+    /// stream stays open.
+    ///
+    /// **Mutation (A, a handler that holds the observers):** in `Followers.stream()`, write the
+    /// termination handler as `{ [self] _ in self.state.withLock { … } }` in place of
+    /// `{ [weak self] _ in self?.state.withLock { … } }`. Run, debug, with
+    /// `LeaseDriverPublisherTests` and `LeaseDriverPublishOrderTests`: red in 5 of 5 at `freed`,
+    /// after `patience` steps (about 4 s), with "the driver is freed and 2 of its 2 sets of
+    /// observers are not". The other 9 tests stay green, `theDriverIsHeldWeakly()` among them.
+    /// Before this test, A was green on all of them.
+    @Test(
+        "The observers of a driver that nothing holds are freed with it while its streams are open")
+    func theObserversAreFreedWithTheirDriver() async throws {
+        let subscribed = await Self.subscribeAndLetGo()
+        try #require(
+            subscribed.observers.count == 2,
+            "reflection found \(subscribed.observers.count) of the publisher's 2 sets of observers")
+        let freed = await Self.pollWithinSteps {
+            subscribed.driver == nil && subscribed.observers.allSatisfy(\.isFreed)
+        }
+        #expect(
+            freed,
+            """
+            after \(Self.patience) steps, with its streams open, the driver is \
+            \(subscribed.driver == nil ? "freed" : "alive") and \
+            \(subscribed.observers.filter { !$0.isFreed }.count) of its 2 sets of observers are not
+            """)
+        for reader in subscribed.readers { reader.cancel() }
+    }
+
     /// Streams dropped as soon as they are made, `churned` of each kind. A stream that is dropped
     /// ends at once. Every observer must be gone once every stream has been dropped.
     ///
@@ -195,11 +238,14 @@ struct LeaseDriverStreamTerminationTests {
         }
         let quiet = await Self.untilOnlyTheCallerHolds(&driver)
         try #require(
-            quiet, "a dropped stream's task still holds the driver after \(Self.patience) steps")
+            quiet, "something besides this test still holds the driver after \(Self.patience) steps"
+        )
 
-        // That wait is not an order on the removals: a removal that holds the driver weakly is
-        // still queued when it ends. So the counts are polled for, and then read once more below.
-        // The copy is taken after the uniqueness check, which nothing repeats.
+        // Since #541 no task is started for a dropped stream, so nothing is queued and that wait
+        // ends at its first check; it is no order on anything. A later design whose removals were
+        // tasks that held the driver weakly would have them queued when it ended, so the counts
+        // are polled for, and then read once more below. The copy is taken after the uniqueness
+        // check, which nothing repeats.
         let counted = driver
         let drained = await Self.pollWithinSteps {
             Self.observerCounts(of: counted) == before
@@ -360,10 +406,41 @@ struct LeaseDriverStreamTerminationTests {
     struct Subscribed: Sendable {
         private(set) weak var driver: LeaseDriver?
         let readers: [Task<Void, Never>]
+        /// The two sets of observers its publisher holds, one for each kind of stream, held
+        /// weakly. Empty if reflection does not find them.
+        let observers: [Weak]
 
-        init(driver: LeaseDriver, readers: [Task<Void, Never>]) {
+        init(driver: LeaseDriver, readers: [Task<Void, Never>], observers: [Weak]) {
             self.driver = driver
             self.readers = readers
+            self.observers = observers
+        }
+    }
+
+    /// An object held weakly, so that the suite can ask whether it has been freed.
+    ///
+    /// `@unchecked Sendable`: it holds nothing strongly, and a `weak` load is atomic.
+    final class Weak: @unchecked Sendable {
+        private weak var object: AnyObject?
+
+        init(_ object: AnyObject) { self.object = object }
+
+        var isFreed: Bool { object == nil }
+    }
+
+    /// The two sets of observers `driver`'s publisher holds (`LeaseDriverPublisher`'s
+    /// `Followers`, which this file cannot name), held weakly, or fewer than two if reflection
+    /// does not find a class instance at either name.
+    ///
+    /// **Nothing here outlives the call**: the reflected values are strong while the function
+    /// runs and gone when it returns, so the references it hands back are the weak ones alone.
+    static func weakObservers(of driver: LeaseDriver) -> [Weak] {
+        guard let streams = Mirror(reflecting: driver).descendant("streams") else { return [] }
+        return ["states", "reports"].compactMap { name in
+            guard let observers = Mirror(reflecting: streams).descendant(name),
+                Mirror(reflecting: observers).displayStyle == .class
+            else { return nil }
+            return Weak(observers as AnyObject)
         }
     }
 
@@ -392,7 +469,13 @@ struct LeaseDriverStreamTerminationTests {
         #expect(
             registered == ObserverCounts(states: 1, reports: 1),
             "\(String(describing: registered)) registered, so a strong capture makes no cycle")
-        return Subscribed(driver: driver, readers: readers)
+        // The weak references must point at objects that are alive while the driver is, or a
+        // reflection that handed back a copy would read as freed from the start.
+        let observers = Self.weakObservers(of: driver)
+        #expect(
+            observers.count == 2 && !observers.contains { $0.isFreed },
+            "the driver's observers are not reachable while the driver is held")
+        return Subscribed(driver: driver, readers: readers, observers: observers)
     }
 
     // MARK: - Waiting for a state of the world

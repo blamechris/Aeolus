@@ -30,7 +30,10 @@ import os
 /// `Followers.stream()` registers the new observer, and yields it the value now, in the closure
 /// `AsyncStream` runs inside its initialiser. The stream's termination handler removes it. Both
 /// take the lock and neither starts a task, so a stream that ends has left by the time whatever
-/// ended it returns, whether it ended at once or after a long read.
+/// ended it returns, whether it ended at once or after a long read. A stream ends when its last
+/// holder drops it, or when the task reading it is cancelled while it waits on the stream. A
+/// reader cancelled while busy elsewhere has not ended it yet: its observer is removed at that
+/// reader's next `next()`, which returns `nil` at once.
 ///
 /// Before #541 both were tasks that reached the observers on the driver's actor, because they
 /// were the actor's state and the streams are asked for from outside it. Nothing ordered the two
@@ -63,8 +66,13 @@ import os
 ///   element is the value at registration, and the next is the next change.
 /// - **That value is the driver's report.** `LeaseDriver` starts its publisher with its own
 ///   report, and every change of `current` or `evidence` is published in the turn that makes it.
-///   So between turns of the actor the value here is `LeaseDriver.report`, and a registration in
-///   the middle of a turn starts with the value before that turn's change, then gets the change.
+///   So between turns of the actor the value here is `LeaseDriver.report`. Pinned for the
+///   evidence write in `applyAnswered()` by `LeaseDriverPublisherTests`'
+///   `aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone()`: publishing it from a task (B)
+///   is red in 5 of 5 debug runs. A registration on another thread can land in the
+///   middle of a turn: it starts with the last value stored when it takes the lock, which in a
+///   turn that makes several changes is any one of them and not necessarily the value before the
+///   turn, and then gets every later one.
 ///
 /// ## The one yield made under the lock
 ///
@@ -77,10 +85,25 @@ import os
 /// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
 /// inside the stream's.
 ///
-/// **No test pins this yield's place.** Moving it after the lock is released (V2) left
-/// `LeaseDriverPublisherTests` green in 10 of 10 debug runs: the window it opens is a few
-/// instructions wide, and no test can make a publication land in it. It is kept under the lock
-/// on the argument above.
+/// **Pinned by the storm test, not by the argument.** `LeaseDriverPublisherTests`'
+/// `aStormOfRegistrationsIsHandedEachChangeAfterTheOneBeforeIt()` registers streams of both kinds
+/// in a loop, eight tasks at once, through one turn of 100,000 publications, and requires each
+/// stream's second element to be the change published right after its first. Run, debug, each
+/// red in 5 of 5 runs at `total.broken.isEmpty`:
+///
+/// - **V2:** yield the first value after the lock is released. A publication takes the lock in
+///   the gap and yields the next change first, so a stream reads a change and then the one before
+///   it.
+/// - **C1:** in `Followers.store(_:)`, take the observers in one `withLock` section and set the
+///   value in a second. A registration between them is missed by the publication and starts
+///   with the old value.
+/// - **C2:** the same two sections, setting the value first. A registration between them starts
+///   with the new value and is also in the publication's snapshot, so it reads that value twice.
+///
+/// The window is a few instructions wide. The run-ordering test beside it registers 200 streams,
+/// a few of them while the owner publishes, and stayed green under V2 in 10 of 10 debug runs.
+/// That `AsyncStream` calls its termination handler outside its own lock is the standard
+/// library's, read in its source, and no test pins it.
 struct LeaseDriverPublisher {
 
     private let states: Followers<LeaseDriverState>
@@ -135,6 +158,12 @@ struct LeaseDriverPublisher {
 
 /// Not `Sendable`, so the driver's instance cannot leave the driver's actor: a task that captured
 /// it to publish from elsewhere is refused at compile time.
+///
+/// Without this the compiler would infer `Sendable`, since every member is, and a `nonisolated`
+/// method of the driver could then publish. Pinned by
+/// `scripts/lending-probes/refused-lease-driver-publisher-publish.swift`, which `check.sh` runs
+/// in CI: with this extension deleted, the probe compiles and `check.sh` is red, 1 of 1. No test
+/// sees it.
 @available(*, unavailable)
 extension LeaseDriverPublisher: Sendable {}
 
@@ -155,7 +184,8 @@ private final class Followers<Element: Sendable>: Sendable {
     }
 
     /// A stream that starts with the value now, registered before this returns and removed by
-    /// the time whatever ends it returns.
+    /// the time whatever ends it returns (a reader cancelled while busy elsewhere has not ended
+    /// it: see "A stream joins and leaves synchronously").
     ///
     /// The termination handler is set after the observer is registered. Nothing can end the
     /// stream between the two: this closure runs inside `AsyncStream`'s initialiser, before
@@ -165,6 +195,12 @@ private final class Followers<Element: Sendable>: Sendable {
     /// holds the handler, so a strong reference would be a cycle that kept the observers alive
     /// after their driver for as long as a stream stayed open. The handler holds nothing else, so
     /// nothing a stream holds reaches the driver.
+    ///
+    /// Pinned by `LeaseDriverStreamTerminationTests.theObserversAreFreedWithTheirDriver()`:
+    /// writing the handler's `[weak self]` as `[self]` (A) leaves these observers alive after the
+    /// driver is freed, red in 5 of 5 debug runs, and the only red among the 10 tests of
+    /// `LeaseDriverStreamTerminationTests`, `LeaseDriverPublisherTests` and
+    /// `LeaseDriverPublishOrderTests`.
     func stream() -> AsyncStream<Element> {
         // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
