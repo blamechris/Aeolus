@@ -14,15 +14,16 @@ import Testing
 /// next caller starts a second handshake on the same connection, for the new process. A caller of
 /// the first one that resumes after that met two defects, both older than #576: it cleared the new
 /// handshake from the slot, and it sent its verb behind the new `hello` before that was answered.
-/// When a caller resumes is the runtime's choice, so each test holds the first caller's relay
-/// (`HelperClient`'s `handshakeRelayHold`) until the schedule is built, and holds the second
+/// When a caller resumes is the runtime's choice, so the first two tests hold the first caller's
+/// relay (`HelperClient`'s `handshakeRelayHold`) until the schedule is built, and hold the second
 /// `hello`'s reply at the helper (`HelloRepliesHeldInTurn`). The clock is the harness's frozen one
 /// (#421), so no deadline runs out unless a test moves it, and none does.
 ///
-/// The last two tests are an older schedule in the same family: the helper dies after it answers
-/// the first `hello`, and the client hears of the death before it records the answer
-/// ([#585](https://github.com/blamechris/Aeolus/issues/585)). They hold the reply in the client
-/// instead (`HelperClient`'s `receivedHelloReplyHold`).
+/// The last two tests are another schedule in the same family, with a defect older than #582's:
+/// the helper dies after it answers the first `hello`, and the client hears of the death before
+/// it records the answer ([#585](https://github.com/blamechris/Aeolus/issues/585)). They hold the
+/// reply in the client instead (`HelperClient`'s `receivedHelloReplyHold`), on the same frozen
+/// clock.
 @Suite("A caller whose handshake the dead helper answered", .timeLimit(.minutes(1)))
 struct HelperClientHandshakeRestartTests {
 
@@ -34,13 +35,14 @@ struct HelperClientHandshakeRestartTests {
     /// is the claim: a third `hello` on the replacement's session is refused, a refused handshake
     /// takes its connection, and the second caller is told `connectionAbandoned`.
     ///
-    /// What the first caller came back with is the other test's claim, not this one's.
+    /// What the first caller came back with is the next test's claim, not this one's.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, restore `if self.generation ==
     /// generation { handshake = nil }` for `if handshake == task { handshake = nil }`. Run: red on
     /// the third caller, refused with `invalidParameter` ("the handshake has already completed on
     /// this connection"), on the second, told `connectionAbandoned`, on the count of `hello`s
-    /// (three), on the health (`.refused`) and on the generation. The other test stays green.
+    /// (three), on the health (`.refused`) and on the generation. The other three tests stay
+    /// green.
     @Test("A late caller of the first handshake does not clear the second from the slot")
     func aLateCallerLeavesTheNextHandshakeInTheSlot() async throws {
         let schedule = try await Self.lateCallerAfterTheHelperDied()
@@ -94,7 +96,10 @@ struct HelperClientHandshakeRestartTests {
     /// `if self.generation == generation, negotiatedReply == nil` check and its `throw`. Run: red
     /// on the first caller, which comes back with a snapshot, and on both readings of the
     /// arrivals: its `snapshot` arrived, and was answered, before the second `hello` was
-    /// (`hello, hello→replied, hello, snapshot, snapshot→replied`). The other test stays green.
+    /// (`hello, hello→replied, hello, snapshot, snapshot→replied`). The slot test above and the
+    /// 4097 test below stay green. The test of a reply its helper did not live to see recorded
+    /// goes red too, on its first caller and both readings of its arrivals, because its
+    /// `helperRestarted` comes from this same check.
     @Test("A late caller of the first handshake sends nothing behind the second hello")
     func aLateCallerSendsNothingBehindTheNextHello() async throws {
         let schedule = try await Self.lateCallerAfterTheHelperDied()
@@ -148,7 +153,10 @@ struct HelperClientHandshakeRestartTests {
     /// `guard interruptions == self.interruptions else { return reply }`. Run: red on the first
     /// caller (refused `handshakeRequired`), the health (`.handshaken`), `negotiated`, the arrivals
     /// (its `snapshot` reached the replacement), the next caller (refused `handshakeRequired`) and
-    /// the arrivals after it. The other test of this schedule stays green.
+    /// the arrivals after it. The other test of this schedule stays green. Deleting #582's
+    /// restart check in `handshakenConnection()` instead turns this red on the first caller and
+    /// both readings of the arrivals: the reply is not recorded, and the caller then sends its
+    /// `snapshot` to the replacement with no `hello`.
     @Test("A hello reply from a helper that died before it was recorded is not recorded")
     func aReplyFromAHelperThatDiedFirstIsNotRecorded() async throws {
         let schedule = try await Self.replyHeldWhileTheHelperDied()
