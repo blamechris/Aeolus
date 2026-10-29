@@ -43,16 +43,19 @@ import Testing
 /// **A slow or stuck hold is not what is compensated; a late poll is.** The condition is a flag
 /// read and the 1 ms sleep is asked for again each time it returns, so a hold that is merely slow
 /// or stuck adds nothing, and what a wait that really is stuck reports depends on the pool it ran
-/// on. On a real clock, a test of `finishedBeforeCeiling` on work that never finishes (removed in
-/// #558 for its 10 s, which was CI's slowest test at 52 s of a 60 s limit) gave up at "10.0 s of
-/// waiting (plus 0.0 s of runner stall compensated)" in all 20 runs of the four outwait and park
-/// suites alone, 10 debug and 10 release. In a run of the whole target, with nothing stopped, the
-/// same wait was compensated for a pool busy with other tests: 2.3 s in a local debug run, 0.5 s
-/// in a local release run, and 7.8 s in CI's debug step and 4.0 s in its release step (run
-/// 40828896951). So a stuck wait runs past this ceiling by what the pool made its polls late, to
-/// the 50 s cap at most. What compensation cannot tell from a stall is an iteration the process
-/// did not run for another reason: the OS descheduling it, or a cooperative pool with every
-/// thread blocked. Those are compensated as well, and the issue says how much.
+/// on. A test of `finishedBeforeCeiling` on work that never finishes, on a real clock, was removed
+/// in #558 because its 10 s wait was CI's slowest test: 51.985 s of a 60 s limit, in the debug step
+/// of CI run 40828896951. The wait gave up at "10.0 s of waiting (plus N s of runner stall
+/// compensated)", and N was 7.8 in that run's debug step and 4.0 in its release step, both read
+/// from the run's log. Measured during #558's review, and not kept: N was 0.0 in all 20 runs of
+/// the four outwait and park suites alone (10 debug, 10 release), and in runs of the whole
+/// target with nothing stopped it was 2.3 locally in debug and 0.5 locally in release. The
+/// nonzero figures are late polls. A pool busy with other tests is the likely cause, but that is
+/// an inference: no run measured what the pool was doing. So a stuck wait runs past this ceiling
+/// by what made its polls late, to the 50 s cap at most. What compensation cannot tell from a stall
+/// is an iteration the process did not run for another reason: the OS descheduling it, or a
+/// cooperative pool with every thread blocked. Those are compensated as well, and the issue says
+/// how much.
 ///
 /// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
 /// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s

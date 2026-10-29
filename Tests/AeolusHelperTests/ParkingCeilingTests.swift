@@ -31,9 +31,11 @@ import Testing
 ///
 /// **Mutation:** in `wait(atMost:clock:)`, delete the timer's `signal()`, so that a park nobody
 /// releases never gives up. Run: red in six of the seven tests here. `aSignalledWaitReportsIt`
-/// parks too, but its park is released, so it passes. In the other six the wait comes back `nil`
-/// after `outwaitCeiling`, so `released == false` and `returned` fail, and the wait after the
-/// ceiling fails with it; `aGivenUpWaitDoesNotCancelTheOthers` hangs to the suite's `.timeLimit`.
+/// parks too, but its park is released, so it passes. In five of the other six the wait comes back
+/// `nil` after `outwaitCeiling`, so `released == false` or `returned` fails, and the wait after the
+/// ceiling fails with it. The sixth, `aGivenUpWaitDoesNotCancelTheOthers`, awaits the park itself
+/// and not through `finishedBeforeCeiling`, so nothing ends its wait: it hangs to the suite's
+/// `.timeLimit`, and the issue is "Time limit was exceeded: 60.000 seconds".
 @Suite("A parking double gives up at its ceiling", .timeLimit(.minutes(1)))
 struct ParkingCeilingTests {
 

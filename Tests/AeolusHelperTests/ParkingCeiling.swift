@@ -28,9 +28,9 @@ import Testing
 /// The longest park was 0.19 to 0.31 s in three runs with nothing added, and in three each with
 /// `yes` added at 2, 6 and 10 times the core count it was 0.42 to 0.47 s, 0.74 to 1.00 s and 1.03
 /// to 1.40 s. 10 s leaves at least 7 times the longest park seen (1.40 s), and at least 2.7 times
-/// the longest return of any wait (3.62 s, the 150 ms wait at `ParkingCeilingTests.swift:92`);
-/// both ratios are floored. Lowering it below 1.40 s would make legitimate parks expire, record an
-/// issue and release mid-test.
+/// the longest return of any wait (3.62 s, the 150 ms wait in
+/// `ParkingCeilingTests.aGivenUpWaitDoesNotCancelTheOthers`); both ratios are floored. Lowering it
+/// below 1.40 s would make legitimate parks expire, record an issue and release mid-test.
 ///
 /// **Why it is not 5 s.** In every run all 45 returns, the 35 parks and the ten waits
 /// `ParkingCeilingTests` makes, directly or through its doubles, fell within 0.2 to 1.1 s of one
