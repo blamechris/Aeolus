@@ -16,11 +16,15 @@ import os
 /// failed its floor (run 40805903008). A `Thread` is scheduled by the kernel, so these race on a
 /// pool of any width, one thread included.
 ///
-/// **Bounded by construction, not by cancellation.** Each registrar makes `registrationsEach`
-/// streams and stops. The publisher publishes until every registrar has stopped, or
-/// `publicationCap`, then waits for them without spinning and publishes twice more, so every
-/// stream has at least two elements buffered before anything reads one. Reading them afterwards
-/// waits on nothing, and no thread loops on a condition another must make true.
+/// **The threads are bounded by construction; the reads are bounded when the code delivers.**
+/// Each registrar makes `registrationsEach` streams and stops. The publisher publishes until
+/// every registrar has stopped, a condition the registrars make true, so that loop is capped by
+/// `publicationCap`. It then waits for them without spinning and publishes twice more. Under
+/// correct code each stream has at least three elements buffered before any is read (the value
+/// at registration and the two publications after), so reading them waits on nothing. A mutant
+/// that leaves a stream fewer than two (the reader takes two of the three) waits for the
+/// suite's time limit, whose cancellation ends `next()`. That is not a hang, but the time limit
+/// frees it, not the design.
 ///
 /// **Sized to cost about 0.3 s** (`bursts`), because it keeps `registrars + 1` threads busy for
 /// that long, which on a runner with three cores is the whole machine, beside tests that are
@@ -55,6 +59,12 @@ struct HealthSignalThreadRaceTests {
     /// run to have raced it at all. Alone, in debug, a run makes 25,635 to 26,679, so the floor is
     /// 5.9% of the fewest; on a pool of one thread 25,958 to 26,128; beside 13 busy loops 18,252
     /// to 19,985 (8.2% of the fewest). A floor of 10,000,000 fails every run and prints these.
+    ///
+    /// **A necessary condition only.** It shows the threads ran concurrently, not that a
+    /// registration crossed the publication window. In #545's round-3 review (recorded in #555),
+    /// with V2 applied and each registration serialised against each publication by an
+    /// `NSLock`, the suite went green 3/3 in both modules, floor included. V2's kill count is the
+    /// direct evidence that the window was crossed.
     static let minimumInterleaved = 1_500
 
     /// Streams made on registrar threads while a thread that owns a signal publishes a cycle of
@@ -68,7 +78,7 @@ struct HealthSignalThreadRaceTests {
     ///   19 to 26. A pool of one thread, 3 runs: 14 to 16. Beside 13 busy loops, 5 runs: 19 to 29.
     ///   Ten more runs at this size while choosing it: 15 to 115.
     /// - **C1, `HealthObservers.store(_:)` taking the observers in one `withLock` section and
-    ///   setting the value in a second:** 8,268 to 9,575.
+    ///   setting the value in a second:** 8,268 to 9,617.
     /// - **C2, the same two sections with the value set first:** 2,913 to 3,974.
     @Test("Registrations on threads of their own are each handed the value after their first")
     func registrationsOnTheirOwnThreadsAreHandedTheValueAfterTheirFirst() async {
