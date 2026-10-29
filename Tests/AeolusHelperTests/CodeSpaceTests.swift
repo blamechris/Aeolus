@@ -1,4 +1,5 @@
 import Testing
+import os
 
 /// `CodeSpace.forEachRun` gives the pool back between runs (#570).
 ///
@@ -13,7 +14,7 @@ import Testing
 /// byte-identical to this one, by convention, and nothing tests that.
 ///
 /// **Mutation:** in `CodeSpace.forEachRun`, delete `await Task.yield()`. Run: red on
-/// `ranBetweenRuns.count > 0`, with `CodeSpace`'s own `visited == scalarCount` still green.
+/// `ranBetweenRuns`, with `CodeSpace`'s own `visited == scalarCount` still green.
 @Suite("CodeSpace gives the pool back between runs")
 struct CodeSpaceTests {
 
@@ -24,16 +25,17 @@ struct CodeSpaceTests {
             return
         }
         let lane = OneLaneTaskExecutor()
-        // `LineCount` is a lock-backed counter a synchronous closure can bump; here it is a flag.
-        let siblingRan = LineCount()
-        let ranBetweenRuns = LineCount()
+        // Locks rather than actors: the sweep's body is synchronous and cannot `await` one.
+        let siblingRan = OSAllocatedUnfairLock(initialState: false)
+        let ranBetweenRuns = OSAllocatedUnfairLock(initialState: false)
         await withTaskExecutorPreference(lane) {
-            let sibling = Task(executorPreference: lane) { siblingRan.add() }
+            let sibling = Task(executorPreference: lane) { siblingRan.withLock { $0 = true } }
             await CodeSpace.forEachRun { _ in
-                if siblingRan.count > 0 { ranBetweenRuns.add() }
+                if siblingRan.withLock({ $0 }) { ranBetweenRuns.withLock { $0 = true } }
             }
             await sibling.value
         }
-        #expect(ranBetweenRuns.count > 0, "the sibling did not run until the sweep was over")
+        #expect(
+            ranBetweenRuns.withLock { $0 }, "the sibling did not run until the sweep was over")
     }
 }
