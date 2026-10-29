@@ -43,16 +43,27 @@ struct SafetyLog: Sendable {
         case fault
     }
 
+    /// The one route every line takes, and the one place a message is escaped: whatever a
+    /// line interpolated, a character that would break or hide it (`LogText.escaped(_:)`) is
+    /// written out before the sink — the unified log, or a test's recorder — hears it (#553).
+    ///
+    /// **Assigned in exactly one initialiser.** The other two delegate to it, so the production
+    /// route and the recorded route cannot differ in what they do to a message, and a test that
+    /// reads the recorder has read what `os_log` was given.
     private let emit: @Sendable (Level, String) -> Void
+
+    private init(escapingInto sink: @escaping @Sendable (Level, String) -> Void) {
+        emit = { level, message in sink(level, LogText.escaped(message)) }
+    }
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {
         let logger = Logger(subsystem: subsystem, category: category)
-        emit = { level, message in
+        self.init(escapingInto: { level, message in
             switch level {
             case .notice: logger.notice("\(message, privacy: .public)")
             case .fault: logger.fault("\(message, privacy: .public)")
             }
-        }
+        })
     }
 
     /// A sink a test can read back, **including the level**.
@@ -69,7 +80,7 @@ struct SafetyLog: Sendable {
     /// claim no test could check, in the type whose own header says a load-bearing claim
     /// "needs a test that fails when it stops being true".
     init(recording sink: @escaping @Sendable (Level, String) -> Void) {
-        emit = sink
+        self.init(escapingInto: sink)
     }
 
     /// Some curated keys answered and some did not.

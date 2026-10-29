@@ -108,8 +108,9 @@ extension AeolusXPCFault {
     /// in the detail. So sanitising the detail at render is load-bearing, not a second guard.
     /// `FaultText.displayable` does it behind `errorDescription`, which `fanctl` prints.
     /// `HelperAuthoredText.sanitised` does it in the app. A new renderer of a `.helperFailed`
-    /// detail has to sanitise it too (#548). `displayable` still keeps U+2028 and U+2029
-    /// (#553).
+    /// detail has to sanitise it too (#548). Both remove Cc, Cf, Zl and Zp
+    /// (`FaultText.isRemovedFromDisplay`, #553). The helper's own log lines escape that set
+    /// rather than removing it, because a log is evidence (`LogText.escaped`).
     ///
     /// **Bounded, not refused, and bounded here rather than at render.**
     /// A description of an arbitrary `Error` has no ceiling by construction, and

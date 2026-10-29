@@ -72,9 +72,11 @@ struct HelperLog: Sendable {
         self.sink = sink
     }
 
-    /// The one route to the unified log: one level, written there and handed to the sink.
+    /// The one route to the unified log: one level, written there and handed to the sink, with
+    /// anything that would break or hide a line escaped first (`LogText.escaped(_:)`, #553).
     /// `HelperLogTests.everyLineTakesTheOneRoute` holds this file to it.
     private func emit(_ level: Level, _ message: String) {
+        let message = LogText.escaped(message)
         log.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
         sink?(level, message)
     }
@@ -147,9 +149,7 @@ struct HelperLog: Sendable {
     /// The transport was interrupted. Distinct from invalidation: the connection object
     /// survives and may carry further messages.
     func connectionInterrupted(_ connection: ConnectionID) {
-        info(
-            "Connection \(connection.logDescription) was interrupted."
-        )
+        info("Connection \(connection.logDescription) was interrupted.")
     }
 
     // MARK: - Messages

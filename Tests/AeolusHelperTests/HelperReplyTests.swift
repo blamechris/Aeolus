@@ -116,4 +116,37 @@ struct HelperReplyTests {
             AeolusXPCFault.crossing(SMCError.connectionFailed(kernReturn: -536_870_212))
                 == .helperFailed(detail: detail))
     }
+
+    /// The live route #548 named, run through the real types: `FNum` declares a type the
+    /// codec does not know, whose four bytes `E2 80 A8 61` decode as UTF-8 to U+2028 and "a".
+    /// `SMCFanEnumerationError.readFailed` carries that text, and `crossing(_:)` puts the
+    /// error's description into a `.helperFailed` detail at full size — it bounds, it does not
+    /// clean — so the detail itself holds the separator, and cleaning it is the renderer's job
+    /// (#553).
+    ///
+    /// The first expectation is the premise: if it fails, the route no longer reaches the
+    /// detail and this test is about nothing. The second is what `fanctl` prints.
+    ///
+    /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
+    /// .paragraphSeparator`. Run: red on the second expectation only.
+    @Test("A firmware type code with a line separator reaches fanctl without it")
+    func aFirmwareTypeCodeWithALineSeparatorIsCleanedBeforeFanctlPrintsIt() throws {
+        let declared = SMCKeyType(fourCharCode: 0xE280_A861)
+        let key = try #require(SMCKey("FNum"))
+        let enumeration = SMCFanEnumerationError.readFailed(
+            context: "read FNum",
+            reason: SMCError.sizeMismatch(key: key, declared: declared, reportedBytes: 1)
+                .readableDescription)
+
+        let fault = AeolusXPCFault.crossing(enumeration)
+
+        guard case .helperFailed(let detail) = fault else {
+            Issue.record("an enumeration error crossed as \(fault), not .helperFailed")
+            return
+        }
+        #expect(detail.unicodeScalars.contains("\u{2028}"), "the route no longer carries it")
+        let printed = try #require(fault.errorDescription)
+        #expect(!printed.unicodeScalars.contains("\u{2028}"))
+        #expect(printed.contains("FNum declares a but returned 1 bytes"))
+    }
 }
