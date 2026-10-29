@@ -44,14 +44,14 @@ struct LeaseDriverPublisherThreadRaceTests {
     /// publishes changes of state, each acquiring the next fan. Each stream's second element must
     /// carry the fan after its first's.
     ///
-    /// **Mutations (debug, 5 runs each, all red at `total.broken.isEmpty`; broken streams of
-    /// 44,800 a run):**
-    /// - **V2, the first value yielded after the lock is released:** 5 to 9. Release, 3 runs:
+    /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`;
+    /// broken streams of 44,800 a run):**
+    /// - **V2, the first value yielded after the lock is released:** 5 to 16. Release, 3 runs:
     ///   6 to 10. A pool of one thread, 3 runs: 7 to 9. Beside 13 busy loops, 5 runs: 13 to 22.
     ///   Sixteen more runs at this size while choosing it: 2 to 20, all red.
     /// - **C1, `Followers.store(_:)` taking the observers in one `withLock` section and setting
     ///   the value in a second:** 2,547 to 2,810.
-    /// - **C2, the same two sections with the value set first:** 1,633 to 1,744.
+    /// - **C2, the same two sections with the value set first:** 1,633 to 1,816.
     @Test("Registrations on threads of their own are each handed the change after their first")
     func registrationsOnTheirOwnThreadsAreHandedTheChangeAfterTheirFirst() async {
         var total = Tally()

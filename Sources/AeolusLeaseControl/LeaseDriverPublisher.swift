@@ -101,7 +101,7 @@ import os
 /// - **C2:** the same two sections, setting the value first. A registration between them starts
 ///   with the new value and is also in the publication's snapshot, so it reads that value twice.
 ///
-/// The window is a few instructions wide: V2 breaks 5 to 9 of 44,800 streams a run. The
+/// The window is a few instructions wide: V2 breaks 5 to 16 of 44,800 streams a run. The
 /// run-ordering test beside it registers 200 streams, a few of them while the owner publishes,
 /// and stayed green under V2 in 10 of 10 debug runs.
 /// That `AsyncStream` calls its termination handler outside its own lock is the standard

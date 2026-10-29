@@ -62,9 +62,9 @@ struct HealthSignalThreadRaceTests {
     /// its first: the value at registration, then the next change, with nothing between them
     /// and nothing ahead of the first.
     ///
-    /// **Mutations (debug, 5 runs each, all red at `total.broken.isEmpty`; broken streams of
-    /// 44,800 a run):**
-    /// - **V2, the first value yielded after the lock is released:** 10 to 23. Release, 3 runs:
+    /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`;
+    /// broken streams of 44,800 a run):**
+    /// - **V2, the first value yielded after the lock is released:** 10 to 24. Release, 3 runs:
     ///   19 to 26. A pool of one thread, 3 runs: 14 to 16. Beside 13 busy loops, 5 runs: 19 to 29.
     ///   Ten more runs at this size while choosing it: 15 to 115.
     /// - **C1, `HealthObservers.store(_:)` taking the observers in one `withLock` section and
