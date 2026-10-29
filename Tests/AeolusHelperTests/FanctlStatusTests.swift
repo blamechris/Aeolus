@@ -26,10 +26,8 @@ struct FanctlStatusTests {
     ) async throws -> (code: Int32?, output: RecordingTerminal) {
         let output = RecordingTerminal()
         var command = try status(arguments)
-        command.helper = HelperConnection(
-            transport: .endpoint(harness.endpoint),
-            pinning: UnenforcedClientPinning(),
-            deadlines: FanctlResetTests.unhurried)
+        command.helper = harness.fanctlConnection(
+            waiting: FanctlResetTests.unhurried, counting: .harness)
         command.terminal = output.terminal
         let code = await exitCode { try await command.run() }
         return (code, output)
