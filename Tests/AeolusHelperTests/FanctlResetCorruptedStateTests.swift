@@ -169,7 +169,7 @@ struct FanctlResetCorruptedStateTests {
 
         let harness = ClientListenerHarness(authority: helper.authority)
         let emitted = try await FanctlResetTests.emitted(
-            over: harness, waiting: FanctlResetTests.unhurried)
+            over: harness, waiting: FanctlResetTests.unhurried, counting: .harness)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))
@@ -244,7 +244,7 @@ struct FanctlResetCorruptedStateTests {
 
         let harness = ClientListenerHarness(authority: helper.authority)
         let emitted = try await FanctlResetTests.emitted(
-            over: harness, waiting: FanctlResetTests.unhurried)
+            over: harness, waiting: FanctlResetTests.unhurried, counting: .harness)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))

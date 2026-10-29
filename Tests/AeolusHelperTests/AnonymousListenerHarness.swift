@@ -82,21 +82,54 @@ final class AdmissionOrderSpy: ConnectionAdmission, @unchecked Sendable {
 /// suite instead of two implementations of which only the test's was ever run.
 /// `PendingReplyTests` is where it is tested directly.
 ///
+/// ## The reply deadline is on a clock only the test moves
+///
+/// A message waits for its reply for ``replyDeadline``, counted on ``clock``, which nothing
+/// moves but the test and ``ClockBackstop``
+/// ([#583](https://github.com/blamechris/Aeolus/issues/583)). It was 10 s of `ContinuousClock`,
+/// and a runner stall longer than that ran it out for a helper that had done nothing wrong:
+/// `AnonymousListenerTests`, `OrderingExemptionTests` and `SupervisedApplyBoundaryTests` failed
+/// together on the same "neither replied nor reported" text on 2026-10-29, twice, and a re-run of
+/// the failed job passed both times.
+///
+/// **What it costs.** A reply that never comes ends the wait when the backstop runs the deadline
+/// out, once the harness has lived 30 s of scheduled waiting time, and not at 10 s. The refuse-all
+/// tests, whose claim is that a refused connection *fails* rather than hangs, are red on that
+/// claim either way (`isPromptTransportFailure`, `timedOut`), 20 s later, and inside their
+/// one-minute limit. A test whose claim is that the wait *has* a deadline moves ``clock`` itself.
+///
 /// Not `Sendable`, and not meant to be: one test owns one harness for its duration.
 final class AnonymousListenerHarness {
 
     let listener: NSXPCListener
     let connection: NSXPCConnection
 
+    /// How long a message waits for its reply, as the clock counts it: what a client is held to,
+    /// and the figure a test moves ``clock`` by to run it out.
+    static let replyDeadline: Duration = .seconds(10)
+
+    /// What every reply wait here counts ``replyDeadline`` on. Frozen: see the type.
+    let clock: ManualClock
+    private let backstop: ClockBackstop
+
     /// `NSXPCListener` holds its delegate weakly. Held here for the harness's lifetime;
     /// without this the delegate would deallocate immediately and every connection would
     /// arrive with nothing to configure it.
     private let delegate: HelperListenerDelegate
 
+    /// - Parameters:
+    ///   - authority: what the helper's exported object answers through.
+    ///   - admission: the code-signing decision, `UnenforcedAdmission` unless a test names one.
+    ///   - backstopAfter: scheduled waiting time before ``ClockBackstop`` runs the reply deadline
+    ///     out. Only a test of the backstop names one.
     init(
         authority: any FanAuthority,
-        admission: any ConnectionAdmission = UnenforcedAdmission()
+        admission: any ConnectionAdmission = UnenforcedAdmission(),
+        backstopAfter: Duration = .seconds(30)
     ) {
+        let clock = ManualClock()
+        self.clock = clock
+        backstop = ClockBackstop(running: clock, after: backstopAfter)
         delegate = HelperListenerDelegate(
             admission: admission,
             authority: authority,
@@ -145,16 +178,22 @@ final class AnonymousListenerHarness {
     ) async -> Result<Data?, Error> {
         let pending = PendingReply<Result<Data?, Error>>(
             ifNothingArrives: .failure(NoReplyArrived()))
-        return await pending.awaitingAnswer { resolve in
-            do {
-                let proxy = try proxy { resolve(.failure($0)) }
-                send(proxy) { data, error in
-                    resolve(error.map { .failure($0) } ?? .success(data))
-                }
-            } catch {
-                resolve(.failure(error))
+        do {
+            let proxy = try proxy { pending.deliver(.failure($0)) }
+            send(proxy) { data, error in
+                pending.deliver(error.map { .failure($0) } ?? .success(data))
             }
+        } catch {
+            pending.deliver(.failure(error))
         }
+        return await answer(of: pending)
+    }
+
+    /// The first answer to `reply`, or its fallback once ``replyDeadline`` has run out on
+    /// ``clock``. The one place a wait on a reply is made, so none of them can reach for the wall
+    /// clock again.
+    func answer<Answer>(of reply: PendingReply<Answer>) async -> Answer {
+        await reply.answer(within: Self.replyDeadline, on: clock)
     }
 
     /// Sends two payload-shaped messages back to back on one connection **without awaiting
@@ -189,7 +228,7 @@ final class AnonymousListenerHarness {
             firstReply.deliver(.failure(error))
             secondReply.deliver(.failure(error))
         }
-        return (await firstReply.answer(), await secondReply.answer())
+        return (await answer(of: firstReply), await answer(of: secondReply))
     }
 
     /// Sends two acknowledgement-shaped messages back to back on one connection **without
@@ -204,7 +243,7 @@ final class AnonymousListenerHarness {
         _ first: (any AeolusXPCProtocol, @escaping @Sendable (Error?) -> Void) -> Void,
         _ second: (any AeolusXPCProtocol, @escaping @Sendable (Error?) -> Void) -> Void,
         recordingInto replies: OrderRecord<String>
-    ) -> (first: PendingReply<Error?>, second: PendingReply<Error?>) {
+    ) -> (first: AwaitedReply<Error?>, second: AwaitedReply<Error?>) {
         let firstReply = PendingReply<Error?>(ifNothingArrives: NoReplyArrived())
         let secondReply = PendingReply<Error?>(ifNothingArrives: NoReplyArrived())
         do {
@@ -224,7 +263,7 @@ final class AnonymousListenerHarness {
             firstReply.deliver(error)
             secondReply.deliver(error)
         }
-        return (firstReply, secondReply)
+        return (AwaitedReply(firstReply, on: self), AwaitedReply(secondReply, on: self))
     }
 
     /// Sends an acknowledgement-shaped message and waits for the answer. `nil` means the
@@ -233,14 +272,35 @@ final class AnonymousListenerHarness {
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Error?) -> Void) -> Void
     ) async -> Error? {
         let pending = PendingReply<Error?>(ifNothingArrives: NoReplyArrived())
-        return await pending.awaitingAnswer { resolve in
-            do {
-                let proxy = try proxy { resolve($0) }
-                send(proxy) { error in resolve(error) }
-            } catch {
-                resolve(error)
-            }
+        do {
+            let proxy = try proxy { pending.deliver($0) }
+            send(proxy) { error in pending.deliver(error) }
+        } catch {
+            pending.deliver(error)
         }
+        return await answer(of: pending)
+    }
+}
+
+/// A reply a test holds unawaited, which is awaited on the harness's clock when the test asks.
+///
+/// What `pipelinedAcknowledgements` hands back in place of the bare latch, whose own `answer()`
+/// would count its deadline on the wall clock. Holds the clock, not the harness: a reply may be
+/// read after the test is done with everything else.
+struct AwaitedReply<Answer>: Sendable {
+
+    private let latch: PendingReply<Answer>
+    private let clock: ManualClock
+
+    fileprivate init(_ latch: PendingReply<Answer>, on harness: AnonymousListenerHarness) {
+        self.latch = latch
+        self.clock = harness.clock
+    }
+
+    /// The first answer, or the fallback once ``AnonymousListenerHarness/replyDeadline`` has run
+    /// out on the harness's clock.
+    func answer() async -> Answer {
+        await latch.answer(within: AnonymousListenerHarness.replyDeadline, on: clock)
     }
 }
 
