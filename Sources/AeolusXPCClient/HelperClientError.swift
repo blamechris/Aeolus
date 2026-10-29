@@ -49,6 +49,12 @@ public enum HelperClientError: Error, Sendable, Hashable {
 
     /// The helper process died and was replaced while this message was in flight.
     ///
+    /// Or before it was sent: a message waits for its connection's handshake, and when the
+    /// process that answered that handshake dies before the message can go, the message is not
+    /// sent to its replacement behind a `hello` nobody has answered yet
+    /// ([#582](https://github.com/blamechris/Aeolus/issues/582)). Either way the caller decides
+    /// whether to ask again, and nothing the old process held survives.
+    ///
     /// The connection object survives — libxpc reconnects it to the new instance — but
     /// nothing the old process was holding does. Any lease died with it, and this client
     /// does not re-acquire one.

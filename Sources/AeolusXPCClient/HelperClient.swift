@@ -82,10 +82,14 @@ import Foundation
 /// discovery, never authorisation. So the only correct client-side rule is the one that is
 /// safe against every helper: send `hello`, wait for it, then send everything else.
 ///
+/// That holds across a restart too. An interruption keeps the generation, so the `hello` a caller
+/// waited for may have been answered by the process that died while the replacement's is still
+/// unanswered, and that caller sends nothing (#582, `handshakenConnection()`).
+///
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **242 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **251 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. Seventeen were added after this section was written: the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
@@ -96,7 +100,9 @@ import Foundation
 /// SwiftLint's 250-line `type_body_length` warning. That took the file to 258 code lines. #541
 /// then gave the health signal's state a type of its own (`HealthSignal`, below), which took the
 /// file to 239 and the actor's body to 234. Three more are the latch a caller waiting on the
-/// handshake is cancelled out of (#576), which took them to 242 and 237. The count of code
+/// handshake is cancelled out of (#576), which took them to 242 and 237. Nine more are #582's:
+/// six let the suite hold one caller's handshake relay, and three keep a caller whose helper died
+/// before it resumed from sending, which took them to 251 and 246. The count of code
 /// lines in the file, 229 when this section was written, did not move when the section was
 /// added — the file grew by fifty-odd lines and by none of the thing the threshold is worth
 /// measuring, which is the whole argument in one measurement. Neither warning is suppressed,
@@ -171,6 +177,19 @@ public actor HelperClient {
     private let pinning: any HelperConnectionPinning
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
+
+    /// What each caller's handshake relay runs before it waits for the handshake: `nil`, so
+    /// nothing, everywhere but the suite ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    ///
+    /// When a caller resumes from the handshake is the runtime's choice, and #582's two defects
+    /// live in the schedules where it resumes late: after the helper that answered has died and
+    /// another caller has started the next handshake. A test cannot ask the runtime for that
+    /// schedule, so it holds one caller's relay here instead. The relay hands the handshake's
+    /// outcome over only once this has returned, so holding it holds that one caller and nothing
+    /// else: not the handshake, its deadline, or any other caller. It runs once the caller has
+    /// joined the handshake in the slot or started one, so its running also tells a test that the
+    /// caller has made that choice.
+    private let handshakeRelayHold: (@Sendable () async -> Void)?
 
     /// Every message in flight, and when each one's deadline starts: at its send, or for a
     /// message the helper sequences, when the sequenced messages sent before it have settled
@@ -253,17 +272,22 @@ public actor HelperClient {
     /// minutes for two fans, and a deadline measured on the wall clock is one a stalled runner
     /// can run out for a client that did nothing wrong. Production has one clock and no way to
     /// name another.
+    ///
+    /// `holdingHandshakeRelays` is the suite's for the same reason, and production has no way to
+    /// name one either: the public initialiser leaves it `nil` (`handshakeRelayHold`).
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
         clientDescription: String,
         deadlines: HelperClientDeadlines,
-        clock: any Clock<Duration>
+        clock: any Clock<Duration>,
+        holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
+        self.handshakeRelayHold = relayHold
         self.inFlight = InFlightMessages(clock: clock)
         let healthSignal = HealthSignal(startingWith: .idle)
         self.healthSignal = healthSignal
@@ -443,7 +467,7 @@ public actor HelperClient {
     /// connection, which the helper refuses, and a refused handshake takes its connection with it
     /// (`performHandshake`): a teardown caused by a caller going away, which `translate(_:on:)`
     /// refuses to allow for every other message. Only a caller handed the handshake's own outcome
-    /// clears it, exactly as every caller did before.
+    /// clears it, and only while the slot still names that handshake (below).
     ///
     /// **When the last waiter goes, the handshake still runs**, to its answer or to its own
     /// deadline, as if someone were waiting. Cancelling it instead would end it without a
@@ -453,6 +477,32 @@ public actor HelperClient {
     /// would have with a caller there. Each relay ends when the handshake does, and the handshake
     /// is bounded by its `hello`'s own deadline (`handshakeVerb`, counted from the `hello`'s turn,
     /// `InFlightMessages`), so no relay outlives that deadline.
+    ///
+    /// ## A caller that resumes after its helper died
+    ///
+    /// An interruption keeps the connection and its generation and empties the slot, so the next
+    /// caller starts a second handshake on the same connection, for the process that replaced the
+    /// one that died. A caller of the first handshake can resume after that, because when a caller
+    /// resumes is the runtime's choice. Two rules hold for it
+    /// ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    ///
+    /// **It clears the slot only of its own handshake**, compared by identity (`Task` is
+    /// `Equatable` on the task, not on its result). Comparing generations, as this did before,
+    /// cleared the second handshake, which shares the first one's generation, and the next caller
+    /// then sent a third `hello` on the connection: refused, so the connection went with it, and
+    /// every caller of the second handshake was told `connectionAbandoned`.
+    ///
+    /// **It sends nothing, and is told `helperRestarted`.** Its handshake succeeded, on the
+    /// process that died, and nothing is negotiated with the new one until the second handshake
+    /// is answered. Sending now would put its verb behind a `hello` that is not answered yet,
+    /// which is the pipelining this client never does. Nor does it wait for the second handshake:
+    /// that would be a second attempt at the handshake this call has already had, and nothing on
+    /// the send path makes one (`HelperClientSendPathSeamTests`); whether to ask again is the
+    /// caller's. So it is answered as a message in flight across the same restart is answered, and
+    /// for the same reason: the helper it reached is gone. A caller that resumes once the second
+    /// handshake has been answered finds it in force and sends on it, like any caller after a
+    /// restart. The check is at this handshake's generation only; a connection given up in the
+    /// meantime is `exchange`'s to report, as `connectionAbandoned`.
     private func handshakenConnection() async throws -> ConnectionGeneration {
         let live = try liveConnection()
         if negotiatedReply != nil { return live }
@@ -463,10 +513,17 @@ public actor HelperClient {
         handshake = task
         // `nil` is this caller's cancellation: the latch has no deadline, the handshake has.
         let waiter = PendingReply<Result<HelloReply, Error>?>(ifNothingArrives: nil)
-        Task.detached(priority: Task.currentPriority) { waiter.deliver(await task.result) }
+        Task.detached(priority: Task.currentPriority) { [hold = handshakeRelayHold] in
+            await hold?()
+            waiter.deliver(await task.result)
+        }
         guard let outcome = await waiter.waitForAnswer() else { throw CancellationError() }
-        if self.generation == generation { handshake = nil }
+        if handshake == task { handshake = nil }
         _ = try outcome.get()
+        // The helper that answered died before this caller resumed: see above.
+        if self.generation == generation, negotiatedReply == nil {
+            throw HelperClientError.helperRestarted
+        }
 
         // The connection this handshake ran on, not whatever is current now. If this client
         // gave it up in between — a `disconnect()`, or another message's cut-off, both of which
