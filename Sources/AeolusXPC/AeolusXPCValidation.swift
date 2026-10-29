@@ -292,6 +292,13 @@ public enum AeolusXPCValidation {
     /// display a name the client did not choose as though it had, which is a quiet
     /// misidentification of who is holding the fans — and a client sending a control
     /// character has a bug worth surfacing rather than absorbing.
+    ///
+    /// **The characters refused are one rule shared by three layers**:
+    /// `FaultText.isRemovedFromDisplay(_:)`, Unicode Cc, Cf, Zl and Zp. This layer refuses
+    /// them on the way in; `fanctl`'s `DisplayText` and the app's `HelperAuthoredText` strip
+    /// them on the way out, because a client does not get to assume the helper answering is
+    /// this one; the helper's own log lines escape them (`LogText`). One predicate, so the
+    /// layers can differ in what they *do* about a character and never in which ones (#483).
     static func validateDescription(
         _ description: String,
         name: String,
@@ -316,18 +323,17 @@ public enum AeolusXPCValidation {
                 detail: "must be at most \(maxUTF8Bytes) bytes when encoded as UTF-8"
             )
         }
-        // .controlCharacters is Unicode categories Cc and Cf, which is both halves of the
-        // problem: Cc covers NUL, the C0 range, and the newline that forges a log entry;
-        // Cf covers the bidirectional overrides that rewrite a line without adding a
-        // visible character to it.
-        guard
-            description.unicodeScalars.allSatisfy({
-                !CharacterSet.controlCharacters.contains($0)
-            })
-        else {
+        // Cc covers NUL, the C0 range and the newline that forges a log entry; Cf covers the
+        // bidirectional overrides that rewrite a line without adding a visible character to
+        // it; Zl and Zp are U+2028 and U+2029, which Core Text and most terminals break a
+        // line on. `CharacterSet.controlCharacters`, this guard's predicate until #483, let those
+        // two through, and reads Foundation's tables, which differ by macOS (on macOS 26 they
+        // also hold thousands of plane-14 scalars that are not Cc or Cf). The category is the
+        // standard library's: one table for this guard and for both renderers.
+        guard !description.unicodeScalars.contains(where: FaultText.isRemovedFromDisplay) else {
             throw AeolusXPCFault.invalidParameter(
                 name: name,
-                detail: "must not contain control or formatting characters"
+                detail: "must not contain control, formatting or line-break characters"
             )
         }
     }

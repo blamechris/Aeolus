@@ -11,10 +11,11 @@ public enum FaultText {
     /// Whether the display rules remove `scalar`: Unicode general category Cc, Cf, Zl or Zp.
     ///
     /// **The one predicate for text from the far side of the boundary**, `public` so the app's
-    /// `HelperAuthoredText` and the helper's `LogText` use this definition rather than a copy
-    /// of it. Two copies had already disagreed: `displayable` removed Cc and Cf and kept
-    /// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which the app's copy removed
-    /// (#553). Core Text breaks a line on both, so a surviving one is a forged second line.
+    /// `HelperAuthoredText`, `fanctl`'s `DisplayText` and the helper's `LogText` use this
+    /// definition rather than a copy of it. Two copies had already disagreed: `displayable`
+    /// removed Cc and Cf and kept U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which
+    /// the app's copy removed (#553). Core Text breaks a line on both, so a surviving one is a
+    /// forged second line.
     ///
     /// - Cc and Cf: what turns one log line into two (`\n`) or reverses the reading order of
     ///   the rest of it (U+202E RIGHT-TO-LEFT OVERRIDE, U+2066 LEFT-TO-RIGHT ISOLATE), and what
@@ -23,8 +24,9 @@ public enum FaultText {
     ///   predicate spelled `CharacterSet.controlCharacters`, which is Cc and Cf, cannot do this
     ///   job. They are named by the scalar's own category here so all four are on the page.
     ///
-    /// Not yet the rule of `AeolusXPCValidation` or of fanctl's `DisplayText`, which still
-    /// refuse or strip Cc and Cf alone. #483 is what moves them here.
+    /// It is also the set the helper **refuses** in a client-chosen description
+    /// (`AeolusXPCValidation.validateDescription`, #483): one rule, applied by refusing it on
+    /// the way in, removing it on the way out, and escaping it in a helper log line.
     public static func isRemovedFromDisplay(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.properties.generalCategory {
         case .control, .format, .lineSeparator, .paragraphSeparator:

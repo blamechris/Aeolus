@@ -202,20 +202,28 @@ struct HandshakeGateTests {
     }
 
     /// A client-chosen description that could forge a log entry is refused before it is
-    /// ever recorded as this connection's identity.
-    @Test("A hello carrying a control character in its description is refused")
-    func helloWithControlCharacterIsRefused() async throws {
+    /// ever recorded as this connection's identity. U+2028 and U+2029 are Zl and Zp, not Cc or
+    /// Cf, and reached the handshake log line until #483.
+    ///
+    /// **Mutation (#483):** in `AeolusXPCValidation.validateDescription`, make the guard's
+    /// predicate `{ CharacterSet.controlCharacters.contains($0) }` again. Run: red on the two
+    /// separator rows, at the fault and at `handshakeState == nil`; the newline row stays green.
+    @Test(
+        "A hello carrying a control character or line separator in its description is refused",
+        arguments: [
+            "fanctl\nDENIED: nothing to see", "fanctl\u{2028}DENIED", "fanctl\u{2029}DENIED",
+        ])
+    func helloWithControlCharacterIsRefused(_ description: String) async throws {
         let authority = RecordingFanAuthority()
         let session = session(authority: authority)
 
-        let reply = await session.hello(
-            payload: try helloPayload(description: "fanctl\nDENIED: nothing to see"))
+        let reply = await session.hello(payload: try helloPayload(description: description))
 
         #expect(
             reply.fault
                 == .invalidParameter(
                     name: "clientDescription",
-                    detail: "must not contain control or formatting characters"))
+                    detail: "must not contain control, formatting or line-break characters"))
         #expect(await session.handshakeState == nil)
     }
 
@@ -299,19 +307,26 @@ struct HandshakeGateTests {
         #expect(await authority.calls.isEmpty)
     }
 
-    @Test("A lease request naming a holder with a control character is refused at the listener")
-    func controlCharacterHolderIsRefusedAtTheListener() async throws {
+    /// The helper-side control for CLAUDE.md rule 7: the check runs in this actor, on the
+    /// decoded payload, before the authority is asked.
+    ///
+    /// **Mutation (#483):** as above. Run: red on the two separator rows, at the fault and at
+    /// `authority.calls.isEmpty`; the U+202E row stays green.
+    @Test(
+        "A lease request naming a holder with a control character or line separator is refused",
+        arguments: ["a\u{202E}b", "a\u{2028}b", "a\u{2029}b"])
+    func controlCharacterHolderIsRefusedAtTheListener(_ holder: String) async throws {
         let authority = RecordingFanAuthority()
         let session = session(authority: authority)
         _ = await session.hello(payload: try helloPayload())
 
-        let reply = await session.acquireLease(payload: try leasePayload(holder: "a\u{202E}b"))
+        let reply = await session.acquireLease(payload: try leasePayload(holder: holder))
 
         #expect(
             reply.fault
                 == .invalidParameter(
                     name: "holderDescription",
-                    detail: "must not contain control or formatting characters"))
+                    detail: "must not contain control, formatting or line-break characters"))
         #expect(await authority.calls.isEmpty)
     }
 
