@@ -20,7 +20,9 @@ struct SliceCountedWaitTests {
     @Test("A slice that took far longer than it should spent one slice of the budget")
     func aStalledSliceSpendsOneSlice() {
         let waits = Counter()
-        let signalled = SliceCountedWait.signalled(DispatchSemaphore(value: 0), within: 1) { _, _ in
+        let signalled = SliceCountedWait.signalled(
+            DispatchSemaphore(value: 0), within: 1, ceiling: .seconds(5)
+        ) { _, _ in
             if waits.next() == 1 { Thread.sleep(forTimeInterval: 0.3) }
             return false
         }
@@ -48,13 +50,15 @@ struct SliceCountedWaitTests {
     /// A semaphore nobody signals ends the wait, false, after the budget and not before.
     ///
     /// **Mutation:** in `signalled`, drop the `seconds * slicesPerSecond` bound for `Int.max`.
-    /// Run: red on the time limit, because the wait never ends; the ceiling below is what stops
-    /// a wait that is slow rather than stopped.
+    /// Run: red on the count, after the one-second ceiling given here ends the wait the bound no
+    /// longer does.
     @Test("A semaphore nobody signals runs the budget out")
     func aSemaphoreNobodySignalsRunsTheBudgetOut() {
         let waits = Counter()
 
-        let signalled = SliceCountedWait.signalled(DispatchSemaphore(value: 0), within: 2) { _, _ in
+        let signalled = SliceCountedWait.signalled(
+            DispatchSemaphore(value: 0), within: 2, ceiling: .seconds(1)
+        ) { _, _ in
             _ = waits.next()
             return false
         }
@@ -66,14 +70,14 @@ struct SliceCountedWaitTests {
     /// A wait that is slow rather than stopped still ends, at the ceiling.
     ///
     /// **Mutation:** in `signalled`, delete the `if ContinuousClock.now >= limit { return false }`.
-    /// Run: red on the count, which is the whole budget instead of the few waits the ceiling
-    /// allows.
+    /// Run: red on the count, which is the whole 80-slice budget instead of the few waits the
+    /// ceiling allows.
     @Test("A wait that every slice makes slow ends at the wall ceiling")
     func aSlowWaitEndsAtTheCeiling() {
         let waits = Counter()
 
         let signalled = SliceCountedWait.signalled(
-            DispatchSemaphore(value: 0), within: 60, ceiling: .milliseconds(200)
+            DispatchSemaphore(value: 0), within: 4, ceiling: .milliseconds(200)
         ) { _, _ in
             _ = waits.next()
             Thread.sleep(forTimeInterval: 0.05)

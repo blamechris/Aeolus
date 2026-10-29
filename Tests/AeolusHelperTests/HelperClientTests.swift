@@ -114,8 +114,9 @@ struct HelperClientTests {
     /// worth writing down because it is not the obvious one. Two `hello`s go out on one
     /// connection and the helper refuses the second with `invalidParameter`; that refusal is
     /// a failed handshake, so this client's own rule takes the connection down with it, and
-    /// the verb still in flight surfaces as `helperUnreachable(code: 4099)`. The message
-    /// count is the backstop assertion at 4 rather than 3.
+    /// the verb still in flight surfaces as `connectionAbandoned` (measured at #421; it was
+    /// `helperUnreachable(code: 4099)` before #413). The message count is the backstop
+    /// assertion at 4 rather than 3.
     @Test("Two verbs racing on a cold connection send one hello between them")
     func racingVerbsShareOneHandshake() async throws {
         let releaseHandshake = AsyncSignal()
@@ -190,9 +191,10 @@ struct HelperClientTests {
                 handshakeVerb: handshakeDeadline))
 
         let snapshot = Task {
-            try await returnedOutcome(of: "the snapshot whose hello is held") {
-                try await client.snapshot()
-            }
+            try await returnedOutcome(
+                of: "the snapshot whose hello is held",
+                afterCancelling: { await releaseHandshake.signal() },
+                { try await client.snapshot() })
         }
         try await waitUntil("the hello is held at the helper and its deadline is running") {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1

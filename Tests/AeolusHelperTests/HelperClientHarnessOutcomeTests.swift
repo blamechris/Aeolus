@@ -75,9 +75,9 @@ struct HelperClientHarnessOutcomeTests {
     /// exactly a client that has failed to give a call its answer. `withKnownIssue` is the
     /// assertion that the wait does record a failure, and it fails if none is recorded.
     ///
-    /// **Mutation:** in `returnedOutcome`, delete the `task.cancel()`. Run: red on the time
-    /// limit, not on this expectation, because the awaited task is still parked: a limit is
-    /// what this exists to keep from being the only thing that reports a hang.
+    /// **Mutation:** in `returnedOutcome`, delete the `task.cancel()`. Run: red on `error is
+    /// CancellationError`, thirty seconds on, when the harness's backstop runs the parked call's
+    /// deadline out and it comes back `helperNeverAnswered`.
     /// **Mutation:** in `returnedOutcome`, delete the `waitUntil`. Run: red on `withKnownIssue`,
     /// which records no issue.
     @Test("A call that does not come back fails the wait and is cancelled")
@@ -107,5 +107,70 @@ struct HelperClientHarnessOutcomeTests {
         #expect(
             await client.health == .handshaken,
             "releasing the call moved the connection's health, so a deadline ran out")
+    }
+
+    /// **A deadline nobody moves is still run out, in the end**: a client that never answers fails
+    /// its test instead of hanging it.
+    ///
+    /// A sleep is parked on a clock nothing else moves, for an hour; the backstop's budget is
+    /// 200 ms of scheduled time. Without it that sleep never ends, and neither would a verb
+    /// waiting on the shared handshake task, which a `.timeLimit` cannot cancel out of.
+    ///
+    /// A second sleep, started after the backstop has fired, ends too: the client may be asked
+    /// again.
+    ///
+    /// **Mutation:** in `ClockBackstop.init`, delete the `clock.advance(by:)`. Run: red on the wait
+    /// for the parked sleep to end.
+    /// **Mutation:** in `ClockBackstop.init`, replace the `while` with an `if`. Run: red on the
+    /// wait for the second sleep to end.
+    @Test("The backstop runs a clock nobody moves out, so a hung client fails")
+    func theBackstopRunsAnUnmovedClockOut() async throws {
+        let clock = ManualClock()
+        let backstop = ClockBackstop(running: clock, after: .milliseconds(200))
+        let ended = CompletionFlag()
+        let parked = Task {
+            try? await clock.sleep(for: .seconds(3600))
+            await ended.mark()
+        }
+
+        try await waitUntil("the parked sleep to end once the backstop's budget is spent") {
+            await ended.isSet
+        }
+        // Cancelled whether or not it ended: a sleep the backstop did not end would otherwise
+        // be awaited for good, and this is a failure to report, not to hang on.
+        parked.cancel()
+        await parked.value
+
+        let endedAgain = CompletionFlag()
+        let again = Task {
+            try? await clock.sleep(for: .seconds(3600))
+            await endedAgain.mark()
+        }
+        try await waitUntil("a sleep started after the backstop fired to end as well") {
+            await endedAgain.isSet
+        }
+        again.cancel()
+        await again.value
+        withExtendedLifetime(backstop) {}
+    }
+
+    /// A backstop that is dropped does not fire: a test that finished must not move a clock a
+    /// later reader could still hold.
+    ///
+    /// The absence is observed for three times the budget, a floor and not a bound: the code
+    /// under test cannot fail by being slow, only a mutant can survive a short look.
+    ///
+    /// **Mutation:** in `ClockBackstop`, delete the `deinit`. Run: red, the clock having moved.
+    @Test("A dropped backstop leaves its clock where it was")
+    func aDroppedBackstopDoesNotFire() async throws {
+        let clock = ManualClock()
+        let before = clock.now
+        var backstop: ClockBackstop? = ClockBackstop(running: clock, after: .milliseconds(200))
+        withExtendedLifetime(backstop) {}
+        backstop = nil
+
+        try await Task.sleep(for: .milliseconds(600))
+
+        #expect(clock.now == before, "a backstop that was dropped still moved the clock")
     }
 }

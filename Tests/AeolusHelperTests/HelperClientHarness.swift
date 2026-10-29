@@ -54,6 +54,9 @@ final class ClientListenerHarness {
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
         listener.resume()
+        let clock = ManualClock()
+        self.clock = clock
+        backstop = ClockBackstop(running: clock)
     }
 
     /// **Measured, because #250 turned on it.** `NSXPCListenerEndpoint` does not retain the
@@ -138,17 +141,18 @@ final class ClientListenerHarness {
     /// ([#421](https://github.com/blamechris/Aeolus/issues/421)).
     ///
     /// A deadline on the wall clock is one a stalled runner runs out for a client that did
-    /// nothing wrong. CI's first tests finish 11 s (release) and 22 s (debug) after the run began
+    /// nothing wrong: CI's first tests finish 11 s (release) and 22 s (debug) after the run began
     /// (#570), and a `kill -STOP` of 8 s fails the slow-peer tests with `helperNeverAnswered(after:
-    /// 5.0 seconds)`. So a test whose claim is not about a deadline cannot sit under one, and none
-    /// does: a deadline here runs out when the test moves the hands past it and at no other time.
+    /// 5.0 seconds)`. So here a deadline runs out when the test moves the hands past it, and at no
+    /// other time but the backstop's.
     ///
-    /// **What it costs, and who pays.** A client that fails to give a call its answer leaves it
-    /// parked instead of failing it at 5 s. `returnedOutcome(of:_:)` is how a test whose claim is that a
-    /// call comes back *without* its deadline asks, and turns a parked call into a failure that
-    /// names the call. A test whose claim is the deadline moves the clock itself and asserts the
-    /// figure it was given.
-    let clock = ManualClock()
+    /// **What it costs.** A client that fails to answer a call leaves it parked instead of failing
+    /// it at 5 s, and a wait on the shared handshake task cannot be cancelled out of, so a
+    /// `.timeLimit` would not end it. `ClockBackstop` runs every deadline out once the harness has
+    /// lived 30 s of scheduled time, and `returnedOutcome(of:_:)` asks sooner and by name. A test
+    /// whose claim is the deadline moves the clock itself and asserts the figure it was given.
+    let clock: ManualClock
+    private let backstop: ClockBackstop
 
     /// The deadlines a client gets when the test does not name its own: **the shipping
     /// trio**, not a tighter one.
@@ -172,12 +176,9 @@ final class ClientListenerHarness {
     /// every such construction under `Tests/` to be no tighter than the product's, or licensed
     /// by name with what asserts it.
     ///
-    /// Because this constant is *defined* as the product's trio, that comparison is a value
-    /// against itself: a source tripwire, blind to tightening `HelperClientDeadlines` itself. The
-    /// absolute floor comes from
-    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` and
-    /// `aPeerASecondSlowToAnswerAGatedVerbStillRoundTrips`, which hold a message while the
-    /// harness's clock runs a second and require the round trip to survive it.
+    /// That comparison is a value against itself, blind to tightening `HelperClientDeadlines`
+    /// itself; the absolute floor is `HelperClientDeadlineTests`' two slow-peer tests, which hold
+    /// a message while this harness's clock runs a second and require the round trip to survive.
     static let defaultDeadlines = HelperClientDeadlines.default
 
     /// A client wired to this harness, with no requirement.
