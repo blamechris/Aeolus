@@ -194,13 +194,15 @@ struct HelperClientHandshakeRestartTests {
     /// A 4097 on it is then `helperRestarted`, as it is when the answer was recorded first and the
     /// interruption cleared it. Read as `helperUnreachable`, the client would have told the first
     /// caller the helper restarted and would tell the next that it may not be installed, about the
-    /// same helper. The 4097 is handed to `translate(_:on:)` directly, as `HelperClientTeardownTests`
-    /// hands it a 4101: a message cannot be made to fail with one on demand.
+    /// same helper. The 4097 is handed to `translate(_:on:)` directly, as
+    /// `HelperClientTeardownTests` hands it a 4101: a message cannot be made to fail with one on
+    /// demand.
     ///
-    /// **Mutation:** in `HelperClient.performHandshake(generation:)`, move `hasEverHandshaken = true`
-    /// below the `interruptions` guard. Run: red here alone, `helperUnreachable(code: 4097)`. The
-    /// other test of this schedule stays green: the first caller's `helperRestarted` comes from
-    /// `handshakenConnection()`, which does not read `hasEverHandshaken`.
+    /// **Mutation:** in `HelperClient.performHandshake(generation:)`, move
+    /// `hasEverHandshaken = true` below the `interruptions` guard. Run: red here alone, on
+    /// `helperUnreachable(code: 4097)`. The other test of this schedule stays green: the first
+    /// caller's `helperRestarted` comes from `handshakenConnection()`, which does not read
+    /// `hasEverHandshaken`.
     @Test("A hello the dead helper answered still counts as having spoken to a helper")
     func aHelloTheDeadHelperAnsweredCountsAsAHelperSpokenTo() async throws {
         let schedule = try await Self.replyHeldWhileTheHelperDied()
