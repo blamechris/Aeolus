@@ -71,8 +71,8 @@ struct HelperClientAccessTests {
 
     /// Every mutable property this actor has, spelled as declared, and where it has to stay.
     ///
-    /// All eight, because unlike the connection session there is no line to draw here: this
-    /// *is* the client's state, and each of the eight is an input to a guard that reads it.
+    /// All nine, because unlike the connection session there is no line to draw here: this
+    /// *is* the client's state, and each of the nine is an input to a guard that reads it.
     /// Three are `let`s whose object is the state: `inFlight` holds every message in flight, and
     /// is the only thing that starts and ends their deadlines, and `healthSignal` and
     /// `healthStreams` hold the health signal and its observers (#541).
@@ -90,6 +90,10 @@ struct HelperClientAccessTests {
     ///   an interruption too, so it is the only thing separating "the helper restarted under
     ///   me" from "nothing ever answered". Set to `true` from elsewhere, this client invents
     ///   a helper it never spoke to.
+    /// - `interruptions` is what `performHandshake` checks before it records a `hello`'s reply
+    ///   (#585). Writable from a sibling file, it could be wound back past an interruption, and
+    ///   a reply from the process that died would be recorded: `.handshaken` published for a
+    ///   process that is gone, and every gated verb after it refused by the replacement.
     /// - `healthSignal` holds the value `health` reports, which `publish` compares against
     ///   before yielding, and the observers it yields to, under a lock of its own (#541). It is
     ///   the only thing that publishes, and its type is not `Sendable`, so only this actor can
@@ -123,6 +127,7 @@ struct HelperClientAccessTests {
         "var negotiatedReply: HelloReply?",
         "var handshake: Task<HelloReply, Error>?",
         "var hasEverHandshaken = false",
+        "var interruptions: UInt64 = 0",
         "var generation: UInt64 = 0",
         "let healthSignal: HealthSignal",
         "let healthStreams: HealthSignal.Streams",
@@ -286,7 +291,7 @@ struct HelperClientAccessTests {
                 declaration.hasPrefix("private "),
                 """
                 `\(declaration)` is no longer private. Every guard in this client turns on \
-                one of these eight, and one that is reachable from every file in \
+                one of these nine, and one that is reachable from every file in \
                 AeolusXPCClient can be satisfied from outside the code that decides it — see \
                 HelperClient.swift's own account of why the split #242 asked for was \
                 declined, which is the same rule read forwards.

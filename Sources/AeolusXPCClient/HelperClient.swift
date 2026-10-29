@@ -38,7 +38,9 @@ import Foundation
 /// **Interruption (4097)** means the helper process died and libxpc will reconnect this
 /// same connection object to its replacement. The connection is kept and the `HelloReply`
 /// is **discarded**: the peer is a new process, it has negotiated nothing with this client,
-/// and anything the old one was holding is gone. The next message re-runs `hello`.
+/// and anything the old one was holding is gone. The next message re-runs `hello`. The answer to
+/// a `hello` sent before the interruption, and not yet recorded when it is handled, is never
+/// recorded at all (#585, `performHandshake`).
 ///
 /// **Invalidation (4099)** means the connection will never work again. It is dropped, and
 /// the next message builds a new one — once.
@@ -89,7 +91,7 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **251 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **249 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. Seventeen were added after this section was written: the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
@@ -102,13 +104,17 @@ import Foundation
 /// file to 239 and the actor's body to 234. Three more are the latch a caller waiting on the
 /// handshake is cancelled out of (#576), which took them to 242 and 237. Nine more are #582's:
 /// six let the suite hold one caller's handshake relay, and three keep a caller whose helper died
-/// before it resumed from sending, which took them to 251 and 246. The count of code
-/// lines in the file, 229 when this section was written, did not move when the section was
-/// added — the file grew by fifty-odd lines and by none of the thing the threshold is worth
-/// measuring, which is the whole argument in one measurement. Neither warning is suppressed,
-/// deliberately — no `swiftlint:disable`, no `file_length` or `type_body_length` override in
-/// `.swiftlint.yml` — because a file, or a body, that grew by two hundred lines of *logic*
-/// should draw exactly the attention this one drew.
+/// before it resumed from sending, which took them to 251 and 246. #585 added seven: four let the
+/// suite hold a `hello`'s reply before it is recorded, and three keep a reply whose helper died
+/// first from being recorded. That would have put the actor's body at 253, so a function in it
+/// that read none of its state, the health a failed handshake leaves, moved out to
+/// `HelperConnectionHealth.afterFailedHandshake(for:)`. That was nine lines, and took them to 249
+/// and 244. The count of code lines in the file, 229 when this section was written, did not
+/// move when the section was added — the file grew by fifty-odd lines and by none of the thing
+/// the threshold is worth measuring, which is the whole argument in one measurement. Neither
+/// warning is suppressed, deliberately — no `swiftlint:disable`, no `file_length` or
+/// `type_body_length` override in `.swiftlint.yml` — because a file, or a body, that grew by two
+/// hundred lines of *logic* should draw exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -191,6 +197,18 @@ public actor HelperClient {
     /// caller has made that choice.
     private let handshakeRelayHold: (@Sendable () async -> Void)?
 
+    /// What `performHandshake` runs once it has a `hello`'s reply in hand and before it records
+    /// it: `nil`, so nothing, everywhere but the suite
+    /// ([#585](https://github.com/blamechris/Aeolus/issues/585)).
+    ///
+    /// A reply and the interruption that follows its helper's death are both queued on this actor,
+    /// and which of them runs first is the executor's choice. #585's defect is the order in which
+    /// the interruption runs first, and a test cannot ask the executor for it, so it holds the
+    /// reply here while the helper dies. Holding it holds that one handshake and nothing else: the
+    /// `hello` has been answered, so its deadline has ended, and the actor is free for the
+    /// interruption.
+    private let receivedHelloReplyHold: (@Sendable () async -> Void)?
+
     /// Every message in flight, and when each one's deadline starts: at its send, or for a
     /// message the helper sequences, when the sequenced messages sent before it have settled
     /// (#413). See `InFlightMessages`.
@@ -208,6 +226,14 @@ public actor HelperClient {
     /// being classified — libxpc fires the interruption handler on its own thread, so by the
     /// time a failed message is being explained, the reply may already be gone.
     private var hasEverHandshaken = false
+
+    /// How many interruptions this actor has handled. It moves in `connectionWasInterrupted`, and
+    /// nowhere else.
+    ///
+    /// An interruption keeps the generation, so the generation cannot say whether the process that
+    /// answered a `hello` is still the one on the other end. `performHandshake` reads this before
+    /// it sends `hello`, and records the reply only if it has not moved since (#585).
+    private var interruptions: UInt64 = 0
 
     /// The connection's health, and its observers, under a lock of their own (#541). Published to
     /// only by `publish(_:)`, on this actor. See `HealthSignal`.
@@ -273,21 +299,24 @@ public actor HelperClient {
     /// can run out for a client that did nothing wrong. Production has one clock and no way to
     /// name another.
     ///
-    /// `holdingHandshakeRelays` is the suite's for the same reason, and production has no way to
-    /// name one either: the public initialiser leaves it `nil` (`handshakeRelayHold`).
+    /// `holdingHandshakeRelays` and `holdingReceivedHelloReplies` are the suite's for the same
+    /// reason, and production has no way to name either: the public initialiser leaves both `nil`
+    /// (`handshakeRelayHold`, `receivedHelloReplyHold`).
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
         clientDescription: String,
         deadlines: HelperClientDeadlines,
         clock: any Clock<Duration>,
-        holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil
+        holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil,
+        holdingReceivedHelloReplies replyHold: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
         self.handshakeRelayHold = relayHold
+        self.receivedHelloReplyHold = replyHold
         self.inFlight = InFlightMessages(clock: clock)
         let healthSignal = HealthSignal(startingWith: .idle)
         self.healthSignal = healthSignal
@@ -557,6 +586,32 @@ public actor HelperClient {
     /// is the one message whose failure this client cannot classify from the outside —
     /// whether the peer recorded it is the peer's state, not the transport's — so the
     /// handshake path spends one extra connection setup rather than reasoning about it.
+    ///
+    /// ## A reply from a process that died before it was recorded is not recorded
+    ///
+    /// If the helper answers `hello` and then dies, its reply and the interruption are both queued
+    /// on this actor, and the executor picks which runs first. When the interruption runs first it
+    /// clears a reply that has not been recorded yet. Recording it afterwards claimed a handshake
+    /// with a process that is gone: `.handshaken` published, `negotiated` naming the dead process,
+    /// and every gated verb after it sent to the replacement with no `hello` and refused
+    /// `handshakeRequired`. A refusal tears nothing down, so nothing ended that
+    /// ([#585](https://github.com/blamechris/Aeolus/issues/585)).
+    ///
+    /// So the reply is recorded only if no interruption has been handled since the `hello` was
+    /// sent (`interruptions`). It is read in the same synchronous stretch as the send, so an
+    /// interruption handled before the send does not count. Otherwise the callers are told
+    /// `helperRestarted` (`handshakenConnection()`), and the next caller handshakes with the
+    /// replacement on the same connection. `hasEverHandshaken` is set either way, because a helper
+    /// did answer: a 4097 on this connection is then a restart, as it is when the reply was
+    /// recorded before the death.
+    ///
+    /// The count cannot tell an interruption that came after the reply from one that came before
+    /// the send and reached this actor only after the `hello` had gone to the replacement. That
+    /// reply is dropped too. The replacement then refuses the next `hello`, the refusal takes the
+    /// connection (above), and the call after it builds another. No lease is lost to it, because
+    /// nothing was negotiated on the connection for a lease to be acquired over. It is what the
+    /// same late interruption already does when it lands after the reply was recorded, and clears
+    /// it. Recording instead is the wedge above, which nothing ends.
     private func performHandshake(generation: UInt64) async throws -> HelloReply {
         guard generation == self.generation, let connection else {
             throw HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
@@ -568,6 +623,7 @@ public actor HelperClient {
                 clientDescription: clientDescription
             )
         )
+        let interruptions = self.interruptions
         do {
             let data: Data = try await exchange(
                 .hello, on: live, within: deadlines.handshakeVerb
@@ -576,16 +632,18 @@ public actor HelperClient {
                     resolve(HelperClientPayload.outcome(data, error))
                 }
             }
+            await receivedHelloReplyHold?()
             let reply = try HelperClientPayload.decode(HelloReply.self, from: data)
 
             // Discarded rather than stored if the connection was replaced while this was in
             // flight: a `HelloReply` describes one process, and attaching it to a connection
             // that did not negotiate it would be a claim about a peer nobody spoke to.
-            if generation == self.generation {
-                negotiatedReply = reply
-                hasEverHandshaken = true
-                publish(.handshaken)
-            }
+            guard generation == self.generation else { return reply }
+            hasEverHandshaken = true
+            // Nor if the process that answered may have died since: see above.
+            guard interruptions == self.interruptions else { return reply }
+            negotiatedReply = reply
+            publish(.handshaken)
             return reply
         } catch {
             // Still held at this generation means nothing above tore it down — the peer
@@ -593,40 +651,11 @@ public actor HelperClient {
             // handshake. See this function's own documentation for why that is fatal to the
             // connection rather than to the message.
             if generation == self.generation, self.connection != nil {
-                let health = Self.healthAfterFailedHandshake(for: error)
+                let health = HelperConnectionHealth.afterFailedHandshake(for: error)
                 discardConnection(generation, as: health, answering: .connectionAbandoned)
             }
             throw error
         }
-    }
-
-    /// What a failed handshake says about the connection it failed on.
-    ///
-    /// Reached for every failure whose connection is still held at this generation, which is
-    /// **not** the same set as "failures the transport did not classify" — an earlier
-    /// version of this comment claimed it was, and was wrong about two arms:
-    ///
-    /// - The three arms of `translate(_:on:)` that call `discardConnection` move the
-    ///   generation, so the `catch` guard declines and this is genuinely not consulted.
-    /// - **4097 does reach here.** `connectionWasInterrupted` keeps its connection and does
-    ///   not move the generation, so the `catch` runs and the verdict becomes `.invalidated`,
-    ///   overwriting the `.interrupted` published a moment earlier. That is correct — the
-    ///   connection has now been discarded — but it is this function that says so.
-    /// - **4101 reaches here too**, because `replyNotDelivered` publishes nothing at all.
-    ///
-    /// The behaviour was right in both; the comment was the defect, and it was the kind that
-    /// makes a later reader believe a live function unreachable.
-    private static func healthAfterFailedHandshake(
-        for error: Error
-    ) -> HelperConnectionHealth {
-        guard let fault = error as? AeolusXPCFault else {
-            // A `HelloReply` this build could not read, or a proxy that does not speak the
-            // protocol. The connection has just been declared dead, and that is the honest
-            // thing to say about it.
-            return .invalidated
-        }
-        if case .versionMismatch = fault { return .versionMismatched }
-        return .refused
     }
 
     /// Sends one message, and answers with whichever of the reply block, the connection's
@@ -783,6 +812,9 @@ public actor HelperClient {
 
     /// The helper process was replaced. Keep the connection, drop what the old one said.
     ///
+    /// It is counted too, so that the reply to a `hello` sent before it, which the old process may
+    /// have sent, is not recorded after it (`interruptions`, #585).
+    ///
     /// Reachable from the suite rather than `private`, because this and
     /// `connectionWasInvalidated` are **libxpc's entry points into this actor** and the
     /// interleaving `generation` exists to survive — a dead connection's handler arriving
@@ -790,6 +822,7 @@ public actor HelperClient {
     /// on demand over a real connection. `HelperClientConnectionTests` plays libxpc instead.
     func connectionWasInterrupted(_ generation: UInt64) {
         guard generation == self.generation else { return }
+        interruptions &+= 1
         negotiatedReply = nil
         handshake = nil
         publish(.interrupted)
