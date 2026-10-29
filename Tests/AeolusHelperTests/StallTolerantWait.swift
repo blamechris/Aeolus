@@ -261,6 +261,11 @@ enum StallTolerantWait {
 /// A *pass* that compensated more than a second writes a line to `note`, standard error by
 /// default; see "What compensation cannot tell" on ``StallTolerantWait``.
 ///
+/// `what` is the event waited for, and is what a pass note and a timeout both name. A caller that
+/// can say why a timeout means something is wrong passes `ifItTimesOut`, which is appended to the
+/// timeout's issue and to nothing else: a wait that passed has no failure to explain, and a note
+/// that did would say so.
+///
 /// This is the injectable overload, and it is what the shipping one calls. `clock` has no
 /// default, so a call without it can only mean the overload below.
 func waitUntil(
@@ -272,6 +277,7 @@ func waitUntil(
     ceiling: Duration = StallTolerantWait.ceiling,
     clock: some WaitClock,
     note: (String) -> Void = StallTolerantWait.writeToStandardError,
+    ifItTimesOut explanation: String? = nil,
     _ condition: () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
@@ -287,7 +293,9 @@ func waitUntil(
     case .held:
         break
     case .timedOut(let expiry):
+        let said = expiry.message(waitingFor: what)
         Issue.record(
-            Comment(rawValue: expiry.message(waitingFor: what)), sourceLocation: sourceLocation)
+            Comment(rawValue: explanation.map { "\(said): \($0)" } ?? said),
+            sourceLocation: sourceLocation)
     }
 }

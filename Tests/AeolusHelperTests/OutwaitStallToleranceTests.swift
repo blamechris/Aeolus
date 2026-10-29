@@ -17,6 +17,13 @@ import Testing
 /// The work in each is `ObservableWork` whose flag the clock sets at a sleep the test chose, and
 /// not a task the scheduler finishes whenever it likes, so the order of "the stall, then the work
 /// finishing" is the clock's and cannot vary between runs.
+///
+/// Each outwait is one function with the real clock as the default for `clock:` (#551), so these
+/// tests drive the body every call site runs. **Mutation:** replace the body of
+/// `finishedBeforeCeiling` with the loop `9b1bfda^` had, or that of `revocationProgress`, leaving
+/// the signature. Run: red on the stall tests' own assertions, `value == 42` and
+/// `progress == .finished`, after the 10 s the old loop waits, and on the reverted outwait's
+/// stuck-work test, whose message the old text does not match.
 @Suite("The outwaits do not spend a runner stall", .timeLimit(.minutes(1)))
 struct OutwaitStallToleranceTests {
 
@@ -34,9 +41,17 @@ struct OutwaitStallToleranceTests {
     /// The stall lands on the third sleep; the work finishes on the fifth. An outwait that spent
     /// the stall would give up at the third sleep and fail on its final look.
     ///
-    /// **Mutation:** in `outwait`, pass `budget: .wallTime` to `waitUntil`, so a late poll is
+    /// The note it writes on the way names the event waited for, and does not carry the
+    /// explanation of a timeout: the wait passed, and "something it awaits was never resumed" is
+    /// a claim about a failure (#551).
+    ///
+    /// **Mutation (1):** in `outwait`, pass `budget: .wallTime` to `waitUntil`, so a late poll is
     /// spent from the budget and not added to it. Run: red, with "timed out after 30.0 s of
     /// waiting (wall-clock bound: 30.0 s of runner stall seen, not compensated)".
+    /// **Mutation (2):** in `outwait`, pass `waiting.event + ": " + waiting.ifItTimesOut` to
+    /// `waitUntil` and drop its `ifItTimesOut:`, which puts the explanation back into the event.
+    /// Run: red on both note expectations, the note ending "…for: the stalled work to finish:
+    /// something it awaits was never resumed."
     @Test("finishedBeforeCeiling waits out a stall longer than its whole budget")
     func finishedBeforeCeilingWaitsOutAStall() async throws {
         let base = Self.stalled()
@@ -51,11 +66,18 @@ struct OutwaitStallToleranceTests {
         #expect(value == 42, "the work finished after the stall and was not waited for")
         #expect(await base.elapsed > .seconds(30), "the stall really happened on the clock")
         #expect(notes.count == 1, "a wait that rode out 30 s of stall said nothing: \(notes)")
+        #expect(
+            notes.first?.contains("for: the stalled work to finish. ") == true,
+            "the note does not name the event alone: \(notes)")
+        #expect(
+            notes.first?.contains("never resumed") == false,
+            "a wait that passed explained a failure: \(notes)")
     }
 
     /// The same for the revocation poll, which is the other wait `outwaitCeiling` bounds.
     ///
-    /// **Mutation:** the one above; both outwaits are held to `outwait`'s budget.
+    /// **Mutations:** the two above; both outwaits are held to `outwait`'s budget and note, and
+    /// the second is red on this test too, on "it did neither".
     @Test("revocationProgress waits out a stall longer than its whole budget")
     func revocationProgressWaitsOutAStall() async throws {
         let base = Self.stalled()
@@ -72,6 +94,12 @@ struct OutwaitStallToleranceTests {
             progress == .finished, "the revocation finished after the stall: \(progress as Any)")
         #expect(await base.elapsed > .seconds(30), "the stall really happened on the clock")
         #expect(notes.count == 1, "a wait that rode out 30 s of stall said nothing: \(notes)")
+        #expect(
+            notes.first?.contains("for: the revocation to finish or park on fan 0. ") == true,
+            "the note does not name the event alone: \(notes)")
+        #expect(
+            notes.first?.contains("it did neither") == false,
+            "a wait that passed explained a failure: \(notes)")
     }
 
     // MARK: - Work that is stuck
