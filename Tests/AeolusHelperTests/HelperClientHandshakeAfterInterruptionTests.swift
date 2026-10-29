@@ -32,8 +32,10 @@ struct HelperClientHandshakeAfterInterruptionTests {
     /// What the first caller came back with is the other test's claim, not this one's.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, restore `if self.generation ==
-    /// generation { handshake = nil }` for `if handshake == task { handshake = nil }`. Run: see
-    /// the PR for #582.
+    /// generation { handshake = nil }` for `if handshake == task { handshake = nil }`. Run: red on
+    /// the third caller, refused with `invalidParameter` ("the handshake has already completed on
+    /// this connection"), on the second, told `connectionAbandoned`, on the count of `hello`s
+    /// (three), on the health (`.refused`) and on the generation. The other test stays green.
     @Test("A late caller of the first handshake does not clear the second from the slot")
     func aLateCallerLeavesTheNextHandshakeInTheSlot() async throws {
         let schedule = try await Self.lateCallerAfterTheHelperDied()
@@ -78,13 +80,16 @@ struct HelperClientHandshakeAfterInterruptionTests {
     /// the helper restarted.
     ///
     /// Its handshake succeeded, on the process that died. Nothing has been negotiated with the new
-    /// one yet, so sending now would put its verb behind a `hello` that is not answered: pipelining,
-    /// which this client never does (`HelperClient`'s own documentation). The arrivals are read
-    /// while the second `hello` is still held, so a verb sent behind it is in them before its reply.
+    /// one yet, so sending now would put its verb behind a `hello` that is not answered:
+    /// pipelining, which this client never does (`HelperClient`'s own documentation). The arrivals
+    /// are read while the second `hello` is still held, so a verb sent behind it is in them before
+    /// that `hello`'s reply.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, delete the
-    /// `if self.generation == generation, negotiatedReply == nil` check and its `throw`. Run: see
-    /// the PR for #582.
+    /// `if self.generation == generation, negotiatedReply == nil` check and its `throw`. Run: red
+    /// on the first caller, which comes back with a snapshot, and on both readings of the
+    /// arrivals: its `snapshot` arrived, and was answered, before the second `hello` was
+    /// (`hello, hello→replied, hello, snapshot, snapshot→replied`). The other test stays green.
     @Test("A late caller of the first handshake sends nothing behind the second hello")
     func aLateCallerSendsNothingBehindTheNextHello() async throws {
         let schedule = try await Self.lateCallerAfterTheHelperDied()

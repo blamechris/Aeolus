@@ -71,12 +71,14 @@ struct HelperClientTests {
     /// **Mutation:** in `HelperClient.handshakenConnection()`, delete the wait for the
     /// handshake — the `guard let outcome = await waiter.waitForAnswer()` line and the two after
     /// it (`_ = try await task.value` before #576) — so the handshake is still sent, and the verb
-    /// no longer waits for its reply, which is exactly what pipelining is. Run: red, and *not* on
-    /// the arrivals: the verb reaches the helper before the `hello` its task had not yet run,
-    /// so it is refused with `handshakeRequired` and this test fails on the thrown error
-    /// before it compares anything. That is the D25 fallback the contract names, arriving
-    /// as a caller-visible failure — which is the outcome this client's rule exists to
-    /// avoid having to handle.
+    /// no longer waits for its reply, which is exactly what pipelining is. Since #582 the check
+    /// after them catches that first, finding no `hello` in force at this generation, and this
+    /// test fails on a thrown `helperRestarted`. Delete that `if … negotiatedReply == nil` check
+    /// and its `throw` as well. Run: red, and *not* on the arrivals: the verb reaches the helper
+    /// before the `hello` its task had not yet run, so it is refused with `handshakeRequired` and
+    /// this test fails on the thrown error before it compares anything. That is the D25 fallback
+    /// the contract names, arriving as a caller-visible failure — which is the outcome this
+    /// client's rule exists to avoid having to handle.
     @Test("The client never pipelines a verb behind an unanswered hello")
     func theClientNeverPipelinesTheHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
