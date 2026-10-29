@@ -5,9 +5,10 @@ import Testing
 
 // The seams #368's tests park a teardown and a revocation on. Every park is a continuation —
 // an `AsyncSignal`, or the lease core's own waiter — so no thread is blocked, and every wait the
-// fix could turn into a hang is bounded by a wall clock that only a failure reaches.
+// fix could turn into a hang is bounded by a budget that only a failure reaches.
 
-/// How long a test waits for something the fix might park before it calls it a hang.
+/// How long a test waits for something the fix might park before it calls it a hang: scheduled
+/// waiting time, not wall time ([#547](https://github.com/blamechris/Aeolus/issues/547)).
 ///
 /// **Failure-only, by margin, not by construction.** Nothing but this ceiling bounds the 30
 /// settling waits (revocations, sweeps, § 5 cycles). Every return of `revocationProgress` and
@@ -29,8 +30,17 @@ import Testing
 /// found.
 ///
 /// So this leaves 2.9 times the worst hold seen, and lowering it below about 3.4 s would have
-/// expired a passing test's wait. It does not cover a stall longer than itself: this is wall-clock
-/// time, and a CI runner was starved for about 30 s in #439.
+/// expired a passing test's wait.
+///
+/// **A stall is not spent from it.** Both outwaits below, `finishedBeforeCeiling` and
+/// `revocationProgress`, are `waitUntil` over this budget, so a poll that comes back more than
+/// 250 ms late has the difference added to its deadline (`StallTolerantWait`), up to that wait's
+/// 50 s cap. They used to measure it on the wall clock, and a runner that stopped the test
+/// process for longer than this (about 30 s in #439; tests that take milliseconds took 30 to 44 s
+/// in the two runs #547 is about) spent every wait in flight at once, so a double that had done
+/// nothing wrong read as one that had lost its ceiling. What compensation cannot tell is a stall
+/// from a slow hold, so a wait that really is stuck can run past the 10 s it was given, to the cap
+/// at most, and says in its issue how much stall it compensated.
 ///
 /// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
 /// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s
@@ -90,52 +100,105 @@ enum RevocationProgress: Sendable, Equatable {
 /// revocation stays parked until the handback it outwaits is let go — so this waits for a state,
 /// not for a number of yields, and whichever it finds is the answer
 /// (`SnapshotAvailabilityDoubles.parkedHandback`'s shape). `nil`, with an issue recorded, when
-/// neither arrives within `outwaitCeiling`.
+/// neither arrives within `outwaitCeiling` of scheduled waiting time, which a runner stall does
+/// not spend (#547).
 func revocationProgress(
     of work: ObservableWork<some Sendable>,
     outwaiting fan: Int,
     in leases: LeaseAuthority,
     sourceLocation: SourceLocation = #_sourceLocation
-) async -> RevocationProgress? {
-    let deadline = ContinuousClock.now + outwaitCeiling
-    while ContinuousClock.now < deadline {
-        if await work.isFinished.isSet { return .finished }
-        if await leases.fansARevocationAwaits.contains(fan) { return .waiting }
-        await Task.yield()
-    }
-    Issue.record(
-        "the revocation neither finished nor parked on fan \(fan) within \(outwaitCeiling)",
+) async throws -> RevocationProgress? {
+    try await revocationProgress(
+        of: work, outwaiting: fan, in: leases, clock: SystemWaitClock(),
         sourceLocation: sourceLocation)
-    return nil
 }
 
-/// Waits for `work` to finish within `outwaitCeiling` of wall-clock time and returns its value,
-/// or records an issue and returns `nil` **without joining it**.
+/// The injectable overload, and what the one above calls: `clock` and `note` are `waitUntil`'s.
+/// It exists so that a test can show a stall is not spent without stopping a process; `clock`
+/// has no default, so a call without it can only mean the overload above.
+func revocationProgress(
+    of work: ObservableWork<some Sendable>,
+    outwaiting fan: Int,
+    in leases: LeaseAuthority,
+    clock: some WaitClock,
+    note: (String) -> Void = StallTolerantWait.writeToStandardError,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws -> RevocationProgress? {
+    // The last look is the answer, so a timeout and a `nil` are the same fact: the poll's final
+    // evaluation found neither state.
+    var progress: RevocationProgress?
+    try await outwait(
+        "the revocation to finish or park on fan \(fan): it did neither", clock: clock,
+        note: note, sourceLocation: sourceLocation
+    ) {
+        if await work.isFinished.isSet {
+            progress = .finished
+        } else if await leases.fansARevocationAwaits.contains(fan) {
+            progress = .waiting
+        } else {
+            progress = nil
+        }
+        return progress != nil
+    }
+    return progress
+}
+
+/// Waits for `work` to finish within `outwaitCeiling` of scheduled waiting time and returns its
+/// value, or records an issue and returns `nil` **without joining it**.
 ///
-/// `finished(_:_:within:)`'s contract with a wall clock in place of a yield count: a revocation a
+/// `finished(_:_:within:)`'s contract with a clock in place of a yield count: a revocation a
 /// mutant never resumes cannot be cancelled — the outwait installs no handler, by design — so
 /// joining it would hang the run, and a yield count is a statement about the scheduler rather
-/// than about time.
+/// than about time. The clock is the wait's, so a runner that stops the test process for longer
+/// than `outwaitCeiling` does not turn a double that is about to return into one that never
+/// did (#547); the poll sleeps, so a `.timeLimit` that expires first ends it.
 @discardableResult
 func finishedBeforeCeiling<Value: Sendable>(
     _ description: String,
     _ work: ObservableWork<Value>,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws -> Value? {
-    let deadline = ContinuousClock.now + outwaitCeiling
-    while await !work.isFinished.isSet, ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(1))
+    try await finishedBeforeCeiling(
+        description, work, clock: SystemWaitClock(), sourceLocation: sourceLocation)
+}
+
+/// The injectable overload, and what the one above calls: `clock` and `note` are `waitUntil`'s.
+/// `clock` has no default, so a call without it can only mean the overload above.
+@discardableResult
+func finishedBeforeCeiling<Value: Sendable>(
+    _ description: String,
+    _ work: ObservableWork<Value>,
+    clock: some WaitClock,
+    note: (String) -> Void = StallTolerantWait.writeToStandardError,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws -> Value? {
+    // `waitUntil` records the timeout, and the last look at the flag is what it decided on, so
+    // the work is joined exactly when no issue was recorded: a flag that flips between the
+    // final look and a second one here would otherwise return a value beside a failure.
+    var done = false
+    try await outwait(
+        "\(description) to finish: something it awaits was never resumed", clock: clock,
+        note: note, sourceLocation: sourceLocation
+    ) {
+        done = await work.isFinished.isSet
+        return done
     }
-    guard await work.isFinished.isSet else {
-        Issue.record(
-            """
-            \(description) did not finish within \(outwaitCeiling): something it awaits was \
-            never resumed
-            """,
-            sourceLocation: sourceLocation)
-        return nil
-    }
+    guard done else { return nil }
     return try await work.task.value
+}
+
+/// The one budget both outwaits above are held to: `outwaitCeiling` of waiting, polled each
+/// millisecond, with `waitUntil`'s stall compensation and its cap.
+private func outwait(
+    _ what: String,
+    clock: some WaitClock,
+    note: (String) -> Void,
+    sourceLocation: SourceLocation,
+    _ condition: () async -> Bool
+) async throws {
+    try await waitUntil(
+        what, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock, note: note,
+        condition, sourceLocation: sourceLocation)
 }
 
 /// § 5's cycles up to the terminal action, under `outwaitCeiling`.

@@ -41,9 +41,10 @@ import Testing
 /// established. That is why the value was raised from 5 s to 10 s. Nothing here covers a hold
 /// longer than 3.62 s.
 ///
-/// `parkCeiling` is wall-clock time on the real `ContinuousClock`, as `outwaitCeiling` is,
-/// because the virtual clock a test moves by hand would have it expire at once. Three expiries in
-/// a row take 30 s of the parking suites' one-minute `.timeLimit`, so a test that hits it that
+/// `parkCeiling` is wall-clock time on the real `ContinuousClock`, because the virtual clock a
+/// test moves by hand would have it expire at once. It is not scheduled waiting time as
+/// `outwaitCeiling` now is (#547): a runner stall is spent from it, not added to it. Three expiries
+/// in a row take 30 s of the parking suites' one-minute `.timeLimit`, so a test that hits it that
 /// often still ends before the limit does.
 let parkCeiling = Duration.seconds(10)
 
