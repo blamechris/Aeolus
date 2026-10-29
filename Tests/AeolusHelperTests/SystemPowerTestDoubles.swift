@@ -252,6 +252,24 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
     }
 }
 
+/// How many seconds `ThreadBlockingRestorePlane` stays blocked if nothing releases it: 90, which
+/// is longer than the 60 s `.timeLimit` of the only suite that uses it, on purpose.
+///
+/// The budget test takes 35 to 46 s of wall time in a CI debug run, almost all of it waiting for a
+/// pool thread behind the start-of-run backlog (38.7 s in run 40942348614; 15.0 s in the release
+/// step). A ceiling inside that would fail correct code on a slow run. So the ceiling is not what
+/// ends a red test; it is what ends the process when nothing else can:
+///
+/// - **A pool with a free thread** (a mutant that drops the budget, say): the time limit ends the
+///   test at 60 s. Its task is cancelled, the `defer` in the test releases the plane, and the
+///   ceiling is never reached.
+/// - **A pool with no free thread** (a pool of one): nothing can run to deliver the time limit
+///   or the release. The ceiling opens the block at 90 s on the blocked thread itself, records an
+///   issue, and the run goes on and ends, with the time limit recorded after it.
+///
+/// Only a test of the ceiling itself passes anything shorter.
+let threadBlockingCeiling = 90
+
 /// The firmware whose restore blocks a thread instead of suspending it.
 ///
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s real shape, as far as a test can
@@ -271,15 +289,46 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
 /// The semaphore is released by `release()` exactly as the wedge above is, so a test leaves
 /// no thread parked behind it. A `DispatchSemaphore` rather than an `AsyncSignal` precisely
 /// because blocking is the property under test.
+///
+/// ## It holds a pool thread, on purpose, and that is bounded twice
+///
+/// ([#554](https://github.com/blamechris/Aeolus/issues/554).) This is the one double in the
+/// suite whose release needs the cooperative pool: the thread it parks is freed by the test's own
+/// task, which runs only after the budget's task has run, and both need a pool thread other than
+/// this one. It cannot be moved onto a `Thread` of its own and keep its claim. A restore that
+/// parks a dedicated thread while its caller suspends is `WedgedRestorePlane`'s model, which the
+/// doc above calls the weaker one, and the budget beating *that* is a different test. So the
+/// hold is bounded instead:
+///
+/// - **There is one such test.** `theBudgetSurvivesARestoreThatBlocksItsThread` is the only user,
+///   so at most one pool thread is ever held on a release that the pool has to deliver. Every
+///   other test that holds a pool thread is released by a `Thread` or by a timeout (see
+///   `docs/TESTING.md`), so it frees its thread without a pool thread to do it. A pool of two or
+///   more therefore gets a thread for this test's budget and its release as soon as the shortest
+///   of those other holds ends, however the rest of the suite is scheduled. A pool of one never
+///   does: this test cannot run there.
+/// - **The block has a ceiling, above the suite's time limit.** `ceiling` seconds of waiting,
+///   counted in slices that a stalled runner cannot spend (`SliceCountedWait`, #421); 90 by
+///   default, against a 60 s `.timeLimit` (see `threadBlockingCeiling`). A semaphore wait cannot
+///   be cancelled, so the time limit alone cannot free this thread: with a free pool thread it
+///   ends the test at 60 s and the test's `defer` releases the plane; with none, the block opens
+///   at the ceiling, records an issue naming itself and goes on, and the process ends instead of
+///   wedging. The gate stays open afterwards, so a later restore does not wait out a ceiling of
+///   its own.
 final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable {
 
     private let wrapped: ScriptedControlPlane
+    private let ceiling: Int
     private let held = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var scopes: [FanRestoreScope] = []
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// - Parameters:
+    ///   - wrapped: the firmware underneath, which takes the restore once it is let through.
+    ///   - ceiling: how many seconds a restore stays blocked if nothing releases it.
+    init(_ wrapped: ScriptedControlPlane, ceiling: Int = threadBlockingCeiling) {
         self.wrapped = wrapped
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -287,7 +336,8 @@ final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable
     /// Every scope the restore was asked for, recorded before it blocks.
     var restoreScopes: [FanRestoreScope] { lock.withLock { scopes } }
 
-    /// Lets every blocked restore through. Called once, from the test's own task.
+    /// Lets every blocked restore through. Synchronous and needing no pool thread, so a test can
+    /// put it in a `defer`: a test that fails before its own call leaves nothing parked.
     func release() {
         // One signal per possible waiter. `signal()` on a semaphore nobody is waiting on
         // simply raises its count, so over-signalling is harmless and under-signalling would
@@ -313,7 +363,17 @@ final class ThreadBlockingRestorePlane: AdmissionBlindPlane, @unchecked Sendable
     /// is synchronous too. This is the honest spelling of the hazard rather than a way around
     /// the diagnostic.
     private func blockThisThreadUntilReleased() {
-        held.wait()
+        guard !signalled(held, within: ceiling) else { return }
+        // Opened for whoever comes next, and said once, from inside the restore it held, so the
+        // issue lands on the test whose task this runs under.
+        release()
+        Issue.record(
+            """
+            ThreadBlockingRestorePlane held a restore for \(ceiling) s and nobody let it through. \
+            That is a release the test never made, or a pool with no thread left to make it. \
+            It has gone on, so that the process ends instead of wedging: a semaphore wait \
+            cannot be cancelled, so the suite's time limit cannot free this thread by itself.
+            """)
     }
 
     // MARK: - Straight delegation

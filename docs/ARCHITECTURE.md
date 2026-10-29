@@ -261,4 +261,5 @@ manual and always will be.
 - [SAFETY.md](SAFETY.md) — the safety subsystem and how each mechanism is tested
 - [SMC-RESEARCH.md](SMC-RESEARCH.md) — observed SMC behaviour and cited sources
 - [RECOVERY.md](RECOVERY.md) — recovering a machine whose fans are stuck
+- [TESTING.md](TESTING.md) — how CI runs the suite, and the tests that hold a cooperative-pool thread
 - [ADR/](ADR/) — decisions and the alternatives that were rejected
