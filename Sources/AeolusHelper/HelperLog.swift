@@ -36,22 +36,23 @@ import os
 /// would train whoever reads the log to ignore it.
 struct HelperLog: Sendable {
 
-    private let log: Logger
-
-    /// A sink every line is also handed to, with its level, so a test can read both back.
+    /// The one route every line takes, held as the one type that escapes (`LogText.EscapingSink`,
+    /// #553): anything that would break or hide a line is written out before the unified log or
+    /// a test's sink hears it, and no `Logger` is stored, so no method here can write around it.
+    /// `HelperLogTests.everyLineTakesTheOneRoute` holds this file to the route.
     ///
-    /// Shaped after `SafetyLog.init(recording:)`. Every interpolation in this type is
-    /// `privacy: .public`, so rendering a line into one `String` and logging that `.public`
-    /// discloses exactly what the per-field form did. That is what lets every line take the one
-    /// route below. This was only the two fan lines until the review of #349.
-    ///
-    /// `nil` in every shipping build: `AeolusHelperMain` calls `init(subsystem:category:)`,
-    /// which cannot set it.
-    private let sink: (@Sendable (Level, String) -> Void)?
+    /// Every interpolation in this type is `privacy: .public`, so rendering a line into one
+    /// `String` and logging that `.public` discloses exactly what the per-field form did. That
+    /// is what lets every line take the one route. The recording initialiser, shaped after
+    /// `SafetyLog.init(recording:)`, also hands a test's sink that same level; the shipping one
+    /// has no sink.
+    private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "XPCBoundary") {
-        log = Logger(subsystem: subsystem, category: category)
-        sink = nil
+        let log = Logger(subsystem: subsystem, category: category)
+        emit = LogText.EscapingSink { level, message in
+            log.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
+        }
     }
 
     /// A log whose lines a test can read back, level included.
@@ -68,17 +69,11 @@ struct HelperLog: Sendable {
         category: String = "XPCBoundary",
         recording sink: @escaping @Sendable (Level, String) -> Void
     ) {
-        log = Logger(subsystem: subsystem, category: category)
-        self.sink = sink
-    }
-
-    /// The one route to the unified log: one level, written there and handed to the sink, with
-    /// anything that would break or hide a line escaped first (`LogText.escaped(_:)`, #553).
-    /// `HelperLogTests.everyLineTakesTheOneRoute` holds this file to it.
-    private func emit(_ level: Level, _ message: String) {
-        let message = LogText.escaped(message)
-        log.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
-        sink?(level, message)
+        let log = Logger(subsystem: subsystem, category: category)
+        emit = LogText.EscapingSink { level, message in
+            log.log(level: Self.osLogType(for: level), "\(message, privacy: .public)")
+            sink(level, message)
+        }
     }
 
     private func info(_ message: String) { emit(.info, message) }

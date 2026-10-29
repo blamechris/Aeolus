@@ -43,27 +43,27 @@ struct SafetyLog: Sendable {
         case fault
     }
 
-    /// The one route every line takes, and the one place a message is escaped: whatever a
-    /// line interpolated, a character that would break or hide it (`LogText.escaped(_:)`) is
-    /// written out before the sink — the unified log, or a test's recorder — hears it (#553).
+    /// The one route every line takes, held as the one type that escapes (#553).
     ///
-    /// **Assigned in exactly one initialiser.** The other two delegate to it, so the production
-    /// route and the recorded route cannot differ in what they do to a message, and a test that
-    /// reads the recorder has read what `os_log` was given.
-    private let emit: @Sendable (Level, String) -> Void
-
-    private init(escapingInto sink: @escaping @Sendable (Level, String) -> Void) {
-        emit = { level, message in sink(level, LogText.escaped(message)) }
-    }
+    /// A `LogText.EscapingSink` rather than a closure: it writes out every character that
+    /// would break or hide a line (`LogText.escaped(_:)`) before the closure inside it — the
+    /// unified log, or a test's recorder — hears the message, and nothing that holds one can
+    /// skip that. **That is what forces the escape, not the shape of the initialisers.** Both
+    /// initialisers below assign it; a shipping `init(subsystem:category:)` that assigned a
+    /// closure of its own, as main's did before this, no longer compiles. Every test builds
+    /// `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the composition and
+    /// `StartupReconciliation` default to is asserted by nothing, and a convention here would
+    /// have been checked by nothing either.
+    private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {
         let logger = Logger(subsystem: subsystem, category: category)
-        self.init(escapingInto: { level, message in
+        emit = LogText.EscapingSink { level, message in
             switch level {
             case .notice: logger.notice("\(message, privacy: .public)")
             case .fault: logger.fault("\(message, privacy: .public)")
             }
-        })
+        }
     }
 
     /// A sink a test can read back, **including the level**.
@@ -80,7 +80,7 @@ struct SafetyLog: Sendable {
     /// claim no test could check, in the type whose own header says a load-bearing claim
     /// "needs a test that fails when it stops being true".
     init(recording sink: @escaping @Sendable (Level, String) -> Void) {
-        self.init(escapingInto: sink)
+        emit = LogText.EscapingSink(sink)
     }
 
     /// Some curated keys answered and some did not.

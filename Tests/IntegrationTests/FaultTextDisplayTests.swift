@@ -38,9 +38,15 @@ struct FaultTextDisplayTests {
     /// A predicate that stripped too much would pass the first half alone.
     ///
     /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
-    /// .paragraphSeparator` from the `case`. Run: red, naming U+2028 and U+2029 as survivors.
-    /// **Mutation:** in `displayable`, replace the filter's predicate with `{ _ in false }`.
-    /// Run: red, naming every scalar of the four categories.
+    /// .paragraphSeparator` from the `case`. Run: red on `survivors.isEmpty`, naming U+2028 and
+    /// U+2029 as survivors; `lost.isEmpty` stays green.
+    /// **Mutation:** in `displayable`, replace the filter's closure with `{ _ in true }`, which
+    /// keeps every scalar. Run: red on `survivors.isEmpty`, naming every scalar of the four
+    /// categories, and on both expectations of the separator test below; `lost.isEmpty` stays
+    /// green.
+    /// **Mutation:** replace the same closure with `{ _ in false }`, which keeps none. Run: red on
+    /// `lost.isEmpty`, and on `rendered == …` in the separator test below; `survivors.isEmpty`
+    /// stays green, which is why the sweep has both halves.
     @Test("No scalar in Cc, Cf, Zl or Zp survives, and no other scalar is lost")
     func displayableRemovesEveryScalarOfTheFourCategories() {
         let removed = Self.allScalars.filter(Self.inTheFourCategories)

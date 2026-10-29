@@ -25,13 +25,17 @@ import Foundation
 /// reaches one through `holderDescription` and the handshake's `clientDescription`, whose
 /// validation refuses Cc and Cf but not yet Zl and Zp (#483).
 ///
-/// **Applied where a line is emitted, not where a field is interpolated.** `SafetyLog` and
-/// `HelperLog` each hand every line to one `emit`, and that `emit` escapes the finished
-/// message. A per-field call would have to be remembered at every `\(detail)` and `\(reason)`,
-/// and the next line added would be the one that forgot. The compiled-in text of those lines
-/// held none of the four categories when this was written, so escaping the whole message
-/// changes only what came from outside; a line that one day needs a real line break of its
-/// own will show it as an escape, visibly, rather than lose it.
+/// **Applied where a line is emitted, not where a field is interpolated, and forced by a type.**
+/// `SafetyLog` and `HelperLog` each hold their way to the unified log as a `LogText
+/// .EscapingSink`, a type whose only operation escapes the message before the closure inside it
+/// hears it. A per-field call would have to be remembered at every `\(detail)` and `\(reason)`,
+/// and the next line added would be the one that forgot; a delegating initialiser the compiler
+/// does not enforce would let the next edit give the shipping initialiser a route of its own,
+/// with every test green, because every test builds the recording one. With the sink stored,
+/// that route is an assignment of a closure to a property that is not a closure.
+/// The compiled-in text of those lines held none of the four categories when this was written,
+/// so escaping the whole message changes only what came from outside; a line that one day needs
+/// a real line break of its own will show it as an escape, visibly, rather than lose it.
 enum LogText {
 
     /// `text` with every scalar in Unicode Cc, Cf, Zl or Zp written as `\u{XXXX}`: upper-case
@@ -63,5 +67,32 @@ enum LogText {
     private static func escape(_ scalar: Unicode.Scalar) -> String {
         let digits = String(scalar.value, radix: 16, uppercase: true)
         return "\\u{" + String(repeating: "0", count: max(0, 4 - digits.count)) + digits + "}"
+    }
+}
+
+extension LogText {
+
+    /// A sink that can only escape: the one way a log reaches `os_log` or a test's recorder.
+    ///
+    /// Stored where a log used to store a closure. A closure can be written to skip the
+    /// escape; this type has one operation, `callAsFunction`, and it calls the closure it
+    /// holds with `escaped(message)`. Nothing that holds an `EscapingSink` can hand the
+    /// closure inside it a raw message, and nothing can assign it a closure without going
+    /// through `init(_:)`, which wraps that closure. So a log type's shipping initialiser
+    /// cannot differ from its recording one in what it does to a message: the only thing the
+    /// two can differ in is the closure, which never sees an unescaped line.
+    ///
+    /// The level travels untouched. `Level` is the log's own, so each log keeps the vocabulary
+    /// of its levels and this type knows nothing of them.
+    struct EscapingSink<Level: Sendable>: Sendable {
+        private let sink: @Sendable (Level, String) -> Void
+
+        init(_ sink: @escaping @Sendable (Level, String) -> Void) {
+            self.sink = sink
+        }
+
+        func callAsFunction(_ level: Level, _ message: String) {
+            sink(level, LogText.escaped(message))
+        }
     }
 }

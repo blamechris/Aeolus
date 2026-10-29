@@ -40,10 +40,11 @@ struct LogTextTests {
     /// Every scalar in Cc, Cf, Zl and Zp is written out, one at a time so a failure names the
     /// scalar; everything else comes back as it went in, in one string so the run is cheap.
     ///
-    /// **Mutation:** make `LogText.escaped` return `text` unchanged. Run: red on the first
-    /// expectation, for all of them.
+    /// **Mutation:** make `LogText.escaped` return `text` unchanged. Run: red on `wrong.isEmpty`,
+    /// listing every removed scalar; the `untouched` comparison stays green, as nothing changes.
     /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
-    /// .paragraphSeparator`. Run: red, naming U+2028 and U+2029.
+    /// .paragraphSeparator`. Run: red on `wrong.isEmpty`, listing the escapes of U+2028 and
+    /// U+2029 and nothing else.
     @Test("Every scalar in Cc, Cf, Zl and Zp is written out, and nothing else is touched")
     func everyRemovedScalarIsWrittenOutAndNothingElseChanges() {
         let removed = Self.allScalars.filter(Self.inTheFourCategories)
@@ -86,6 +87,50 @@ struct LogTextTests {
         #expect(LogText.escaped(once) == once)
     }
 
+    // MARK: - The sink that forces the escape
+
+    /// What the sink hands its closure, and with which level.
+    private final class Heard: @unchecked Sendable {
+        private let lock = NSLock()
+        private var levels: [HelperLog.Level] = []
+        private var messages: [String] = []
+
+        func append(_ level: HelperLog.Level, _ message: String) {
+            lock.withLock {
+                levels.append(level)
+                messages.append(message)
+            }
+        }
+
+        var heard: (levels: [HelperLog.Level], messages: [String]) {
+            lock.withLock { (levels, messages) }
+        }
+    }
+
+    /// `EscapingSink` is what the shipping `SafetyLog()` and `HelperLog()` store, and nothing
+    /// observes them: every test builds the recording initialiser. This is the one place the
+    /// escape is held to the type itself, so a sink that stopped escaping is red here and not
+    /// only in whichever log's rows happen to read it back.
+    ///
+    /// **Mutation:** in `EscapingSink.callAsFunction`, call `sink(level, message)` rather than
+    /// `sink(level, LogText.escaped(message))`. Run: red on the `messages` expectation; the
+    /// `levels` expectation stays green, because the level is not touched either way.
+    /// **Mutation:** make `LogText.escaped` return `text` unchanged. Run: red on the same one.
+    @Test("An EscapingSink hands its closure the escaped message and the level as it came")
+    func theSinkEscapesBeforeItsClosureHearsTheMessage() {
+        let heard = Heard()
+        let sink = LogText.EscapingSink<HelperLog.Level> { heard.append($0, $1) }
+
+        sink(.error, "FNum declares \u{2028}a\n\u{202E}b")
+        sink(.fault, "nothing to escape")
+
+        #expect(heard.heard.levels == [.error, .fault])
+        #expect(
+            heard.heard.messages == [
+                #"FNum declares \u{2028}a\u{000A}\u{202E}b"#, "nothing to escape",
+            ])
+    }
+
     // MARK: - SafetyLog
 
     /// The site #553 names: `StartupReconciliation.reconcile()`'s enumeration `catch`, which
@@ -94,9 +139,10 @@ struct LogTextTests {
     /// firmware-shaped description, so the interpolation, the description and the escape are
     /// all the production ones.
     ///
-    /// **Mutation:** in `SafetyLog.init(escapingInto:)`, assign
-    /// `emit = { level, message in sink(level, message) }`. Run: red on the first two
-    /// expectations.
+    /// **Mutation:** in `LogText.EscapingSink.callAsFunction`, call `sink(level, message)`
+    /// rather than `sink(level, LogText.escaped(message))`. Run: red on the `line.contains(…)`
+    /// expectation and on `raw.isEmpty`; `lines.count == 1` and the `.fault` expectation stay
+    /// green, because the line is still logged once, at the right level.
     @Test("Startup reconciliation's enumeration failure logs the firmware's text, escaped")
     func theEnumerationFailureLineEscapesTheDetail() async throws {
         let recorded = RecordedLog()
@@ -129,7 +175,8 @@ struct LogTextTests {
     /// The funnel, not the one site: lines that interpolate an error elsewhere in `SafetyLog`
     /// reach the log through the same `emit`.
     ///
-    /// **Mutation:** as above. Run: red on every row.
+    /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations, on all four
+    /// rows.
     @Test("Other SafetyLog lines that quote an error escape it too")
     func otherSafetyLinesEscapeToo() {
         let recorded = RecordedLog()
@@ -150,11 +197,14 @@ struct LogTextTests {
 
     // MARK: - HelperLog
 
-    /// `HelperLog.emit` escapes before the unified log and the sink both. Lines that quote a
-    /// firmware-derived `reason` or a `detail` are the ones that can carry the text.
+    /// `HelperLog` holds its route as a `LogText.EscapingSink`, so a line reaches the unified log
+    /// and a test's sink escaped. Lines that quote a firmware-derived `reason` or a `detail` are
+    /// the ones that can carry the text.
     ///
-    /// **Mutation:** in `HelperLog.emit`, delete `let message = LogText.escaped(message)`.
-    /// Run: red on every row.
+    /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations. There is no
+    /// mutation of `HelperLog` alone that reddens only this test: the escape is not in
+    /// `HelperLog`, so `HelperLog` cannot lose it, and `everyLineTakesTheOneRoute` holds the
+    /// count of places it reaches `os_log`.
     @Test("HelperLog lines that quote an error escape it too")
     func helperLogLinesEscapeTheirQuotedText() {
         let lines = RecordedHelperLines()
