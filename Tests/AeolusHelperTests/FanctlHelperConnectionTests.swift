@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+@testable import AeolusHelper
 @testable import AeolusXPCClient
 @testable import fanctl
 
@@ -69,6 +70,47 @@ struct FanctlHelperConnectionTests {
         #expect(call.description == HelperConnection.clientDescription)
         #expect(call.deadlines == deadlines)
         #expect(client === made, "client() returned something other than what the maker made")
+    }
+
+    /// The shipping maker hands the client the description it was given, and the helper hears it
+    /// in the handshake ([#589](https://github.com/blamechris/Aeolus/issues/589)).
+    ///
+    /// `shippingClient` is the maker a shipping `fanctl` carries, and the description is the name
+    /// the helper's log knows the tool by. Nothing else observed it: passing `"x"` for it survived
+    /// every `fanctl` test, since the suites' own maker is what they build their clients with.
+    /// The client keeps the description to itself, so this reads it where it ends up, in the
+    /// handshake the helper's session recorded for the connection. The description is one no
+    /// command uses, so that a maker which passed on `HelperConnection.clientDescription` in its
+    /// place is as red as one that passed a constant.
+    ///
+    /// **No source seam is needed.** The maker is a static the test calls directly, and the helper
+    /// session is the observer.
+    ///
+    /// **On the wall clock, with deadlines past anything a stall spends.** The shipping maker
+    /// cannot take the harness's clock, which is the point of it. So the deadlines are the
+    /// product's plus the stall ceiling, as `FanctlResetTests` gives its answering tests, in
+    /// literals for `HelperClientDeadlineLiteralTests`, and a runner that stands still for 30 s
+    /// mid-handshake does not fail a test whose claim is not about time.
+    ///
+    /// **Mutation:** in `HelperConnection.shippingClient`, pass `"x"` for `clientDescription`.
+    /// Run: red on the recorded description.
+    /// **Mutation:** in the same closure, pass `HelperConnection.clientDescription` instead. Run:
+    /// red on the same line.
+    @Test("The shipping maker passes the description it was given on to the helper")
+    func theShippingMakerPassesItsDescriptionOn() async throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let description = "a description no fanctl command uses"
+        let client = HelperConnection.shippingClient(
+            .endpoint(harness.endpoint), UnenforcedClientPinning(), description,
+            HelperClientDeadlines(
+                gatedVerb: .seconds(55), panicVerb: .seconds(60), handshakeVerb: .seconds(65)))
+
+        _ = try await client.snapshot()
+        await client.disconnect()
+
+        let session = try #require(harness.sessions.first)
+        let recorded = await session.handshakeState?.clientDescription
+        #expect(recorded == description, "the helper heard \(recorded ?? "no handshake")")
     }
 
     /// What the maker saw, behind a lock: it is `@Sendable` and runs on whatever calls `client()`.
