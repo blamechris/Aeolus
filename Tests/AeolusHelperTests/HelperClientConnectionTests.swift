@@ -43,7 +43,9 @@ struct HelperClientConnectionTests {
         #expect(await client.negotiated != nil)
 
         harness.killHelperSideOfEveryConnection()
-        try await waitUntil("the client saw the interruption") {
+        try await waitUntil(
+            "the client saw the interruption", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await client.health == .interrupted
         }
         #expect(await client.negotiated == nil, "the old process's reply was kept")
@@ -83,7 +85,9 @@ struct HelperClientConnectionTests {
                 try await client.snapshot()
             }
         }
-        try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
         harness.killHelperSideOfEveryConnection()
 

@@ -37,7 +37,10 @@ struct HelperClientHarnessOutcomeTests {
                 try await client.snapshot()
             }
         }
-        try await waitUntil("the snapshot's deadline has parked on the harness's clock") {
+        try await waitUntil(
+            "the snapshot's deadline has parked on the harness's clock",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
         harness.clock.advance(by: HelperClientDeadlines.gatedVerb)

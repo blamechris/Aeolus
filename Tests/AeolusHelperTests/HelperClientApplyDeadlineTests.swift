@@ -107,7 +107,7 @@ struct HelperClientApplyDeadlineTests {
             let apply = Task { try await client.apply(settings, leaseID: lease.id) }
             try await waitUntil(
                 "the apply is parked in the helper and its deadline is running",
-                timeout: .seconds(30)
+                timeout: StallTolerantWait.deliveryBudget
             ) {
                 await authority.hasBeenAskedToApply && clock.sleepers == 1
             }
@@ -244,7 +244,8 @@ struct HelperClientApplyDeadlineTests {
         #expect(await parked.client.health == .unresponsive)
         #expect(await parked.client.currentGeneration != parked.generation)
         try await waitUntil(
-            "the helper saw the connection go, which ends its lease", timeout: .seconds(30)
+            "the helper saw the connection go, which ends its lease",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await parked.authority.invalidatedConnections.count == 1
         }

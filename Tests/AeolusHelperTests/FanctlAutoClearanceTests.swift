@@ -306,10 +306,15 @@ struct FanctlAutoClearanceTests {
 
         let clock = harness.clock
         let runningOut = Task {
-            try await waitUntil("the held snapshot reached the helper") {
+            try await waitUntil(
+                "the held snapshot reached the helper", timeout: StallTolerantWait.deliveryBudget
+            ) {
                 await authority.snapshotsServed >= 1
             }
-            try await waitUntil("the client's deadline for it parked on the harness's clock") {
+            try await waitUntil(
+                "the client's deadline for it parked on the harness's clock",
+                timeout: StallTolerantWait.deliveryBudget
+            ) {
                 clock.sleepers >= 1
             }
             clock.advance(by: Self.hangDeadline)

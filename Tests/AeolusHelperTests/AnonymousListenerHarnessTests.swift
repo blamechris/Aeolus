@@ -50,10 +50,15 @@ struct AnonymousListenerHarnessTests {
         #expect(hello.payload != nil, "the handshake failed, so the snapshot was refused instead")
 
         let mover = Task {
-            try await waitUntil("the snapshot reached the authority") {
+            try await waitUntil(
+                "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+            ) {
                 await authority.hasBeenAsked
             }
-            try await waitUntil("the harness's reply deadline parked on its clock") {
+            try await waitUntil(
+                "the harness's reply deadline parked on its clock",
+                timeout: StallTolerantWait.deliveryBudget
+            ) {
                 clock.sleepers >= 1
             }
             await moved.mark()

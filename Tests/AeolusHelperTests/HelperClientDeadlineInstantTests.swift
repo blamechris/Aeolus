@@ -49,7 +49,10 @@ struct HelperClientDeadlineInstantTests {
         let snapshot = ParkedCall(of: "the snapshot the helper never answers") {
             _ = try await client.snapshot()
         }
-        try await waitUntil("the snapshot is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the snapshot is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
 
@@ -77,7 +80,10 @@ struct HelperClientDeadlineInstantTests {
             of: "the snapshot whose hello is held",
             afterCancelling: { await releaseHandshake.signal() },
             { _ = try await client.snapshot() })
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1
         }
 
@@ -103,7 +109,10 @@ struct HelperClientDeadlineInstantTests {
         let restore = ParkedCall(of: "the panic path the helper never answers") {
             try await client.restoreAllToAutomatic()
         }
-        try await waitUntil("the request is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the request is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAsked && harness.clock.sleepers == 1
         }
 

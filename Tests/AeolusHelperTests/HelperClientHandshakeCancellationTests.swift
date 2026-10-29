@@ -52,7 +52,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1
         }
         let secondStarted = AsyncSignal()
@@ -131,7 +134,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1
         }
         cancelled.cancel()
@@ -188,7 +194,10 @@ struct HelperClientHandshakeCancellationTests {
         let client = harness.client()
 
         let cancelled = Task { try await client.snapshot() }
-        try await waitUntil("the hello is held at the helper and its deadline is running") {
+        try await waitUntil(
+            "the hello is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             harness.arrivals == ["hello"] && harness.clock.sleepers == 1
         }
         let generation = await client.currentGeneration
