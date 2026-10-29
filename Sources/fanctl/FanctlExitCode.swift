@@ -171,14 +171,19 @@ struct HelperCommandFailure: Error, Equatable, Sendable {
 /// reading's unavailable reason.
 ///
 /// The helper validates holder descriptions on the way in, but this client does not get to
-/// assume the process answering is well-behaved, so control and formatting characters are
+/// assume the process answering is well-behaved, so the characters that validation refuses are
 /// removed before anything reaches a terminal and the length is capped.
+///
+/// **Which characters is not this type's to decide.** It is `FaultText.isRemovedFromDisplay(_:)`,
+/// Unicode Cc, Cf, Zl and Zp: the set the helper refuses in a description, the app's
+/// `HelperAuthoredText` removes, and the helper's logs escape. This type stopped at Cc and Cf
+/// until #483, so U+2028 and U+2029, which a terminal breaks a line on, reached one.
 enum DisplayText {
     static let maxLength = 200
 
     static func sanitised(_ text: String) -> String {
         let stripped = String(
-            text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            text.unicodeScalars.filter { !FaultText.isRemovedFromDisplay($0) })
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "(unprintable)" }
         guard trimmed.count > maxLength else { return trimmed }

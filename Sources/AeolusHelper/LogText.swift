@@ -23,7 +23,8 @@ import Foundation
 /// `SMCSensorProvider.undecodedReason` and `SMCError.readableDescription` can each carry a
 /// line break or a bidirectional control into a `detail` or a `reason` (#553, #548). A client
 /// reaches one through `holderDescription` and the handshake's `clientDescription`, whose
-/// validation refuses Cc and Cf but not yet Zl and Zp (#483).
+/// validation refuses all four categories (#483), so a client's text reaches a line already
+/// clean and the escape is for the firmware's.
 ///
 /// **Applied where a line is emitted, not where a field is interpolated, and forced by a type.**
 /// `SafetyLog` and `HelperLog` each hold their way to the unified log as a `LogText
