@@ -157,7 +157,7 @@ extension HelperClientError: LocalizedError {
                 """
         case .helperRestarted:
             return """
-                The Aeolus helper restarted while this request was in flight. Any manual \
+                The Aeolus helper restarted while this request was in progress. Any manual \
                 control it was holding ended with it; ask for the fans again if you still \
                 want them.
                 """
