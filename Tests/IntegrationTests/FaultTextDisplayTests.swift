@@ -21,16 +21,13 @@ struct FaultTextDisplayTests {
         }
     }
 
-    private static let allScalars: [Unicode.Scalar] = (0...0x10FFFF).compactMap {
-        Unicode.Scalar($0)
-    }
-
     private static func hex(_ scalars: some Sequence<Unicode.Scalar>) -> [String] {
         scalars.map { String(format: "U+%04X", $0.value) }
     }
 
-    /// One call over the whole code space, so every scalar is judged in the same string and
-    /// the run costs one pass rather than 1.1 million. "a" and "b" shield the ends from the
+    /// One call per run of the code space, so every scalar is judged in a string with its
+    /// neighbours and the sweep costs a few hundred calls rather than 1.1 million, giving the pool
+    /// back between them (`CodeSpace`, #570). "a" and "b" shield the ends of each run from the
     /// whitespace trim, which is a separate rule, and both caps are lifted so truncation is
     /// not what removes anything.
     ///
@@ -48,21 +45,29 @@ struct FaultTextDisplayTests {
     /// `lost.isEmpty`, and on `rendered == …` in the separator test below; `survivors.isEmpty`
     /// stays green, which is why the sweep has both halves.
     @Test("No scalar in Cc, Cf, Zl or Zp survives, and no other scalar is lost")
-    func displayableRemovesEveryScalarOfTheFourCategories() {
-        let removed = Self.allScalars.filter(Self.inTheFourCategories)
+    func displayableRemovesEveryScalarOfTheFourCategories() async {
+        var removed: [Unicode.Scalar] = []
+        var survivors: [Unicode.Scalar] = []
+        var lost: [Unicode.Scalar] = []
+        await CodeSpace.forEachRun { run in
+            var input = String.UnicodeScalarView()
+            input.append("a")
+            input.append(contentsOf: run)
+            input.append("b")
+            let output = Set(
+                FaultText.displayable(String(input), limit: .max, byteLimit: .max).unicodeScalars)
+            for scalar in run {
+                if Self.inTheFourCategories(scalar) {
+                    removed.append(scalar)
+                    if output.contains(scalar) { survivors.append(scalar) }
+                } else if !output.contains(scalar) {
+                    lost.append(scalar)
+                }
+            }
+        }
         #expect(removed.count > 200)
         #expect(removed.contains("\u{2028}"))
         #expect(removed.contains("\u{2029}"))
-
-        var input = String.UnicodeScalarView()
-        input.append("a")
-        input.append(contentsOf: Self.allScalars)
-        input.append("b")
-        let output = Set(
-            FaultText.displayable(String(input), limit: .max, byteLimit: .max).unicodeScalars)
-
-        let survivors = removed.filter { output.contains($0) }
-        let lost = Self.allScalars.filter { !Self.inTheFourCategories($0) && !output.contains($0) }
         #expect(survivors.isEmpty, "survived: \(Self.hex(survivors))")
         #expect(lost.isEmpty, "lost: \(Self.hex(lost.prefix(20)))")
     }

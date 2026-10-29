@@ -25,10 +25,6 @@ struct LogTextTests {
         }
     }
 
-    private static let allScalars: [Unicode.Scalar] = (0...0x10FFFF).compactMap {
-        Unicode.Scalar($0)
-    }
-
     /// The escape, spelled without `LogText`'s own code: upper-case hexadecimal, four digits
     /// at least.
     private static func expectedEscape(_ scalar: Unicode.Scalar) -> String {
@@ -38,16 +34,27 @@ struct LogTextTests {
     // MARK: - The pure escaper
 
     /// Every scalar in Cc, Cf, Zl and Zp is written out, one at a time so a failure names the
-    /// scalar; everything else comes back as it went in, in one string so the run is cheap.
+    /// scalar; everything else comes back as it went in, a run of the code space to a string, so
+    /// the sweep gives the pool back between runs (`CodeSpace`, #570).
     ///
     /// **Mutation:** make `LogText.escaped` return `text` unchanged. Run: red on `wrong.isEmpty`,
-    /// listing every removed scalar; the `untouched` comparison stays green, as nothing changes.
+    /// listing every removed scalar; `runsChanged == 0` stays green, as nothing changes.
     /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
     /// .paragraphSeparator`. Run: red on `wrong.isEmpty`, listing the escapes of U+2028 and
     /// U+2029 and nothing else.
     @Test("Every scalar in Cc, Cf, Zl and Zp is written out, and nothing else is touched")
-    func everyRemovedScalarIsWrittenOutAndNothingElseChanges() {
-        let removed = Self.allScalars.filter(Self.inTheFourCategories)
+    func everyRemovedScalarIsWrittenOutAndNothingElseChanges() async {
+        var removed: [Unicode.Scalar] = []
+        var runsChanged = 0
+        await CodeSpace.forEachRun { run in
+            removed += run.filter(Self.inTheFourCategories)
+            var kept = String.UnicodeScalarView()
+            kept.append(contentsOf: run.filter { !Self.inTheFourCategories($0) })
+            let untouched = String(kept)
+            if Array(LogText.escaped(untouched).unicodeScalars) != Array(untouched.unicodeScalars) {
+                runsChanged += 1
+            }
+        }
         #expect(removed.count > 200)
         #expect(removed.contains("\u{2028}") && removed.contains("\u{2029}"))
 
@@ -55,13 +62,7 @@ struct LogTextTests {
             LogText.escaped("a\($0)b") != "a" + Self.expectedEscape($0) + "b"
         }
         #expect(wrong.isEmpty, "not escaped as \\u{XXXX}: \(wrong.map(Self.expectedEscape))")
-
-        var kept = String.UnicodeScalarView()
-        kept.append(contentsOf: Self.allScalars.filter { !Self.inTheFourCategories($0) })
-        let untouched = String(kept)
-        #expect(
-            Array(LogText.escaped(untouched).unicodeScalars) == Array(untouched.unicodeScalars),
-            "a scalar outside Cc, Cf, Zl and Zp was changed")
+        #expect(runsChanged == 0, "a scalar outside Cc, Cf, Zl and Zp was changed")
     }
 
     @Test("The escapes read as the scalar's own number, padded to four digits")
