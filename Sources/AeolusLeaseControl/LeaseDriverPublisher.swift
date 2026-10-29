@@ -199,7 +199,8 @@ private final class Followers<Element: Sendable>: Sendable {
     /// Pinned by `LeaseDriverStreamTerminationTests.theObserversAreFreedWithTheirDriver()`:
     /// writing the handler's `[weak self]` as `[self]` (A) leaves these observers alive after the
     /// driver is freed, red in 5 of 5 debug runs, and the only red among the 10 tests of
-    /// `LeaseDriverStreamTerminationTests`, `LeaseDriverPublisherTests` and
+    /// `LeaseDriverStreamTerminationTests`, `LeaseDriverPublisherTests`,
+    /// `LeaseDriverPublisherRaceTests`, `LeaseDriverEvidencePublishTests` and
     /// `LeaseDriverPublishOrderTests`.
     func stream() -> AsyncStream<Element> {
         // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.
