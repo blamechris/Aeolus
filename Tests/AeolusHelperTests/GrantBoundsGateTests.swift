@@ -103,8 +103,8 @@ struct GrantBoundsGateTests {
     /// `.boundsImplausible`: a caller that went away says nothing about the firmware.
     ///
     /// The refusal's log line is written only on the refusal's path, so a cancellation that
-    /// reaches the caller as itself wrote none — `LeaseLog` has no seam a test can read, which is
-    /// why the fault is the assertion.
+    /// reaches the caller as itself wrote none. `LeaseLog` has had a recording seam since #560;
+    /// this test predates it, and the fault is still the assertion.
     ///
     /// **Mutation:** delete the `catch let cancellation as CancellationError` clause from
     /// `refuseIfBoundsImplausible(_:wanting:)`. Run: red — `.boundsImplausible` thrown.

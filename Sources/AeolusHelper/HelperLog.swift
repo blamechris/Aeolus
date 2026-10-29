@@ -42,7 +42,7 @@ struct HelperLog: Sendable {
     /// that called `os_log` or built a `Logger` inline would still be a route, and
     /// `HelperLogTests.everyLineTakesTheOneRoute` counts both in this file. The stored type is
     /// pinned by `LogTextTests.shippingHelperLogHoldsOnlyAnEscapingSink`. An extension of
-    /// `HelperLog` in another file is covered by neither.
+    /// `HelperLog` in another file is scanned, lexically, by `LogRouteTests`.
     ///
     /// Every interpolation in this type is `privacy: .public`, so rendering a line into one
     /// `String` and logging that `.public` discloses exactly what the per-field form did. That
