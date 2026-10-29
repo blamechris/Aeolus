@@ -38,9 +38,21 @@ import Testing
 /// 50 s cap. They used to measure it on the wall clock, and a runner that stopped the test
 /// process for longer than this (about 30 s in #439; tests that take milliseconds took 30 to 44 s
 /// in the two runs #547 is about) spent every wait in flight at once, so a double that had done
-/// nothing wrong read as one that had lost its ceiling. What compensation cannot tell is a stall
-/// from a slow hold, so a wait that really is stuck can run past the 10 s it was given, to the cap
-/// at most, and says in its issue how much stall it compensated.
+/// nothing wrong read as one that had lost its ceiling.
+///
+/// **A slow or stuck hold is not what is compensated; a late poll is.** The condition is a flag
+/// read and the 1 ms sleep is asked for again each time it returns, so a hold that is merely slow
+/// or stuck adds nothing, and what a wait that really is stuck reports depends on the pool it ran
+/// on. On a real clock, a test of `finishedBeforeCeiling` on work that never finishes (removed in
+/// #558 for its 10 s, which was CI's slowest test at 52 s of a 60 s limit) gave up at "10.0 s of
+/// waiting (plus 0.0 s of runner stall compensated)" in all 20 runs of the four outwait and park
+/// suites alone, 10 debug and 10 release. In a run of the whole target, with nothing stopped, the
+/// same wait was compensated for a pool busy with other tests: 2.3 s in a local debug run, 0.5 s
+/// in a local release run, and 7.8 s in CI's debug step and 4.0 s in its release step (run
+/// 40828896951). So a stuck wait runs past this ceiling by what the pool made its polls late, to
+/// the 50 s cap at most. What compensation cannot tell from a stall is an iteration the process
+/// did not run for another reason: the OS descheduling it, or a cooperative pool with every
+/// thread blocked. Those are compensated as well, and the issue says how much.
 ///
 /// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
 /// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s
@@ -102,25 +114,15 @@ enum RevocationProgress: Sendable, Equatable {
 /// (`SnapshotAvailabilityDoubles.parkedHandback`'s shape). `nil`, with an issue recorded, when
 /// neither arrives within `outwaitCeiling` of scheduled waiting time, which a runner stall does
 /// not spend (#547).
+///
+/// `clock` and `note` are `waitUntil`'s. There is one function and not a shipping forward over an
+/// injectable overload, so a test that drives it with a clock that can come back late runs the
+/// body every call site runs (#551).
 func revocationProgress(
     of work: ObservableWork<some Sendable>,
     outwaiting fan: Int,
     in leases: LeaseAuthority,
-    sourceLocation: SourceLocation = #_sourceLocation
-) async throws -> RevocationProgress? {
-    try await revocationProgress(
-        of: work, outwaiting: fan, in: leases, clock: SystemWaitClock(),
-        sourceLocation: sourceLocation)
-}
-
-/// The injectable overload, and what the one above calls: `clock` and `note` are `waitUntil`'s.
-/// It exists so that a test can show a stall is not spent without stopping a process; `clock`
-/// has no default, so a call without it can only mean the overload above.
-func revocationProgress(
-    of work: ObservableWork<some Sendable>,
-    outwaiting fan: Int,
-    in leases: LeaseAuthority,
-    clock: some WaitClock,
+    clock: some WaitClock = SystemWaitClock(),
     note: (String) -> Void = StallTolerantWait.writeToStandardError,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws -> RevocationProgress? {
@@ -128,8 +130,8 @@ func revocationProgress(
     // when it recorded the timeout.
     var progress: RevocationProgress?
     try await outwait(
-        "the revocation to finish or park on fan \(fan): it did neither", clock: clock,
-        note: note, sourceLocation: sourceLocation
+        (event: "the revocation to finish or park on fan \(fan)", ifItTimesOut: "it did neither"),
+        clock: clock, note: note, sourceLocation: sourceLocation
     ) {
         if await work.isFinished.isSet {
             progress = .finished
@@ -153,23 +155,15 @@ func revocationProgress(
 /// not turn a double that is about to return into one that never did (#547). The poll only
 /// sleeps, so a `.timeLimit` that expires first cancels it; joining the task is the one
 /// uncancellable step, and it is reached only for work that has finished.
+///
+/// `clock` and `note` are `waitUntil`'s. There is one function and not a shipping forward over an
+/// injectable overload, so a test that drives it with a clock that can come back late runs the
+/// body every call site runs (#551).
 @discardableResult
 func finishedBeforeCeiling<Value: Sendable>(
     _ description: String,
     _ work: ObservableWork<Value>,
-    sourceLocation: SourceLocation = #_sourceLocation
-) async throws -> Value? {
-    try await finishedBeforeCeiling(
-        description, work, clock: SystemWaitClock(), sourceLocation: sourceLocation)
-}
-
-/// The injectable overload, and what the one above calls: `clock` and `note` are `waitUntil`'s.
-/// `clock` has no default, so a call without it can only mean the overload above.
-@discardableResult
-func finishedBeforeCeiling<Value: Sendable>(
-    _ description: String,
-    _ work: ObservableWork<Value>,
-    clock: some WaitClock,
+    clock: some WaitClock = SystemWaitClock(),
     note: (String) -> Void = StallTolerantWait.writeToStandardError,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws -> Value? {
@@ -178,8 +172,10 @@ func finishedBeforeCeiling<Value: Sendable>(
     // final look and a second one here would otherwise return a value beside a failure.
     var done = false
     try await outwait(
-        "\(description) to finish: something it awaits was never resumed", clock: clock,
-        note: note, sourceLocation: sourceLocation
+        (
+            event: "\(description) to finish",
+            ifItTimesOut: "something it awaits was never resumed"
+        ), clock: clock, note: note, sourceLocation: sourceLocation
     ) {
         done = await work.isFinished.isSet
         return done
@@ -190,16 +186,21 @@ func finishedBeforeCeiling<Value: Sendable>(
 
 /// The one budget both outwaits above are held to: `outwaitCeiling` of waiting, polled each
 /// millisecond, with `waitUntil`'s stall compensation and its cap.
+///
+/// `waiting.event` is what is waited for, and is all a passing wait's note says.
+/// `waiting.ifItTimesOut` is why a timeout is a failure, and goes into the issue a timeout records
+/// and nowhere else.
 private func outwait(
-    _ what: String,
+    _ waiting: (event: String, ifItTimesOut: String),
     clock: some WaitClock,
     note: (String) -> Void,
     sourceLocation: SourceLocation,
     _ condition: () async -> Bool
 ) async throws {
     try await waitUntil(
-        what, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock, note: note,
-        condition, sourceLocation: sourceLocation)
+        waiting.event, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock,
+        note: note, ifItTimesOut: waiting.ifItTimesOut, condition,
+        sourceLocation: sourceLocation)
 }
 
 /// § 5's cycles up to the terminal action, under `outwaitCeiling`.
