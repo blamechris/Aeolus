@@ -204,9 +204,7 @@ struct HelperClientHealthStreamTests {
     /// `{ [weak self] _ in self?.state.withLock { … } }`. Run, debug, with `HealthSignalTests`:
     /// red in 5 of 5 at the wait, after its 20 s budget. The other 6 tests stay green,
     /// `theClientIsHeldWeakly()` among them. Before this test, A was green on all of them.
-    @Test(
-        "The observers of a client that nothing holds are freed with it while a health stream is open"
-    )
+    @Test("A client's observers are freed with it, while a health stream is open")
     func theObserversAreFreedWithTheClient() async throws {
         let subscribed = try await Self.subscribeAndLetGo()
         try await waitUntil(

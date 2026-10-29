@@ -67,7 +67,7 @@ import os
 /// - **That value is the driver's report.** `LeaseDriver` starts its publisher with its own
 ///   report, and every change of `current` or `evidence` is published in the turn that makes it.
 ///   So between turns of the actor the value here is `LeaseDriver.report`. Pinned for the
-///   evidence write in `applyAnswered()` by `LeaseDriverPublisherTests`'
+///   evidence write in `applyAnswered()` by `LeaseDriverPublisherRaceTests`'
 ///   `aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone()`: publishing it from a task (B)
 ///   is red in 5 of 5 debug runs. A registration on another thread can land in the
 ///   middle of a turn: it starts with the last value stored when it takes the lock, which in a
@@ -85,7 +85,7 @@ import os
 /// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
 /// inside the stream's.
 ///
-/// **Pinned by the storm test, not by the argument.** `LeaseDriverPublisherTests`'
+/// **Pinned by the storm test, not by the argument.** `LeaseDriverPublisherRaceTests`'
 /// `aStormOfRegistrationsIsHandedEachChangeAfterTheOneBeforeIt()` registers streams of both kinds
 /// in a loop, eight tasks at once, through one turn of 100,000 publications, and requires each
 /// stream's second element to be the change published right after its first. Run, debug, each

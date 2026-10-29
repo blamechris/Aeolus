@@ -147,44 +147,7 @@ struct HealthSignalTests {
     /// is broken. `LeaseDriverPublisherTests` has the same test for the lease driver's publisher.
     @Test("A storm of registrations is handed each value right after the one before it")
     func aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt() async {
-        let owner = Owner()
-        let registered = Counter()
-        let total = await withTaskGroup(of: StormOutcome.self) { group in
-            for _ in 0..<Self.stormers {
-                group.addTask { .stormer(await Self.storm(against: owner, counting: registered)) }
-            }
-            group.addTask {
-                // Bounded by steps as well as by cancellation, so a stormer that cannot start does
-                // not hold the owner back for ever.
-                var waited = 0
-                while registered.value < Self.stormers, waited < Self.patience {
-                    do { try await Task.sleep(for: Self.step) } catch { return .published }
-                    waited += 1
-                }
-                await owner.publish(Self.stormPublished)
-                return .published
-            }
-            var total = Tally()
-            var stormersLeft = Self.stormers
-            for await outcome in group {
-                switch outcome {
-                case .stormer(let tally):
-                    total.add(tally)
-                    stormersLeft -= 1
-                    if stormersLeft == 0 { group.cancelAll() }
-                case .published:
-                    if stormersLeft > 0 {
-                        group.addTask {
-                            try? await Task.sleep(for: Self.grace)
-                            return .graceEnded
-                        }
-                    }
-                case .graceEnded:
-                    group.cancelAll()
-                }
-            }
-            return total
-        }
+        let total = await Self.stormRegistrations(against: Owner())
 
         #expect(
             total.abandoned == 0,
@@ -273,6 +236,48 @@ struct HealthSignalTests {
     /// How many steps the owner waits for the stormers to register once, and how long each is.
     static let patience = 5_000
     static let step: Duration = .milliseconds(1)
+
+    /// Runs the storm: `stormers` tasks register streams against `owner` while it publishes
+    /// `stormPublished` values in one turn, and what they found, added up.
+    static func stormRegistrations(against owner: Owner) async -> Tally {
+        let registered = Counter()
+        return await withTaskGroup(of: StormOutcome.self) { group in
+            for _ in 0..<stormers {
+                group.addTask { .stormer(await storm(against: owner, counting: registered)) }
+            }
+            group.addTask {
+                // Bounded by steps as well as by cancellation, so a stormer that cannot start does
+                // not hold the owner back for ever.
+                var waited = 0
+                while registered.value < stormers, waited < patience {
+                    do { try await Task.sleep(for: step) } catch { return .published }
+                    waited += 1
+                }
+                await owner.publish(stormPublished)
+                return .published
+            }
+            var total = Tally()
+            var stormersLeft = stormers
+            for await outcome in group {
+                switch outcome {
+                case .stormer(let tally):
+                    total.add(tally)
+                    stormersLeft -= 1
+                    if stormersLeft == 0 { group.cancelAll() }
+                case .published:
+                    if stormersLeft > 0 {
+                        group.addTask {
+                            try? await Task.sleep(for: grace)
+                            return .graceEnded
+                        }
+                    }
+                case .graceEnded:
+                    group.cancelAll()
+                }
+            }
+            return total
+        }
+    }
 
     /// Registers streams one after another until it sees `terminal` first or is cancelled, taking
     /// two elements of each and checking the second against the first.

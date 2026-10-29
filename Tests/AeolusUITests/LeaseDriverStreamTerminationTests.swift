@@ -153,8 +153,7 @@ struct LeaseDriverStreamTerminationTests {
     /// after `patience` steps (about 4 s), with "the driver is freed and 2 of its 2 sets of
     /// observers are not". The other 9 tests stay green, `theDriverIsHeldWeakly()` among them.
     /// Before this test, A was green on all of them.
-    @Test(
-        "The observers of a driver that nothing holds are freed with it while its streams are open")
+    @Test("A driver's observers are freed with it, while its streams are open")
     func theObserversAreFreedWithTheirDriver() async throws {
         let subscribed = await Self.subscribeAndLetGo()
         try #require(
