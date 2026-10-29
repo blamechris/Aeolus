@@ -134,7 +134,7 @@ struct MenuBarContentView: View {
                 Text("Updated")
             }
         case .failed(let error):
-            Text("Last refresh failed: \(PollingStatusDisplay.failureReason(error))")
+            Text(PollingStatusDisplay.lastRefreshFailedLine(error))
         }
     }
 

@@ -85,6 +85,17 @@ enum PollingStatusDisplay {
         HelperAuthoredText.sanitised(error.description)
     }
 
+    /// The whole of the menu bar's status line for a failed refresh: "Last refresh failed: "
+    /// and the cleaned reason (#548).
+    ///
+    /// Built here rather than in the menu bar's view body so that a unit test sees the string
+    /// the user reads. When the view interpolated `failureReason(_:)` itself, restoring
+    /// `error.description` there left every test green. The view now displays this value and
+    /// adds nothing to it.
+    static func lastRefreshFailedLine(_ error: PollingError) -> String {
+        "Last refresh failed: \(failureReason(error))"
+    }
+
     /// `elapsed(since:now:)` without "just now", for readings that are being shown as not
     /// current: "just now" there would read as an all-clear.
     private static func elapsedWithoutJustNow(since date: Date, now: Date) -> String {

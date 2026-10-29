@@ -72,10 +72,40 @@ struct PollingStatusFailureReasonTests {
     }
 
     /// The menu bar's "Last refresh failed:" line shows the same words through the same
-    /// function. Pinned here at the function; the view body that calls it has no test.
+    /// function. Pinned here at the function.
     @Test("The shared failure reason drops the line feed and keeps the rest")
     func sharedFailureReasonIsCleaned() async throws {
         let error = try await discoveryFailure()
         #expect(PollingStatusDisplay.failureReason(error) == Self.cleanedReason)
+    }
+
+    /// The whole menu bar line, as the view displays it (#548). The view body adds nothing to
+    /// this value, so this is the string the user reads.
+    ///
+    /// **Mutation (M6):** build the line from `error.description` instead of
+    /// `failureReason(error)`. Run: red at the line expectation and the removed-scalar
+    /// expectation.
+    @Test("The menu bar's last-refresh-failed line carries the cleaned reason, line feed dropped")
+    func menuBarLineIsCleaned() async throws {
+        let error = try await discoveryFailure()
+
+        let line = PollingStatusDisplay.lastRefreshFailedLine(error)
+
+        #expect(line == "Last refresh failed: \(Self.cleanedReason)")
+        #expect(!line.unicodeScalars.contains(where: HelperAuthoredText.isRemoved))
+    }
+
+    /// A failure with nothing to clean reads as its own description after the fixed prefix, so
+    /// the prefix and its separator are pinned by something that does not depend on the
+    /// sanitiser.
+    @Test("The menu bar's line is the fixed prefix and the failure's own words")
+    func menuBarLineKeepsAPlainReason() {
+        #expect(
+            PollingStatusDisplay.lastRefreshFailedLine(.noSMC)
+                == "Last refresh failed: no AppleSMC service on this machine")
+        #expect(
+            PollingStatusDisplay.lastRefreshFailedLine(
+                .readFailed(context: "enumerate sensors", reason: "connection to AppleSMC failed"))
+                == "Last refresh failed: enumerate sensors: connection to AppleSMC failed")
     }
 }
