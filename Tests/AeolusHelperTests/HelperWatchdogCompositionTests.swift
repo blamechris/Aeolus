@@ -362,7 +362,7 @@ struct HelperWatchdogCompositionTests {
                 release.signal()
                 window.withLock { $0.finished = true }
             }
-            guard entered.wait(timeout: .now() + .seconds(20)) == .success else { return }
+            guard signalled(entered, within: 20) else { return }
             window.withLock { $0.occupied = true }
 
             // Queued behind the held connection; it cannot run until the release.

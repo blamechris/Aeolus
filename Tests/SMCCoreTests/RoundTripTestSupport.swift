@@ -32,8 +32,23 @@ final class SteppedClock: Clock, Sendable {
 /// A bounded wait, in a synchronous function so an `async` test may call it: the compiler
 /// refuses `DispatchSemaphore.wait` directly in an async context, and the bound is what keeps
 /// a failing test from hanging instead of failing.
+///
+/// **The budget is counted in slices of 50 ms, not measured against a deadline**
+/// ([#421](https://github.com/blamechris/Aeolus/issues/421)). `observeInFlight` allows a reader
+/// that takes microseconds three seconds, and a runner that stops the process for ten, or
+/// starves it for twenty, spends that while the reader was not running either, and a correct
+/// monitor is then reported as one that "blocked behind a round trip that had not returned".
+/// A stall, however it ends the slice it lands in, spends that one slice. The wait also ends at
+/// `seconds + 50` of wall time, so a waiter that is slow rather than stopped still fails.
+/// `SliceCountedWait` in `AeolusHelperTests` is the same wait, with the tests of it; the two
+/// targets cannot share a file.
 func signalled(_ semaphore: DispatchSemaphore, within seconds: Int) -> Bool {
-    semaphore.wait(timeout: .now() + .seconds(seconds)) == .success
+    let limit = ContinuousClock.now.advanced(by: .seconds(seconds + 50))
+    for _ in 0..<(seconds * 20) {
+        if semaphore.wait(timeout: .now() + .milliseconds(50)) == .success { return true }
+        if ContinuousClock.now >= limit { return false }
+    }
+    return false
 }
 
 /// `monitor.inFlight()`, read on a thread of its own, with the answer to "did it return" as an
