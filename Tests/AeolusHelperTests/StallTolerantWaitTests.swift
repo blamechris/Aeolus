@@ -178,27 +178,55 @@ struct StallTolerantWaitTests {
         #expect(StallTolerantWait.ceiling < .seconds(60))
     }
 
-    /// The deadlines the one-minute suites run under leave their client room to fail first.
+    /// The backstop the one-minute suites fail at leaves their client room to report before the
+    /// limit ([#589](https://github.com/blamechris/Aeolus/issues/589)).
     ///
     /// `FanctlResetCorruptedStateTests` and `FanctlAutoUnreadModeTests` carry
-    /// `.timeLimit(.minutes(1))` and take `FanctlResetTests.unhurried`. With a request dropped, the
-    /// client's own "did not confirm" must surface before that limit fires with a message that
-    /// says nothing about why (#443). So each verb's deadline plus `margin` stays under 60 s. The
-    /// limit is restated here and not read, as above: a suite's trait cannot be read at run time.
+    /// `.timeLimit(.minutes(1))`, as do the client suites. Each counts its deadlines on a harness
+    /// clock only the test moves (#421, #583), so a request nothing answers does not fail when its
+    /// deadline's figure has passed. It fails when `ClockBackstop` runs the deadline out,
+    /// `ClockBackstop.defaultBudget` of scheduled waiting time into the harness's life. The
+    /// client's own "did not confirm" must surface before the limit fires with a message that says
+    /// nothing about why (#443), which is two relations:
     ///
-    /// **The margin is 30 s.** That is the stall #439's CI runner showed before a suite's first
-    /// request went out (the first ~30 s of the run, every test taking ~34 s), and it is over four
-    /// times the most the dropped-request runs spent outside the deadline (17.1 s at 10 s, so
-    /// 7.1 s; 65.4 s at 60 s, so 5.4 s). At 10 s that leaves 20 s unspent; at 55 s and 60 s it
-    /// leaves none, which is what #439 gave these suites.
+    /// - **The budget is under the ceiling.** The backstop waits through `StallTolerantWait`, so
+    ///   a stall is added to the budget until the wait reaches `ceiling`, and ends there whatever
+    ///   it has compensated. A budget at or over the ceiling is a budget no stall can extend.
+    /// - **The ceiling leaves `margin` under the limit.** That is the latest the backstop fires,
+    ///   and the client reports once it has. The limit is restated here and not read, as above: a
+    ///   suite's trait cannot be read at run time.
     ///
-    /// **Mutation:** set `FanctlResetTests.unhurried` back to 55 s gated and 60 s panic. Run: red.
-    @Test("The deadlines the one-minute suites run under leave their client room to fail first")
-    func theOneMinuteSuitesDeadlinesFitInsideTheirTimeLimit() {
-        let margin = Duration.seconds(30)
-        let deadlines = FanctlResetTests.unhurried
-        #expect(deadlines.gatedVerb + margin < .seconds(60))
-        #expect(deadlines.panicVerb + margin < .seconds(60))
+    /// **The margin is 5 s.** With the harness dropping the panic request, the client's "did not
+    /// confirm" came 0.04 s after the backstop fired (30.037 to 30.041 s a test, two tests in each
+    /// of two runs, at a load average of 15). So the margin is over a hundred times what it took,
+    /// and half of the 10 s the ceiling leaves.
+    ///
+    /// **What this replaces.** The guard held `FanctlResetTests.unhurried`'s deadlines and a 30 s
+    /// margin under 60 s, which named a 10 s that decides nothing for these suites: it is only
+    /// what the client reports. Moved to the backstop, 30 s plus that margin is not under 60 s, so
+    /// the margin is derived again (above) and not carried.
+    ///
+    /// **Mutation:** set `ClockBackstop.defaultBudget` to `.seconds(55)`. Run: red on the first
+    /// expectation, the budget at or over the ceiling.
+    /// **Mutation:** set `StallTolerantWait.ceiling` to `.seconds(56)`. Run: red on the second,
+    /// while `theCeilingIsInsideTheShortestTimeLimit` stays green.
+    @Test("The backstop the one-minute suites fail at leaves their client room to report")
+    func theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit() {
+        let margin = Duration.seconds(5)
+        let budget = ClockBackstop.defaultBudget
+        #expect(
+            budget < StallTolerantWait.ceiling,
+            """
+            the backstop fires after \(budget) of scheduled time, and a wait is ended at \
+            \(StallTolerantWait.ceiling) of wall time whatever it has compensated, so no stall \
+            can extend it
+            """)
+        #expect(
+            StallTolerantWait.ceiling + margin < .seconds(60),
+            """
+            a backstop ended at the ceiling of \(StallTolerantWait.ceiling) leaves its client \
+            less than \(margin) to report before a one-minute limit
+            """)
     }
 
     // MARK: - Cancellation

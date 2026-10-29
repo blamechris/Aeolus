@@ -125,7 +125,7 @@ final class AnonymousListenerHarness {
     init(
         authority: any FanAuthority,
         admission: any ConnectionAdmission = UnenforcedAdmission(),
-        backstopAfter: Duration = .seconds(30)
+        backstopAfter: Duration = ClockBackstop.defaultBudget
     ) {
         let clock = ManualClock()
         self.clock = clock

@@ -43,15 +43,15 @@ struct FanctlResetTests {
     /// default of `FanctlAutoTests.run`, named by `FanctlStatusTests` and the corrupted-state
     /// suite): 10 s gated, 10 s panic, and the product's handshake. They are the values this
     /// constant had before #439 made it stall-tolerant (`7b19422^`), restored and not newly
-    /// chosen, so that a request nothing answers fails at 10 s, inside the one-minute limits
-    /// those suites carry (#443). `theOneMinuteSuitesDeadlinesFitInsideTheirTimeLimit` holds it
-    /// under them, and `noHarnessDefaultImposesATighterDeadlineThanTheProduct` above the product.
+    /// chosen, so that a request nothing answers fails inside the one-minute limits those suites
+    /// carry (#443). `noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds it no tighter.
     ///
     /// **Counted on the harness's clock since #583.** These suites build their connection with
-    /// `counting: .harness`, so a runner stall cannot spend the 10 s: the deadline runs out when
-    /// `ClockBackstop` moves the clock, 30 s of scheduled waiting time into the harness's life,
-    /// and the client's "did not confirm" then surfaces inside the one-minute limit as before.
-    /// The figure is still what the client reports and what the figure above is held to.
+    /// `counting: .harness`, so a runner stall cannot spend the 10 s. A request nothing answers
+    /// fails with the client's "did not confirm" when `ClockBackstop` moves the clock, 30 s of
+    /// scheduled waiting time in (50 s of wall time at the most). That the backstop is inside the
+    /// limit is `theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit`'s; the 10 s is only what the
+    /// client reports, and does not decide when the request fails (#589).
     static let unhurried = HelperClientDeadlines(
         gatedVerb: .seconds(10),
         panicVerb: .seconds(10),
