@@ -1,3 +1,5 @@
+import Testing
+
 /// The Unicode code space, handed out a run at a time so a sweep gives the cooperative pool back
 /// between runs (#570).
 ///
@@ -18,19 +20,33 @@ enum CodeSpace {
     /// queued behind a sweep waits for a run, not for the sweep.
     static let runLength: UInt32 = 4_096
 
+    /// How many Unicode scalar values there are: U+0000 to U+10FFFF, less the 2,048 surrogates.
+    /// A literal, not derived from the loop's own bounds, so a walk that stopped short is red.
+    static let scalarCount = 1_112_064
+
     /// Calls `body` with each run of scalars, in ascending order, covering U+0000 to U+10FFFF
     /// except the surrogates, and yields the pool after each.
     ///
-    /// The yield is not a `throws` point: a cancelled sweep still finishes, because a sweep that
-    /// stopped early would pass having looked at part of the code space.
-    static func forEachRun(_ body: ([Unicode.Scalar]) -> Void) async {
+    /// A sweep that quietly looked at part of the code space would pass, so the walk counts what
+    /// it handed out and records an issue at the caller's line if that is not every scalar. The
+    /// yield is not a `throws` point for the same reason: a cancelled sweep still finishes.
+    static func forEachRun(
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ body: ([Unicode.Scalar]) -> Void
+    ) async {
         let end: UInt32 = 0x11_0000
         var start: UInt32 = 0
+        var visited = 0
         while start < end {
             let stop = min(start + runLength, end)
-            body((start..<stop).compactMap { Unicode.Scalar($0) })
+            let run = (start..<stop).compactMap { Unicode.Scalar($0) }
+            visited += run.count
+            body(run)
             start = stop
             await Task.yield()
         }
+        #expect(
+            visited == scalarCount, "the walk handed out \(visited) of \(scalarCount) scalars",
+            sourceLocation: sourceLocation)
     }
 }
