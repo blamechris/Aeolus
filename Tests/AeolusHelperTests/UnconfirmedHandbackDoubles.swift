@@ -60,8 +60,9 @@ actor WedgedThenRefusingRestorePlane: AdmissionBlindPlane {
         if !hasParked {
             hasParked = true
             // A wedge nobody releases gives up at the ceiling and goes on into the refusal (#451).
-            if try await !held.wait(atMost: ceiling) {
-                recordAbandonedPark(by: "WedgedThenRefusingRestorePlane", of: scope, after: ceiling)
+            if case .abandoned(let expiry) = try await held.wait(atMost: ceiling) {
+                recordAbandonedPark(
+                    by: "WedgedThenRefusingRestorePlane", of: scope, after: expiry)
             }
         }
         throw AeolusXPCFault.helperFailed(detail: "the firmware discarded the mode write")
@@ -177,8 +178,8 @@ actor CycleWedgingRestorePlane: AdmissionBlindPlane {
         restoreScopes.append(scope)
         if isWedging {
             let thisCyclesWedge = held
-            if try await !thisCyclesWedge.wait(atMost: ceiling) {
-                recordAbandonedPark(by: "CycleWedgingRestorePlane", of: scope, after: ceiling)
+            if case .abandoned(let expiry) = try await thisCyclesWedge.wait(atMost: ceiling) {
+                recordAbandonedPark(by: "CycleWedgingRestorePlane", of: scope, after: expiry)
                 // The test is red already: stop wedging, as `release()` does, so a restore the
                 // cycle issues next does not wait out a ceiling of its own (#451).
                 await release()

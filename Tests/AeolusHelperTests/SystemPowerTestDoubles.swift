@@ -209,8 +209,8 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
         // A wedge nobody releases gives up at the ceiling, and a mutation that adds a restore to
         // a path the test did not park fails it instead of hanging the run (#451). The latch is
         // open after that, so no later restore waits out a ceiling of its own.
-        if try await !held.wait(atMost: ceiling) {
-            recordAbandonedPark(by: "WedgedRestorePlane", of: scope, after: ceiling)
+        if case .abandoned(let expiry) = try await held.wait(atMost: ceiling) {
+            recordAbandonedPark(by: "WedgedRestorePlane", of: scope, after: expiry)
         }
         try await wrapped.restoreToAutomatic(scope)
     }

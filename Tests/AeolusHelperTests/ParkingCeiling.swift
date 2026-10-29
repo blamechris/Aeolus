@@ -28,9 +28,9 @@ import Testing
 /// The longest park was 0.19 to 0.31 s in three runs with nothing added, and in three each with
 /// `yes` added at 2, 6 and 10 times the core count it was 0.42 to 0.47 s, 0.74 to 1.00 s and 1.03
 /// to 1.40 s. 10 s leaves at least 7 times the longest park seen (1.40 s), and at least 2.7 times
-/// the longest return of any wait (3.62 s, the 150 ms wait at `ParkingCeilingTests.swift:92`);
-/// both ratios are floored. Lowering it below 1.40 s would make legitimate parks expire, record an
-/// issue and release mid-test.
+/// the longest return of any wait (3.62 s, the 150 ms wait in
+/// `ParkingCeilingTests.aGivenUpWaitDoesNotCancelTheOthers`); both ratios are floored. Lowering it
+/// below 1.40 s would make legitimate parks expire, record an issue and release mid-test.
 ///
 /// **Why it is not 5 s.** In every run all 45 returns, the 35 parks and the ten waits
 /// `ParkingCeilingTests` makes, directly or through its doubles, fell within 0.2 to 1.1 s of one
@@ -54,12 +54,42 @@ import Testing
 /// expiries in a row with no stall take 30 s of that limit, so a test that hits it that often
 /// still ends before the limit does. What compensation cannot tell from a stall is a poll the
 /// process did not run for another reason, and those are compensated too.
+///
+/// The issue a park that gave up records says what happened and not what was asked for: the time
+/// it waited, the stall it compensated, and whether the cap ended it
+/// (``recordAbandonedPark(by:of:after:sourceLocation:)``). Printing `parkCeiling` would say 10 s
+/// for a park the cap ended at 50 s of wall time, 45 s of which were a stall.
 let parkCeiling = Duration.seconds(10)
 
 /// How often the park's timer looks at the clock. Short against the 250 ms a poll must come back
 /// late by to count as a stall, and long enough that a park costs a wakeup per 10 ms rather than
 /// per millisecond.
 let parkPollInterval = Duration.milliseconds(10)
+
+/// How a park ended.
+enum ParkOutcome: Sendable, Equatable {
+
+    /// The signal was sent: by the release the park was waiting for, or on its behalf by an
+    /// earlier expiry on the same signal, whose latch is open.
+    case signalled
+
+    /// The ceiling, or the cap, ended the park first, and the park sent the signal itself.
+    /// Carries what the poll spent, so the issue the double records can say it.
+    case abandoned(StallTolerantWait.Expiry)
+
+    /// Whether the signal was sent rather than the park abandoned. For tests of the park
+    /// itself: a double matches `case .abandoned`, so it has the `Expiry` to record.
+    var wasSignalled: Bool { self == .signalled }
+}
+
+/// Where the timer leaves what it spent when it gives up, for the waiter to read once the signal
+/// it sent has resumed it.
+private actor AbandonedPark {
+
+    private(set) var expiry: StallTolerantWait.Expiry?
+
+    func abandon(after expiry: StallTolerantWait.Expiry) { self.expiry = expiry }
+}
 
 extension AsyncSignal {
 
@@ -72,9 +102,11 @@ extension AsyncSignal {
     ///     stopping a process passes one that can come back late; every other caller takes the
     ///     real one. There is one function and not a shipping forward over an injectable
     ///     overload, so the body the doubles run is the body the tests drive.
-    /// - Returns: `true` when the signal was sent, `false` when `ceiling` passed first. On `false`
-    ///   the signal has been sent on the waiter's behalf, so every waiter on it goes on, and a
-    ///   later one does not park for another ceiling: the signal is a latch, and it is open.
+    /// - Returns: ``ParkOutcome/signalled`` when the signal was sent, and
+    ///   ``ParkOutcome/abandoned(_:)`` when the ceiling or the cap ended it, with what the poll
+    ///   spent. On `abandoned` the signal has been sent on the waiter's behalf, so every waiter
+    ///   on it goes on, and a later one does not park for another ceiling: the signal is a
+    ///   latch, and it is open.
     /// - Throws: `CancellationError`, when the calling task is cancelled while it waits.
     ///
     /// The timer is `StallTolerantWait.poll` with a condition that never holds, so what counts as
@@ -86,35 +118,45 @@ extension AsyncSignal {
     /// poll's sleep.
     func wait(
         atMost ceiling: Duration, clock: some WaitClock = SystemWaitClock()
-    ) async throws -> Bool {
-        let expired = CompletionFlag()
+    ) async throws -> ParkOutcome {
+        let gaveUp = AbandonedPark()
         let timer = Task {
             let outcome = try? await StallTolerantWait.poll(
                 timeout: ceiling, interval: parkPollInterval, clock: clock
             ) { false }
-            guard case .timedOut = outcome, !Task.isCancelled else { return }
-            await expired.mark()
+            guard case .timedOut(let expiry) = outcome, !Task.isCancelled else { return }
+            // Before the signal, so that a waiter the signal resumes finds it.
+            await gaveUp.abandon(after: expiry)
             signal()
         }
         defer { timer.cancel() }
         try await wait()
-        return await !expired.isSet
+        guard let expiry = await gaveUp.expiry else { return .signalled }
+        return .abandoned(expiry)
     }
 }
 
-/// Records that `double` held a restore of `scope` for `ceiling` and nobody let it through.
+/// Records that `double` held a restore of `scope` and nobody let it through, saying what the
+/// park spent: `expiry` is what ``AsyncSignal/wait(atMost:clock:)`` returned.
+///
+/// The time waited, the stall compensated and whether the cap ended the park are `waitUntil`'s
+/// wording (`Expiry.message(waitingFor:)`), so a park and a wait that gave up read alike. It takes
+/// the `Expiry` and not the ceiling the double was given, so a caller cannot hand it the
+/// constant by accident: after a stall that ceiling is not how long the park was held, or why
+/// it ended.
 ///
 /// Called by the double itself, from inside the restore it held, so the issue lands on the test
 /// whose task the restore runs under.
 func recordAbandonedPark(
-    by double: String, of scope: FanRestoreScope, after ceiling: Duration,
+    by double: String, of scope: FanRestoreScope, after expiry: StallTolerantWait.Expiry,
     sourceLocation: SourceLocation = #_sourceLocation
 ) {
     Issue.record(
         """
-        \(double) held a restore of \(scope) for \(ceiling) and nobody let it through: a restore \
-        the test did not account for, or a release it never made. It has gone on, so that the run \
-        ends red instead of hanging.
+        \(double) held a restore of \(scope) and nobody let it through: \
+        \(expiry.message(waitingFor: "its release")). That is a restore the test did not account \
+        for, or a release it never made. It has gone on, so that the run ends red instead of \
+        hanging.
         """,
         sourceLocation: sourceLocation)
 }
