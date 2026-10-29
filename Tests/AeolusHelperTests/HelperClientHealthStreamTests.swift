@@ -13,12 +13,19 @@ import Testing
 ///    termination handler takes the observer out of the client's `HealthSignal`, under its lock.
 ///    Without that, an ended stream kept its observer for good, and every later change of health
 ///    was yielded to it. `droppedStreamsLeaveNoObserver(_:)` drops thousands as they are made.
+///    A stream ends when its last holder drops it, or when the task reading it is cancelled
+///    while it waits on the stream. A reader cancelled while busy elsewhere has not ended it
+///    yet: the observer is removed at that reader's next `next()`, which returns `nil` at once.
+///    (Run on its own, a stream whose reader was cancelled during a blocking call had not
+///    terminated 0.1 s later, and had after the reader read again.)
 /// 2. **It joins and leaves synchronously (#541):** registered by the time `healthUpdates()`
 ///    returns, and gone by the time whatever drops it returns.
 ///    `aStreamJoinsAndLeavesInTheStepsThatMakeAndDropIt()`.
-/// 3. **Nothing a stream holds reaches the client.** The client holds the observer, and the
-///    observer holds the handler, so a handler that held the client would make a cycle that keeps
-///    a connection-owning actor alive while any of its streams is open. `theClientIsHeldWeakly()`.
+/// 3. **Nothing a stream holds reaches the client, or the observers.** The client holds the
+///    observers, and each observer holds the handler, so a handler that held the client would make
+///    a cycle that keeps a connection-owning actor alive while any of its streams is open, and one
+///    that held the observers a cycle that keeps them alive after the client is gone.
+///    `theClientIsHeldWeakly()` and `theObserversAreFreedWithTheClient()`.
 ///
 /// No connection is made here. A stream of the health signal reaches the actor and nothing past
 /// it, so the harness's listener is never dialled; it is there because it is how this target
@@ -124,14 +131,16 @@ struct HelperClientHealthStreamTests {
         }
 
         try await waitUntil(
-            "every task the dropped streams started has ended", timeout: Self.patience
+            "nothing besides this test holds the client", timeout: Self.patience
         ) { isKnownUniquelyReferenced(&client) }
         try #require(
             isKnownUniquelyReferenced(&client),
-            "a dropped stream's task still holds the client, so the count would be read early")
+            "something besides this test still holds the client, so the count would be read early")
 
-        // That wait is not an order on the removals: a removal that holds the client weakly is
-        // still queued when it ends. So the count is polled for, and then read once more below.
+        // Since #541 no task is started for a dropped stream, so nothing is queued and that wait
+        // ends at its first check; it is no order on anything. A later design whose removals were
+        // tasks that held the client weakly would have them queued when it ended, so the count is
+        // polled for, and then read once more below.
         try await waitUntil(
             "every dropped stream's observer has been removed", timeout: Self.patience
         ) { Self.observerCount(of: client) == joined }
@@ -177,6 +186,33 @@ struct HelperClientHealthStreamTests {
         try await waitUntil(
             "the client is freed with its health stream open", timeout: Self.patience
         ) { subscribed.client == nil }
+        // Open until the wait is over, for the reason `droppedStreamsLeaveNoObserver` gives.
+        withExtendedLifetime(subscribed.updates) {}
+    }
+
+    /// The observers of a client's health are freed with the client, while one of its health
+    /// streams is open.
+    ///
+    /// `theClientIsHeldWeakly()` cannot see this. The termination handler of a stream names the
+    /// observers, not the client, so a handler that held the observers strongly would make a
+    /// cycle (the set holds each observer, each observer holds its handler, the handler holds the
+    /// set) that leaves the client free and keeps the set, and everything in it, for as long as
+    /// a stream stays open.
+    ///
+    /// **Mutation (A, a handler that holds the observers):** in `HealthObservers.stream()`, write
+    /// the termination handler as `{ [self] _ in self.state.withLock { … } }` in place of
+    /// `{ [weak self] _ in self?.state.withLock { … } }`. Run, debug, with `HealthSignalTests`:
+    /// red in 5 of 5 at the wait, after its 20 s budget. The other 6 tests stay green,
+    /// `theClientIsHeldWeakly()` among them. Before this test, A was green on all of them.
+    @Test(
+        "The observers of a client that nothing holds are freed with it while a health stream is open"
+    )
+    func theObserversAreFreedWithTheClient() async throws {
+        let subscribed = try await Self.subscribeAndLetGo()
+        try await waitUntil(
+            "the client and its observers are freed with its health stream open",
+            timeout: Self.patience
+        ) { subscribed.client == nil && subscribed.observers.isFreed }
         // Open until the wait is over, for the reason `droppedStreamsLeaveNoObserver` gives.
         withExtendedLifetime(subscribed.updates) {}
     }
@@ -296,6 +332,36 @@ struct HelperClientHealthStreamTests {
     struct Subscribed {
         weak var client: HelperClient?
         let updates: AsyncStream<HelperConnectionHealth>.Iterator
+        /// The client's `HealthObservers`, which this file cannot name, held weakly.
+        let observers: Weak
+    }
+
+    /// An object held weakly, so that the suite can ask whether it has been freed.
+    final class Weak {
+        private weak var object: AnyObject?
+
+        init(_ object: AnyObject) { self.object = object }
+
+        var isFreed: Bool { object == nil }
+    }
+
+    static let noObservers = Comment(
+        rawValue:
+            "the client's observers cannot be reached: `HelperClient.healthStreams` or"
+            + " `HealthSignal.Streams.observers` was renamed or is no longer a class, and this"
+            + " suite reads them by name")
+
+    /// The `HealthObservers` of `client`'s signal, held weakly, or `nil` if reflection does not
+    /// find a class instance there.
+    ///
+    /// **Nothing here outlives the call**: the reflected values are strong while the function
+    /// runs and gone when it returns, so the reference it hands back is the weak one alone.
+    static func weakObservers(of client: HelperClient) -> Weak? {
+        guard
+            let observers = Mirror(reflecting: client).descendant("healthStreams", "observers"),
+            Mirror(reflecting: observers).displayStyle == .class
+        else { return nil }
+        return Weak(observers as AnyObject)
     }
 
     /// Makes a client, opens a health stream, reads its first element, requires its observer to
@@ -318,6 +384,11 @@ struct HelperClientHealthStreamTests {
         try #require(
             registered == 1,
             "\(registered) observers are registered, so a strong capture would make no cycle")
-        return Subscribed(client: client, updates: updates)
+        let observers = try #require(Self.weakObservers(of: client), Self.noObservers)
+        // It must point at an object that is alive while the client is, or a reflection that
+        // handed back a copy would read as freed from the start.
+        try #require(
+            !observers.isFreed, "the client's observers are not reachable while it is held")
+        return Subscribed(client: client, updates: updates, observers: observers)
     }
 }

@@ -15,7 +15,9 @@ import os
 /// thread may take. `HealthObservers.stream()` registers in the closure `AsyncStream` runs inside
 /// its initialiser, and the stream's termination handler removes. Neither starts a task, so a
 /// stream that ends has left by the time whatever ended it returns, and there is no order to
-/// keep.
+/// keep. A stream ends when its last holder drops it, or when the task reading it is cancelled
+/// while it waits on the stream. A reader cancelled while busy elsewhere has not ended it yet: its
+/// observer is removed at that reader's next `next()`, which returns `nil` at once.
 ///
 /// ## Two halves over one set of observers
 ///
@@ -53,10 +55,25 @@ import os
 /// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
 /// inside the stream's.
 ///
-/// **No test pins this yield's place.** Moving it after the lock is released (V2) left
-/// `HealthSignalTests` green in 10 of 10 debug runs: the window it opens is a few
-/// instructions wide, and no test can make a publication land in it. It is kept under the lock
-/// on the argument above.
+/// **Pinned by the storm test, not by the argument.** `HealthSignalTests`'
+/// `aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt()` registers streams in a loop,
+/// eight tasks at once, through one turn of 100,000 publications, and requires each stream's
+/// second element to be the value published right after its first. Run, debug, each red in 5 of 5
+/// runs at `total.broken.isEmpty`:
+///
+/// - **V2:** yield the first value after the lock is released. A publication takes the lock in
+///   the gap and yields the next value first, so a stream reads a value and then the one before
+///   it.
+/// - **C1:** in `HealthObservers.store(_:)`, take the observers in one `withLock` section and set
+///   the value in a second. A registration between them is missed by the publication and starts
+///   with the old value.
+/// - **C2:** the same two sections, setting the value first. A registration between them starts
+///   with the new value and is also in the publication's snapshot, so it reads that value twice.
+///
+/// The window is a few instructions wide. The run-ordering test beside it registers 200 streams,
+/// a few of them while the owner publishes, and stayed green under V2 in 10 of 10 debug runs.
+/// That `AsyncStream` calls its termination handler outside its own lock is the standard
+/// library's, read in its source, and no test pins it.
 struct HealthSignal {
 
     private let observers: HealthObservers
@@ -96,6 +113,12 @@ struct HealthSignal {
 
 /// Not `Sendable`, so the client's instance cannot leave the client's actor: a task that captured
 /// it to publish from elsewhere is refused at compile time.
+///
+/// Without this the compiler would infer `Sendable`, since every member is, and a `nonisolated`
+/// method of the client could then publish. Pinned by
+/// `scripts/lending-probes/refused-health-signal-publish.swift`, which `check.sh` runs in CI:
+/// with this extension deleted, the probe compiles and `check.sh` is red, 1 of 1. No test sees
+/// it.
 @available(*, unavailable)
 extension HealthSignal: Sendable {}
 
@@ -120,7 +143,8 @@ private final class HealthObservers: Sendable {
     var current: HelperConnectionHealth { state.withLock { $0.current } }
 
     /// A stream that starts with the value now, registered before this returns and removed by
-    /// the time whatever ends it returns.
+    /// the time whatever ends it returns (a reader cancelled while busy elsewhere has not ended
+    /// it: see "Why this is not the actor's state").
     ///
     /// The termination handler is set after the observer is registered. Nothing can end the
     /// stream between the two: this closure runs inside `AsyncStream`'s initialiser, before
@@ -131,6 +155,11 @@ private final class HealthObservers: Sendable {
     /// after their client for as long as a stream stayed open. The handler holds nothing else, so
     /// nothing a stream holds reaches the client, and a connection-owning actor is never kept
     /// alive by a stream somebody forgot to end.
+    ///
+    /// Pinned by `HelperClientHealthStreamTests.theObserversAreFreedWithTheClient()`: writing the
+    /// handler's `[weak self]` as `[self]` (A) leaves these observers alive after the client is
+    /// freed, red in 5 of 5 debug runs, and the only red among the 7 tests of
+    /// `HelperClientHealthStreamTests` and `HealthSignalTests`.
     func stream() -> AsyncStream<HelperConnectionHealth> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let token = UUID()

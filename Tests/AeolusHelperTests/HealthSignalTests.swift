@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 @testable import AeolusXPCClient
 
@@ -9,7 +10,8 @@ import Testing
 /// Since #541 an observer of `HelperClient.healthUpdates()` registers in the step that makes its
 /// stream, on whatever thread that is, and not on the client's actor. So its first element is the
 /// value the signal holds. A registration that runs while the client publishes must still hand
-/// its stream the value then and every later one, in order and once each.
+/// its stream the value then and every later one, in order and once each; the storm test is
+/// what holds the registration to the value at the instant it took the lock.
 @Suite(
     "HealthSignal — a new observer starts with the value now, however it races a publish",
     .timeLimit(.minutes(1)))
@@ -62,10 +64,13 @@ struct HealthSignalTests {
     ///
     /// **What it does not catch (V2, the first value yielded outside the lock):** in
     /// `HealthObservers.stream()`, register and read the value now under the lock, and yield it
-    /// after the lock is released. Run, debug: green in 10 of 10. The window is the few
-    /// instructions between the release and the yield, and nothing here can make a publication
-    /// land in it. That the first value is yielded under the lock is argued in `HealthSignal`'s
-    /// header, and no test pins it. V1 above is red here in 3 of 3.
+    /// after the lock is released. Run, debug: green in 10 of 10. It registers 200 streams, and a
+    /// review counted 11 to 14 of them registering while the owner published, so the window, the
+    /// few instructions between the release and the yield, is crossed rarely if at all. That, and
+    /// a snapshot and a set in two lock sections (C1 and C2), are pinned by
+    /// `aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt()`. What this test holds is
+    /// the run: every stream is handed every later value, in order, once each. V1 above is red
+    /// here in 3 of 3.
     @Test("A registration racing a run of publications is handed each later value, in order")
     func aRegistrationRacingPublicationsGetsEveryLaterValueInOrder() async {
         let owner = Owner()
@@ -108,6 +113,98 @@ struct HealthSignalTests {
             """)
     }
 
+    /// Streams register in a loop on the pool while an actor that owns a signal makes one long run
+    /// of publications in a single turn. Each stream takes two elements, and the second must be
+    /// the one the signal published right after the first: the value at registration, then the
+    /// next change, with nothing between them and nothing ahead of the first.
+    ///
+    /// **Why this and not the test above.** The window a wrong first yield or a split lock opens is
+    /// a few instructions wide. The test above registers 200 streams in all, and a run of it
+    /// registered 0 to 14 of them while the owner was publishing. This registers streams for as
+    /// long as the owner publishes (`stormPublished`), `stormers` tasks at a time, so a window that
+    /// narrow is crossed many times in one run. `midRun` counts the registrations that began
+    /// after the run did, and the test requires `minimumMidRun` of them wherever tasks can run
+    /// beside the owner's turn.
+    ///
+    /// The owner publishes only once every task has registered once, so none of them is a
+    /// latecomer to a run already over. Every wait is on a task group's child or on a stream, all
+    /// of which end when the test is cancelled, and a reader still waiting once the owner has
+    /// finished is cancelled after `grace` and counted as `abandoned`, so a mutant that loses an
+    /// element is a red and not a test that waits for it until the suite's time limit.
+    ///
+    /// **Mutations (debug, 5 runs each, all red at `total.broken.isEmpty`):**
+    /// - **V2, the first value yielded after the lock is released:** 60 to 111 of about 350,000 to
+    ///   380,000 streams broken in a run, each a value followed by the one before it.
+    /// - **C1, `HealthObservers.store(_:)` taking the observers in one `withLock` section and
+    ///   setting the value in a second:** 40,561 to 50,209 of about 260,000 to 285,000, each a
+    ///   value that skipped its successor. One run also left a stream waiting for an element that
+    ///   never came, which `grace` cancelled and `abandoned` counted.
+    /// - **C2, the same two sections with the value set first:** 14,158 to 20,643 of about
+    ///   280,000, each a value followed by itself.
+    ///
+    /// Unmutated, debug, a run registers about 275,000 streams, about 229,000 of them counted
+    /// mid-run (a lower bound: a registration at the cycle's first value is not counted), and none
+    /// is broken. `LeaseDriverPublisherTests` has the same test for the lease driver's publisher.
+    @Test("A storm of registrations is handed each value right after the one before it")
+    func aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt() async {
+        let owner = Owner()
+        let registered = Counter()
+        let total = await withTaskGroup(of: StormOutcome.self) { group in
+            for _ in 0..<Self.stormers {
+                group.addTask { .stormer(await Self.storm(against: owner, counting: registered)) }
+            }
+            group.addTask {
+                // Bounded by steps as well as by cancellation, so a stormer that cannot start does
+                // not hold the owner back for ever.
+                var waited = 0
+                while registered.value < Self.stormers, waited < Self.patience {
+                    do { try await Task.sleep(for: Self.step) } catch { return .published }
+                    waited += 1
+                }
+                await owner.publish(Self.stormPublished)
+                return .published
+            }
+            var total = Tally()
+            var stormersLeft = Self.stormers
+            for await outcome in group {
+                switch outcome {
+                case .stormer(let tally):
+                    total.add(tally)
+                    stormersLeft -= 1
+                    if stormersLeft == 0 { group.cancelAll() }
+                case .published:
+                    if stormersLeft > 0 {
+                        group.addTask {
+                            try? await Task.sleep(for: Self.grace)
+                            return .graceEnded
+                        }
+                    }
+                case .graceEnded:
+                    group.cancelAll()
+                }
+            }
+            return total
+        }
+
+        #expect(
+            total.abandoned == 0,
+            "\(total.abandoned) streams never got a second element, and were cancelled")
+        #expect(
+            total.broken.isEmpty,
+            """
+            \(total.brokenCount) of \(total.registrations) streams were not handed the value \
+            after their first as their second; the first few (first, second): \(total.broken)
+            """)
+        if Self.canRaceThePublisher {
+            #expect(
+                total.midRun >= Self.minimumMidRun,
+                """
+                only \(total.midRun) of \(total.registrations) registrations began while the owner \
+                was publishing, so this run did not race it
+                """)
+        }
+    }
+
     // MARK: - Support
 
     /// How many streams race the publications.
@@ -147,6 +244,104 @@ struct HealthSignalTests {
             for step in 1...count { signal.publish(cycle[step % cycle.count]) }
             signal.publish(HealthSignalTests.terminal)
         }
+    }
+
+    // MARK: - The storm
+
+    /// How many tasks register streams at once.
+    static let stormers = 8
+
+    /// How many values of the cycle the owner publishes in the storm's single turn.
+    static let stormPublished = 100_000
+
+    /// How many registrations must have begun after the owner started publishing. Their number
+    /// depends on the machine, and a run is far above this one on the development machine; a run
+    /// below it did not race the owner, which is what the floor is there to say.
+    static let minimumMidRun = 1_000
+
+    /// Whether the pool can run a stormer beside the owner's turn. On a pool of one thread
+    /// (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`) the turn holds the only thread, so no
+    /// registration can begin in the middle of it and the run claims no race.
+    static let canRaceThePublisher =
+        ProcessInfo.processInfo.activeProcessorCount > 1
+        && ProcessInfo.processInfo.environment["LIBDISPATCH_COOPERATIVE_POOL_STRICT"] != "1"
+
+    /// How long a stormer may wait for an element after the owner has finished, before it is
+    /// cancelled and counted as abandoned.
+    static let grace: Duration = .seconds(10)
+
+    /// How many steps the owner waits for the stormers to register once, and how long each is.
+    static let patience = 5_000
+    static let step: Duration = .milliseconds(1)
+
+    /// Registers streams one after another until it sees `terminal` first or is cancelled, taking
+    /// two elements of each and checking the second against the first.
+    static func storm(against owner: Owner, counting registered: Counter) async -> Tally {
+        var tally = Tally()
+        var counted = false
+        while !Task.isCancelled {
+            var stream = owner.streams.updates().makeAsyncIterator()
+            guard let first = await stream.next() else {
+                tally.abandoned += 1
+                break
+            }
+            tally.registrations += 1
+            if !counted {
+                counted = true
+                registered.increment()
+            }
+            if first == terminal { break }
+            if first != cycle[0] { tally.midRun += 1 }
+            guard let second = await stream.next() else {
+                tally.abandoned += 1
+                break
+            }
+            let next =
+                second == terminal
+                ? first == cycle[stormPublished % cycle.count] : second == successor(of: first)
+            if !next { tally.record(broken: "\(first) then \(second)") }
+            if second == terminal { break }
+        }
+        return tally
+    }
+
+    /// What the stormers found, added across them.
+    struct Tally: Sendable {
+        var registrations = 0
+        var midRun = 0
+        var abandoned = 0
+        var brokenCount = 0
+        /// The first few streams that were wrong, as text.
+        var broken: [String] = []
+
+        mutating func record(broken example: String) {
+            brokenCount += 1
+            if broken.count < 3 { broken.append(example) }
+        }
+
+        mutating func add(_ other: Tally) {
+            registrations += other.registrations
+            midRun += other.midRun
+            abandoned += other.abandoned
+            brokenCount += other.brokenCount
+            for example in other.broken where broken.count < 3 { broken.append(example) }
+        }
+    }
+
+    /// What ends a child of the storm's task group.
+    enum StormOutcome: Sendable {
+        case stormer(Tally)
+        case published
+        case graceEnded
+    }
+
+    /// A count that tasks add to and one task reads.
+    final class Counter: Sendable {
+        private let count = OSAllocatedUnfairLock(initialState: 0)
+
+        var value: Int { count.withLock { $0 } }
+
+        func increment() { count.withLock { $0 += 1 } }
     }
 
     /// The first element of `stream`. It always has one: registering yields the value now.
