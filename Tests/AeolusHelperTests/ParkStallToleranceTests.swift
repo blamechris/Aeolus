@@ -37,7 +37,8 @@ struct ParkStallToleranceTests {
         let base = VirtualWaitClock(lateness: { $0 == 3 ? .seconds(30) : .zero })
 
         let released = try await signal.wait(
-            atMost: parkCeiling, clock: ReleasingWaitClock(base, releasing: signal, atSleep: 5))
+            atMost: parkCeiling, clock: ReleasingWaitClock(base, releasing: signal, atSleep: 5)
+        ).wasSignalled
 
         #expect(released, "the ceiling expired on a stall, with a release five sleeps away")
         #expect(await base.elapsed > .seconds(30), "the stall really happened on the clock")
@@ -58,7 +59,7 @@ struct ParkStallToleranceTests {
         let signal = AsyncSignal()
         let clock = VirtualWaitClock(lateness: { _ in .seconds(1) })
 
-        let released = try await signal.wait(atMost: parkCeiling, clock: clock)
+        let released = try await signal.wait(atMost: parkCeiling, clock: clock).wasSignalled
 
         #expect(released == false, "the ceiling never expired on a park nobody released")
         let elapsed = await clock.elapsed

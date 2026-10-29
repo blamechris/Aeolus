@@ -78,7 +78,7 @@ struct ParkingCeilingTests {
     @Test("A wait that is signalled in time reports it, and records nothing")
     func aSignalledWaitReportsIt() async throws {
         let signal = AsyncSignal()
-        let waiting = observing { try await signal.wait(atMost: .seconds(30)) }
+        let waiting = observing { try await signal.wait(atMost: .seconds(30)).wasSignalled }
         await signal.signal()
         let released = try await finishedBeforeCeiling("the signalled wait", waiting)
         #expect(released == true, "the wait gave up on a signal that was sent")
@@ -87,13 +87,13 @@ struct ParkingCeilingTests {
     @Test("A wait nobody signals gives up at its ceiling and leaves the signal open")
     func anUnsignalledWaitGivesUp() async throws {
         let signal = AsyncSignal()
-        let waiting = observing { try await signal.wait(atMost: Self.ceiling) }
+        let waiting = observing { try await signal.wait(atMost: Self.ceiling).wasSignalled }
         let released = try await finishedBeforeCeiling("the unsignalled wait", waiting)
         #expect(released == false, "the wait was not told it gave up")
 
         // Open: a second wait with a ceiling no test would sit through returns at once, and
         // says it was signalled, because the expiry signalled on its behalf.
-        let later = observing { try await signal.wait(atMost: .seconds(30)) }
+        let later = observing { try await signal.wait(atMost: .seconds(30)).wasSignalled }
         #expect(try await finishedBeforeCeiling("the wait after the ceiling", later) == true)
     }
 
@@ -102,7 +102,7 @@ struct ParkingCeilingTests {
         let signal = AsyncSignal()
         // Parked well inside the timed wait's ceiling, which is the longer of the two for it.
         let plain = observing { try await signal.wait() }
-        let released = try await signal.wait(atMost: .milliseconds(150))
+        let released = try await signal.wait(atMost: .milliseconds(150)).wasSignalled
         #expect(released == false)
         // `wait()`'s cancellation handler resumes every waiter with `CancellationError`, so a
         // wait that cancelled itself on expiry would have this one throw instead of return.
