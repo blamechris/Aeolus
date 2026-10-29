@@ -172,6 +172,19 @@ public actor HelperClient {
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
 
+    /// What each caller's handshake relay runs before it waits for the handshake: `nil`, so
+    /// nothing, everywhere but the suite ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    ///
+    /// When a caller resumes from the handshake is the runtime's choice, and #582's two defects
+    /// live in the schedules where it resumes late: after the helper that answered has died and
+    /// another caller has started the next handshake. A test cannot ask the runtime for that
+    /// schedule, so it holds one caller's relay here instead. The relay hands the handshake's
+    /// outcome over only once this has returned, so holding it holds that one caller and nothing
+    /// else: not the handshake, its deadline, or any other caller. It runs once the caller has
+    /// joined the handshake in the slot or started one, so its running also tells a test that the
+    /// caller has made that choice.
+    private let handshakeRelayHold: (@Sendable () async -> Void)?
+
     /// Every message in flight, and when each one's deadline starts: at its send, or for a
     /// message the helper sequences, when the sequenced messages sent before it have settled
     /// (#413). See `InFlightMessages`.
@@ -253,17 +266,22 @@ public actor HelperClient {
     /// minutes for two fans, and a deadline measured on the wall clock is one a stalled runner
     /// can run out for a client that did nothing wrong. Production has one clock and no way to
     /// name another.
+    ///
+    /// `holdingHandshakeRelays` is the suite's for the same reason, and production has no way to
+    /// name one either: the public initialiser leaves it `nil` (`handshakeRelayHold`).
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
         clientDescription: String,
         deadlines: HelperClientDeadlines,
-        clock: any Clock<Duration>
+        clock: any Clock<Duration>,
+        holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
+        self.handshakeRelayHold = relayHold
         self.inFlight = InFlightMessages(clock: clock)
         let healthSignal = HealthSignal(startingWith: .idle)
         self.healthSignal = healthSignal
@@ -463,7 +481,10 @@ public actor HelperClient {
         handshake = task
         // `nil` is this caller's cancellation: the latch has no deadline, the handshake has.
         let waiter = PendingReply<Result<HelloReply, Error>?>(ifNothingArrives: nil)
-        Task.detached(priority: Task.currentPriority) { waiter.deliver(await task.result) }
+        Task.detached(priority: Task.currentPriority) { [hold = handshakeRelayHold] in
+            await hold?()
+            waiter.deliver(await task.result)
+        }
         guard let outcome = await waiter.waitForAnswer() else { throw CancellationError() }
         if self.generation == generation { handshake = nil }
         _ = try outcome.get()

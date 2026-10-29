@@ -33,16 +33,16 @@ final class ClientListenerHarness {
     /// reach a peer that has negotiated and a client that does not know it, which is the
     /// state a permanently wedged connection starts from.
     ///
-    /// `holdingHandshakeReplies` withholds each `hello` reply until that signal fires. The
-    /// message still reaches the real session, so the arrival is recorded and the handshake
-    /// is negotiated; only the answer waits. It is what makes "a second verb arrived while
-    /// the handshake was still unanswered" a *constructed* state rather than a raced one.
+    /// `holdingHandshakeReplies` withholds each `hello` reply until its hold lets it go: an
+    /// `AsyncSignal` holds every one until it fires (`HandshakeReplyHold`). The message still
+    /// reaches the real session, so the arrival is recorded and the handshake is negotiated; only
+    /// the answer waits, which makes "a verb arrived while `hello` was unanswered" constructed.
     init(
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange,
         capabilities: [String] = HelperListenerDelegate.advertisedCapabilities,
         garblingHandshakeReplies: Bool = false,
-        holdingHandshakeReplies: AsyncSignal? = nil
+        holdingHandshakeReplies: (any HandshakeReplyHold)? = nil
     ) {
         delegate = ClientListenerDelegate(
             authority: authority,
@@ -208,7 +208,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
     private let helperRange: ProtocolVersionRange
     private let capabilities: [String]
     private let garblingHandshakeReplies: Bool
-    private let holdingHandshakeReplies: AsyncSignal?
+    private let holdingHandshakeReplies: (any HandshakeReplyHold)?
     private let record = OrderRecord<String>()
 
     private let lock = NSLock()
@@ -221,7 +221,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
         helperRange: ProtocolVersionRange,
         capabilities: [String],
         garblingHandshakeReplies: Bool,
-        holdingHandshakeReplies: AsyncSignal?
+        holdingHandshakeReplies: (any HandshakeReplyHold)?
     ) {
         self.authority = authority
         self.helperRange = helperRange
@@ -310,13 +310,13 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
     private let service: HelperXPCService
     private let record: OrderRecord<String>
     private let garblingHandshakeReplies: Bool
-    private let holdingHandshakeReplies: AsyncSignal?
+    private let holdingHandshakeReplies: (any HandshakeReplyHold)?
 
     init(
         wrapping service: HelperXPCService,
         record: OrderRecord<String>,
         garblingHandshakeReplies: Bool = false,
-        holdingHandshakeReplies: AsyncSignal? = nil
+        holdingHandshakeReplies: (any HandshakeReplyHold)? = nil
     ) {
         self.service = service
         self.record = record
@@ -343,7 +343,7 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
                 return
             }
             Task { [self] in
-                try? await gate.wait()
+                await gate.replyMayLeave()
                 replied("hello")
                 reply(payload, error)
             }
