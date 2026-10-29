@@ -85,11 +85,12 @@ import os
 /// and its storage's `deinit` call it after releasing that lock, so the lock here is never taken
 /// inside the stream's.
 ///
-/// **Pinned by the storm test, not by the argument.** `LeaseDriverPublisherRaceTests`'
-/// `aStormOfRegistrationsIsHandedEachChangeAfterTheOneBeforeIt()` registers streams of both kinds
-/// in a loop, eight tasks at once, through one turn of 100,000 publications, and requires each
-/// stream's second element to be the change published right after its first. Run, debug, each
-/// red in 5 of 5 runs at `total.broken.isEmpty`:
+/// **Pinned by the thread race test, not by the argument.** `LeaseDriverPublisherThreadRaceTests`'
+/// `registrationsOnTheirOwnThreadsAreHandedTheChangeAfterTheirFirst()` makes streams of both
+/// kinds on four threads of their own while another thread publishes, 1,400 bursts of 32 streams,
+/// and requires each stream's second element to be the change published right after its first. It
+/// runs on threads, not on the cooperative pool, so it needs no free pool thread beside the
+/// publisher. Run, debug, each red in 5 of 5 runs at `total.broken.isEmpty`:
 ///
 /// - **V2:** yield the first value after the lock is released. A publication takes the lock in
 ///   the gap and yields the next change first, so a stream reads a change and then the one before
@@ -100,8 +101,9 @@ import os
 /// - **C2:** the same two sections, setting the value first. A registration between them starts
 ///   with the new value and is also in the publication's snapshot, so it reads that value twice.
 ///
-/// The window is a few instructions wide. The run-ordering test beside it registers 200 streams,
-/// a few of them while the owner publishes, and stayed green under V2 in 10 of 10 debug runs.
+/// The window is a few instructions wide: V2 breaks 5 to 9 of 44,800 streams a run. The
+/// run-ordering test beside it registers 200 streams, a few of them while the owner publishes,
+/// and stayed green under V2 in 10 of 10 debug runs.
 /// That `AsyncStream` calls its termination handler outside its own lock is the standard
 /// library's, read in its source, and no test pins it.
 struct LeaseDriverPublisher {
@@ -200,7 +202,7 @@ private final class Followers<Element: Sendable>: Sendable {
     /// writing the handler's `[weak self]` as `[self]` (A) leaves these observers alive after the
     /// driver is freed, red in 5 of 5 debug runs, and the only red among the 10 tests of
     /// `LeaseDriverStreamTerminationTests`, `LeaseDriverPublisherTests`,
-    /// `LeaseDriverPublisherRaceTests`, `LeaseDriverEvidencePublishTests` and
+    /// `LeaseDriverPublisherThreadRaceTests`, `LeaseDriverEvidencePublishTests` and
     /// `LeaseDriverPublishOrderTests`.
     func stream() -> AsyncStream<Element> {
         // Unbounded, so a slow reader drops nothing: every state, and every floor, is delivered.

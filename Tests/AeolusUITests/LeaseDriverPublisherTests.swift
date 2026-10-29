@@ -76,9 +76,9 @@ struct LeaseDriverPublisherTests {
     /// It registers 200 streams, and a review counted 0 to 10 of them registering while the owner
     /// published, so the window, the few instructions between the release and the yield, is
     /// crossed rarely if at all. That, and a snapshot and a set in two lock sections (C1 and C2),
-    /// are pinned by `LeaseDriverPublisherRaceTests`' storm, with
-    /// `aStormOfRegistrationsIsHandedEachChangeAfterTheOneBeforeIt()`. What this test holds is the
-    /// run: every stream is handed every later change, in order, once each.
+    /// are pinned by `LeaseDriverPublisherThreadRaceTests`, which races threads of their own.
+    /// What this test holds is the run: every stream is handed every later change, in order, once
+    /// each.
     ///
     /// What it does catch, run in debug: P1 (`.bufferingNewest(1)` in `Followers.stream()`), red in
     /// 3 of 3 with every stream broken, as #513's test is; and V1 above, red in 2 of 3.
