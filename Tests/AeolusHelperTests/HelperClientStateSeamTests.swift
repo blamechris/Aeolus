@@ -276,13 +276,18 @@ struct HelperClientStateSeamTests {
     /// a floor unable to see the shrink it was written for — eight of the target's declarations
     /// could leave the scan under a floor of 25 without a word, which is most of a file's worth.
     ///
-    /// **Mutation:** raise this to `34`. Run: red on both floors, `(stored.count → 33) >= 34`,
+    /// **It has to be moved when the population does.** It stood at 33 after the target had grown
+    /// to 56, which was 23 declarations of headroom: a scan that stopped reading that many would
+    /// have passed. Read the count off a failure and set the floor to it, as a floor of `9999`
+    /// reports it: `declares 56 stored properties`.
+    ///
+    /// **Mutation:** raise this to `57`. Run: red on both floors, `(stored.count → 56) >= 57`,
     /// which is the boundary a shrink of one arrives at from the other side. That is the mutation
     /// actually run, and it is the constant rather than the tree for a reason worth stating: every
     /// stored property in this target is referenced, so deleting one does not compile and the
     /// population cannot be shrunk by an edit that builds. The count itself is read from the tree
-    /// and not asserted anywhere else — a floor of `9999` reports `declares 33 stored properties`.
-    private static let storedPropertyFloor = 33
+    /// and not asserted anywhere else.
+    private static let storedPropertyFloor = 56
 
     /// How many top-level public types the payload file declares today, as a floor.
     ///
