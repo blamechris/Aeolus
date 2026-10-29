@@ -73,6 +73,66 @@ struct SMCErrorReadableDescriptionTests {
         #expect(description == "#KEY byte order undetectable (SMC interface generation unknown)")
     }
 
+    // MARK: - A type code padded to four characters (#544)
+
+    /// `flt `, `ui8 ` and `si8 ` are three-character codes the SMC pads to four with a space.
+    /// Named in a sentence, the padding put a second space after the type: "F0Ac declares
+    /// flt  but returned 2 bytes". Pinned exactly, one case per description that names a type.
+    @Test("A padded type code is named without its padding")
+    func paddedTypeCodeIsNamedWithoutPadding() {
+        let key = SMCKey("F0Ac")!
+        #expect(
+            SMCError.sizeMismatch(key: key, declared: .flt, reportedBytes: 2).readableDescription
+                == "F0Ac declares flt but returned 2 bytes")
+        #expect(
+            SMCError.encodingFailed(key: key, type: .ui8).readableDescription
+                == "F0Ac (ui8) value could not be encoded")
+        #expect(
+            SMCError.encodingNotImplemented(type: .si8).readableDescription
+                == "no encoder implemented yet for si8")
+        #expect(
+            SMCError.unrepresentableKeyCount(type: .flt, bytes: [0x7F, 0xC0, 0x00, 0x00])
+                .readableDescription
+                == "#KEY (flt, raw bytes 7fc00000) did not decode to a whole number within "
+                + "Int's range")
+        #expect(
+            SMCError.nonNumericKeyCount(type: .unknown(0x6162_2020), bytes: [0x00, 0x0D])
+                .readableDescription
+                == "#KEY declares ab (raw bytes 000d), which is not a numeric type, so it "
+                + "holds no key count")
+    }
+
+    /// The same rule as a property, over every description that names a type: no run of two
+    /// spaces and no trailing space, for each padded code `SMCKeyType` knows and for an
+    /// unrecognised code padded by two.
+    @Test(
+        "No description that names a padded type has a double or trailing space",
+        arguments: [SMCKeyType.flt, .ui8, .si8, .unknown(0x6162_2020)])
+    func noDoubleSpaceAfterAPaddedType(type: SMCKeyType) {
+        let key = SMCKey("F0Ac")!
+        let naming: [SMCError] = [
+            .sizeMismatch(key: key, declared: type, reportedBytes: 2),
+            .encodingFailed(key: key, type: type),
+            .encodingNotImplemented(type: type),
+            .unrepresentableKeyCount(type: type, bytes: [0x00]),
+            .nonNumericKeyCount(type: type, bytes: [0x00]),
+        ]
+        for error in naming {
+            let description = error.readableDescription
+            #expect(!description.contains("  "), "\(description)")
+            #expect(!description.hasSuffix(" "), "\(description)")
+        }
+    }
+
+    /// A code that is nothing but padding has no name to trim down to. It is shown as the
+    /// firmware declared it, so the text still carries what the SMC sent rather than nothing.
+    @Test("A type code that is all spaces is shown as declared, not trimmed away")
+    func blankTypeCodeIsShownAsDeclared() {
+        #expect(
+            SMCError.encodingNotImplemented(type: .unknown(0x2020_2020)).readableDescription
+                == "no encoder implemented yet for     ")
+    }
+
     /// The switch inside `readableDescription` is exhaustive over `SMCError` with no
     /// `default:` arm, so a missing case does not build. What this test adds is what the
     /// compiler cannot check: every case produces a non-empty string, and none of them is the

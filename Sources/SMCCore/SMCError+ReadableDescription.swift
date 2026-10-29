@@ -13,6 +13,10 @@ extension SMCError {
     /// The switch names every case and has no `default:` arm, so a new case does not compile
     /// until it is described here.
     ///
+    /// A declared type is named by `SMCKeyType.readableName`, never `fourCharString`: `flt `
+    /// is padded to four characters, and its padding put two spaces after it in a sentence
+    /// (#544).
+    ///
     /// Deliberately not `CustomStringConvertible`. Conforming would change what
     /// `String(describing:)` prints for an `SMCError` at every call site, including the root
     /// helper's log lines (`ReadOnlyFanAuthority.readSensors()` logs a failed `read(keys:)`
@@ -26,13 +30,13 @@ extension SMCError {
         case .firmware(let code):
             return "firmware rejected the request (SMC result 0x\(Self.hex([code])))"
         case .sizeMismatch(let key, let declared, let reportedBytes):
-            return "\(key) declares \(declared.fourCharString) but returned \(reportedBytes) bytes"
+            return "\(key) declares \(declared.readableName) but returned \(reportedBytes) bytes"
         case .invalidFlagValue(let key, let byte):
             return "\(key) is declared flag but returned 0x\(Self.hex([byte])), not 0x00 or 0x01"
         case .encodingFailed(let key, let type):
-            return "\(key) (\(type.fourCharString)) value could not be encoded"
+            return "\(key) (\(type.readableName)) value could not be encoded"
         case .encodingNotImplemented(let type):
-            return "no encoder implemented yet for \(type.fourCharString)"
+            return "no encoder implemented yet for \(type.readableName)"
         case .notPermitted:
             return "not permitted (this connection has no write access)"
         case .notReadable(let key):
@@ -50,10 +54,10 @@ extension SMCError {
         case .implausibleKeyCount(let declared):
             return "#KEY decoded to an implausible value (\(declared))"
         case .unrepresentableKeyCount(let type, let bytes):
-            return "#KEY (\(type.fourCharString), raw bytes \(Self.hex(bytes))) did not decode "
+            return "#KEY (\(type.readableName), raw bytes \(Self.hex(bytes))) did not decode "
                 + "to a whole number within Int's range"
         case .nonNumericKeyCount(let type, let bytes):
-            return "#KEY declares \(type.fourCharString) (raw bytes \(Self.hex(bytes))), which is "
+            return "#KEY declares \(type.readableName) (raw bytes \(Self.hex(bytes))), which is "
                 + "not a numeric type, so it holds no key count"
         }
     }
@@ -74,7 +78,8 @@ extension SMCError {
     ///
     /// Shared by `integerByteOrderUndetectable`, whose subject is the key, and by
     /// `SMCSensorProvider`'s per-key failure for a numeric value that `scalar()` declined to
-    /// decode, whose subject is the declared type. One wording, so the two cannot drift.
+    /// decode, whose subject is the declared type's `readableName`. One wording, so the two
+    /// cannot drift.
     static func byteOrderUndetectableDescription(of subject: String) -> String {
         "\(subject) byte order undetectable (SMC interface generation unknown)"
     }

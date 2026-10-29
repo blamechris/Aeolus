@@ -324,11 +324,14 @@ public struct SMCSensorProvider: SensorProvider {
     /// Keyed on the declared type (`CLAUDE.md` rule 9), not on `value.byteOrder`: on a Mac
     /// whose generation is unknown, every key's `byteOrder` is `nil`, the non-numeric ones
     /// included, and those are still not numeric.
+    ///
+    /// The type is named by `SMCKeyType.readableName`, without the space that pads `flt ` to
+    /// four characters (#544).
     static func undecodedReason(for value: SMCValue) -> String {
         guard value.type.isNumeric else {
-            return "\(value.type.fourCharString) is not numeric"
+            return "\(value.type.readableName) is not numeric"
         }
-        return SMCError.byteOrderUndetectableDescription(of: value.type.fourCharString)
+        return SMCError.byteOrderUndetectableDescription(of: value.type.readableName)
     }
 
     /// Classifies a key's physical kind using only the fan-key naming convention
