@@ -38,7 +38,7 @@ struct LeaseDriverEvidencePublishTests {
     ///
     /// **Mutation (B, a deferred publish):** in `applyAnswered()`, replace the publish with
     /// `let answered = report; Task { self.publisher.publishEvidenceChange(answered) }`. Run,
-    /// debug: red in 5 of 5 at `raced.mismatches.isEmpty`, with 8 of 320 to 537 streams
+    /// debug: red in 5 of 5 at `raced.mismatches.isEmpty`, with 8 of 320 to 566 streams
     /// mismatched in every run, one for each follower: the stream started with `noRead` where the
     /// driver's `report` already carried the floor. Before this test, B was green on all 777 tests
     /// of the package in 5 of 5 runs (the review that found it).

@@ -46,15 +46,15 @@ struct LeaseDriverPublisherRaceTests {
     /// that was wrong, or abandoned, ends the test at once. Run with only the other storm, a
     /// round raced in 12 of 12 runs.
     ///
-    /// **Mutations (debug, three sweeps of 5 runs each, all 15 red at `total.broken.isEmpty`):**
-    /// - **V2, the first value yielded after the lock is released:** 151 to 286 of about 480,000
+    /// **Mutations (debug, four sweeps of 5 runs each, all 20 red at `total.broken.isEmpty`):**
+    /// - **V2, the first value yielded after the lock is released:** 151 to 442 of about 480,000
     ///   to 562,000 streams broken in a run, each a change followed by the one before it.
     /// - **C1, `Followers.store(_:)` taking the observers in one `withLock` section and setting
-    ///   the value in a second:** 6,178 to 22,518 of about 145,000 to 531,000, each a change
-    ///   that skipped its successor. One run also left a stream waiting for an element that never
+    ///   the value in a second:** 2,111 to 22,518 of about 59,000 to 531,000, each a change
+    ///   that skipped its successor. Two runs also left a stream waiting for an element that never
     ///   came, which `grace` cancelled and `abandoned` counted.
-    /// - **C2, the same two sections with the value set first:** 13,457 to 18,096 of about
-    ///   490,000 to 536,000, each a change followed by itself.
+    /// - **C2, the same two sections with the value set first:** 1,311 to 18,096 of about
+    ///   55,000 to 536,000, each a change followed by itself.
     ///
     /// Unmutated, debug, a run registers about 490,000 to 500,000 streams, all but a few of them
     /// mid-run, and none is broken. `HealthSignalTests` has the same test for the health signal.
