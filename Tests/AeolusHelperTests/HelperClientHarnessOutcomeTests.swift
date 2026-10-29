@@ -75,6 +75,14 @@ struct HelperClientHarnessOutcomeTests {
     /// exactly a client that has failed to give a call its answer. `withKnownIssue` is the
     /// assertion that the wait does record a failure, and it fails if none is recorded.
     ///
+    /// **The connection is handshaken first**, by a round trip that completes, so the call that
+    /// does not come back is the snapshot parked on its own reply and not a call still behind the
+    /// `hello`. Since #576 a call cancelled behind the `hello` leaves at once while the handshake
+    /// runs on. On a runner slow enough to spend the 200 ms wait before the `hello` is answered,
+    /// the health below is then read while the handshake is still in flight: CI run 40897877885
+    /// failed it, and with the `hello` reply delayed 500 ms it read `.idle` locally, then
+    /// `.handshaken` once the `hello` was answered.
+    ///
     /// **Mutation:** in `returnedOutcome`, delete the `task.cancel()`. Run: red on `error is
     /// CancellationError`, thirty seconds on, when the harness's backstop runs the parked call's
     /// deadline out and it comes back `helperNeverAnswered`.
@@ -86,6 +94,13 @@ struct HelperClientHarnessOutcomeTests {
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
         let client = harness.client()
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+        ) {
+            _ = try await client.acquireLease(
+                LeaseRequest(holderDescription: "test client", fanIndices: [0]))
+        }
+        #expect(await client.health == .handshaken)
 
         var outcome: Result<SystemSnapshot, any Error>?
         await withKnownIssue("the snapshot is held at the helper, which is the case under test") {
