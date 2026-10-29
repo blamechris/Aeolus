@@ -48,16 +48,26 @@ struct HelperLogTests {
     /// **Mutation:** add `private let strayLog = Logger(subsystem: "x", category: "y")` and make
     /// `info(_:)` call `strayLog.log(…)`. Run: red on `levels ==` and the `Logger(` count here,
     /// and on `children.count == 1` in `LogTextTests`'s shipping-`HelperLog` test; nothing else.
-    /// **Mutation:** make `fault(_:)` call `Logger(subsystem: "x", category: "y").fault("\(message,
-    /// privacy: .public)")`. Run: red on the `Logger(` count alone here (`loggerCall` needs a word
-    /// character before the dot, so it does not see a call on `)`), and on `HelperLog lines that
-    /// quote an error escape it too` in `LogTextTests`.
+    /// **Mutation (H2):** make `fault(_:)` call `Logger(subsystem: "x", category: "y")
+    /// .fault("\(message, privacy: .public)")`. Run, against the full suite, six issues over the
+    /// baseline:
+    /// - the `Logger(` count here, alone of this test's expectations, because `loggerCall` needs
+    ///   a word character before the dot and does not see a call on `)`;
+    /// - `HelperLog lines that quote an error escape it too` in `LogTextTests`;
+    /// - the `lines.levels(containing: "machine-wide restore that connection") == [.fault]`
+    ///   expectation of three tests that read the line from the recording sink, which it no
+    ///   longer reaches: `PanicVerbMachineWideRestoreTests` twice for `Any error from the
+    ///   keystone…` (one per argument) and once for `A refused machine-wide restore is logged
+    ///   at fault…`, and `FanctlResetCorruptedStateTests` once.
+    ///
+    /// An `extension HelperLog` in *another* file is `LogRouteTests`' to catch, not this scan's.
+    ///
     /// **Not mutations but compile errors**, which is the point of the stored type: assigning a
     /// closure to `emit` in either initialiser, and reading a `log` from a method.
     @Test("Every HelperLog line reaches the unified log through its escaping sink")
     func everyLineTakesTheOneRoute() throws {
-        let code = try Self.strippedSource("HelperLog.swift")
-        let levels = try Self.matches(of: Self.loggerCall, in: code)
+        let code = try LogSource.stripped("HelperLog.swift")
+        let levels = try LogSource.matches(of: LogSource.loggerCall, in: code)
 
         #expect(
             levels == ["log.log(", "log.log("],
@@ -67,22 +77,25 @@ struct HelperLogTests {
             unified log unescaped, or at a level no sink sees.
             """)
         #expect(
-            try Self.matches(of: #"\blog\.log\(level: Self\.osLogType\(for: level\)"#, in: code)
-                .count == 2, "a log.log call does not take its type from osLogType(for:)")
+            try LogSource.matches(
+                of: #"\blog\.log\(level: Self\.osLogType\(for: level\)"#, in: code
+            )
+            .count == 2, "a log.log call does not take its type from osLogType(for:)")
         #expect(code.contains("private let emit: LogText.EscapingSink<Level>"))
         #expect(
-            try Self.matches(of: #"\bemit\s*=\s*LogText\.EscapingSink\s*\{"#, in: code).count == 2,
+            try LogSource.matches(of: #"\bemit\s*=\s*LogText\.EscapingSink\s*\{"#, in: code).count
+                == 2,
             "an initialiser does not build its emit as a LogText.EscapingSink")
         #expect(code.contains("sink(level, message)"), "emit does not hand the sink its level")
         #expect(
-            try Self.matches(of: #"\bLogger\s*\("#, in: code).count == 2,
+            try LogSource.matches(of: #"\bLogger\s*\("#, in: code).count == 2,
             "HelperLog.swift builds a Logger other than its two initialisers' one each")
-        #expect(try Self.matches(of: #"\bos_log\s*\("#, in: code).isEmpty)
+        #expect(try LogSource.matches(of: #"\bos_log\s*\("#, in: code).isEmpty)
 
-        let vocabulary = try Self.strippedSource("HelperLogLevel.swift")
+        let vocabulary = try LogSource.stripped("HelperLogLevel.swift")
         #expect(
-            try Self.matches(of: Self.loggerCall, in: vocabulary).isEmpty
-                && Self.matches(of: #"\b(Logger|os_log)\s*\("#, in: vocabulary).isEmpty,
+            try LogSource.matches(of: LogSource.loggerCall, in: vocabulary).isEmpty
+                && LogSource.matches(of: #"\b(Logger|os_log)\s*\("#, in: vocabulary).isEmpty,
             "HelperLogLevel.swift writes to the unified log; only emit may")
     }
 
@@ -113,27 +126,9 @@ struct HelperLogTests {
     @Test("The daemon's advertising line asks the plane what it can write")
     func theDaemonAsksThePlaneWhenItAdvertises() throws {
         let code = HelperCompositionTests.strippingWhitespace(
-            try Self.strippedSource("AeolusHelperMain.swift"))
+            try LogSource.stripped("AeolusHelperMain.swift"))
         #expect(
             code.contains("writeCapability:helper.plane.writeCapability)"),
             "AeolusHelperMain.bringUp does not take the listening line's capability from the plane")
-    }
-
-    /// A call of a logging method on any receiver, qualified or not: `log.fault(`,
-    /// `self.log.notice(`, `other.log(`.
-    private static let loggerCall =
-        #"\b\w+\s*\.\s*(fault|error|notice|debug|info|log|trace|warning|critical)\s*\("#
-
-    private static func strippedSource(_ file: String) throws -> String {
-        let url = try #require(
-            try SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
-            "\(file) is not in the source tree")
-        return SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
-    }
-
-    private static func matches(of pattern: String, in code: String) throws -> [String] {
-        try NSRegularExpression(pattern: pattern)
-            .matches(in: code, range: NSRange(code.startIndex..., in: code))
-            .compactMap { Range($0.range, in: code).map { String(code[$0]) } }
     }
 }
