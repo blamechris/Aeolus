@@ -330,10 +330,11 @@ struct LogTextTests {
     // MARK: - LeaseLog
 
     /// `LeaseLog` holds its route as a `LogText.EscapingSink` (#560), so the lines that quote
-    /// text it did not write reach the unified log and a test's sink escaped: a holder
-    /// description a client chose (whose validation refuses Cc and Cf but not yet Zl and Zp,
-    /// #483), the description of an error a restore threw, a sensor read's `detail`, and what an
-    /// unread fan bound said.
+    /// text it did not write reach the unified log and a test's sink escaped: the description of
+    /// an error a restore threw, a sensor read's `detail`, what an unread fan bound said, and a
+    /// holder description. The validation of a client's description refuses all four categories
+    /// (#483), so a real one arrives clean; the row hands the log a hostile one anyway, because
+    /// the escape is the log's own and must not depend on a check made elsewhere.
     ///
     /// **Mutation:** the `callAsFunction` one above. Run: red on both expectations, the count of
     /// escaped lines and the three scalars. **Mutation:** make `LogText.escaped` return its

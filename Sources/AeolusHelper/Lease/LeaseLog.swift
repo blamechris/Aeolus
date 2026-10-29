@@ -32,11 +32,11 @@ import os
 /// still the client's own account of itself and the wording says so, exactly as
 /// `HelperLog` does for the handshake.
 ///
-/// That validation refuses Cc and Cf and not yet Zl and Zp (#483), and `detail`, `unread` and
-/// an `error`'s description come from the firmware, so the text a line quotes is not all
-/// text this module wrote. Every line goes through `emit`, a `LogText.EscapingSink`, which
-/// writes each Cc, Cf, Zl and Zp scalar out as `\u{XXXX}` before the unified log hears it
-/// (#560). Nothing else in the type reaches the unified log.
+/// That validation covers a client's text and not the firmware's: `detail`, `unread` and an
+/// `error`'s description come from the firmware, so a line can quote text this module did not
+/// write and nothing has validated. Every line goes through `emit`, a `LogText.EscapingSink`,
+/// which writes each Cc, Cf, Zl and Zp scalar out as `\u{XXXX}` before the unified log hears
+/// it (#560), whoever the text came from. Nothing else in the type reaches the unified log.
 struct LeaseLog: Sendable {
 
     /// How loud a line is.
