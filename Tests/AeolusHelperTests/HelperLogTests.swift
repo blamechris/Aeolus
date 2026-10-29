@@ -46,8 +46,8 @@ struct HelperLogTests {
     /// may write nothing at all.
     ///
     /// **Mutation:** add `private let strayLog = Logger(subsystem: "x", category: "y")` and make
-    /// `info(_:)` call `strayLog.log("\(message, privacy: .public)")`. Run: red on `levels ==
-    /// ["log.log(", "log.log("]` and on the `Logger(` count; the rest stay green.
+    /// `info(_:)` call `strayLog.log(…)`. Run: red on `levels ==` and the `Logger(` count here,
+    /// and on `children.count == 1` in `LogTextTests`'s shipping-`HelperLog` test; nothing else.
     /// **Mutation:** make `fault(_:)` call `Logger(subsystem: "x", category: "y").fault("\(message,
     /// privacy: .public)")`. Run: red on the `Logger(` count alone here (`loggerCall` needs a word
     /// character before the dot, so it does not see a call on `)`), and on `HelperLog lines that
