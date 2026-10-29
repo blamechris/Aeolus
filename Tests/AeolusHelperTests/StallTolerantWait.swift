@@ -132,16 +132,35 @@ enum StallTolerantWait {
     /// **When to pass it.** For a wait whose subject is the product having *done* something that
     /// needs a hop to the other side ("is held at the helper", "is parked at the helper", "the
     /// client has the reply in hand", "the client heard the helper die"), in a test whose
-    /// deadlines are counted on a clock only the test moves. The budget then carries no claim
-    /// about time: a longer one cannot make a wrong client pass, it only decides how long a
-    /// failing test takes to say so. A wait whose claim *is* a time keeps its own bound and a
-    /// `budget:` that says so (``WaitBudget/wallTime``).
+    /// deadlines are counted on a clock only the test moves, or have all run out already
+    /// (`FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown` counts its 2 s on the wall
+    /// clock, and waits after `run()` has returned). The budget then carries no claim about time:
+    /// a longer one cannot make a wrong client pass, it only decides how long a failing test takes
+    /// to say so. A wait whose claim *is* a time keeps its own bound and a `budget:` that says so
+    /// (``WaitBudget/wallTime``).
     ///
-    /// **Why 30 s.** Over twice the longest wait that was missed, and equal to the 30 s the
-    /// harness gives a lost reply (`ClockBackstop.defaultBudget`), so a precondition that is
-    /// never met is reported under its own name before the backstop runs the harness's deadlines
-    /// out. Under the 50 s ``ceiling`` and the 60 s of the shortest `.timeLimit`. The relations
-    /// are held by `StallTolerantWaitTests.aDeliveryWaitFitsInsideTheBackstopAndTheTimeLimit`.
+    /// **Where it must not be used.** No wait whose condition is the client's *reaction to a
+    /// clock advance the test made* (a deadline having run out, a turn having come) may use this
+    /// constant. Its length is the backstop's, so the backstop can run a late deadline out while
+    /// the wait is still going, and a client with the wrong deadline then passes. The #595
+    /// review gave `HelperClientHandshakeCancellationTests`' "the handshake's deadline ran out
+    /// and gave the connection up" this budget, and a client with a doubled handshake deadline
+    /// went green at 30.034 s (30.026 s when repeated for #596): the backstop had run the
+    /// deadline out. With the default budget the same client is red at 5.04 s. That wait keeps
+    /// the default. One wait of the kind still has this constant, where no backstop moves the
+    /// client's clock and a later assertion catches a late deadline
+    /// (`HelperClientSequencedDeadlineTests`, "the snapshot's turn came when the apply's
+    /// deadline ran out"), and says so. A wait for the helper to *hear* something after the
+    /// test has asserted the client's reaction is a delivery, and is the constant's.
+    ///
+    /// **Why 30 s.** Over twice the longest wait that was missed, and no longer than the 30 s the
+    /// harness gives a lost reply (`ClockBackstop.defaultBudget`). It is not "before" the
+    /// backstop: that 30 s starts when the harness is built and a wait starts later, so a
+    /// delivery that never happens is reported **after** the backstop has fired and run the
+    /// harness's deadlines out, by as long as the harness had lived when the wait began. What the
+    /// bound keeps is that this lag does not grow with the budget. Under the 50 s ``ceiling`` and
+    /// the 60 s of the shortest `.timeLimit`. The relations are held by
+    /// `StallTolerantWaitTests.aDeliveryWaitFitsInsideTheBackstopAndTheTimeLimit`.
     static let deliveryBudget: Duration = .seconds(30)
 
     enum Outcome: Sendable, Equatable {
