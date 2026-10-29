@@ -161,7 +161,7 @@ private final class HealthObservers: Sendable {
     /// Pinned by `HelperClientHealthStreamTests.theObserversAreFreedWithTheClient()`: writing the
     /// handler's `[weak self]` as `[self]` (A) leaves these observers alive after the client is
     /// freed, red in 5 of 5 debug runs, and the only red among the 7 tests of
-    /// `HelperClientHealthStreamTests` and `HealthSignalTests`.
+    /// `HelperClientHealthStreamTests`, `HealthSignalTests` and `HealthSignalThreadRaceTests`.
     func stream() -> AsyncStream<HelperConnectionHealth> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let token = UUID()
