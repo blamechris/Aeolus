@@ -67,7 +67,7 @@ import os
 /// - **That value is the driver's report.** `LeaseDriver` starts its publisher with its own
 ///   report, and every change of `current` or `evidence` is published in the turn that makes it.
 ///   So between turns of the actor the value here is `LeaseDriver.report`. Pinned for the
-///   evidence write in `applyAnswered()` by `LeaseDriverPublisherRaceTests`'
+///   evidence write in `applyAnswered()` by `LeaseDriverEvidencePublishTests`'
 ///   `aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone()`: publishing it from a task (B)
 ///   is red in 5 of 5 debug runs. A registration on another thread can land in the
 ///   middle of a turn: it starts with the last value stored when it takes the lock, which in a

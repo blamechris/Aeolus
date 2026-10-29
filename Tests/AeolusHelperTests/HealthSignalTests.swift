@@ -151,7 +151,8 @@ struct HealthSignalTests {
     ///
     /// Unmutated, debug, a run registers about 275,000 streams, about 229,000 of them counted
     /// mid-run (a lower bound: a registration at the cycle's first value is not counted), and none
-    /// is broken. `LeaseDriverPublisherRaceTests` has the same test for the lease driver's publisher.
+    /// is broken. `LeaseDriverPublisherRaceTests` has the same test for the lease driver's
+    /// publisher.
     @Test("A storm of registrations is handed each value right after the one before it")
     func aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt() async {
         let total = await Self.stormUntilItRaces()
@@ -255,17 +256,15 @@ struct HealthSignalTests {
         for _ in 0..<rounds {
             total.add(await stormRegistrations(against: Owner()))
             total.rounds += 1
-            if total.brokenCount > 0 || total.abandoned > 0 || !canRaceThePublisher
-                || total.midRun >= minimumMidRun
-            {
-                break
-            }
+            let settled = total.brokenCount > 0 || total.abandoned > 0
+            let raced = !canRaceThePublisher || total.midRun >= minimumMidRun
+            if settled || raced { break }
         }
         return total
     }
 
-    /// Runs one round of the storm: `stormers` tasks register streams against `owner` while it publishes
-    /// `stormPublished` values in one turn, and what they found, added up.
+    /// Runs one round of the storm: `stormers` tasks register streams against `owner` while it
+    /// publishes `stormPublished` values in one turn, and what they found, added up.
     static func stormRegistrations(against owner: Owner) async -> Tally {
         let registered = Counter()
         return await withTaskGroup(of: StormOutcome.self) { group in

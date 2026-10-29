@@ -149,11 +149,11 @@ struct LeaseDriverStreamTerminationTests {
     /// **Mutation (A, a handler that holds the observers):** in `Followers.stream()`, write the
     /// termination handler as `{ [self] _ in self.state.withLock { … } }` in place of
     /// `{ [weak self] _ in self?.state.withLock { … } }`. Run, debug, with
-    /// `LeaseDriverPublisherTests`, `LeaseDriverPublisherRaceTests` and
-    /// `LeaseDriverPublishOrderTests`: red in 5 of 5 at `freed`, after `patience` steps (about
-    /// 4 s), with "the driver is freed and 2 of its 2 sets of observers are not". The other 9 of
-    /// the 10 tests stay green, `theDriverIsHeldWeakly()` among them. Before this test, A was
-    /// green on all of them.
+    /// `LeaseDriverPublisherTests`, `LeaseDriverPublisherRaceTests`,
+    /// `LeaseDriverEvidencePublishTests` and `LeaseDriverPublishOrderTests`: red in 5 of 5 at
+    /// `freed`, after `patience` steps (about 4 s), with "the driver is freed and 2 of its 2 sets
+    /// of observers are not". It is the only test of the five suites that goes red, and
+    /// `theDriverIsHeldWeakly()` stays green. Before this test, A was green on all of them.
     @Test("A driver's observers are freed with it, while its streams are open")
     func theObserversAreFreedWithTheirDriver() async throws {
         let subscribed = await Self.subscribeAndLetGo()

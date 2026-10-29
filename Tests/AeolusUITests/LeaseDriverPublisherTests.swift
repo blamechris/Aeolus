@@ -20,7 +20,7 @@ struct LeaseDriverPublisherTests {
     /// A new observer's first element is the last report published, after a change of state and
     /// after a change of the evidence alone, and a fresh driver's first is its own report. That a
     /// real driver's publisher agrees with its `report` after the evidence moved alone is
-    /// `LeaseDriverPublisherRaceTests.aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone()`.
+    /// `LeaseDriverEvidencePublishTests.aNewObserverStartsWithTheReportAsTheEvidenceMovesAlone()`.
     ///
     /// **Mutation (V1, a value that is never stored):** in `Followers.store(_:)`, delete
     /// `state.current = value`. Run, debug: red at "after a change of state" and at each first
