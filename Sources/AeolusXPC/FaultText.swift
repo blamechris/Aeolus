@@ -21,8 +21,10 @@ public enum FaultText {
     ///   the rest of it (U+202E RIGHT-TO-LEFT OVERRIDE, U+2066 LEFT-TO-RIGHT ISOLATE), and what
     ///   shows nothing at all (U+200B ZERO WIDTH SPACE, U+00AD SOFT HYPHEN).
     /// - Zl and Zp: the two line breaks the first pair do not contain, and the reason a
-    ///   predicate spelled `CharacterSet.controlCharacters`, which is Cc and Cf, cannot do this
-    ///   job. They are named by the scalar's own category here so all four are on the page.
+    ///   predicate spelled `CharacterSet.controlCharacters` cannot do this job. It lets both
+    ///   through, and it reads Foundation's tables, which differ by macOS: on macOS 26 they also
+    ///   hold thousands of plane-14 scalars that are not Cc or Cf (#563). All four categories
+    ///   are named here by the scalar's own, the standard library's table.
     ///
     /// It is also the set the helper **refuses** in a client-chosen description
     /// (`AeolusXPCValidation.validateDescription`, #483): one rule, applied by refusing it on

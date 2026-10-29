@@ -29,11 +29,13 @@ struct LogRouteTests {
     /// its own `Logger`, calls `os_log`, or logs through a second stored one changes a number.
     ///
     /// What it does not see: a spelling outside those three (`NSLog`, `OSLog`'s own
-    /// initialiser, another log type's method); a call on a call result through a type name the
-    /// scan does not know (`QuietSink(…).fault(…)`, where `QuietSink` is a typealias of `Logger`
-    /// declared in another file: the name is not `Logger`, and `loggerCall` needs a word
-    /// character before the dot); and an edit that changes a count and its expectation
-    /// together. `Logger` is matched as a token, so `os.Logger`, a typealias declared in this
+    /// initialiser, another log type's method); a call on a receiver that is not a plain name,
+    /// one that ends in `)`, `]`, `?` or `!` (`quiet().fault(…)`, `self.loggers[0].fault(…)`,
+    /// `logger?.fault(…)`, `logger!.fault(…)`), because `loggerCall` needs a word character
+    /// before the dot and does not see a call on `)`; and an edit that changes a count and its
+    /// expectation together. A call on a typealias of `Logger` declared in another file
+    /// (`QuietSink(…).fault(…)`) is one of those: the name is not `Logger`, and the receiver
+    /// ends in `)`. `Logger` is matched as a token, so `os.Logger`, a typealias declared in this
     /// file and an annotation are seen. This is the file that, until #560, no test read as
     /// source: an in-file `SafetyLog` method that logged directly was caught only by a
     /// recording test of that particular line.
@@ -157,8 +159,9 @@ struct LogRouteTests {
     /// (`WatchdogLog.swift` is one, for good reason: it is a different log with a different
     /// vocabulary); an extension spelled so the declaration pattern misses it
     /// (`extension AeolusHelper.HelperLog`); a call through another log type's method; a call
-    /// on a call result through a type name it does not know (a typealias of `Logger` declared in
-    /// a file that extends no log); and every spelling the in-file scans do not see.
+    /// on a receiver that is not a plain name, one that ends in `)`, `]`, `?` or `!`, which
+    /// `loggerCall` does not see (`quiet().fault(…)`, `logger?.fault(…)`); and every spelling
+    /// the in-file scans do not see.
     ///
     /// It reads the home files by their relative path, so a probe that is *named*
     /// `HelperLog.swift` in another directory is still scanned. It also requires that the scan
@@ -230,11 +233,13 @@ struct LogRouteTests {
     /// .escaped`, which the sweep in `LogTextTests` holds, or another type written beside
     /// `EscapingSink` that a log stores instead, which the reflection tests refuse.
     ///
-    /// It also does not see an `extension LogText.EscapingSink where Level == …` in another
-    /// file. That can add an overload of `callAsFunction` that skips the escape, with the suite
-    /// green, and `log show` then shows the raw line (the review of #565 ran it). This test
-    /// reads the struct's own body and nothing else; that class is held by review of any file
-    /// that extends the type.
+    /// It also does not see an `extension LogText.EscapingSink where Level == …` outside the
+    /// struct's braces, in this file or another. That can add an overload of `callAsFunction`
+    /// that skips the escape, with the suite green, and `log show` then shows the raw line (the
+    /// review of #565 ran it, from another file). One in `LogText.swift` itself is the more
+    /// direct bypass: same-file code can read `private let sink` (SE-0169). This test reads the
+    /// struct's own body and nothing else; that class is held by review of any code that
+    /// extends the type, in `LogText.swift` as much as anywhere.
     ///
     /// **Mutation (E1):** #560's comment verbatim. `init(_:)` stores `{ level, message in
     /// sink(level, LogText.escaped(message)) }`, `callAsFunction` calls `sink(level, message)`,
@@ -265,9 +270,9 @@ struct LogRouteTests {
         #expect(
             body == reviewed,
             """
-            EscapingSink is no longer the reviewed text. Updating `reviewed` is a safety review \
-            of the sink: re-check that callAsFunction escapes the message on every path before \
-            you change it.
+            EscapingSink is no longer the reviewed text. Either revert the edit to \
+            EscapingSink, or re-check that callAsFunction escapes the message on every path \
+            before you change `reviewed`: updating `reviewed` is a safety review of the sink.
             """)
     }
 

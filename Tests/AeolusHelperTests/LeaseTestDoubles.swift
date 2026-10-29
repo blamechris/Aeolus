@@ -329,6 +329,10 @@ enum LeaseFixture {
     /// `envelopes` defaults to that same machine's declared bounds — plausible, through the real
     /// scripted firmware (`plausibleEnvelopes()`). The lease core's own parameter has no default
     /// (#270): a defaulted envelope reader would be one nothing configured.
+    ///
+    /// `log` defaults to the shared `log` above, which writes to the unified log and can be read
+    /// by no test. A test about what a lease line says, or that none was written, passes a
+    /// `LeaseLog(recording:)` of its own (#569).
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: any FanRestoring = RecordingFanRestorer(),
@@ -339,7 +343,8 @@ enum LeaseFixture {
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
-        tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity
+        tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
+        log: LeaseLog = LeaseFixture.log
     ) -> LeaseAuthority {
         LeaseAuthority(
             enumeration: enumeration,

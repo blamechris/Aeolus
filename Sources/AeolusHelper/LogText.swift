@@ -92,9 +92,10 @@ extension LogText {
     /// reflection tests, which see one child either way. `LogRouteTests.theEscapingSink
     /// IsTheTextThatWasReviewed` compares this struct's text, whitespace and comments aside,
     /// with the reviewed one, so changing it means changing that test too. It reads this
-    /// struct's body only: an `extension EscapingSink where Level == …` in another file can add
-    /// an overload of `callAsFunction` that skips the escape and is not seen, so a file that
-    /// extends this type is held by review.
+    /// struct's body only: an `extension EscapingSink where Level == …` outside the struct's
+    /// braces, in this file or another, can add an overload of `callAsFunction` that skips the
+    /// escape and is not seen, so any code that extends this type is held by review. One in
+    /// this file is the more direct bypass: same-file code can read `private let sink`.
     struct EscapingSink<Level: Sendable>: Sendable {
         private let sink: @Sendable (Level, String) -> Void
 

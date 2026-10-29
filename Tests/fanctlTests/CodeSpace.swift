@@ -6,12 +6,14 @@ import Testing
 /// A test that walks every scalar is a synchronous loop. In an `async` test with no suspension
 /// point it holds one cooperative-pool thread from its first scalar to its last, and CI runs
 /// every test in one process on a pool three threads wide. That is real load on the pool: on a
-/// pool of one thread, a task asking to be resumed every 10 ms came back 1.1 to 1.9 s late with
-/// the sweeps unbroken, and 11 to 12 ms late with them in runs (five debug runs each). Whether
+/// pool of one thread, a task asking to be resumed every 10 ms came back late with the sweeps
+/// unbroken, by 5 ms to 1.9 s across three sets of five debug runs, depending on whether the
+/// probe was scheduled ahead of the sweeps. So 1.9 s is the high end of a start-up race and not
+/// a floor. With the sweeps in runs it came back 11 to 12 ms late (five debug runs). Whether
 /// they contributed to the CI failure that raised #570, a 250 ms client deadline in
 /// `HelperClientTeardownTests` that ran out, was not shown: a CI run with the sweeps in runs
-/// still had the same silent first seconds, and that deadline's exposure is #421's. A run that
-/// ends in `Task.yield()` hands the thread to whatever is queued behind it.
+/// still had silent first seconds, and that deadline's exposure is #421's. A run that ends in
+/// `Task.yield()` hands the thread to whatever is queued behind it.
 ///
 /// **Every test target that sweeps the code space carries an identical copy of this file.** Test
 /// targets cannot share code, and moving the helper into a product module to get round that would
