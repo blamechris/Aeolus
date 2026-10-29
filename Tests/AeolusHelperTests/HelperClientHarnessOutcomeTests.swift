@@ -173,4 +173,33 @@ struct HelperClientHarnessOutcomeTests {
 
         #expect(clock.now == before, "a backstop that was dropped still moved the clock")
     }
+
+    /// **A call does not outlive the test that was waiting for it.** When the wait ends because
+    /// the test was cancelled (a `.timeLimit`, say), the call's own task is cancelled before the
+    /// error goes on, so it is not left running until the harness's backstop.
+    ///
+    /// The call sleeps for an hour, so only cancellation ends it, and notes that it heard.
+    ///
+    /// **Mutation:** in `returnedOutcome`, delete the `task.cancel()` from the `catch`. Run: red on
+    /// the wait for the call to hear that its test was cancelled.
+    @Test("A call is cancelled with the test that was waiting for it")
+    func aCancelledTestCancelsItsCall() async throws {
+        let heard = CompletionFlag()
+        let waiting = Task {
+            try await returnedOutcome(of: "a sleep only cancellation ends") {
+                do {
+                    try await Task.sleep(for: .seconds(3600))
+                } catch {
+                    await heard.mark()
+                    throw error
+                }
+            }
+        }
+        waiting.cancel()
+
+        try await waitUntil("the call to hear that the test waiting for it was cancelled") {
+            await heard.isSet
+        }
+        _ = try? await waiting.value
+    }
 }

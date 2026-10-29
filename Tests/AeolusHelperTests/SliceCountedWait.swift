@@ -1,7 +1,6 @@
 import Foundation
 
-/// A bounded wait on a `DispatchSemaphore` for a thread that is not a cooperative-pool thread,
-/// whose budget a stalled runner cannot spend
+/// A bounded wait on a `DispatchSemaphore` whose budget a stalled runner cannot spend
 /// ([#421](https://github.com/blamechris/Aeolus/issues/421)).
 ///
 /// `semaphore.wait(timeout: .now() + 20)` measures its 20 s against the wall clock. A runner that
@@ -25,6 +24,12 @@ import Foundation
 /// For waits whose claim is not about time: a failsafe that frees a thread a failing test would
 /// otherwise leave parked, or a readiness that another thread has to reach. A wait whose bound is
 /// a deadline the product is held to does not belong here; this stretches whatever it is given.
+///
+/// **Whose thread it parks.** The waits in this target are on `Thread`s of their own. The copy in
+/// `SMCCoreTests` (`signalled(_:within:)`) is called from the test's own synchronous code, which
+/// for an `async` test is a cooperative-pool thread, and parks it for up to the budget. That is
+/// harmless only because every signaller there is a dedicated `Thread` that needs no pool thread
+/// to run; a wait on a semaphore that a pool task signals is #554's hazard, not a use of this.
 enum SliceCountedWait {
 
     /// How long one wait lasts.

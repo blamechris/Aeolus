@@ -15,14 +15,17 @@ import Testing
 /// The call runs in a task of its own, and the wait for it is `waitUntil`'s, which counts only
 /// time the waiter ran, so a runner stall is added to the wait and never spent from it. When the
 /// wait ends and the call has not returned, the failure is recorded against the caller's line and
-/// the call is **cancelled**, which the client answers at once with a `CancellationError`
-/// (`PendingReply`), so the test ends on its own assertions and not on its time limit.
+/// the call is **cancelled**. A call parked in the client's wait on its own reply is answered at
+/// once with a `CancellationError` (`PendingReply`), so the test ends on its own assertions and
+/// not on its time limit.
 ///
-/// **A call that cancellation cannot free** is one parked behind something the test holds: a
-/// `hello` whose reply the test has not released, because the verb waits for the
-/// shared handshake task and that task does not hear its waiter's cancellation. `release`
-/// is for that: it runs once the call has been cancelled and before it is awaited, and releases
-/// what the test holds.
+/// **A call that cancellation cannot free** is one parked behind the shared handshake: the verb
+/// waits for the handshake task with an `await` that does not hear its waiter's cancellation
+/// ([#576](https://github.com/blamechris/Aeolus/issues/576)). It comes back only when the
+/// handshake does, which is when the harness's backstop runs the `hello` deadline out (about 30 s
+/// in, as `helperNeverAnswered(after: 15.0 seconds)`), or when the test releases a `hello` it is
+/// holding. `release` is for the second: it runs once the call has been cancelled and before it
+/// is awaited, and releases what the test holds.
 ///
 /// The clock is not moved to release a parked call. Doing so would run out a deadline, and the
 /// call would come back with `helperNeverAnswered`, the very answer a caller of this is asking
@@ -31,15 +34,17 @@ import Testing
 ///
 /// - Parameters:
 ///   - what: the call, as the failure should name it.
-///   - timeout: how long the call may take, as scheduled waiting time (`waitUntil`'s default).
+///   - timeout: how long the call may take, as scheduled waiting time. 15 s, which is what the
+///     deadlines used to give a failing call (10 to 15 s); it costs time only in a failing run.
 ///   - sourceLocation: the caller's line, which a failed wait is recorded against.
 ///   - release: what to do once a call that did not come back has been cancelled.
 ///   - call: the call itself.
 /// - Returns: the call's result or its error, and `CancellationError` if it was cancelled.
-/// - Throws: `CancellationError`, from the wait, when the test itself is cancelled.
+/// - Throws: `CancellationError`, from the wait, when the test itself is cancelled; the call is
+///   cancelled first, so it does not outlive the test.
 func returnedOutcome<Value: Sendable>(
     of what: String,
-    timeout: Duration = .seconds(5),
+    timeout: Duration = .seconds(15),
     sourceLocation: SourceLocation = #_sourceLocation,
     afterCancelling release: () async -> Void = {},
     _ call: @escaping @Sendable () async throws -> Value
@@ -56,11 +61,18 @@ func returnedOutcome<Value: Sendable>(
         return result
     }
 
-    try await waitUntil(
-        "\(what) to come back, with its deadline on a clock nothing moves",
-        timeout: timeout,
-        { await returned.isSet },
-        sourceLocation: sourceLocation)
+    do {
+        try await waitUntil(
+            "\(what) to come back, with its deadline on a clock nothing moves",
+            timeout: timeout,
+            { await returned.isSet },
+            sourceLocation: sourceLocation)
+    } catch {
+        // The test was cancelled (a `.timeLimit`, say). The call is its own task and would
+        // otherwise run on until the backstop, with nobody left to read what it returns.
+        task.cancel()
+        throw error
+    }
     if await !returned.isSet {
         task.cancel()
         await release()
@@ -75,10 +87,14 @@ func returnedOutcome<Value: Sendable>(
 /// A harness's deadlines are on a clock nothing moves, which is the point; but a verb waits for
 /// the shared handshake task with an `await` that cancellation does not end, and a `.timeLimit`
 /// is only a cancellation. A client that lost its `hello` would then park its test, and with it
-/// the run, for as long as the CI job allows. The wait here is `waitUntil`'s, counting only time
-/// the waiter ran, so a stalled runner moves it no nearer; it is cancelled with the harness, and
-/// a test that finishes never reaches it. 30 s sits under the 60 s of the smallest `.timeLimit`
-/// with the room `StallTolerantWait.ceiling` allows a stall to add.
+/// the run, for as long as the CI job allows. The wait here is `StallTolerantWait.poll`, which
+/// counts only time the waiter ran, so a stall is added to the 30 s; it is cancelled with the
+/// harness, and a test that finishes never reaches it.
+///
+/// **The stall allowance has a cap.** `poll` ends at its 50 s wall ceiling whatever it has
+/// compensated, so once a harness has lived through more than 20 s of stalls in total, the
+/// backstop fires at 50 s of wall time, which is 50 s minus that total of scheduled time. 50 s
+/// is also what keeps it under the 60 s of the smallest `.timeLimit`.
 ///
 /// **It keeps going once it has fired.** A client that has been told its deadline ran out may be
 /// asked again by the same test, and a deadline started after the backstop fired would otherwise

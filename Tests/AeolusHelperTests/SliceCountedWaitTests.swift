@@ -14,20 +14,28 @@ struct SliceCountedWaitTests {
     /// A budget measured against the wall clock would be spent by the 300 ms and make fewer waits
     /// (and, with waits that return at once, a great many more); only a count is exactly twenty.
     ///
+    /// **The wall ceiling is an hour, deliberately.** At five seconds this test was itself the
+    /// victim of the stall it is about: stopped for 8 s inside the 300 ms, the first wait ended
+    /// past the ceiling, the wait gave up after one, and the count was 1 (a reviewer's `kill
+    /// -STOP`, #575). The ceiling is another test's claim (`aSlowWaitEndsAtTheCeiling`), so here
+    /// it is out of reach of any stall. The fakes return at once, so the wait still ends after
+    /// twenty; the valve below only ends a mutant that would otherwise spin for the hour.
+    ///
     /// **Mutation:** in `signalled`, replace the `for` with a loop that runs until
     /// `ContinuousClock.now` passes a deadline `seconds` ahead. Run: red on the count, which
-    /// becomes thousands because the fake waits take no time.
+    /// becomes 101 because the fake waits take no time and the valve ends it.
     @Test("A slice that took far longer than it should spent one slice of the budget")
     func aStalledSliceSpendsOneSlice() {
         let waits = Counter()
         let signalled = SliceCountedWait.signalled(
-            DispatchSemaphore(value: 0), within: 1, ceiling: .seconds(5)
+            DispatchSemaphore(value: 0), within: 1, ceiling: .seconds(3600)
         ) { _, _ in
-            if waits.next() == 1 { Thread.sleep(forTimeInterval: 0.3) }
-            return false
+            let call = waits.next()
+            if call == 1 { Thread.sleep(forTimeInterval: 0.3) }
+            return call > 100
         }
 
-        #expect(!signalled)
+        #expect(!signalled, "the valve fired, so the wait made more than a hundred")
         #expect(
             waits.count == SliceCountedWait.slicesPerSecond,
             "\(waits.count) waits for a one second budget; a stall must spend one slice, not more")

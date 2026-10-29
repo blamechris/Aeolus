@@ -113,8 +113,12 @@ struct HelperClientConnectionTests {
     /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, take the proxy with bare
     /// `remoteObjectProxy`, so nothing reports the transport failure. Run: red — the call never
     /// comes back, which is the "it hung" answer this expectation exists to exclude. Its deadline
-    /// is on a clock nothing moves (#421), so the wait for it fails and names it instead of
-    /// running out at 5 s, and the cancelled call is told `CancellationError`.
+    /// is on a clock nothing moves (#421), so the wait for it fails and names it after 15 s. The
+    /// call is parked on the shared handshake task, which cancellation does not end
+    /// ([#576](https://github.com/blamechris/Aeolus/issues/576)), so it is not told
+    /// `CancellationError`: it comes back only when the harness's backstop runs the `hello`
+    /// deadline out, about 30 s in, as `helperNeverAnswered(after: 15.0 seconds)`, and the
+    /// `guard case .helperUnreachable` below records it.
     @Test("A helper refusing every connection is a prompt, honest error")
     func aRefusingHelperIsPromptAndNamesBothPossibilities() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())

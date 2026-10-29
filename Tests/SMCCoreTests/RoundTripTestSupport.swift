@@ -42,6 +42,10 @@ final class SteppedClock: Clock, Sendable {
 /// `seconds + 50` of wall time, so a waiter that is slow rather than stopped still fails.
 /// `SliceCountedWait` in `AeolusHelperTests` is the same wait, with the tests of it; the two
 /// targets cannot share a file.
+///
+/// It parks the calling thread, and for an `async` test that is a cooperative-pool thread. That is
+/// harmless only because every signaller here (`observeInFlight`'s reader, `ParkedRoundTrip`) is a
+/// dedicated `Thread`; never wait on a semaphore a pool task has to signal (#554).
 func signalled(_ semaphore: DispatchSemaphore, within seconds: Int) -> Bool {
     let limit = ContinuousClock.now.advanced(by: .seconds(seconds + 50))
     for _ in 0..<(seconds * 20) {
