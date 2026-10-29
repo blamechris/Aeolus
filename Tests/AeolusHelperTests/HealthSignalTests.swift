@@ -132,6 +132,13 @@ struct HealthSignalTests {
     /// finished is cancelled after `grace` and counted as `abandoned`, so a mutant that loses an
     /// element is a red and not a test that waits for it until the suite's time limit.
     ///
+    /// **It runs in rounds.** In 2 of 6 full runs of this package's tests, a single round did not
+    /// race: 0 of 16 and 10 of 26 registrations began while the owner was publishing, because the
+    /// pool was busy with other tests and no stormer got a thread beside the owner's turn. A
+    /// round that did not race starts another, with a new owner, until the rounds have or
+    /// `rounds` are spent; a stream that was wrong, or abandoned, ends the test at once. Run with
+    /// only the other storm, a round raced in 12 of 12 runs.
+    ///
     /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`):**
     /// - **V2, the first value yielded after the lock is released:** 60 to 237 of about 295,000 to
     ///   380,000 streams broken in a run, each a value followed by the one before it.
@@ -147,7 +154,7 @@ struct HealthSignalTests {
     /// is broken. `LeaseDriverPublisherTests` has the same test for the lease driver's publisher.
     @Test("A storm of registrations is handed each value right after the one before it")
     func aStormOfRegistrationsIsHandedEachValueAfterTheOneBeforeIt() async {
-        let total = await Self.stormRegistrations(against: Owner())
+        let total = await Self.stormUntilItRaces()
 
         #expect(
             total.abandoned == 0,
@@ -163,7 +170,7 @@ struct HealthSignalTests {
                 total.midRun >= Self.minimumMidRun,
                 """
                 only \(total.midRun) of \(total.registrations) registrations began while the owner \
-                was publishing, so this run did not race it
+                was publishing, in \(total.rounds) rounds, so this run did not race it
                 """)
         }
     }
@@ -229,6 +236,9 @@ struct HealthSignalTests {
         ProcessInfo.processInfo.activeProcessorCount > 1
         && ProcessInfo.processInfo.environment["LIBDISPATCH_COOPERATIVE_POOL_STRICT"] != "1"
 
+    /// How many rounds the storm may take to race the owner once.
+    static let rounds = 5
+
     /// How long a stormer may wait for an element after the owner has finished, before it is
     /// cancelled and counted as abandoned.
     static let grace: Duration = .seconds(10)
@@ -237,7 +247,24 @@ struct HealthSignalTests {
     static let patience = 5_000
     static let step: Duration = .milliseconds(1)
 
-    /// Runs the storm: `stormers` tasks register streams against `owner` while it publishes
+    /// Runs the storm in rounds, each against a new owner, until the rounds so far have raced
+    /// `minimumMidRun` registrations, a stream was wrong or abandoned, `rounds` are spent, or the
+    /// pool cannot race the owner at all.
+    static func stormUntilItRaces() async -> Tally {
+        var total = Tally()
+        for _ in 0..<rounds {
+            total.add(await stormRegistrations(against: Owner()))
+            total.rounds += 1
+            if total.brokenCount > 0 || total.abandoned > 0 || !canRaceThePublisher
+                || total.midRun >= minimumMidRun
+            {
+                break
+            }
+        }
+        return total
+    }
+
+    /// Runs one round of the storm: `stormers` tasks register streams against `owner` while it publishes
     /// `stormPublished` values in one turn, and what they found, added up.
     static func stormRegistrations(against owner: Owner) async -> Tally {
         let registered = Counter()
@@ -315,6 +342,7 @@ struct HealthSignalTests {
         var registrations = 0
         var midRun = 0
         var abandoned = 0
+        var rounds = 0
         var brokenCount = 0
         /// The first few streams that were wrong, as text.
         var broken: [String] = []
@@ -328,6 +356,7 @@ struct HealthSignalTests {
             registrations += other.registrations
             midRun += other.midRun
             abandoned += other.abandoned
+            rounds += other.rounds
             brokenCount += other.brokenCount
             for example in other.broken where broken.count < 3 { broken.append(example) }
         }

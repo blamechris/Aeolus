@@ -104,6 +104,14 @@ struct LeaseDriverPublisherRaceTests {
     /// finished is cancelled after `grace` and counted as `abandoned`, so a mutant that loses an
     /// element is a red and not a test that waits for it until the suite's time limit.
     ///
+    /// **It runs in rounds.** The health signal's storm, which this one mirrors, did not race in
+    /// a single round in 2 of 6 full runs of this package's tests: 0 of 16 and 10 of 26
+    /// registrations began while the owner was publishing, because the pool was busy with other
+    /// tests and no stormer got a thread beside the owner's turn. A round that did not race
+    /// starts another, with a new owner, until the rounds have or `rounds` are spent; a stream
+    /// that was wrong, or abandoned, ends the test at once. Run with only the other storm, a
+    /// round raced in 12 of 12 runs.
+    ///
     /// **Mutations (debug, two sweeps of 5 runs each, all 10 red at `total.broken.isEmpty`):**
     /// - **V2, the first value yielded after the lock is released:** 177 to 286 of about 500,000
     ///   to 562,000 streams broken in a run, each a change followed by the one before it.
@@ -117,7 +125,7 @@ struct LeaseDriverPublisherRaceTests {
     /// mid-run, and none is broken. `HealthSignalTests` has the same test for the health signal.
     @Test("A storm of registrations is handed each change right after the one before it")
     func aStormOfRegistrationsIsHandedEachChangeAfterTheOneBeforeIt() async {
-        let total = await Self.stormRegistrations(against: Owner())
+        let total = await Self.stormUntilItRaces()
 
         #expect(
             total.abandoned == 0,
@@ -133,7 +141,7 @@ struct LeaseDriverPublisherRaceTests {
                 total.midRun >= Self.minimumMidRun,
                 """
                 only \(total.midRun) of \(total.registrations) registrations began while the owner \
-                was publishing, so this run did not race it
+                was publishing, in \(total.rounds) rounds, so this run did not race it
                 """)
         }
     }
@@ -254,6 +262,9 @@ struct LeaseDriverPublisherRaceTests {
         ProcessInfo.processInfo.activeProcessorCount > 1
         && ProcessInfo.processInfo.environment["LIBDISPATCH_COOPERATIVE_POOL_STRICT"] != "1"
 
+    /// How many rounds the storm may take to race the owner once.
+    static let rounds = 5
+
     /// How long a stormer may wait for an element after the owner has finished, before it is
     /// cancelled and counted as abandoned.
     static let grace: Duration = .seconds(10)
@@ -268,7 +279,24 @@ struct LeaseDriverPublisherRaceTests {
         return fans.first
     }
 
-    /// Runs the storm: `stormers` tasks register streams of `owner`'s publisher, half of each kind,
+    /// Runs the storm in rounds, each against a new owner, until the rounds so far have raced
+    /// `minimumMidRun` registrations, a stream was wrong or abandoned, `rounds` are spent, or the
+    /// pool cannot race the owner at all.
+    static func stormUntilItRaces() async -> Tally {
+        var total = Tally()
+        for _ in 0..<rounds {
+            total.add(await stormRegistrations(against: Owner()))
+            total.rounds += 1
+            if total.brokenCount > 0 || total.abandoned > 0 || !canRaceThePublisher
+                || total.midRun >= minimumMidRun
+            {
+                break
+            }
+        }
+        return total
+    }
+
+    /// Runs one round of the storm: `stormers` tasks register streams of `owner`'s publisher, half of each kind,
     /// while it publishes `stormPublished` changes in one turn, and what they found, added up.
     static func stormRegistrations(against owner: Owner) async -> Tally {
         let registered = Counter()
@@ -354,6 +382,7 @@ struct LeaseDriverPublisherRaceTests {
         var registrations = 0
         var midRun = 0
         var abandoned = 0
+        var rounds = 0
         var brokenCount = 0
         /// The first few streams that were wrong, as text.
         var broken: [String] = []
@@ -367,6 +396,7 @@ struct LeaseDriverPublisherRaceTests {
             registrations += other.registrations
             midRun += other.midRun
             abandoned += other.abandoned
+            rounds += other.rounds
             brokenCount += other.brokenCount
             for example in other.broken where broken.count < 3 { broken.append(example) }
         }
