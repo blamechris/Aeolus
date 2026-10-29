@@ -8,9 +8,10 @@ import os
 /// on the cooperative pool (#541): the first value is yielded under the lock, and a publication
 /// stores its value and takes its observers in one section. `HealthSignalThreadRaceTests` is the
 /// same test for the health signal, and says why threads, what bounds it (the threads by
-/// construction, the reads only while the code delivers; a mutant that loses an element is freed
-/// by the suite's time limit) and why it is sized as it is. Run alone on the development
-/// machine, in debug, this takes 0.30 s and about 0.8 CPU-s (release: 0.24 s, about 0.5 CPU-s).
+/// construction, the reads only while the code delivers; a mutant that leaves a stream fewer
+/// than two elements is freed by the suite's time limit) and why it is sized as it is. Run
+/// alone on the development machine, in debug, this takes 0.30 s and about 0.8 CPU-s
+/// (release: 0.24 s, about 0.5 CPU-s).
 @Suite(
     "LeaseDriverPublisher — registrations on their own threads race a publisher on its own",
     .timeLimit(.minutes(1)))
@@ -41,10 +42,10 @@ struct LeaseDriverPublisherThreadRaceTests {
     /// 12,391 (17% of the fewest). A floor of 10,000,000 fails every run and prints these.
     ///
     /// **A necessary condition only.** It shows the threads ran concurrently, not that a
-    /// registration crossed the publication window. In #545's review, with V2 applied and each
-    /// registration serialised against each publication by an `NSLock`, V2 went green 3/3 in
-    /// both modules while the count stayed far above the floor. V2's kill count is the direct
-    /// evidence that the window was crossed.
+    /// registration crossed the publication window. In #545's round-3 review (recorded in #555),
+    /// with V2 applied and each registration serialised against each publication by an
+    /// `NSLock`, the suite went green 3/3 in both modules, floor included. V2's kill count is the
+    /// direct evidence that the window was crossed.
     static let minimumInterleaved = 1_500
 
     /// Streams of both kinds made on registrar threads while a thread that owns a publisher

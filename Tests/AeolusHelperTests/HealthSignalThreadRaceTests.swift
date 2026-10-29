@@ -22,8 +22,9 @@ import os
 /// `publicationCap`. It then waits for them without spinning and publishes twice more. Under
 /// correct code each stream has at least three elements buffered before any is read (the value
 /// at registration and the two publications after), so reading them waits on nothing. A mutant
-/// that loses one waits for the suite's time limit, whose cancellation ends `next()`. That is
-/// not a hang, but the time limit frees it, not the design.
+/// that leaves a stream fewer than two (the reader takes two of the three) waits for the
+/// suite's time limit, whose cancellation ends `next()`. That is not a hang, but the time limit
+/// frees it, not the design.
 ///
 /// **Sized to cost about 0.3 s** (`bursts`), because it keeps `registrars + 1` threads busy for
 /// that long, which on a runner with three cores is the whole machine, beside tests that are
@@ -60,10 +61,10 @@ struct HealthSignalThreadRaceTests {
     /// to 19,985 (8.2% of the fewest). A floor of 10,000,000 fails every run and prints these.
     ///
     /// **A necessary condition only.** It shows the threads ran concurrently, not that a
-    /// registration crossed the publication window. In #545's review, with V2 applied and each
-    /// registration serialised against each publication by an `NSLock`, V2 went green 3/3 in
-    /// both modules while the count stayed far above the floor. V2's kill count is the direct
-    /// evidence that the window was crossed.
+    /// registration crossed the publication window. In #545's round-3 review (recorded in #555),
+    /// with V2 applied and each registration serialised against each publication by an
+    /// `NSLock`, the suite went green 3/3 in both modules, floor included. V2's kill count is the
+    /// direct evidence that the window was crossed.
     static let minimumInterleaved = 1_500
 
     /// Streams made on registrar threads while a thread that owns a signal publishes a cycle of
