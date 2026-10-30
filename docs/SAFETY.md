@@ -1411,7 +1411,12 @@ floor every permit is clamped to, is not recorded, whether a report or a re-asse
 it, and the refusal is logged at `.fault`; the record then keeps the
 step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
 RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
-([#395](https://github.com/blamechris/Aeolus/pull/395)).
+([#395](https://github.com/blamechris/Aeolus/pull/395)). The record's `commanded` has no setter: it
+is a get-only view of storage private to `HeldFan`, and `record(_:)`, which holds the check, is the
+one assignment to it. The compiler refuses an assignment to `commanded`, and to the storage from
+another file; no key path to `commanded` is writable at run time; and the one assignment in
+`HeldFan`'s own file is held by a lexical count, which catches accidents
+([#612](https://github.com/blamechris/Aeolus/issues/612), `ReclamationHeldFanAccessTests`).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
