@@ -23,7 +23,8 @@ import Foundation
 ///
 /// - **Listener:** the shape of the request. Does the JSON decode, is the holder
 ///   description a description, is the TTL a number of seconds this helper grants, is the
-///   lease ID a UUID — and has this connection handshaken at all.
+///   lease ID a UUID, is every sensor key a curve names shaped like an SMC key — and has
+///   this connection handshaken at all. Whether this machine has that sensor is not a shape.
 /// - **Authority:** the state of the hardware. Which fans exist
 ///   (`AeolusXPCValidation.validateFanIndices(_:enumeratedFanIndices:)` against the set it
 ///   enumerated itself), whether their bounds are plausible, whether a lease is held,
