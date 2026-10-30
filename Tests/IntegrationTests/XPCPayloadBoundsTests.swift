@@ -296,42 +296,55 @@ struct XPCPayloadBoundsTests {
         #expect(request.fanIndices.count == AeolusXPCPayloadBounds.maxFansPerPayload)
     }
 
-    /// `apply` carries no client-authored free text — its only strings are four-byte SMC
-    /// keys, which the helper has refused in any other shape since #566, and a fixed
-    /// aggregation name — so what has to fit is structure: one setting per fan this project
-    /// will enumerate, each holding the largest `Control` arm. The keys are the largest the
-    /// helper accepts, and the decoded settings are validated as the helper validates them,
-    /// so this is the largest payload that is *answered*, not merely decoded. Before #566 the
-    /// keys here were five characters (`TC00P`), and nothing refused them.
-    @Test("A settings payload for every fan, each with a full curve, fits under the cap")
+    /// The largest `apply` payload the envelope's derivation describes, written out by hand: one
+    /// setting per fan this project will enumerate, each a curve with every field at its maximum.
+    ///
+    /// - Every number at its longest canonical form: a 20-character `Int` index and 24-character
+    ///   `Double`s, for every point and both margins (`maxNumberBytes`).
+    /// - Every string value fully escaped: 16 sensor keys of four bytes, 26 bytes each written as
+    ///   `\u00XX`, and the aggregation name the same way (`jsonEscapeExpansion`).
+    /// - Object keys at their literal width and no whitespace, which is what the type charges.
+    ///
+    /// Asserted under the cap with its headroom unspent, since the headroom is for fields a newer
+    /// peer adds, not for these. Decoded and validated as the helper does both, so it is a payload
+    /// the helper's checks accept, not only its decoder. Until #619's review this was a
+    /// `JSONEncoder` payload of short keys and small numbers, 92,407 bytes, called the largest; the
+    /// review built accepted payloads of 186,433 and 202,817 bytes. This one is 205,761.
+    @Test("The largest settings payload the derivation describes fits under the cap, unspent")
     func maximalSettingsFitUnderTheCap() throws {
-        let curve = FanCurve(
-            points: (0..<AeolusXPCPayloadBounds.maxCurvePoints).map {
-                FanCurve.Point(temperatureCelsius: Double($0), rpm: 1000 + Double($0))
-            },
-            source: SensorGroup(
-                sensorKeys: (0..<AeolusXPCPayloadBounds.maxSensorKeysPerCurve).map {
-                    String(format: "Tp%02d", $0)
-                },
-                aggregation: .maximum
-            )
-        )
-        // Asserted before the payload is built, because "maximal" is this test's entire
-        // premise and nothing else here checks it. `FanCurve.init` empties a curve that
-        // carries a non-finite point (#190), so a regression there — or any future rule that
-        // drops points — would shrink this payload, and a cap test whose fixture quietly got
-        // smaller passes while the cap stops bounding anything.
-        #expect(curve.points.count == AeolusXPCPayloadBounds.maxCurvePoints)
-
-        let settings = (0..<AeolusXPCPayloadBounds.maxFansPerPayload).map {
-            FanSetting(fanIndex: $0, control: .curve(curve))
+        let longestDouble = "-1.7976931348623157e+308"
+        #expect(longestDouble.utf8.count == 24 && Double(longestDouble)?.isFinite == true)
+        let point = "{\"temperatureCelsius\":\(longestDouble),\"rpm\":\(longestDouble)}"
+        let points = Array(repeating: point, count: AeolusXPCPayloadBounds.maxCurvePoints)
+        let keys = (0..<AeolusXPCPayloadBounds.maxSensorKeysPerCurve).map {
+            "\"\(Self.fullyEscaped(String(format: "Tp%02d", $0)))\""
         }
-        let payload = try Self.encoded(settings)
+        let curve = """
+            {"points":[\(points.joined(separator: ","))],\
+            "source":{"sensorKeys":[\(keys.joined(separator: ","))],\
+            "aggregation":"\(Self.fullyEscaped("maximum"))"},\
+            "hysteresisCelsius":\(longestDouble),"maximumRampRPMPerSecond":\(longestDouble)}
+            """
+        let settings = (0..<AeolusXPCPayloadBounds.maxFansPerPayload).map {
+            "{\"fanIndex\":\(Int.min + $0),\"control\":{\"curve\":{\"_0\":\(curve)}}}"
+        }
+        let payload = Data("[\(settings.joined(separator: ","))]".utf8)
 
-        #expect(payload.count <= AeolusXPCPayloadBounds.maxFanSettingsBytes)
+        #expect(
+            payload.count
+                <= AeolusXPCPayloadBounds.maxFanSettingsBytes
+                / AeolusXPCPayloadBounds.headroomFactor)
         let decoded = try AeolusXPCValidation.decodeFanSettings(from: payload)
-        #expect(decoded.count == AeolusXPCPayloadBounds.maxFansPerPayload)
         try AeolusXPCValidation.validateSensorKeys(in: decoded)
+        // "Maximal" is this test's whole premise, so the decoded shape is checked, not assumed.
+        #expect(decoded.count == AeolusXPCPayloadBounds.maxFansPerPayload)
+        guard case .curve(let decodedCurve) = try #require(decoded.first).control else {
+            Issue.record("the fixture's first setting did not decode as a curve")
+            return
+        }
+        #expect(decodedCurve.points.count == AeolusXPCPayloadBounds.maxCurvePoints)
+        #expect(
+            decodedCurve.source.sensorKeys.count == AeolusXPCPayloadBounds.maxSensorKeysPerCurve)
     }
 
     /// The other way a cap fails, and the one no test that derives its own payload from the
