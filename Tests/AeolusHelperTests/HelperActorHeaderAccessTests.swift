@@ -35,8 +35,9 @@ import Testing
 ///   first, `public extension LeaseAuthority {` compiles on the two extensions that declare a
 ///   value type (`LeaseAuthorityHandbackRegisters.swift` and
 ///   `LeaseAuthoritySleepSealPairing.swift`) and fails on `LeaseAuthorityRefusals.swift`, whose
-///   methods take internal types. With the second, the session's `HelperConnectionSessionGates
-///   .swift` extension fails because its methods return internal types.
+///   methods take internal types. With the second, both of the session's extensions
+///   (`HelperConnectionSessionGates.swift` and `HelperConnectionSessionMessages.swift`) fail
+///   because their methods return internal types.
 /// - `public actor ReclamationWatchdog<Plane: FanControlPlane>` does not compile ("generic actor
 ///   cannot be declared public because its generic parameter uses an internal type"; `package`
 ///   fails the same way), and a `package` `FanControlPlane` fails on its own requirements. So the

@@ -30,14 +30,29 @@ import Testing
 ///
 /// ## What this does not reach
 ///
+/// The structural fix is [#612](https://github.com/blamechris/Aeolus/issues/612); until it lands
+/// these routes are open, and every one of them was measured at full target scope unless it says
+/// inferred.
+///
 /// - **A member in the formatter's two-line spelling** (a modifier alone on a line, the
 ///   declaration under it at twelve spaces in the source, eight once the level is removed) is in
 ///   no population, whether new or already there
 ///   ([#605](https://github.com/blamechris/Aeolus/issues/605)). An acknowledged member written
 ///   so goes missing and is red; a new one is seen by nothing here.
 /// - **An initialiser or a subscript** is read by no population in this repository: the scan
-///   reads `let`, `var` and `func`. A second `init` that took a `commanded` would be a route to
-///   the field that this suite does not see.
+///   reads `let`, `var` and `func`. Measured: `init(lease: UUID, forcing target: CommandedTarget)
+///   { self.lease = lease; self.commanded = target }` beside `init(lease:)` leaves the whole
+///   target green.
+/// - **A nested type whose name is in backticks.** `noTypeIsNestedInHeldFan` skips it, because
+///   its name pattern is a plain identifier. Measured: ``enum `Backdoor` { static func
+///   force(_ fan: inout HeldFan, to target: CommandedTarget) { fan.commanded = target } }``
+///   inside `HeldFan` leaves the whole target green; `swift format lint --strict` exits 0 on it
+///   and SwiftLint exits 0 with one `nesting` warning.
+/// - **`Judgement` moved inside `HeldFan`**, with the same `static func force`. The type list
+///   says which types exist, not where they sit, so it is the same list in the same order.
+///   Measured: with the two places that name `Judgement` qualified as `HeldFan.Judgement`
+///   (`ReclamationRegistry.swift` and `ReclamationRegistryTests.swift`), the whole target is
+///   green.
 /// - **The bodies of the acknowledged methods** (inferred, not run). The entries say which
 ///   methods exist, not what they assign: `judge(_:)` edited to assign `commanded`, or a local
 ///   function in one, leaves every entry as it was. That `record(_:)` is the only writer is a
@@ -52,9 +67,11 @@ import Testing
 ///   cases, and a member added to it is read here as `HeldFan`'s and is red as an unacknowledged
 ///   one.
 ///
-/// What this does hold is every way in that needs no edit to an existing body: a bare `var`, a
-/// new member of a kind the scan reads, a binding list, a second declaration of `HeldFan`, and a
-/// type nested in the record or a second extension in its file (`noTypeIsNestedInHeldFan`).
+/// ## What is held
+///
+/// A bare `var` for `commanded`, or any respelling of a member; a new property or method; a
+/// binding list; a second declaration of `HeldFan`; a nested type with a plain name, and a second
+/// `extension`, in the file.
 @Suite("§ 5's per-fan record keeps its commanded target's setter private")
 struct ReclamationHeldFanAccessTests {
 
@@ -170,19 +187,27 @@ struct ReclamationHeldFanAccessTests {
         )
     }
 
-    /// Nothing is nested in `HeldFan`. A type declared inside its body can write `commanded`: the
-    /// setter is `private`, and a nested type is inside the scope `private` names, so `enum
-    /// Backdoor { static func force(_ fan: inout HeldFan, to target: CommandedTarget) {
-    /// fan.commanded = target } }` compiles, passes `swift format lint --strict`, and sits at a
-    /// depth the member scan does not read. So the type declarations in the file are listed:
-    /// the extension, the record and `Judgement`, in source order, as `kind Name`. The match is
-    /// on the keyword and the name wherever it stands, so a nested type in any spelling is a
-    /// third entry, and a second `extension` (`extension ReclamationWatchdog.HeldFan`, whose
-    /// `private` reaches the setter from the same file) is a fourth.
+    /// A type declared inside `HeldFan` can write `commanded`: the setter is `private`, and a
+    /// nested type is inside the scope `private` names, so `enum Backdoor { static func
+    /// force(_ fan: inout HeldFan, to target: CommandedTarget) { fan.commanded = target } }`
+    /// compiles, passes `swift format lint --strict`, and sits at a depth the member scan does
+    /// not read. So the type declarations in the file are listed: the extension, the record and
+    /// `Judgement`, in source order, as `kind Name`.
+    ///
+    /// **What it catches:** a nested type whose name is a plain identifier, under any modifier or
+    /// attribute, because the match is on the keyword and the name wherever it stands; and a
+    /// second `extension` (`extension ReclamationWatchdog.HeldFan`, whose `private` reaches the
+    /// setter from the same file).
+    ///
+    /// **What it does not, measured and open until
+    /// [#612](https://github.com/blamechris/Aeolus/issues/612):** a name in backticks, which the
+    /// pattern skips, and a type that is already in the list moved inside `HeldFan`, because the
+    /// list says which types exist and not where they sit (`Judgement`). Both are in the limits
+    /// above.
     ///
     /// **Mutation:** add `enum Backdoor { static func force(_ fan: inout HeldFan, to target:
     /// CommandedTarget) { fan.commanded = target } }` to `HeldFan`'s body. Run: red here.
-    @Test("No type is declared in the per-fan record's file beyond the three it holds")
+    @Test("No plain-named type is declared in the per-fan record's file beyond the three it holds")
     func noTypeIsNestedInHeldFan() throws {
         let code = try MemberAccessScan.strippedSource(of: Self.heldFanFile)
         let declaration = try NSRegularExpression(
@@ -201,7 +226,9 @@ struct ReclamationHeldFanAccessTests {
             the type declarations in \(Self.heldFanFile) changed: found \(found), expected \
             \(Self.acknowledgedTypeDeclarations). A type nested in `HeldFan`, or a second \
             extension of it in this file, can write `commanded` without `record(_:)`'s check, \
-            and the member scan does not read it. Say why here, and read what it adds.
+            and the member scan does not read it. This lists plain-named declarations only: not \
+            a name in backticks, and not where a listed type sits (#612). Say why here, and \
+            read what it adds.
             """
         )
     }
