@@ -122,4 +122,28 @@ struct StallTolerantWaitBudgetTests {
 
         #expect(fromQuiet.isEmpty && fromShort.isEmpty, "\(fromQuiet + fromShort)")
     }
+
+    // MARK: - A fanctl deadline on the wall clock
+
+    /// `FanctlResetTests.unhurried` leaves a one-minute limit room, should it ever be counted on
+    /// the wall clock ([#581](https://github.com/blamechris/Aeolus/issues/581), item 8).
+    ///
+    /// Nothing counts it there today: the suites that take it pass `.harness`, and a request
+    /// nothing answers fails when `ClockBackstop` runs it out. `emitted(over:waiting:counting:)`
+    /// has no default clock, so a caller that chose `.wall` would be deliberate, and this is what
+    /// it would be held to. Each verb's deadline plus 30 s, the stall #439's CI runner showed
+    /// before a suite's first request went out, stays under the 60 s of a one-minute limit
+    /// (restated, as a suite's trait cannot be read). It is the guard
+    /// `theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit` replaced (#590), for the one
+    /// configuration that replacement does not cover.
+    ///
+    /// **Mutation:** set `unhurried`'s `gatedVerb` to `.seconds(55)`. Run: red on the first
+    /// expectation. **Mutation:** set its `panicVerb` to `.seconds(60)`. Run: red on the second.
+    @Test("The fanctl suites' deadlines leave 30 s under a one-minute limit on the wall clock")
+    func unhurriedFitsAOneMinuteLimitOnTheWallClock() {
+        let unhurried = FanctlResetTests.unhurried
+        let margin = Duration.seconds(30)
+        #expect(unhurried.gatedVerb + margin < .seconds(60))
+        #expect(unhurried.panicVerb + margin < .seconds(60))
+    }
 }

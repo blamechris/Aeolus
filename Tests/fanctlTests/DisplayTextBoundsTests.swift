@@ -1,4 +1,3 @@
-import AeolusXPC
 import Foundation
 import Testing
 
@@ -12,6 +11,11 @@ import Testing
 /// be hundreds of kilobytes. The caps are 200 characters and 800 UTF-8 bytes, and the ellipsis,
 /// one character of three bytes, is counted inside both.
 ///
+/// **The caps are literals here, on purpose.** `DisplayText` has none of its own: they are
+/// `FaultDetailBounds`'s. A test that read them from there would be an oracle that moves with the
+/// behaviour, and stay green when the shared cap changed. These are #567's 200 and 800, so a
+/// change to the shared caps is red here until someone decides this suite should follow it.
+///
 /// **What these inputs avoid.** Nothing in them is in Unicode Cc, Cf, Zl or Zp, which
 /// `DisplayText` removes before it cuts: an emoji ZWJ sequence, for one, is not one long cluster
 /// here, because U+200D is Cf and goes first. Combining marks (Mn, Me) and emoji modifiers (Sk)
@@ -20,6 +24,8 @@ import Testing
 struct DisplayTextBoundsTests {
 
     private static let ellipsis = "…"
+    private static let maxLength = 200
+    private static let maxUTF8Bytes = 800
 
     /// One shape of cluster, repeated until it overflows both caps.
     struct Shape: Sendable, CustomTestStringConvertible {
@@ -83,9 +89,9 @@ struct DisplayTextBoundsTests {
         let output = DisplayText.sanitised(input)
 
         #expect(
-            output.utf8.count <= DisplayText.maxUTF8Bytes,
-            "\(output.utf8.count) bytes against a cap of \(DisplayText.maxUTF8Bytes)")
-        #expect(output.count <= DisplayText.maxLength)
+            output.utf8.count <= Self.maxUTF8Bytes,
+            "\(output.utf8.count) bytes against a cap of \(Self.maxUTF8Bytes)")
+        #expect(output.count <= Self.maxLength)
         #expect(output.last == Character(Self.ellipsis), "the cut is not marked")
         #expect(!output.unicodeScalars.contains("\u{FFFD}"), "a scalar was cut in half")
 
@@ -101,8 +107,8 @@ struct DisplayTextBoundsTests {
 
         // The ellipsis takes its room out of both caps: 199 characters and 797 bytes for the rest.
         let ellipsisBytes = Self.ellipsis.utf8.count
-        let room = (DisplayText.maxUTF8Bytes - ellipsisBytes) / shape.byteCount
-        let expectedClusters = min(DisplayText.maxLength - Self.ellipsis.count, room)
+        let room = (Self.maxUTF8Bytes - ellipsisBytes) / shape.byteCount
+        let expectedClusters = min(Self.maxLength - Self.ellipsis.count, room)
         let keptClusters = keptScalars.count / shape.scalarCount
         #expect(
             keptClusters == expectedClusters,
@@ -124,7 +130,7 @@ struct DisplayTextBoundsTests {
 
         let output = DisplayText.sanitised(input)
 
-        #expect(output.utf8.count <= DisplayText.maxUTF8Bytes)
+        #expect(output.utf8.count <= Self.maxUTF8Bytes)
         // A Bool, not the strings: a failed comparison would print the 40 KB output.
         let isOneClusterAndTheEllipsis = output == cluster + Self.ellipsis
         #expect(isOneClusterAndTheEllipsis)
@@ -173,16 +179,5 @@ struct DisplayTextBoundsTests {
         let one = "a" + String(repeating: "\u{0301}", count: 1_000)
         #expect(DisplayText.sanitised(one) == DisplayText.unprintable)
         #expect(DisplayText.sanitised(Self.ellipsis) == Self.ellipsis)
-    }
-
-    /// The caps are `FaultDetailBounds`', which `FaultText.displayable` and the app's
-    /// `HelperAuthoredText` are bounded by too, so all three layers hold one pair of numbers.
-    ///
-    /// **Mutation (#567):** make `DisplayText.maxUTF8Bytes` `4096`. Run: red here, and on the
-    /// exact count in the six dense rows, which are written against that constant.
-    @Test("The caps are the ones the other two layers use")
-    func theCapsAreTheSharedOnes() {
-        #expect(DisplayText.maxLength == FaultDetailBounds.maxLength)
-        #expect(DisplayText.maxUTF8Bytes == FaultDetailBounds.maxUTF8Bytes)
     }
 }

@@ -196,10 +196,16 @@ struct StallTolerantWaitTests {
     ///   and the client reports once it has. The limit is restated here and not read, as above: a
     ///   suite's trait cannot be read at run time.
     ///
-    /// **The margin is 5 s.** With the harness dropping the panic request, the client's "did not
-    /// confirm" came 0.04 s after the backstop fired (30.037 to 30.041 s a test, two tests in each
-    /// of two runs, at a load average of 15). So the margin is over a hundred times what it took,
-    /// and half of the 10 s the ceiling leaves.
+    /// **The margin is 5 s, a floor on a real 10 s of slack** (the limit's 60 s less the ceiling's
+    /// 50 s). With the harness dropping the panic request, the client's "did not confirm" came
+    /// 0.04 s after the backstop fired (30.037 to 30.041 s a test, two tests in each of two runs,
+    /// at a load average of 15, on one machine). So the margin is over a hundred times what it
+    /// took, and half of the 10 s the ceiling leaves. It covers that latency and only that: the
+    /// time between the backstop firing and the client's report. It does not cover a stall in the
+    /// last 50 ms poll before the ceiling, which can still fire the backstop late, the ceiling
+    /// being checked between polls (``StallTolerantWait``). A miss costs the message of a run
+    /// that is already failing, a request nothing answered: the time limit fires first, naming
+    /// nothing, instead of the client's "did not confirm".
     ///
     /// **What this replaces.** The guard held `FanctlResetTests.unhurried`'s deadlines and a 30 s
     /// margin under 60 s, which named a 10 s that decides nothing for these suites: it is only
@@ -230,7 +236,8 @@ struct StallTolerantWaitTests {
     }
 
     /// What a setup wait on a delivery is given reaches past the delivery it was missed by, and
-    /// stops inside the backstop and the ceiling ([#592](https://github.com/blamechris/Aeolus/issues/592)).
+    /// is no longer than the backstop and under the ceiling
+    /// ([#592](https://github.com/blamechris/Aeolus/issues/592)).
     ///
     /// Three relations, each of which a plausible edit breaks:
     ///
@@ -238,10 +245,14 @@ struct StallTolerantWaitTests {
     ///   wait to give up had spent 5.0 s and had 7.5 s of stall compensated. A budget under twice
     ///   that is a budget the next slow run also misses. The 5.0 and 7.5 are restated, since they
     ///   are a measurement and no constant of the target.
-    /// - **Not over the backstop.** `ClockBackstop` runs every deadline of a harness out once it
-    ///   has lived `ClockBackstop.defaultBudget`. A delivery wait longer than that would still be
-    ///   waiting for a message after the client had been told its call timed out, and the failure
-    ///   would name the timeout and not the missing delivery.
+    /// - **Not longer than the backstop.** `ClockBackstop` runs every deadline of a harness out
+    ///   once it has lived `ClockBackstop.defaultBudget`, and it starts when the harness is built,
+    ///   before any wait here begins. So no budget makes a wait end *before* the backstop fires:
+    ///   a delivery that never comes is reported after it, by as long as the harness had lived
+    ///   when the wait began, and a client call still parked has been told by then that its
+    ///   deadline ran out. The bound keeps that lag from growing with the budget, and claims no
+    ///   more. It is not a licence for a wait on the client's reaction to a clock advance:
+    ///   see ``StallTolerantWait/deliveryBudget``.
     /// - **Under the ceiling.** A wait ends at the ceiling whatever it has compensated, so a
     ///   budget at or over it is one no stall can extend, and the ceiling is itself held under a
     ///   minute above.
@@ -263,9 +274,9 @@ struct StallTolerantWaitTests {
         #expect(
             budget <= ClockBackstop.defaultBudget,
             """
-            a delivery wait of \(budget) outlasts the backstop's \(ClockBackstop.defaultBudget), \
-            so a missing delivery would be reported after the client had been told its call \
-            timed out
+            a delivery wait of \(budget) is longer than the backstop's \
+            \(ClockBackstop.defaultBudget): its report of a missing delivery would trail the \
+            backstop by more than the harness's age when the wait began
             """)
         #expect(
             budget < StallTolerantWait.ceiling,

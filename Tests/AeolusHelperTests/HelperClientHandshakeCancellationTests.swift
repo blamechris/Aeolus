@@ -212,7 +212,8 @@ struct HelperClientHandshakeCancellationTests {
 
         harness.clock.advance(by: HelperClientDeadlines.handshakeVerb)
         // The default budget, not `deliveryBudget` (#592): this wait is the claim, and a budget
-        // past the harness's backstop would let it run a late deadline out for the client.
+        // as long as the harness's backstop lets the backstop run a late deadline out for the
+        // client while it waits (#596).
         try await waitUntil("the handshake's deadline ran out and gave the connection up") {
             await client.health == .unresponsive
         }

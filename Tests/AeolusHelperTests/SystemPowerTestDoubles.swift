@@ -255,10 +255,11 @@ actor WedgedRestorePlane: AdmissionBlindPlane {
 /// How many seconds `ThreadBlockingRestorePlane` stays blocked if nothing releases it: 90, which
 /// is longer than the 60 s `.timeLimit` of the only suite that uses it, on purpose.
 ///
-/// The budget test takes 35 to 46 s of wall time in a CI debug run, almost all of it waiting for a
-/// pool thread behind the start-of-run backlog (38.7 s in run 40942348614; 15.0 s in the release
-/// step). A ceiling inside that would fail correct code on a slow run. So the ceiling is not what
-/// ends a red test; it is what ends the process when nothing else can:
+/// The budget test takes 27.4 to 40.7 s of wall time in a CI debug run, almost all of it waiting
+/// for a pool thread behind the start-of-run backlog (five runs read: 29.6 s in 40946892305, 38.7 s
+/// in 40942348614, 40.7 s in 40952697856, 27.4 s in 40957180035, 38.6 s in 40969687518; 15.0 s in
+/// the release step of 40942348614). A ceiling inside that would fail correct code on a slow run.
+/// So the ceiling is not what ends a red test; it is what ends the process when nothing else can:
 ///
 /// - **A pool with a free thread** (a mutant that drops the budget, say): the time limit ends the
 ///   test at 60 s. Its task is cancelled, the `defer` in the test releases the plane, and the

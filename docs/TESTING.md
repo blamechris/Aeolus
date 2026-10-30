@@ -33,9 +33,11 @@ a release that **needs** a pool thread, unless it is the only test that does and
   only suspends (on a continuation) and holds no thread while it does.
 - **Give every hold a ceiling.** `signalled(_:within:)` (`SliceCountedWait`, whose budget a
   stalled runner cannot spend), or a timed wait. A block that is never released must end, so
-  that the process can. Put the ceiling above the suite's `.timeLimit`, so that a slow run never
-  trips it: the time limit ends the test when the pool has a free thread, and the ceiling ends
-  the process when it has none.
+  that the process can. For a hold the pool has to release, put the ceiling above the suite's
+  `.timeLimit`, so that a slow run never trips it: the time limit ends the test when the pool has
+  a free thread, and the ceiling ends the process when it has none. A hold a `Thread` releases
+  should fail safe sooner: nothing it waits for needs the pool, so it has no slow pool to
+  outlast, and the 30, 10, 5 and 3 s failsafes in the tables below are the better design.
 - **Put the release in a `defer`** when it is synchronous, so a test that fails before its own
   release leaves nothing parked.
 - **Poll with `Task.sleep`**, never by waiting on a semaphore that a pool task signals.

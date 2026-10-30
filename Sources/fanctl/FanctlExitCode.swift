@@ -186,14 +186,9 @@ struct HelperCommandFailure: Error, Equatable, Sendable {
 /// does its own strip and trim and calls `FaultDetailBounds.truncated`, the cut `bounded(_:)` is
 /// built on, so all three share one cut: the two caps, their 4:1 ratio, the ellipsis counted
 /// inside them and the rule that a cut never splits a grapheme cluster are `FaultDetailBounds`'s
-/// and not a second copy here.
+/// and not a second copy here. This type names neither cap, not even as an alias: they are
+/// `FaultDetailBounds.maxLength` and `FaultDetailBounds.maxUTF8Bytes`.
 enum DisplayText {
-    /// The longest cleaned text, in characters, ellipsis included. `FaultDetailBounds.maxLength`.
-    static let maxLength = FaultDetailBounds.maxLength
-
-    /// The same bound in UTF-8 bytes. `FaultDetailBounds.maxUTF8Bytes`.
-    static let maxUTF8Bytes = FaultDetailBounds.maxUTF8Bytes
-
     /// Shown in place of text with nothing printable left in it.
     static let unprintable = "(unprintable)"
 

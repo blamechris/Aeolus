@@ -24,7 +24,8 @@ public enum FaultText {
     ///   predicate spelled `CharacterSet.controlCharacters` cannot do this job. It lets both
     ///   through, and it reads Foundation's tables, which differ by macOS: on macOS 26 they also
     ///   hold thousands of plane-14 scalars that are not Cc or Cf (#563). All four categories
-    ///   are named here by the scalar's own, the standard library's table.
+    ///   are named here by `Unicode.Scalar.Properties.generalCategory`, the standard library's
+    ///   table.
     ///
     /// It is also the set the helper **refuses** in a client-chosen description
     /// (`AeolusXPCValidation.validateDescription`, #483): one rule, applied by refusing it on

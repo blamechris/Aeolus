@@ -324,6 +324,9 @@ struct HelperClientSequencedDeadlineTests {
         let snapshot = try await Self.snapshotBehind(parked)
 
         parked.clock.advance(by: Self.applyDeadline)
+        // 30 s though this waits on a reaction to the advance, which `deliveryBudget` is not for.
+        // Nothing here can run a late deadline out for it: `Parked`'s clock is one no backstop
+        // moves. The snapshot's answer below is what catches one (a doubled `apply` deadline).
         try await waitUntil(
             "the snapshot's turn came when the apply's deadline ran out",
             timeout: StallTolerantWait.deliveryBudget
