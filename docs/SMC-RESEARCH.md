@@ -177,6 +177,12 @@ Three keys fail `READ_KEYINFO` outright and carry no type at all: `BDFU`, `CH0J`
 Enumeration has to tolerate this — a key can appear in the index and still have no
 retrievable metadata.
 
+**Past the end of the table, `READ_INDEX` answers with an error, not a code** (macOS 27.2,
+where `#KEY` is 3,514; #623). Indices 3,514, 3,515 and 3,614 each returned SMC result byte
+`0xB8` (184). No filler code came back, zero or otherwise, so the cross-check's probe one past
+the bound sees no key here whichever way a code `SMCKey` refuses is counted. Three indices
+on one machine, read once each.
+
 ### `flt` decodes little-endian on this machine — agrees, but not decisively about *why*
 
 | Key | Raw | As LE Float32 | As BE Float32 |
