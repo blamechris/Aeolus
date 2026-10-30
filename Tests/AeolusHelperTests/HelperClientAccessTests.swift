@@ -5,11 +5,11 @@ import Testing
 ///
 /// ## Why this suite exists
 ///
-/// [#242](https://github.com/blamechris/Aeolus/issues/242) asked whether
-/// `HelperClient.swift` should be split at SwiftLint's 400-line warning, and the answer
-/// recorded then was no: Swift `private` is file-scoped, so every remaining seam needs a
-/// member of the actor reachable from a sibling file, and D36 is that stored state stays
-/// `private` and is mutated only from its declaring file.
+/// [#242](https://github.com/blamechris/Aeolus/issues/242) asked whether `HelperClient.swift`
+/// should be split at SwiftLint's 400-line warning, and the answer recorded then was no: Swift
+/// `private` is file-scoped, so every remaining seam needs a member of the actor reachable from
+/// a sibling file, and D36 is that stored state stays `private` and is mutated only from its
+/// declaring file.
 ///
 /// That answer was a paragraph, and #128's lesson — the one D36 exists because of — is that
 /// a paragraph is not enforcement: the next split has no way to notice it is widening
@@ -17,8 +17,7 @@ import Testing
 /// elsewhere cover `AeolusHelper` only, and **nothing asserted access anywhere in
 /// `AeolusXPCClient` before this suite**: with this file held out and all seven of
 /// `HelperClient`'s `private var`s widened to `internal`, the package ran **1581 tests in 242
-/// suites, passed**. Declining a refactor and leaving its rule unenforced is the weaker half
-/// of the two, so the rule is wired up here instead.
+/// suites, passed**. Leaving the rule unenforced is the weaker half, so it is wired up here.
 ///
 /// It is not an argument against ever splitting the file; it tells a split what it is spending,
 /// at the moment it spends it. [#600](https://github.com/blamechris/Aeolus/issues/600) moved
@@ -34,9 +33,9 @@ import Testing
 /// guard stops naming anything.
 /// `onlyTheAcknowledgedPropertiesAreNonPrivate` and its method half are what catch the
 /// widening nobody listed, and they scan every file the actor is written in, so a member
-/// cannot be widened simply by being written in a new one, or by being made `public`: they
-/// compare each member **as spelled** (#604). An `extension`'s own modifier is on no member's
-/// line, and is `HelperClientExtensionAccessTests`'s.
+/// cannot be widened simply by being written in a new one. They compare each member **as
+/// spelled** (#604), so `public` on an acknowledged one is red, bar the exception below; an
+/// `extension`'s own modifier is `HelperClientExtensionAccessTests`'s.
 ///
 /// ## What this suite cannot see, stated rather than implied
 ///
@@ -46,10 +45,13 @@ import Testing
 /// separate question of what the client may **keep** is `HelperClientStateSeamTests`, which
 /// forbids a stored snapshot or lease whatever its access level.
 ///
-/// It reads a member at four spaces, so **a new member in the formatter's two-line spelling**
-/// — a modifier alone on a line, the declaration under it at eight — is in no population here
-/// ([#605](https://github.com/blamechris/Aeolus/issues/605)): a new `public func` written so
-/// passes `swift format --strict` and every client access and seam test.
+/// It reads a member at four spaces, so **a member in the formatter's two-line spelling** — a
+/// modifier alone on a line, the declaration under it at eight — is in no population here,
+/// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)):
+/// `private let deadlines` rewritten as `public` over `        let deadlines` passes `swift format
+/// --strict` and every client access and seam test. Only an acknowledged member (it goes
+/// missing) and the ones `declaration(of:in:from:)` judges, in `mustStayPrivate` and
+/// `mustHaveAPrivateSetter`, are guarded in that spelling.
 @Suite("The XPC client's own state stays private to HelperClient.swift")
 struct HelperClientAccessTests {
 
@@ -118,12 +120,11 @@ struct HelperClientAccessTests {
     /// renamed, moved or reformatted property fails loudly, not as an entry protecting nothing.
     ///
     /// **Mutation:** drop the `private` from `private var negotiatedReply: HelloReply?`. Run: red
-    /// on `theClientsMutableStateStaysPrivate` **and** on
-    /// `onlyTheAcknowledgedPropertiesAreNonPrivate`: the named guard and the exhaustive one see
-    /// the same widening from two directions. **Mutation:** respell `private var generation:
-    /// UInt64 = 0` as `= .zero`, still private. Run: red on `theClientsMutableStateStaysPrivate`
-    /// **alone**, on zero matches — the list-rot half, which the exhaustive sibling cannot see
-    /// because nothing about the access level changed.
+    /// on `theClientsMutableStateStaysPrivate` and `onlyTheAcknowledgedPropertiesAreNonPrivate`:
+    /// the named guard and the exhaustive one see the same widening from two directions.
+    /// **Mutation:** respell `private var generation: UInt64 = 0` as `= .zero`, still private.
+    /// Run: red on `theClientsMutableStateStaysPrivate` **alone**, on zero matches — the list-rot
+    /// half, which the exhaustive sibling cannot see because no access level changed.
     private static let mustStayPrivate = [
         "var connection: NSXPCConnection?",
         "var negotiatedReply: HelloReply?",
@@ -142,18 +143,17 @@ struct HelperClientAccessTests {
     /// `HelperClient.swift` writes them, which is the half of D36 that matters for these two.
     /// `MemberAccessScan` counts `private(set)` as non-private, deliberately, so both are on
     /// `acknowledgedNonPrivateProperties` too, as spelled since #604. This list stays: it judges
-    /// the whole declaration, and a widening is argued in two lists, not the one a maintainer is
-    /// used to editing.
+    /// the whole declaration, and a widening is argued in two lists, not one.
     ///
     /// **The check is an equality on the whole declaration, not a prefix.** **Mutation:** respell
     /// `private(set) var interruptions: UInt64 = 0` as `var interruptions: UInt64 = 0`. Run: red
     /// on this test **and** on `onlyTheAcknowledgedPropertiesAreNonPrivate`; this one alone
     /// before #604. **Mutation:** `private(set) nonisolated(unsafe) var interruptions: UInt64 =
-    /// 0`, which compiles and draws SwiftLint's `modifier_order` and nothing else; and
-    /// `private(set) public var interruptions: UInt64 = 0`. Run: each red on the same two. A
-    /// prefix check, `hasPrefix("private(set) ")`, passed both with all four tests green, and
-    /// the #603 review's probe rewound `interruptions` from a sibling file through an
-    /// `as? ReferenceWritableKeyPath` cast.
+    /// 0`, which compiles and draws only SwiftLint's `modifier_order`; and `private(set) public
+    /// var interruptions: UInt64 = 0`. Run: each red on the same two. A prefix check,
+    /// `hasPrefix("private(set) ")`, left the first green on all four tests, and the #603
+    /// review's probe rewound `interruptions` from a sibling file through an
+    /// `as? ReferenceWritableKeyPath` cast; it passed the second too.
     ///
     /// **A modifier alone on the line above is part of the declaration** (#604). **Mutation:**
     /// `nonisolated(unsafe)` alone above `private(set) var interruptions`, at four spaces or at
@@ -177,9 +177,10 @@ struct HelperClientAccessTests {
     /// privilege boundary a new *public* property is at least as much of an event as a new
     /// internal one, so the list pins how each member is exposed too: `public var
     /// currentGeneration` is a different string and fails like an unlisted property. That
-    /// makes "a widening cannot hide by being a bigger one" true, as it was not before #604: the
-    /// entries were bare names, so a member acknowledged as `internal` could be made `public`
-    /// with the whole suite green. An `internal` written out is a respelling too.
+    /// makes "a widening cannot hide by being a bigger one" true, bar the two-line spelling
+    /// (#605), as it was not before #604: the entries were bare names, so a member
+    /// acknowledged as `internal` could be made `public` with the whole suite green. An
+    /// `internal` written out is a respelling too.
     ///
     /// Four are **get-only computed views** of private storage: `negotiated` and `health` are
     /// the public read API — the second is ADR 0006's switch for the app — and
@@ -199,10 +200,10 @@ struct HelperClientAccessTests {
     /// `mustHaveAPrivateSetter` holds it to that.
     ///
     /// **Mutation:** drop the `private` from `private let deadlines: HelperClientDeadlines`, an
-    /// injected `let` on no list here. Run: red on
-    /// `onlyTheAcknowledgedPropertiesAreNonPrivate` alone, naming it — which is the half that
-    /// catches a widening nobody wrote down. **Mutation:** respell `var currentGeneration` as
-    /// `public var currentGeneration`. Run: red on the same test alone, naming both spellings.
+    /// injected `let` on no list here. Run: red on `onlyTheAcknowledgedPropertiesAreNonPrivate`
+    /// alone, naming it — the half that catches a widening nobody wrote down, in the one-line
+    /// spelling only (#605). **Mutation:** respell `var currentGeneration` as `public var
+    /// currentGeneration`. Run: red on the same test alone, naming both spellings.
     private static let acknowledgedNonPrivateProperties: Set<String> = [
         "public var negotiated",
         "public var health",
@@ -244,16 +245,15 @@ struct HelperClientAccessTests {
     /// would land on the existing entry. The parameter types are in the key because labels
     /// alone cannot see an overload either, and the modifier run is in front of it because the
     /// key cannot see an access level (#604). The longest keys are written as adjacent literals
-    /// to stay inside the line limit; they concatenate to the exact spelling, and the test fails
-    /// naming both sides if they ever do not.
+    /// to stay inside the line limit, and the test fails naming both sides if they differ.
     ///
     /// **Mutation:** drop the `private` from `private func publish(_ health:
     /// HelperConnectionHealth)`, the one way the health changes. Run: red on
-    /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
-    /// `func publish(_: HelperConnectionHealth)`. **Mutation:** `public func
-    /// discardConnection(` (AMY), or `public func connectionWasInvalidated(` (AMW), the #604
-    /// review's two. Run: red on the same test alone, naming both spellings. Each was green on
-    /// the 14 tests of the client access and seam suites before.
+    /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming `func publish(_:
+    /// HelperConnectionHealth)`. **Mutation:** `public func discardConnection(` (AMY), or `public
+    /// func connectionWasInvalidated(` (AMW), the #604 review's two. Run: red on the same test
+    /// alone, naming both spellings; each was green on the 14 tests of the client access and
+    /// seam suites before.
     ///
     /// **A limit found by trying it, recorded because it is load-bearing and is not this
     /// suite's doing:** `private func exchange<Answer: Sendable>` cannot be widened at all.

@@ -163,11 +163,11 @@ struct MemberAccessScanSpellingTests {
             MemberAccessScan.members(inSource: fixture, keyword: .property).isEmpty
                 && MemberAccessScan.members(inSource: fixture, keyword: .method).isEmpty,
             """
-            stated rather than implied, because it is a hole and `swift format lint --strict` \
-            is not the gate for it: the formatter writes the second line of a broken \
-            declaration at eight spaces, which `members(inSource:keyword:)` reads as a nested \
-            member and skips. An acknowledged member written this way goes missing from the \
-            population and its list fails; a new one is seen by nothing here.
+            #605 inverts this. It is stated rather than implied, because it is a hole and `swift \
+            format lint --strict` is not the gate for it: the formatter writes the second line of \
+            a broken declaration at eight spaces, which `members(inSource:keyword:)` reads as a \
+            nested member and skips. A member written this way, new or an existing one widened \
+            in it, is in no population; an acknowledged one goes missing and its list fails.
             """
         )
     }

@@ -25,11 +25,15 @@ import Foundation
 /// A line with any other token on it — a `}`, a previous declaration, an argument continuation —
 /// ends the run.
 ///
-/// **What this does not reach:** the declaration line itself is still recognised at exactly four
-/// spaces. The formatter's own spelling of a two-line declaration puts the second line at eight,
-/// so a member written that way is not in `members(in:keyword:)`'s population at all, and what
-/// notices is an acknowledged entry going missing. A *new* member written that way is seen by
-/// nothing here; see `MemberAccessScan`'s account of the four-space indent.
+/// **What this does not reach:**
+///
+/// - The declaration line itself is still recognised at exactly four spaces. The formatter's own
+///   spelling of a two-line declaration puts the second line at eight, so a member written that
+///   way, new or an existing one widened in it, is not in `members(in:keyword:)`'s population at
+///   all. What notices is an acknowledged entry going missing, or a member a suite judges with
+///   `declaration(of:in:from:)`; see `MemberAccessScan`'s account of the four-space indent.
+/// - A modifier line whose parentheses do not close on it, the first line of an attribute wrapped
+///   over several, ends the run, so a modifier above such an attribute is not joined.
 extension MemberAccessScan {
 
     /// Consumes the modifier run from the head of `tokens` — attributes, ignorable modifiers,
@@ -57,16 +61,53 @@ extension MemberAccessScan {
     }
 
     /// The tokens of `line` when it holds modifiers and nothing else — or `nil` when it is blank,
-    /// a comment, or carries any token that is not a modifier.
+    /// a comment, carries any token that is not a modifier, or leaves a parenthesis open.
     ///
     /// A trailing `//` comment is cut first, so `nonisolated(unsafe)  // why` is still a modifier
-    /// line: a comment must not be what hides a modifier from the declaration beneath it.
+    /// line: a comment must not be what hides a modifier from the declaration beneath it. The
+    /// cut, and the parentheses that must close, are read outside string literals, so an
+    /// attribute whose message holds `https://…` or `f(` is a modifier line whole. A line whose
+    /// parentheses do not close on it — the first line of an attribute wrapped over several —
+    /// ends the run instead: an attribute left open would consume whatever followed it.
     static func modifierOnlyTokens(of line: Substring) -> [Substring]? {
-        let code = line.range(of: "//").map { line[..<$0.lowerBound] } ?? line
+        let code = strippingTrailingComment(from: line)
+        guard parenthesesClose(in: code) else { return nil }
         let written = code.split(separator: " ")
         var rest = written
         _ = consumeModifiers(from: &rest)
         return !written.isEmpty && rest.isEmpty ? written : nil
+    }
+
+    /// `line` up to a `//` that is not inside a string literal.
+    ///
+    /// A quote opens or closes a string unless a backslash escapes it. Raw-string delimiters
+    /// (`#"…"#`) are not tracked: a modifier line has no reason to carry one.
+    static func strippingTrailingComment(from line: Substring) -> Substring {
+        var inString = false
+        var index = line.startIndex
+
+        while index < line.endIndex {
+            let character = line[index]
+            let next = line.index(after: index)
+            if inString, character == "\\" {
+                index = next < line.endIndex ? line.index(after: next) : next
+                continue
+            }
+            if character == "\"" {
+                inString.toggle()
+            } else if !inString, character == "/", next < line.endIndex, line[next] == "/" {
+                return line[..<index]
+            }
+            index = next
+        }
+        return line
+    }
+
+    /// Whether every parenthesis opened in `text`, outside string literals, is closed in it, with
+    /// no string left open.
+    static func parenthesesClose(in text: Substring) -> Bool {
+        var inString = false
+        return parenthesisDepth(of: text, inString: &inString) == 0 && !inString
     }
 
     /// The modifier tokens on the lines directly above `lines[index]`, in source order.
@@ -148,13 +189,34 @@ extension MemberAccessScan {
     // MARK: - Parsing
 
     /// Drops one attribute from the head of the modifier run, counting parentheses rather than
-    /// whitespace — see the type's doc comment for the spelling that made the difference.
+    /// whitespace — see the type's doc comment for the spelling that made the difference — and
+    /// not counting the ones inside a string literal, which a space can split across tokens.
     private static func dropAttribute(from tokens: inout [Substring]) {
         var depth = 0
+        var inString = false
         repeat {
-            let token = tokens.removeFirst()
-            depth += token.filter { $0 == "(" }.count
-            depth -= token.filter { $0 == ")" }.count
+            depth += parenthesisDepth(of: tokens.removeFirst(), inString: &inString)
         } while depth > 0 && !tokens.isEmpty
+    }
+
+    /// The parentheses in `text` opened less closed, outside string literals. `inString` carries a
+    /// literal that `text` leaves open into the text that follows it.
+    private static func parenthesisDepth(of text: Substring, inString: inout Bool) -> Int {
+        var depth = 0
+        var escaped = false
+        for character in text {
+            if escaped {
+                escaped = false
+            } else if inString, character == "\\" {
+                escaped = true
+            } else if character == "\"" {
+                inString.toggle()
+            } else if !inString, character == "(" {
+                depth += 1
+            } else if !inString, character == ")" {
+                depth -= 1
+            }
+        }
+        return depth
     }
 }

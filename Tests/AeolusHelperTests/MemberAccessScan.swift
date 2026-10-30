@@ -62,9 +62,10 @@ import Testing
 /// be made callable from the app with every access test green
 /// ([#604](https://github.com/blamechris/Aeolus/issues/604)). `Member.spelling` is the modifier
 /// run, in source order and including any modifier-only line above, then the introducer, then
-/// the key, and a list that holds it fails on a respelling as it does on a new member. What it
-/// still cannot see is a modifier on the `extension` a member sits in, which is on no member's
-/// line: `public extension HelperClient {` is `extensionHeaders(of:inTarget:)`'s.
+/// the key, and a list that holds it fails on a respelling as it does on a new member, for any
+/// member the scan reads. What it still cannot see is a modifier on the `extension` a member
+/// sits in, which is on no member's line: `public extension HelperClient {` is
+/// `extensionHeaders(of:inTarget:)`'s.
 ///
 /// ## The four-space indent, and the gate that actually holds it
 ///
@@ -78,9 +79,13 @@ import Testing
 /// **One spelling is the exception, and the formatter is not its gate:** a modifier alone on a
 /// line, the declaration beneath it at eight spaces, is what `swift format` writes for a
 /// declaration broken after its modifier, and it passes `--strict`. The declaration line is
-/// read as a nested member and skipped, so a *new* member written so is in no population
-/// ([#605](https://github.com/blamechris/Aeolus/issues/605)); an acknowledged one goes missing,
-/// which an exact list notices. `MemberAccessScanSpellingTests` pins this as a limit.
+/// read as a nested member and skipped, so **a member written so is in no population, whether
+/// it is new or an existing one widened in that spelling**: `private let deadlines` rewritten
+/// as `public` over `        let deadlines` compiles, exits `--strict` 0, and left the client
+/// access and seam suites green ([#605](https://github.com/blamechris/Aeolus/issues/605)).
+/// What still sees it: an acknowledged member goes missing from its list, and a member a suite
+/// names and judges with `declaration(of:in:from:)`, which reads the line above, is red.
+/// `MemberAccessScanSpellingTests` pins the blind spot as a limit.
 enum MemberAccessScan {
 
     enum Keyword {
@@ -205,15 +210,21 @@ enum MemberAccessScan {
     /// `line.base`, because the formatter wraps a parameter list that does not fit and a
     /// line-local parse would key every wrapped declaration on an empty clause. `preceded` is the
     /// modifier tokens of the modifier-only lines directly above, which belong to this declaration
-    /// and are read ahead of the line's own — see `MemberAccessScanModifiers.swift`.
+    /// — see `MemberAccessScanModifiers.swift`. They are walked **apart from the line's own
+    /// tokens**, so a line above can add to a member's spelling and privacy and can never change
+    /// what the line itself parses as: a run walked together with the line let an attribute that
+    /// never closed consume the declaration beneath it (#606's review).
     static func member(
         in line: Substring, preceded: [Substring] = [], keyword: Keyword
     ) -> Member? {
         guard line.hasPrefix("    "), !line.hasPrefix("     ") else { return nil }
-        let written = preceded + line.drop(while: { $0 == " " }).split(separator: " ")
+        let written = line.drop(while: { $0 == " " }).split(separator: " ")
+        var above = preceded
         var tokens = written
-        let isPrivate = consumeModifiers(from: &tokens)
-        let modifiers = written.dropLast(tokens.count).map(String.init)
+        let abovePrivate = consumeModifiers(from: &above)
+        let linePrivate = consumeModifiers(from: &tokens)
+        let isPrivate = abovePrivate || linePrivate
+        let modifiers = (preceded + written.dropLast(tokens.count)).map(String.init)
 
         let introducers: Set<String> = keyword == .property ? ["let", "var"] : ["func"]
         guard tokens.count > 1, introducers.contains(String(tokens[0])) else { return nil }

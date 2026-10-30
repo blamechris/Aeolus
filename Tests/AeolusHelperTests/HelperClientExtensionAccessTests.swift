@@ -25,8 +25,8 @@ struct HelperClientExtensionAccessTests {
         "HelperClientVerbs.swift: extension HelperClient {",
     ]
 
-    /// **Mutation:** write `public extension HelperClient {` at the top of
-    /// `HelperClient+Translation.swift`. Run: red here alone, naming the header. **Mutation:**
+    /// **Mutation:** write `public extension HelperClient {` for the `extension HelperClient {`
+    /// in `HelperClient+Translation.swift`. Run: red here alone, naming the header. **Mutation:**
     /// put `public` alone on the line above `extension HelperClient {`. Run: red here alone.
     @Test("Every extension of the XPC client is written without a modifier")
     func everyExtensionOfTheClientIsBare() throws {
