@@ -21,11 +21,15 @@ import Testing
 ///
 /// A member is read at four spaces once the type's own indent is dropped, so **a member in the
 /// formatter's two-line spelling** — a modifier alone on a line, the declaration under it at
-/// eight — is in no population here, whether new or already there
-/// ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a view written so goes
-/// missing from its list and is red; a new member is seen by nothing here. An `extension`'s own
-/// modifier is on no member's line, so `package extension ReclamationWatchdog {` is read by
-/// nothing here, and `HeldFan`'s members, at eight spaces, are in no population.
+/// twelve in the source, eight once the indent is dropped — is in no population here, whether
+/// new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a
+/// view written so goes missing from its list and is red; a new member is seen by nothing here.
+/// An `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)).
+/// `public extension ReclamationWatchdog {` alone does not compile against an internal actor,
+/// and neither does the first step, `public actor ReclamationWatchdog<…>` (its generic
+/// parameter is internal); that suite pins both lines. `HeldFan`'s members, at eight spaces,
+/// are `ReclamationHeldFanAccessTests`'.
 @Suite("§ 5's registry keeps its stores private, cannot suspend, and takes no closure")
 struct ReclamationRegistryAccessTests {
 
@@ -137,9 +141,6 @@ struct ReclamationRegistryAccessTests {
     /// `MemberAccessScan` reads four. Dropping one indent level brings them to four and the
     /// extension's own members to none, which `ReclamationWatchdogAccessTests` already scans.
     static func registryMembersSource() throws -> String {
-        try MemberAccessScan.strippedSource(of: registryFile)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.hasPrefix("    ") ? String($0.dropFirst(4)) : String($0) }
-            .joined(separator: "\n")
+        try MemberAccessScan.outdentedSource(of: registryFile)
     }
 }
