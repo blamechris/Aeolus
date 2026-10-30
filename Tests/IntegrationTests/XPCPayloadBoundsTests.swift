@@ -296,9 +296,13 @@ struct XPCPayloadBoundsTests {
         #expect(request.fanIndices.count == AeolusXPCPayloadBounds.maxFansPerPayload)
     }
 
-    /// `apply` carries no client-authored free text — its only strings are four-character
-    /// SMC keys and a fixed aggregation name — so what has to fit is structure: one setting
-    /// per fan this project will enumerate, each holding the largest `Control` arm.
+    /// `apply` carries no client-authored free text — its only strings are four-byte SMC
+    /// keys, which the helper has refused in any other shape since #566, and a fixed
+    /// aggregation name — so what has to fit is structure: one setting per fan this project
+    /// will enumerate, each holding the largest `Control` arm. The keys are the largest the
+    /// helper accepts, and the decoded settings are validated as the helper validates them,
+    /// so this is the largest payload that is *answered*, not merely decoded. Before #566 the
+    /// keys here were five characters (`TC00P`), and nothing refused them.
     @Test("A settings payload for every fan, each with a full curve, fits under the cap")
     func maximalSettingsFitUnderTheCap() throws {
         let curve = FanCurve(
@@ -307,7 +311,7 @@ struct XPCPayloadBoundsTests {
             },
             source: SensorGroup(
                 sensorKeys: (0..<AeolusXPCPayloadBounds.maxSensorKeysPerCurve).map {
-                    String(format: "TC%02dP", $0)
+                    String(format: "Tp%02d", $0)
                 },
                 aggregation: .maximum
             )
@@ -325,9 +329,9 @@ struct XPCPayloadBoundsTests {
         let payload = try Self.encoded(settings)
 
         #expect(payload.count <= AeolusXPCPayloadBounds.maxFanSettingsBytes)
-        #expect(
-            try AeolusXPCValidation.decodeFanSettings(from: payload).count
-                == AeolusXPCPayloadBounds.maxFansPerPayload)
+        let decoded = try AeolusXPCValidation.decodeFanSettings(from: payload)
+        #expect(decoded.count == AeolusXPCPayloadBounds.maxFansPerPayload)
+        try AeolusXPCValidation.validateSensorKeys(in: decoded)
     }
 
     /// The other way a cap fails, and the one no test that derives its own payload from the
