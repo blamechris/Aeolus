@@ -186,6 +186,16 @@ extension MemberAccessScan {
             + "and not found \(acknowledged.subtracting(found).sorted())"
     }
 
+    /// The name a property's `spelling` ends in: its last word, because a property's key is its
+    /// name and the key is the last thing `Member.spelling` appends.
+    ///
+    /// For the checks that read an acknowledged property's accessor block by name
+    /// (`accessorBlock(of:in:)`) while the list they read holds spellings. A method's spelling
+    /// ends in a signature, which has spaces in it, so this is for properties only.
+    static func name(ofPropertySpelling spelling: String) -> String {
+        spelling.split(separator: " ").last.map(String.init) ?? spelling
+    }
+
     // MARK: - Parsing
 
     /// Drops one attribute from the head of the modifier run, counting parentheses rather than

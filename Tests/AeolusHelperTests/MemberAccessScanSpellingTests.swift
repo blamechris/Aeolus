@@ -51,6 +51,29 @@ struct MemberAccessScanSpellingTests {
         )
     }
 
+    @Test("A property's name is the last word of its spelling")
+    func aPropertysNameIsTheLastWordOfItsSpelling() {
+        let fixture = """
+            actor Probe {
+                nonisolated(unsafe)
+                private(set) var counter: UInt64 = 0
+                @available(macOS 26.0, *) nonisolated var gated: Int { 0 }
+                let plain = 0
+            }
+            """
+        let properties = MemberAccessScan.members(inSource: fixture, keyword: .property)
+
+        #expect(
+            properties.map { MemberAccessScan.name(ofPropertySpelling: $0.spelling) }
+                == ["counter", "gated", "plain"],
+            """
+            #607: the checks that read an acknowledged property's accessor block take its name, \
+            and the lists they read hold spellings. The name is the key, which is what a \
+            spelling ends in. Found \(properties.map(\.spelling)).
+            """
+        )
+    }
+
     @Test("A modifier alone on the line above is part of the member it precedes")
     func aModifierOnTheLineAboveJoinsItsDeclaration() {
         let fixture = """
