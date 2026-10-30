@@ -69,7 +69,7 @@ import Testing
 /// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
 /// Only an acknowledged member (it goes missing) and the ones `mustStayPrivate` names, which
 /// `declaration(of:in:from:)` judges with the line above, are guarded in that spelling. An
-/// `extension`'s own modifier is `HelperActorHeaderAccessTests`' (#610); `package extension
+/// `extension`'s own modifier is `HelperActorHeaderAccessTests`' (#610); `public extension
 /// LeaseAuthority {` alone does not compile against an internal actor.
 @Suite("The lease core's registry stays private to LeaseAuthority.swift")
 struct LeaseAuthorityAccessTests {

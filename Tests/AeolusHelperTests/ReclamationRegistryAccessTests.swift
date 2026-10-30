@@ -25,9 +25,11 @@ import Testing
 /// new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a
 /// view written so goes missing from its list and is red; a new member is seen by nothing here.
 /// An `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
-/// ([#610](https://github.com/blamechris/Aeolus/issues/610)). `package extension ReclamationWatchdog {` alone does not compile against an
-/// internal actor, so a widening starts at the actor's own declaration, and that suite pins both.
-/// `HeldFan`'s members, at eight spaces, are `ReclamationHeldFanAccessTests`'.
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)).
+/// `public extension ReclamationWatchdog {` alone does not compile against an internal actor,
+/// and neither does the first step, `public actor ReclamationWatchdog<…>` (its generic
+/// parameter is internal); that suite pins both lines. `HeldFan`'s members, at eight spaces,
+/// are `ReclamationHeldFanAccessTests`'.
 @Suite("§ 5's registry keeps its stores private, cannot suspend, and takes no closure")
 struct ReclamationRegistryAccessTests {
 

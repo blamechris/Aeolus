@@ -38,12 +38,23 @@ import Testing
 /// - **An initialiser or a subscript** is read by no population in this repository: the scan
 ///   reads `let`, `var` and `func`. A second `init` that took a `commanded` would be a route to
 ///   the field that this suite does not see.
+/// - **The bodies of the acknowledged methods** (inferred, not run). The entries say which
+///   methods exist, not what they assign: `judge(_:)` edited to assign `commanded`, or a local
+///   function in one, leaves every entry as it was. That `record(_:)` is the only writer is a
+///   sentence in the source, and nothing here.
+/// - **A key path** (inferred from #456's finding on `Request`, not run here): a `private(set)`
+///   setter can be reached through a dynamic cast of a key path to `WritableKeyPath` (SR-5218),
+///   from any file.
 /// - **`HeldFan`'s own declaration and its sibling's.** `struct HeldFan` and `enum Judgement` are
 ///   read by no suite. Their access is capped by the actor, so a widened header matters only
 ///   after the headers `HelperActorHeaderAccessTests` pins have been widened; measured:
 ///   `public struct HeldFan` compiles and leaves the access suites green. `Judgement` has only
 ///   cases, and a member added to it is read here as `HeldFan`'s and is red as an unacknowledged
 ///   one.
+///
+/// What this does hold is every way in that needs no edit to an existing body: a bare `var`, a
+/// new member of a kind the scan reads, a binding list, a second declaration of `HeldFan`, and a
+/// type nested in the record or a second extension in its file (`noTypeIsNestedInHeldFan`).
 @Suite("§ 5's per-fan record keeps its commanded target's setter private")
 struct ReclamationHeldFanAccessTests {
 
@@ -66,6 +77,12 @@ struct ReclamationHeldFanAccessTests {
         "var uncommandedDivergentCycles",
     ]
 
+    /// The type declarations in the file, in source order: the extension everything sits in, the
+    /// record, and `Judgement`, which is `HeldFan`'s sibling and not nested in it.
+    private static let acknowledgedTypeDeclarations = [
+        "extension ReclamationWatchdog", "struct HeldFan", "enum Judgement",
+    ]
+
     /// Every method of `HeldFan`, **as spelled**. `mutating` is part of an entry, so a method that
     /// starts to mutate, or stops, is red. `record(_:)` is the one writer of `commanded`, and
     /// `command(_:)` goes through it.
@@ -80,7 +97,7 @@ struct ReclamationHeldFanAccessTests {
     ]
 
     /// **Mutation:** declare `struct HeldFan {}` in a file of its own, inside another type. Run:
-    /// red here alone, naming both files.
+    /// red here, naming both files.
     @Test("HeldFan is declared in the one file this suite reads")
     func heldFanIsDeclaredWhereThisSuiteReads() throws {
         let sites = try MemberAccessScan.filesDeclaring(
@@ -138,7 +155,7 @@ struct ReclamationHeldFanAccessTests {
     /// adds a member the two exact lists above would miss. Asserted absent, as the sibling suites
     /// do, rather than parsed.
     ///
-    /// **Mutation:** add `var (leakA, leakB) = (0, 0)` to `HeldFan`. Run: red here alone.
+    /// **Mutation:** add `var (leakA, leakB) = (0, 0)` to `HeldFan`. Run: red here.
     @Test("Every declaration the exact lists read binds exactly one name")
     func everyDeclarationBindsOneName() throws {
         let found = MemberAccessScan.multipleBindings(
@@ -149,6 +166,42 @@ struct ReclamationHeldFanAccessTests {
             """
             these declarations bind more than one name: \(found). The access scan reads only the \
             first, so the rest are members nothing here acknowledges. Write one per line.
+            """
+        )
+    }
+
+    /// Nothing is nested in `HeldFan`. A type declared inside its body can write `commanded`: the
+    /// setter is `private`, and a nested type is inside the scope `private` names, so `enum
+    /// Backdoor { static func force(_ fan: inout HeldFan, to target: CommandedTarget) {
+    /// fan.commanded = target } }` compiles, passes `swift format lint --strict`, and sits at a
+    /// depth the member scan does not read. So the type declarations in the file are listed:
+    /// the extension, the record and `Judgement`, in source order, as `kind Name`. The match is
+    /// on the keyword and the name wherever it stands, so a nested type in any spelling is a
+    /// third entry, and a second `extension` (`extension ReclamationWatchdog.HeldFan`, whose
+    /// `private` reaches the setter from the same file) is a fourth.
+    ///
+    /// **Mutation:** add `enum Backdoor { static func force(_ fan: inout HeldFan, to target:
+    /// CommandedTarget) { fan.commanded = target } }` to `HeldFan`'s body. Run: red here.
+    @Test("No type is declared in the per-fan record's file beyond the three it holds")
+    func noTypeIsNestedInHeldFan() throws {
+        let code = try MemberAccessScan.strippedSource(of: Self.heldFanFile)
+        let declaration = try NSRegularExpression(
+            pattern: #"\b(actor|class|enum|extension|protocol|struct)\s+([A-Za-z_][A-Za-z0-9_]*)"#)
+        let found = declaration.matches(in: code, range: NSRange(code.startIndex..., in: code))
+            .compactMap { match -> String? in
+                guard let kind = Range(match.range(at: 1), in: code),
+                    let name = Range(match.range(at: 2), in: code)
+                else { return nil }
+                return "\(code[kind]) \(code[name])"
+            }
+
+        #expect(
+            found == Self.acknowledgedTypeDeclarations,
+            """
+            the type declarations in \(Self.heldFanFile) changed: found \(found), expected \
+            \(Self.acknowledgedTypeDeclarations). A type nested in `HeldFan`, or a second \
+            extension of it in this file, can write `commanded` without `record(_:)`'s check, \
+            and the member scan does not read it. Say why here, and read what it adds.
             """
         )
     }

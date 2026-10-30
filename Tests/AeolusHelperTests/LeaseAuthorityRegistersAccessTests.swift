@@ -43,8 +43,9 @@ import Testing
 /// new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a
 /// view written so goes missing from its list and is red; a new member is seen by nothing here.
 /// An `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
-/// ([#610](https://github.com/blamechris/Aeolus/issues/610)). `package extension LeaseAuthority {` alone does not compile against an
-/// internal actor, so a widening starts at the actor's own declaration, and that suite pins both.
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)).
+/// `public extension LeaseAuthority {` alone does not compile against an internal actor, so a
+/// widening starts at the actor's own declaration, and that suite pins both.
 @Suite("The lease core's registers and sleep seal are values the actor reaches only by member")
 struct LeaseAuthorityRegistersAccessTests {
 

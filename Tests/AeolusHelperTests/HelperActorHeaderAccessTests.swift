@@ -13,20 +13,34 @@ import Testing
 /// gives for the client's. `RoleCensus` begins a statement at the `actor` introducer (read, not
 /// run), so a modifier in front of it goes unseen there too.
 ///
+/// ## `public` is the spelling only this suite catches
+///
+/// `package` is not the reason this suite exists. `WriteSeamAccessTests.
+/// noSourceFileDeclaresPackageAccess` refuses it on every declaration under `Sources`, on the
+/// line above one included, so a `package` header is red there in a full run whatever happens
+/// here. `public` is refused by nothing else. Measured on a scratch edit: `public actor
+/// LeaseAuthority: HeldLeaseRole {` with `public extension LeaseAuthority {` on the extension in
+/// `LeaseAuthorityHandbackRegisters.swift` compiles, and with this suite's assertions removed the
+/// whole target is green. Deleting this suite on the grounds that `package` is banned leaves that
+/// edit unguarded.
+///
 /// ## The route is two edits, and the compiler decides how far it goes
 ///
-/// Swift rejects `package extension LeaseAuthority {` against an internal actor ("extension of
-/// internal actor cannot be declared package"), so widening an extension first needs the actor's
-/// own declaration widened, and only then the extension. Measured on scratch edits to the sources:
+/// Swift rejects `public extension LeaseAuthority {` against an internal actor ("extension of
+/// internal actor cannot be declared public"; `package` fails the same way), so widening an
+/// extension first needs the actor's own declaration widened, and only then the extension.
+/// Measured on scratch edits to the sources, for `public`:
 ///
-/// - `package actor LeaseAuthority` and `package actor HelperConnectionSession` compile. With the
-///   first, `package extension LeaseAuthority {` compiles on the two extensions that declare a
+/// - `public actor LeaseAuthority` and `public actor HelperConnectionSession` compile. With the
+///   first, `public extension LeaseAuthority {` compiles on the two extensions that declare a
 ///   value type (`LeaseAuthorityHandbackRegisters.swift` and
 ///   `LeaseAuthoritySleepSealPairing.swift`) and fails on `LeaseAuthorityRefusals.swift`, whose
-///   methods take internal types. Both of the connection session's extensions fail the same way.
-/// - `package actor ReclamationWatchdog<Plane: FanControlPlane>` does not compile (its generic
-///   parameter is internal), and a `package` `FanControlPlane` fails on its own requirements. So
-///   the watchdog's lines are pinned ahead of a route the compiler closes today.
+///   methods take internal types. With the second, the session's `HelperConnectionSessionGates
+///   .swift` extension fails because its methods return internal types.
+/// - `public actor ReclamationWatchdog<Plane: FanControlPlane>` does not compile ("generic actor
+///   cannot be declared public because its generic parameter uses an internal type"; `package`
+///   fails the same way), and a `package` `FanControlPlane` fails on its own requirements. So the
+///   watchdog's lines are pinned ahead of a route the compiler closes today.
 ///
 /// Both lines are pinned, and each is red on its own. A real widening is a review, and is
 /// re-stated here.
@@ -46,10 +60,10 @@ import Testing
 /// - **An extension reached through a `typealias`.** `ReclamationWatchdogAccessTests` and
 ///   `LeaseAuthorityRegistersAccessTests` refuse an alias of their actors;
 ///   `HelperConnectionSession` has no such check.
-/// - **A nested type's header** (`Registry`, `HeldFan`, `HandbackRegisters`) is read by no suite.
-///   Its access is capped by the actor it sits in, so it matters only after the headers pinned
-///   here have been widened. Measured: `public struct HeldFan` compiles and leaves the access
-///   suites green.
+/// - **A nested type's header** (`Registry`, `Registration`, `HeldFan`, `Judgement`,
+///   `HandbackRegisters`, `SleepSealPairing`, `SealOutcome`) is read by no suite. Its access is
+///   capped by the actor it sits in, so it matters only after the headers pinned here have been
+///   widened. Measured: `public struct HeldFan` compiles and leaves the access suites green.
 @Suite("The helper actors' own declarations and extensions are written without a modifier")
 struct HelperActorHeaderAccessTests {
 
@@ -99,10 +113,11 @@ struct HelperActorHeaderAccessTests {
             ]),
     ]
 
-    /// **Mutations:** write `package actor LeaseAuthority: HeldLeaseRole {`; the same for
-    /// `HelperConnectionSession`. Put `package` alone on the line above `actor LeaseAuthority`.
-    /// Put `internal` alone on the line above `actor ReclamationWatchdog<…>`, for which the
-    /// `package` spelling does not compile. Run: red here alone on each, at the comparison.
+    /// **Mutations:** write `public actor LeaseAuthority: HeldLeaseRole {`; the same for
+    /// `HelperConnectionSession`. Write `package actor LeaseAuthority: HeldLeaseRole {`, or put
+    /// `package` alone on the line above it; `WriteSeamAccessTests` is red on those two as well.
+    /// Put `internal` alone on the line above `actor ReclamationWatchdog<…>`, for which `public`
+    /// and `package` do not compile. Run: red here at the comparison, on each.
     @Test("Each helper actor is declared in its own file, without a modifier")
     func everyActorIsDeclaredWithoutAModifier() throws {
         for helper in Self.actors {
@@ -131,11 +146,12 @@ struct HelperActorHeaderAccessTests {
         }
     }
 
-    /// **Mutations:** write `package actor LeaseAuthority` with `package extension
-    /// LeaseAuthority {` on the extension in `LeaseAuthorityHandbackRegisters.swift`, or on the
-    /// one in `LeaseAuthoritySleepSealPairing.swift`, or with `package` alone on the line above
-    /// it. Run: red here, and in the declaration test too. Put `internal` alone on the line
-    /// above `extension ReclamationWatchdog {` in `ReclamationSignals.swift`. Run: red here alone.
+    /// **Mutations:** write `public actor LeaseAuthority` with `public extension LeaseAuthority
+    /// {` on the extension in `LeaseAuthorityHandbackRegisters.swift`, or on the one in
+    /// `LeaseAuthoritySleepSealPairing.swift`, or with `public` alone on the line above it. Run:
+    /// red here and in the declaration test, and nowhere else in the target. The same with
+    /// `package` is red in `WriteSeamAccessTests` too. Put `internal` alone on the line above
+    /// `extension ReclamationWatchdog {` in `ReclamationSignals.swift`. Run: red here.
     @Test("Every extension of a helper actor is written without a modifier")
     func everyExtensionOfAnActorIsBare() throws {
         for helper in Self.actors {
