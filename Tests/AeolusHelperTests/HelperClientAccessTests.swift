@@ -7,9 +7,9 @@ import Testing
 ///
 /// [#242](https://github.com/blamechris/Aeolus/issues/242) asked whether
 /// `HelperClient.swift` should be split at SwiftLint's 400-line warning, and the answer
-/// recorded in that file is no: Swift `private` is file-scoped, so every remaining seam
-/// needs a member of the actor reachable from a sibling file, and D36 is that stored state
-/// stays `private` and is mutated only from its declaring file.
+/// recorded then was no: Swift `private` is file-scoped, so every remaining seam needs a
+/// member of the actor reachable from a sibling file, and D36 is that stored state stays
+/// `private` and is mutated only from its declaring file.
 ///
 /// That answer was a paragraph, and #128's lesson — the one D36 exists because of — is that
 /// a paragraph is not enforcement: the next split has no way to notice it is widening
@@ -22,14 +22,20 @@ import Testing
 /// decision nothing could keep. Declining a refactor and leaving its rule unenforced is the
 /// weaker half of the two, so the rule is wired up here instead.
 ///
-/// It is not an argument against ever splitting the file. It is what tells a later split
-/// what it is spending, at the moment it spends it, rather than after.
+/// It is not an argument against ever splitting the file. It is what tells a split what it is
+/// spending, at the moment it spends it, rather than after. [#600](
+/// https://github.com/blamechris/Aeolus/issues/600) split `translate(_:on:sentAfter:)` out into
+/// `HelperClient+Translation.swift`, and spent three things: `hasEverHandshaken` and
+/// `interruptions` went `private(set)`, and `discardConnection` went `internal`. Run against that
+/// tree before this file was updated, all four tests below were red, naming what had been
+/// widened: one issue each, bar `theClientsMutableStateStaysPrivate`, which drew one per property.
 ///
 /// ## Both directions, for the reason `HelperConnectionSessionAccessTests` gives
 ///
-/// `theClientsMutableStateStaysPrivate` fails when a listed property loses its `private`,
-/// when it is no longer declared as written, **and** when a second line of the file matches
-/// the same spelling — the three ways a named guard stops naming anything.
+/// `theClientsMutableStateStaysPrivate` fails when a listed property loses its `private` (or,
+/// for the two that are `private(set)`, its `(set)`), when it is no longer declared as written,
+/// **and** when a second line of the file matches the same spelling — the three ways a named
+/// guard stops naming anything.
 /// `onlyTheAcknowledgedPropertiesAreNonPrivate` and its method half are what catch the
 /// widening nobody listed, and they scan every file the actor is written in, so a member
 /// cannot be widened simply by being written in a new one.
@@ -51,20 +57,21 @@ struct HelperClientAccessTests {
     private static let clientType = "HelperClient"
     private static let clientTarget = "AeolusXPCClient"
 
-    /// Both files `HelperClient`'s members are written in, **sorted**, and checked against
-    /// the tree by `theScannedFilesAreEveryFileTheClientIsIn` rather than trusted.
+    /// All three files `HelperClient`'s members are written in, **sorted**, and checked
+    /// against the tree by `theScannedFilesAreEveryFileTheClientIsIn` rather than trusted.
     ///
     /// Neither declares a second type at the actor's own member indent, which is the
     /// precondition `MemberAccessScan.members(in:keyword:)` states. `ConnectionGeneration` is
     /// nested inside the actor, so its two `let`s sit at eight spaces and are not read as the
-    /// actor's; the other eight files in the target declare types whose names merely begin
-    /// with `HelperClient`, and the scan matches a name whole.
+    /// actor's; the other files in the target declare types whose names merely begin with
+    /// `HelperClient`, and the scan matches a name whole.
     ///
     /// Written out rather than derived at the point of use, for the reason the connection
     /// session's suite gives: a list compared against the tree is a decision a maintainer
     /// makes once, and deriving it silently would make the scan follow a split instead of
     /// reporting it.
     private static let clientFiles = [
+        "HelperClient+Translation.swift",
         "HelperClient.swift",
         "HelperClientVerbs.swift",
     ]
@@ -73,6 +80,8 @@ struct HelperClientAccessTests {
     ///
     /// All nine, because unlike the connection session there is no line to draw here: this
     /// *is* the client's state, and each of the nine is an input to a guard that reads it.
+    /// Seven are held `private` here and two, `hasEverHandshaken` and `interruptions`, are held
+    /// `private(set)` by `mustHaveAPrivateSetter` (#600); the reasons below are for all nine.
     /// Three are `let`s whose object is the state: `inFlight` holds every message in flight, and
     /// is the only thing that starts and ends their deadlines, and `healthSignal` and
     /// `healthStreams` hold the health signal and its observers (#541).
@@ -113,7 +122,7 @@ struct HelperClientAccessTests {
     /// match exactly one line of the file, so a renamed, moved or reformatted property fails
     /// loudly instead of leaving an entry that protects nothing.
     ///
-    /// **Mutation:** drop the `private` from `private var hasEverHandshaken = false`. Run: red
+    /// **Mutation:** drop the `private` from `private var negotiatedReply: HelloReply?`. Run: red
     /// on `theClientsMutableStateStaysPrivate` **and** on
     /// `onlyTheAcknowledgedPropertiesAreNonPrivate`, both, which is stated rather than hidden —
     /// the named guard and the exhaustive one are supposed to see the same widening from two
@@ -126,12 +135,36 @@ struct HelperClientAccessTests {
         "var connection: NSXPCConnection?",
         "var negotiatedReply: HelloReply?",
         "var handshake: (task: Task<HelloReply, Error>, hasSent: Bool)?",
-        "var hasEverHandshaken = false",
-        "var interruptions: UInt64 = 0",
         "var generation: UInt64 = 0",
         "let healthSignal: HealthSignal",
         "let healthStreams: HealthSignal.Streams",
         "let inFlight: InFlightMessages",
+    ]
+
+    /// The two properties `HelperClient+Translation.swift` reads, whose setters stay `private`.
+    ///
+    /// `translate(_:on:sentAfter:)` decides on `hasEverHandshaken` and on `interruptions`, so
+    /// their getters are readable from a sibling file ([#600](
+    /// https://github.com/blamechris/Aeolus/issues/600)), and nothing else about them is: only
+    /// `HelperClient.swift` writes them, which is the half of D36 that matters for these two.
+    /// `MemberAccessScan` counts `private(set)` as non-private, deliberately, so both are on
+    /// `acknowledgedNonPrivateProperties` as well. What that list cannot see is the widening
+    /// past this one, since `private(set) var` and a bare `var` are the same to it: writable from
+    /// every file in the target. This list is the only thing that notices.
+    ///
+    /// **The check is an equality on the whole declaration, not a prefix.** **Mutation:** respell
+    /// `private(set) var interruptions: UInt64 = 0` as `var interruptions: UInt64 = 0`. Run: red
+    /// on `theClientsMutableStateStaysPrivate` alone. **Mutation:** respell it as
+    /// `private(set) nonisolated(unsafe) var interruptions: UInt64 = 0`, which compiles and draws
+    /// SwiftLint's `modifier_order` warning and nothing else. Run: red on the same test alone.
+    /// With a prefix check, `hasPrefix("private(set) ")`, this was green on all four tests of the
+    /// suite, and the #603 review's probe, a free function in a sibling file, rewound
+    /// `interruptions` through an `as? ReferenceWritableKeyPath` cast (`before=1 cast=true
+    /// after=0`). **Mutation:** respell it as `private(set) public var interruptions: UInt64 =
+    /// 0`. Run: red on the same test alone; a prefix check passed this too.
+    private static let mustHaveAPrivateSetter = [
+        "var hasEverHandshaken = false",
+        "var interruptions: UInt64 = 0",
     ]
 
     /// Every property of `HelperClient` that is not `private`, and why.
@@ -142,18 +175,23 @@ struct HelperClientAccessTests {
     /// as much of an event as a new internal one, so the list pins the whole exported surface
     /// and a widening cannot hide by being a bigger one.
     ///
-    /// All four are **get-only computed views** of private storage, which is the property
-    /// worth stating: `negotiated` and `health` are the public read API — the second is ADR
+    /// Four are **get-only computed views** of private storage, which is the property worth
+    /// stating: `negotiated` and `health` are the public read API — the second is ADR
     /// 0006's switch for the app — and `currentGeneration` is `internal` for the suite, for
     /// the reason the source gives, that the generation is the parameter every late-handler
     /// guard turns on and a test unable to name it could only assert them by accident.
     /// `deadlinesRunning` is `internal` for the suite too (#418's review): a deadline's instant
     /// is read when its timer first runs, so a test moving a hand-wound clock has to know how
     /// many deadlines are running before it can know they have all parked. It reads a count off
-    /// `inFlight` and can settle nothing. **A
-    /// stored property appearing in this list is the failure to argue about**, because that
-    /// is the shape that hands a caller an assignment; a computed one can only re-derive what
-    /// something in the declaring file still owns.
+    /// `inFlight` and can settle nothing. **A stored property appearing in this list is the
+    /// failure to argue about**, because that is the shape that hands a caller an assignment; a
+    /// computed one can only re-derive what something in the declaring file still owns.
+    ///
+    /// The other two are **stored**, and are the argument: `hasEverHandshaken` and
+    /// `interruptions` are `private(set)` since [#600](
+    /// https://github.com/blamechris/Aeolus/issues/600), because `translate(_:on:sentAfter:)`
+    /// moved to `HelperClient+Translation.swift` and decides on both. That hands a caller a
+    /// read and no assignment, and `mustHaveAPrivateSetter` is what holds it to that.
     ///
     /// **Mutation:** drop the `private` from `private let deadlines: HelperClientDeadlines`, an
     /// injected `let` on no list here. Run: red on
@@ -164,6 +202,8 @@ struct HelperClientAccessTests {
         "health",
         "currentGeneration",
         "deadlinesRunning",
+        "hasEverHandshaken",
+        "interruptions",
     ]
 
     /// Every method of `HelperClient` that is not `private`, and what each is.
@@ -173,7 +213,7 @@ struct HelperClientAccessTests {
     /// actor negotiates it privately inside `performHandshake`. `disconnect()` is the teardown
     /// a caller that is finished asks for, and `healthUpdates()` the `nonisolated` stream.
     ///
-    /// The remaining five are `internal`, and they are the seam #242 asked whether more of
+    /// The remaining six are `internal`, and they are the seam #242 asked whether more of
     /// this actor could be expressed over:
     ///
     /// - `withHandshakenProxy` and `withProxy` are the two gates, and they are the answer to
@@ -185,9 +225,16 @@ struct HelperClientAccessTests {
     ///   two handlers are libxpc's entry points into this actor and the interleaving
     ///   `generation` exists to survive cannot be provoked on demand over a real connection,
     ///   and one arm of `translate` — `NSXPCConnectionReplyInvalid` — cannot be provoked at
-    ///   all. **These three are the ones to argue about**, because unlike the gates each
-    ///   mutates the storage above, so a sixth internal method reaching it is a decision
-    ///   rather than a convenience.
+    ///   all.
+    /// - `discardConnection(_:as:answering:)` is `internal` for `translate`, which moved to
+    ///   `HelperClient+Translation.swift` in [#600](
+    ///   https://github.com/blamechris/Aeolus/issues/600) and calls it for the three arms that
+    ///   cost the connection. It is the one function that invalidates the connection and moves
+    ///   the generation, so it is the widest of the six.
+    ///
+    /// **These four are the ones to argue about**, because unlike the gates each mutates the
+    /// storage above, so a fifth internal method reaching it is a decision rather than a
+    /// convenience.
     ///
     /// **Spelled as signatures, not names**, for the reason #236 established on the
     /// connection session: a bare-name key cannot see a second method that reuses a name, and
@@ -199,12 +246,10 @@ struct HelperClientAccessTests {
     /// to stay inside the line limit. They concatenate to the exact key the scan produces;
     /// the test fails naming both sides if they ever do not.
     ///
-    /// **Mutation:** drop the `private` from `private func discardConnection(`, whose signature
-    /// is `(_ generation: UInt64, as health: HelperConnectionHealth, answering verdict:
-    /// HelperClientError)` since #413 — chosen because it is exactly what moving
-    /// `translate(_:on:sentAfter:)` to a sibling file would cost. Run: red on
+    /// **Mutation:** drop the `private` from `private func publish(_ health:
+    /// HelperConnectionHealth)`, the one way the health changes. Run: red on
     /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
-    /// `discardConnection(_: UInt64, as: HelperConnectionHealth, answering: HelperClientError)`.
+    /// `publish(_: HelperConnectionHealth)`.
     ///
     /// **A limit found by trying it, recorded because it is load-bearing and is not this
     /// suite's doing:** `private func exchange<Answer: Sendable>` cannot be widened at all.
@@ -232,6 +277,7 @@ struct HelperClientAccessTests {
         "translate(_: Error, on: UInt64, sentAfter: UInt64)",
         "connectionWasInterrupted(_: UInt64)",
         "connectionWasInvalidated(_: UInt64)",
+        "discardConnection(_: UInt64, as: HelperConnectionHealth, answering: HelperClientError)",
     ]
 
     /// The file set is a claim about the tree, so it is read off the tree.
@@ -239,8 +285,8 @@ struct HelperClientAccessTests {
     /// #236's first mutation against the connection session was a fourth file —
     /// `extension HelperConnectionSession { … }` in a file listed nowhere and scanned by
     /// nothing, green across two suites. The same move is available here, and is in fact the
-    /// likely shape of a later split of `HelperClient.swift`: adding
-    /// `HelperClientConnection.swift` is how the refactor #242 declined would arrive. This is
+    /// likely shape of a further split of `HelperClient.swift`: adding
+    /// `HelperClientConnection.swift` is how the connection's lifecycle would leave it. This is
     /// what fails when it does, and what makes the widening it needs visible in the same run.
     ///
     /// The declaring file is checked the same way, because `theClientsMutableStateStaysPrivate`
@@ -249,10 +295,10 @@ struct HelperClientAccessTests {
     ///
     /// **Mutation:** add `Sources/AeolusXPCClient/HelperClientConnection.swift` holding
     /// `extension HelperClient { func currentHealthForSiblingFile() -> HelperConnectionHealth
-    /// { health } }` — a third file for the actor with an internal member in it. Run: red
-    /// here, naming the file, and across the whole package **red nowhere else** — 1 issue in
-    /// 1585 tests. That second half is the measurement worth keeping: it is what says this
-    /// test is the only thing in the tree that notices.
+    /// { health } }` — a fourth file for the actor with an internal member in it. Run: red
+    /// here, naming the file, and across the whole package **red nowhere else** — one issue,
+    /// this test's, and every other test green. That second half is the measurement worth
+    /// keeping: it is what says this test is the only thing in the tree that notices.
     @Test("Every file the XPC client is written in is one this suite scans")
     func theScannedFilesAreEveryFileTheClientIsIn() throws {
         let sites = try MemberAccessScan.filesDeclaring(
@@ -293,8 +339,22 @@ struct HelperClientAccessTests {
                 `\(declaration)` is no longer private. Every guard in this client turns on \
                 one of these nine, and one that is reachable from every file in \
                 AeolusXPCClient can be satisfied from outside the code that decides it — see \
-                HelperClient.swift's own account of why the split #242 asked for was \
-                declined, which is the same rule read forwards.
+                HelperClient.swift's own account of where its split stops, which is the same \
+                rule read forwards.
+                """
+            )
+        }
+        for member in Self.mustHaveAPrivateSetter {
+            let declaration = try MemberAccessScan.declaration(
+                of: member, in: code, from: Self.declaringFile)
+            #expect(
+                declaration == "private(set) \(member)",
+                """
+                `\(declaration)` is not exactly `private(set) \(member)`. A sibling file may read \
+                it, as `translate(_:on:sentAfter:)` does, and may not write it: a writable \
+                `hasEverHandshaken` invents a helper this client never spoke to, and a \
+                writable `interruptions` can be wound back past a death. It is an equality, not \
+                a prefix, because a modifier added beside `private(set)` can widen it.
                 """
             )
         }
