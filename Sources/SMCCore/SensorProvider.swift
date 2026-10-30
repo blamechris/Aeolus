@@ -230,7 +230,7 @@ public struct SMCSensorProvider: SensorProvider {
     /// Reads a subset of keys directly — see `SensorProvider.read(keys:)`. Never requires
     /// a prior `readAll()`: `open()` is idempotent, so calling it here costs nothing once
     /// a connection already exists and makes a bare `read(keys:)` call work standalone.
-    /// Malformed key strings (not exactly four ASCII characters) are reported as
+    /// Malformed key strings (not exactly four printable-ASCII bytes) are reported as
     /// `.unknownKey` rather than thrown, consistent with every other outcome here being
     /// per-key rather than aborting the whole request.
     public func read(keys: [String]) async throws -> [SensorReadOutcome] {

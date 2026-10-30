@@ -47,9 +47,10 @@ public enum SMCError: Error, Sendable, Equatable {
     /// would fabricate a value. Metadata (type, size, attributes) remains available via
     /// `SMCConnection.keyInfo(for:)`.
     case valueTooLargeForSingleRead(key: SMCKey, dataSize: Int)
-    /// `#KEY` index enumeration returned a four-character code that is not valid ASCII.
-    /// Never observed on `Mac16,5`, but the index table is firmware data, not something
-    /// this project controls, so it must not be assumed well-formed.
+    /// `#KEY` index enumeration returned a four-character code with a byte outside printable
+    /// ASCII (see `SMCKey.permittedBytes`). Never observed on `Mac16,5`, whose 3,514 keys are
+    /// all inside it, but the index table is firmware data, not something this project
+    /// controls, so it must not be assumed well-formed.
     case malformedKeyCode(FourCharCode)
     /// A negative or otherwise unrepresentable key-table index was requested.
     case invalidIndex(Int)
