@@ -97,11 +97,13 @@ struct KeyTableWalk: Sendable {
     private(set) var listedRefusedCodes: [RefusedKeyCode] = []
 
     /// The most refused codes a walk counts as walked. Past it, the walk counts none of them.
+    /// See `refusedCodesAreWalked` for the other condition, that the walk found a key.
     ///
     /// A refused code is walked on the reading that the firmware holds a key this project's
     /// alphabet cannot name (#623). That reading is credible for a few. A misread of the
-    /// reply's key field refuses on the order of every index: a field read one byte off leaves
-    /// a zero byte in every code, which `SMCKey` refuses. Counting those would let a walk that
+    /// reply's key field can refuse every index. A field read one byte off takes its last byte
+    /// from the next field, the version; if that byte is zero, which nobody here has checked,
+    /// every code ends in zero and `SMCKey` refuses it. Counting those would let a walk that
     /// resolved no key at all match `#KEY` and complete discovery with an empty key set. Every
     /// named read would then report its key absent, and a Mac with fans would be reported as
     /// having none (the #627 review). Past the cap the walk does what it did before #623: the
@@ -114,27 +116,41 @@ struct KeyTableWalk: Sendable {
     /// single refused code did before #623. That fails toward `.readFailed`, never toward a
     /// false `.keyNotFound`.
     ///
-    /// **What it still lets through.** Up to eight refused codes are counted, wherever they sit.
-    /// So the cross-check cannot see `#KEY` overcounting by eight or fewer when the firmware
-    /// answers each index past its real table with a nonzero refused code; a zero filler is
-    /// `.unanswered` and still fails it. Nor can it see a misread that refuses eight codes or
-    /// fewer. On `Mac16,5` the firmware answers past its table with result byte `0xB8`, which
-    /// is `.unanswered`. Either way the refused-code line is logged.
+    /// **What it still lets through.** Up to eight refused codes are counted, beside at least
+    /// one key, wherever they sit. So the cross-check cannot see `#KEY` overcounting by eight
+    /// or fewer when the firmware answers each index past its real table with a nonzero
+    /// refused code; a zero filler is `.unanswered` and still fails it. Nor can it see a misread
+    /// that refuses eight codes or fewer. On `Mac16,5` the firmware answers past its table with
+    /// result byte `0xB8`, which is `.unanswered`. Either way the refused-code line is logged.
+    ///
+    /// **What no count can see.** A misread whose codes stay printable resolves every index to
+    /// a key, only the wrong one: a field read onto a printable neighbouring byte, or read in
+    /// reverse byte order. The walk counts keys, so it matches, as it does on `main`. Only a
+    /// check of *which* keys were found can catch that; that is #628.
     static let maximumWalkedRefusedCodes = 8
 
     init(declaredCount: Int) {
         self.declaredCount = declaredCount
     }
 
-    /// Whether this walk's refused codes count as walked: there are at most
-    /// `maximumWalkedRefusedCodes` of them.
+    /// Whether this walk's refused codes count as walked: the walk found at least one key, and
+    /// there are at most `maximumWalkedRefusedCodes` refused codes.
+    ///
+    /// **The key is needed because the cap is absolute.** A `#KEY` of eight or fewer, with every
+    /// reply a nonzero refused code, would otherwise walk every index, match, and complete
+    /// discovery with an empty key set: the #627 review's blocker, at a small declared count.
+    /// A walk that found no key has no evidence that the firmware's table is being read at all,
+    /// so its refused codes count for nothing. The misreads described above act on every reply
+    /// alike, refusing every code or none, so refused codes beside a key look like a real
+    /// table. A majority rule (more keys than refused codes) would differ from this only on
+    /// tables of sixteen entries or fewer, and no table this project has seen is near that.
     var refusedCodesAreWalked: Bool {
-        refusedCodeCount <= Self.maximumWalkedRefusedCodes
+        keyCount > 0 && refusedCodeCount <= Self.maximumWalkedRefusedCodes
     }
 
     /// The indices `0..<declaredCount` this walk counts as walked, for
-    /// `KeyCountCrossCheck.walkedCount`: every key, and every refused code while there are no
-    /// more than `maximumWalkedRefusedCodes`. An `.unanswered` index never counts.
+    /// `KeyCountCrossCheck.walkedCount`: every key, and every refused code while
+    /// `refusedCodesAreWalked`. An `.unanswered` index never counts.
     var walkedCount: Int {
         keyCount + (refusedCodesAreWalked ? refusedCodeCount : 0)
     }
@@ -201,14 +217,19 @@ struct KeyTableWalk: Sendable {
             .joined(separator: ", ")
         let unlisted = refusedCodeCount - listedRefusedCodes.count
         let more = unlisted > 0 ? ", and \(unlisted) more" : ""
-        let counted =
-            refusedCodesAreWalked
-            ? "Each counts as walked, since the firmware answered for it"
-            : """
-            None counts as walked: more than \(Self.maximumWalkedRefusedCodes) is likelier a \
-            misread of the index table than keys SMCKey cannot name, so the #KEY cross-check \
-            is left to fail on them
-            """
+        let counted: String
+        if refusedCodesAreWalked {
+            counted = "Each counts as walked, since the firmware answered for it"
+        } else {
+            let reason =
+                keyCount == 0
+                ? "the walk found no key, so they are"
+                : "more than \(Self.maximumWalkedRefusedCodes) is"
+            counted = """
+                None counts as walked: \(reason) likelier a misread of the index table than keys \
+                SMCKey cannot name, so the #KEY cross-check is left to fail on them
+                """
+        }
         return """
             #KEY walk: \(refusedCodeCount) of \(declaredCount) index-table entries returned a \
             key code SMCKey cannot represent, with a byte outside printable ASCII: \

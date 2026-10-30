@@ -9,11 +9,17 @@ import Testing
 @Suite("Key-table walk, the refused-code log line")
 struct KeyTableWalkRefusedCodeLogTests {
 
-    /// A walk of `declaredCount` indices that met `refused` at indices 0, 1, 2 and so on.
-    static func walk(refusing refused: [FourCharCode], declaredCount: Int) -> KeyTableWalk {
+    /// A walk of `declaredCount` indices that met `refused` at indices 0, 1, 2 and so on, then
+    /// a key after them unless `withKey` is false. Without a key, no refused code is walked.
+    static func walk(
+        refusing refused: [FourCharCode], declaredCount: Int, withKey: Bool = true
+    ) -> KeyTableWalk {
         var walk = KeyTableWalk(declaredCount: declaredCount)
         for (index, code) in refused.enumerated() {
             _ = walk.record(.refused(code), at: index)
+        }
+        if withKey {
+            _ = walk.record(.key(KeyTableCodes.fan), at: refused.count)
         }
         return walk
     }
@@ -69,6 +75,17 @@ struct KeyTableWalkRefusedCodeLogTests {
         let message = try #require(walk.refusedCodesMessage())
 
         #expect(message.contains("None counts as walked: more than \(cap)"))
+        #expect(!message.contains("Each counts as walked"))
+    }
+
+    @Test("With no key beside them, the line says none counts as walked, and why")
+    func lineSaysNoneCountsWithNoKey() throws {
+        let walk = Self.walk(
+            refusing: [0x0000_000A, 0x4630_0A63], declaredCount: 2, withKey: false)
+
+        let message = try #require(walk.refusedCodesMessage())
+
+        #expect(message.contains("None counts as walked: the walk found no key"))
         #expect(!message.contains("Each counts as walked"))
     }
 

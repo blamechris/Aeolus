@@ -17,8 +17,8 @@ enum MisreadIndexTables {
     static let allZero = ScriptedIndexTable(
         codes: Dictionary(uniqueKeysWithValues: (0...declaredCount).map { ($0, 0) }))
 
-    /// Real-looking keys read one byte off: each code shifted left eight bits, so its low byte
-    /// is the next field's zero and `SMCKey` refuses every one. Past the table, `0xB8`.
+    /// Real-looking keys read one byte off, where the byte after the key field is zero: each
+    /// code shifted left eight bits, so `SMCKey` refuses every one. Past the table, `0xB8`.
     static let shifted = ScriptedIndexTable(
         codes: Dictionary(
             uniqueKeysWithValues: (0..<declaredCount).map { index in
@@ -26,13 +26,33 @@ enum MisreadIndexTables {
                 return (index, key.fourCharCode << 8)
             }))
 
+    /// A distinct nonzero code `SMCKey` refuses: `F0`, a line feed, then `offset`'s byte.
+    static func refusedCode(_ offset: Int) -> FourCharCode {
+        0x4630_0A00 | FourCharCode(offset % 0xFF + 1)
+    }
+
     /// `refused` nonzero refused codes between two keys, in a table that declares all of them.
     static func refusing(_ refused: Int) -> ScriptedIndexTable {
         var codes = [0: KeyTableCodes.fan.fourCharCode]
         for offset in 0..<refused {
-            codes[1 + offset] = 0x4630_0A00 | FourCharCode(offset % 0xFF + 1)
+            codes[1 + offset] = refusedCode(offset)
         }
         codes[refused + 1] = KeyTableCodes.temperature.fourCharCode
+        return ScriptedIndexTable(codes: codes)
+    }
+
+    /// `count` nonzero refused codes and no key at all; the probe at `count` is unanswered.
+    static func allRefused(_ count: Int) -> ScriptedIndexTable {
+        ScriptedIndexTable(
+            codes: Dictionary(uniqueKeysWithValues: (0..<count).map { ($0, refusedCode($0)) }))
+    }
+
+    /// One key at index 0, then `refused` nonzero refused codes.
+    static func oneKeyRefusing(_ refused: Int) -> ScriptedIndexTable {
+        var codes = [0: KeyTableCodes.fan.fourCharCode]
+        for offset in 0..<refused {
+            codes[1 + offset] = refusedCode(offset)
+        }
         return ScriptedIndexTable(codes: codes)
     }
 }
@@ -172,6 +192,59 @@ struct KeyTableWalkRefusedCapTests {
             declaredCount: Self.cap + 3, keyAt: MisreadIndexTables.refusing(Self.cap + 1).key(at:))
 
         #expect(await !discoveryCompleted(on: connection))
+    }
+}
+
+/// The delta review's case: the cap is absolute, so a `#KEY` of eight or fewer with every reply
+/// a nonzero refused code walked every index and matched. `KeyTableWalk.refusedCodesAreWalked`
+/// now also needs a key. Beside one key, up to the cap still counts.
+@Suite("Key-table walk, refused codes with no key beside them")
+struct KeyTableWalkNoKeyTests {
+
+    static let counts = Array(1...KeyTableWalk.maximumWalkedRefusedCodes)
+
+    @Test(
+        "verifyKeyCountCrossCheck's walk fails a small table of refused codes only",
+        arguments: counts)
+    func crossCheckFailsASmallAllRefusedTable(count: Int) {
+        let result = SMCConnection.walkKeyTable(
+            declaredCount: count, keyAt: MisreadIndexTables.allRefused(count).key(at:)
+        ).crossCheck
+
+        #expect(result.walkedCount == 0)
+        #expect(!result.matches)
+    }
+
+    @Test("readAll's walk does not complete discovery on refused codes only", arguments: counts)
+    func readAllFailsASmallAllRefusedTable(count: Int) async {
+        let connection = SMCConnection()
+        let provider = SMCSensorProvider(connection: connection)
+
+        _ = await provider.readAll(
+            declaredCount: count, keyAt: MisreadIndexTables.allRefused(count).key(at:))
+
+        #expect(await !discoveryCompleted(on: connection))
+    }
+
+    @Test("verifyKeyCountCrossCheck's walk matches one key beside refused codes", arguments: counts)
+    func crossCheckMatchesOneKeyBesideRefusedCodes(refused: Int) {
+        let result = SMCConnection.walkKeyTable(
+            declaredCount: refused + 1, keyAt: MisreadIndexTables.oneKeyRefusing(refused).key(at:)
+        ).crossCheck
+
+        #expect(result.walkedCount == refused + 1)
+        #expect(result.matches)
+    }
+
+    @Test("readAll's walk completes discovery with one key beside refused codes", arguments: counts)
+    func readAllCompletesDiscoveryWithOneKeyBesideRefusedCodes(refused: Int) async {
+        let connection = SMCConnection()
+        let provider = SMCSensorProvider(connection: connection)
+
+        _ = await provider.readAll(
+            declaredCount: refused + 1, keyAt: MisreadIndexTables.oneKeyRefusing(refused).key(at:))
+
+        #expect(await discoveryCompleted(on: connection))
     }
 }
 
