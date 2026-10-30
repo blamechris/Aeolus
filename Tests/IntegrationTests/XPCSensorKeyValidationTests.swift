@@ -84,10 +84,15 @@ struct XPCSensorKeyValidationTests {
     /// `FaultText.isRemovedFromDisplay` removes is accepted: the acceptance #566 names, held
     /// against the predicate the description fields and both renderers read.
     ///
+    /// Asserted on counts, with the first forty scalars named in the message. An `#expect` on
+    /// an array prints the whole array when it fails, and under the second mutation below that
+    /// is every scalar past U+007F the display rule keeps: an 18.6 MB test log, against 1.1 MB
+    /// for a run where it prints forty.
+    ///
     /// **Mutation:** make `isSensorKeyScalar` `scalar.isASCII` alone. Run: red on
-    /// `outsideNotRefused` and `removedButAdmitted`, naming U+0000 to U+001F and U+007F.
-    /// **Mutation:** make it `!FaultText.isRemovedFromDisplay(scalar)` alone. Run: red on
-    /// `outsideNotRefused` only, since nothing it admits is removed from display.
+    /// `outsideNotRefusedCount` and `removedButAdmittedCount`, naming U+0000 to U+001F and
+    /// U+007F. **Mutation:** make it `!FaultText.isRemovedFromDisplay(scalar)` alone. Run: red
+    /// on `outsideNotRefusedCount` only, since nothing it admits is removed from display.
     @Test("A key is accepted exactly when its scalars are printable ASCII")
     func theAlphabetIsPrintableASCII() async {
         var outsideNotRefused: [Unicode.Scalar] = []
@@ -112,10 +117,13 @@ struct XPCSensorKeyValidationTests {
                 }
             }
         }
+        let outsideNotRefusedCount = outsideNotRefused.count
+        let insideRefusedCount = insideRefused.count
+        let removedButAdmittedCount = removedButAdmitted.count
         #expect(removed > 200)
-        #expect(outsideNotRefused.isEmpty, "not refused: \(Self.named(outsideNotRefused))")
-        #expect(insideRefused.isEmpty, "refused: \(Self.named(insideRefused))")
-        #expect(removedButAdmitted.isEmpty, "admitted: \(Self.named(removedButAdmitted))")
+        #expect(outsideNotRefusedCount == 0, "not refused: \(Self.named(outsideNotRefused))")
+        #expect(insideRefusedCount == 0, "refused: \(Self.named(insideRefused))")
+        #expect(removedButAdmittedCount == 0, "admitted: \(Self.named(removedButAdmitted))")
     }
 
     private static func named(_ scalars: [Unicode.Scalar]) -> [String] {
