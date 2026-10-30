@@ -233,6 +233,38 @@ struct HelperClientStaleHandshakeTests {
             "the arrivals were \(harness.arrivals)")
     }
 
+    /// A 4097 that is the first notice of a death is counted, with no interruption handler beside
+    /// it ([#601](https://github.com/blamechris/Aeolus/issues/601)).
+    ///
+    /// The tests above are about a notice that is not counted. This is the counted side, and
+    /// nothing else pinned it: when a helper's side is killed, the real interruption handler
+    /// always fires too, counts the death, and hides a 4097 arm that does not. So nothing here
+    /// dies and no handler runs. A handshaken connection is handed a 4097 for a message sent after
+    /// no notice (`sentAfter: 0`), which is the reverse of the usual order: the 4097 first, its
+    /// handler's notice still to come. Uncounted, the reply of the process that died stays
+    /// recorded until the handler arrives. That is bounded, and nothing else would flag it.
+    ///
+    /// **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`, delete the line `if notices ==
+    /// interruptions { connectionWasInterrupted(generation) }`. Run: red here alone, on
+    /// `negotiated` and on the health, and across the package red nowhere else. Dropping the guard
+    /// and keeping the call, the mutation of `aLateNoticeLeavesTheNewerHandshakeAndItsConnection`,
+    /// leaves this green: nothing has counted before this notice.
+    @Test("A 4097 that is the first notice of a death is counted")
+    func aFirstNoticeOfADeathIsCounted() async throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let client = harness.client()
+        _ = try await client.snapshot()
+        #expect(await client.negotiated != nil, "the client has not handshaken")
+        let generation = await client.currentGeneration
+
+        let interrupted = NSError(domain: NSCocoaErrorDomain, code: XPCTransportCode.interrupted)
+        _ = await client.translate(interrupted, on: generation, sentAfter: 0)
+
+        #expect(await client.negotiated == nil, "the reply of the process that died is recorded")
+        let health = await client.health
+        #expect(health == .interrupted, "the health is \(health)")
+    }
+
     // MARK: - The schedule the second test builds
 
     /// The point the second test starts from.

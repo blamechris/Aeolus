@@ -98,12 +98,16 @@ extension HelperClient {
             // the last notice counted went out before a death was heard of, so this is a second
             // notice of a death already counted, or one whose handler's notice is still to come.
             // Counted again, it cleared a handshake recorded since with the replacement, and the
-            // next verb's `hello` was refused and took the connection. No death goes uncounted:
-            // each fires the interruption handler, with messages in flight or without (measured;
-            // see the suite's `killHelperSideOfEveryConnection`). The cost is narrower: a message
-            // that reached a replacement before an earlier death was counted, a handshake recorded
-            // with it, and the replacement dying too. Until its handler's notice, a gated verb then
-            // reaches the next process with no `hello`, and is refused without a teardown.
+            // next verb's `hello` was refused and took the connection. No death goes uncounted,
+            // on this premise: each fires the interruption handler, with messages in flight or
+            // without. That is the contract Apple documents for
+            // `NSXPCConnection.interruptionHandler`, which runs when the remote process exits or
+            // crashes. The suite bears it out only as far as a harness can: its
+            // `killHelperSideOfEveryConnection` invalidates the listener-side connection inside
+            // the test process, and no helper process exits. The cost is narrower: a message that
+            // reached a replacement before an earlier death was counted, a handshake recorded
+            // with it, and the replacement dying too. Until its handler's notice, a gated verb
+            // then reaches the next process with no `hello`, and is refused without a teardown.
             let hadSpokenToAHelper = hasEverHandshaken
             if notices == interruptions { connectionWasInterrupted(generation) }
             return hadSpokenToAHelper

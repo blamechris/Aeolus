@@ -40,8 +40,11 @@ import Foundation
 /// is **discarded**: the peer is a new process, it has negotiated nothing with this client,
 /// and anything the old one was holding is gone. The next message re-runs `hello`. The answer to
 /// a `hello` sent before the interruption, and not yet recorded when it is handled, is never
-/// recorded at all (#585, `performHandshake`). A handshake whose `hello` has not gone is kept, and
-/// a 4097 on a message sent before the last interruption counted is not counted again (#588).
+/// recorded at all (#585, `performHandshake`). A handshake whose `hello` has not gone is kept
+/// (#588). A 4097 on a message sent before the last notice counted is not counted either: the
+/// counter counts notices, not interruptions, and that 4097 is a second notice of a death already
+/// counted, or a notice of a later one whose interruption handler is still to come
+/// (`translate(_:on:sentAfter:)`).
 ///
 /// **Invalidation (4099)** means the connection will never work again. It is dropped, and
 /// the next message builds a new one — once.
