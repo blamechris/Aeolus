@@ -25,14 +25,19 @@ import Foundation
 ///
 /// ## The alphabet: ASCII, less what the display rule removes
 ///
-/// `SMCKey` admits any four ASCII characters. This admits those for which
-/// `FaultText.isRemovedFromDisplay` is false, which within ASCII is U+0020 to U+007E: the one
-/// rule the description fields are refused by (#483), narrowed to what an SMC key is written
-/// in. A key is client-chosen text that a root daemon will read, and later log and show beside
-/// a reading, so it is held to the shared rule; and it names a four-byte code, so it is held to
-/// ASCII. Space is admitted, because `FS! `, Intel's force bitmask, has one. On `Mac16,5`
-/// (macOS 27.2) all 3,514 keys the SMC enumerates are four bytes in this alphabet, and the only
-/// characters among them that are not letters or digits are `!`, `#`, `-` and `?`.
+/// This admits the scalars for which `FaultText.isRemovedFromDisplay` is false and that are
+/// ASCII, which is U+0020 to U+007E: the one rule the description fields are refused by (#483),
+/// narrowed to what an SMC key is written in. A key is client-chosen text that a root daemon
+/// will read, and later log and show beside a reading, so it is held to the shared rule; and it
+/// names a four-byte code, so it is held to ASCII. Space is admitted, because `FS! `, Intel's
+/// force bitmask, has one. On `Mac16,5` (macOS 27.2) all 3,514 keys the SMC enumerates are four
+/// bytes in this alphabet, and the only characters among them that are not letters or digits
+/// are `!`, `#`, `-` and `?`.
+///
+/// `SMCKey` holds to the same alphabet, four bytes of it (#620). That is a second definition
+/// and not a call into this one, because `SMCCore` and this module do not depend on each other
+/// and joining them is a change to the target graph. `SMCKeyBoundaryAgreementTests` pins the
+/// two equal.
 ///
 /// ## Refused, never repaired
 ///
@@ -44,7 +49,8 @@ extension AeolusXPCValidation {
     ///
     /// Bytes rather than characters, because the key is a four-byte code and a `Character`
     /// count does not bound bytes: `"ab\r\nc"` is four characters, every one of them ASCII by
-    /// `Character.isASCII`, and five bytes, so `SMCKey`'s own `count == 4` admits it.
+    /// `Character.isASCII`, and five bytes, so a `count == 4` check admits it. `SMCKey` made one
+    /// until #620.
     public static let sensorKeyUTF8Bytes = 4
 
     /// The most sensors one curve may be driven by.

@@ -34,8 +34,8 @@ struct XPCSensorKeyValidationTests {
     }
 
     /// Bytes, not characters. `Tp0é` and `ab\r\nc` are four characters and five bytes; the
-    /// second is four ASCII characters by `Character.isASCII`, which is what `SMCKey`'s own
-    /// check admits.
+    /// second is four ASCII characters by `Character.isASCII`, which is all `SMCKey`'s check
+    /// asked until #620.
     ///
     /// **Mutation:** delete the length guard in `validateSensorKey`. Run: red on every row; the
     /// two five-byte rows are then refused by the alphabet guard, so red on the detail.
