@@ -115,11 +115,13 @@ struct HelperClientTests {
     /// **Mutation:** in `HelperClient.handshakenConnection()`, replace
     /// `handshake?.task ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
     /// worth writing down because it is not the obvious one. Two `hello`s go out on one
-    /// connection and the helper refuses the second with `invalidParameter`; that refusal is
-    /// a failed handshake, so this client's own rule takes the connection down with it, and
-    /// the verb still in flight surfaces as `connectionAbandoned` (measured at #421; it was
-    /// `helperUnreachable(code: 4099)` before #413). The message count is the backstop
-    /// assertion at 4 rather than 3.
+    /// connection and the helper refuses the second with `invalidParameter`. Since #588 that
+    /// refusal meets the first `hello`'s recorded reply, so it leaves the connection
+    /// (`performHandshake`), and the refused verb is caught with `invalidParameter` itself: 10 of
+    /// 10 runs, alone and in this suite. Before #588 the refusal took the connection down, and the
+    /// verb still in flight surfaced as `connectionAbandoned` (measured at #421, and again with
+    /// #588's clause deleted; it was `helperUnreachable(code: 4099)` before #413). The message
+    /// count is the backstop assertion at 4 rather than 3.
     @Test("Two verbs racing on a cold connection send one hello between them")
     func racingVerbsShareOneHandshake() async throws {
         let releaseHandshake = AsyncSignal()

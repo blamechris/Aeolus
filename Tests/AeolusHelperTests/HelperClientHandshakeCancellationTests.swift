@@ -120,7 +120,9 @@ struct HelperClientHandshakeCancellationTests {
     /// **Mutation:** in the cancelled branch of `handshakenConnection()`, clear `handshake` before
     /// throwing, as the `defer` it replaced did on every exit. Run: red on the late caller, which
     /// sends a second `hello` and is refused with `invalidParameter` ("the handshake has already
-    /// completed on this connection"), on the arrivals, which hold two `hello`s, and on `health`.
+    /// completed on this connection"), and on the arrivals, which hold two `hello`s. `health` was
+    /// red too until #588; it stays `.handshaken` now, because the refusal meets the first
+    /// `hello`'s recorded reply and so leaves the connection (`performHandshake`).
     ///
     /// **Mutation:** the code before #576, as in the first test. Run: red on the wait for the
     /// cancelled caller alone, at 15 s; the late caller, started after the `hello` was released to
