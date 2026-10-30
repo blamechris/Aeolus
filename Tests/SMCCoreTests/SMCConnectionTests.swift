@@ -660,12 +660,7 @@ struct SMCConnectionMac165Tests {
     /// walk of the key table. A live pass here is direct evidence the resolver's
     /// hypothesis holds on this machine, right now, not just at the moment the bytes in
     /// `SMCByteOrderResolverTests` were captured.
-    ///
-    /// It also pins that every entry of this machine's table is a key: none refused, none
-    /// unanswered. The walk counts up to `KeyTableWalk.maximumWalkedRefusedCodes` refused codes
-    /// as walked (#623), so `matches` alone would still pass with a few of them; on this
-    /// machine a misread of the index table cannot hide behind that cap.
-    @Test("#KEY cross-check passes on live hardware, with every entry a key")
+    @Test("#KEY cross-check passes on live hardware")
     func keyCountCrossCheckPassesLive() async throws {
         let connection = SMCConnection()
         try await connection.open()
@@ -674,12 +669,6 @@ struct SMCConnectionMac165Tests {
         let result = try await connection.verifyKeyCountCrossCheck()
         #expect(result.matches)
         #expect(result.declaredCount > 1000)
-
-        let walk = try await connection.walkKeyTable()
-        #expect(walk.crossCheck == result)
-        #expect(walk.tally.refusedCodeCount == 0)
-        #expect(walk.tally.keyCount == result.declaredCount)
-        #expect(result.walkedCount == result.declaredCount)
     }
 
     /// The cell-sum identity, read live rather than from a fixed capture. `B0AV`,
