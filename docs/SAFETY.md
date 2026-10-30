@@ -1442,9 +1442,9 @@ worse than a UI that reports an error, because the user acts on it.
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationRecordIntegrityTests.swift` (a report or a re-assert's return below the floor or not a
 number, refused and logged at `.fault`; a report matching a system target below the floor; a target
-that is not a number; every RPM a log line states, #395; and a cycle that cannot read, once or
-twice in a row, leaving the record's target, so the next readable cycle still marks and re-asserts
-a divergence the blind one hid, #612, #615),
+that is not a number; every RPM a log line states, #395; and a cycle that cannot read, in a run
+short of `ReclamationLimits.blindCyclesBeforeDivergence`, leaving the record's target, so the next
+readable cycle still marks and re-asserts a divergence the blind one hid, #612, #615, #617),
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
 and #366's episode and given-up lease as values, in its extension in

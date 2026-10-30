@@ -77,14 +77,16 @@ import Testing
 ///   another record, in a mutating method replaces the whole record, storage and all, and the
 ///   count does not see it. It is a route to clearing or replaying `commanded`, not past the
 ///   floor: the storage can take only `nil` or a value some record's `record(_:)` took (inferred,
-///   not run). Replacing it so in `recordReadFailure()`, every counter copied across, on the first
-///   failure in a row or on the second, is red in
+///   not run). Replacing it so in `recordReadFailure()`, every counter copied across, on any
+///   failure in a row short of `ReclamationLimits.blindCyclesBeforeDivergence`, is red in
 ///   `ReclamationRecordIntegrityTests.aReadFailureLeavesTheRecordsTarget` and
 ///   `.aDivergenceABlindCycleHidIsCaughtAfterIt`, and nowhere else: measured at full scope
-///   (#612, and #615 for the second). On the third it is red nowhere, measured at full scope
-///   (#615), and no cycle judges the fan against that record afterwards, because the actor has
-///   handed it back (inferred). The same replacement in another method, or a replay of another
-///   record's target, is caught only where a behaviour test reads the result: inferred. No issue.
+///   (#612 for the first, #615 for the second with the constant at 3, #617 for the third with it
+///   at 4). On the failure that reaches the constant it is red nowhere, measured at full scope
+///   with the constant at 3 (#615) and at 4 (#617), and no cycle judges the fan against that
+///   record afterwards, because the actor has handed it back (inferred). The same replacement in
+///   another method, or a replay of another record's target, is caught only where a behaviour
+///   test reads the result: inferred. No issue.
 /// - **`HeldFan`'s own declaration and its sibling's.** `struct HeldFan` and `enum Judgement` are
 ///   read by no suite. Their access is capped by the actor's, which `HelperActorHeaderAccessTests`
 ///   pins: `public struct HeldFan` compiles and leaves this target green, measured at full scope
