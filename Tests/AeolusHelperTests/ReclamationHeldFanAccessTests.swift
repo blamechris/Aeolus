@@ -25,14 +25,20 @@ import Testing
 /// ## The control is structural; the scans catch accidents
 ///
 /// Since #612 `commanded` is a get-only view of `private var storedCommanded`. The compiler refuses
-/// an assignment to `commanded` anywhere, and one to `storedCommanded` outside this file. At run
-/// time no key path to `commanded` is writable (`noKeyPathToTheCommandedTargetIsWritable`). Until
-/// #612 it was a `private(set) var`, whose key path is writable at run time (SR-5218), and #611's
-/// lexical scan was the only thing between three measured shapes and a second writer.
+/// an assignment to `commanded` anywhere ("cannot assign to property: 'commanded' is a get-only
+/// property"), and one to `storedCommanded` from another file ("inaccessible due to 'private'
+/// protection level"). At run time no key path to `commanded` is writable
+/// (`noKeyPathToTheCommandedTargetIsWritable`). As a `private(set) var`, until #612, its key path
+/// was writable (SR-5218), and shapes that assigned it compiled past #611's lexical scan. Measured
+/// on #612, these no longer compile: a type nested in `HeldFan` named in backticks
+/// (``enum `Backdoor` ``), one whose name starts outside ASCII (`enum Éackdoor`), a second `init`
+/// and a subscript, each assigning `commanded`. `Judgement` moved inside `HeldFan` to assign it is
+/// inferred, not run: the same refusal.
 ///
 /// What is left is this file, where `private` reaches a type nested in `HeldFan` and an extension
-/// of it: either can name `storedCommanded`. `theStorageIsAssignedOnlyInRecord` counts the
-/// assignments to it, and is lexical.
+/// of it, so either can name `storedCommanded`. `theStorageIsAssignedOnlyInRecord` counts the
+/// assignments to it, and is lexical. Each of the four measured shapes, rewritten to assign
+/// `storedCommanded`, compiles and is red on that count and nowhere else, measured at full scope.
 ///
 /// ## What is compared
 ///
@@ -63,17 +69,18 @@ import Testing
 ///   seen by nothing here: measured at full scope (`public` alone above a new `var leak = 0`,
 ///   #612). Closed by [#605](https://github.com/blamechris/Aeolus/issues/605).
 /// - **An initialiser or a subscript** is in no population: the scan reads `let`, `var` and
-///   `func`. Neither can assign `commanded`, and one that assigns `storedCommanded` is the
-///   write-site count's: measured at full scope for both (#612). Anything else either could write
-///   is internal already. No issue: nothing either reaches is held here.
+///   `func`. Neither can assign `commanded`, and one that assigns `storedCommanded` is red on the
+///   write-site count: measured at full scope for both (#612). No issue: past the storage, either
+///   reaches only members that are internal already.
 /// - **A write that does not name the storage.** `self = HeldFan(lease: lease)`, or `self` assigned
 ///   another record, in a mutating method replaces the whole record, storage and all, and the
 ///   count does not see it: inferred, not run. It can store only `nil` or a value some record's
-///   `record(_:)` took, so no target past the floor check. No issue.
+///   `record(_:)` took. No issue: it cannot carry a target past the floor check.
 /// - **`HeldFan`'s own declaration and its sibling's.** `struct HeldFan` and `enum Judgement` are
 ///   read by no suite. Their access is capped by the actor's, which `HelperActorHeaderAccessTests`
 ///   pins: `public struct HeldFan` compiles and leaves this target green, measured at full scope
-///   (#612). Not a route to `commanded`.
+///   (#612). Not a route to `commanded`. Closed by
+///   [#613](https://github.com/blamechris/Aeolus/issues/613).
 @Suite("§ 5's per-fan record keeps its commanded target read-only")
 struct ReclamationHeldFanAccessTests {
 
@@ -123,13 +130,14 @@ struct ReclamationHeldFanAccessTests {
     ]
 
     /// A `private(set) var` hides its setter from lookup and not from a key path: at run time the
-    /// key path is a `WritableKeyPath`, and a cast recovers it from any file in the module
-    /// (SR-5218, the route #456 closed on `Request`). A computed property with no setter has no
-    /// writable key path to recover. The first expectation is the second's precondition: a cast to
-    /// a value type the key path does not have is `nil` whatever the setter.
+    /// key path is a `WritableKeyPath`, and a cast outside the declaring file recovers it (SR-5218,
+    /// the route #456 closed on `Request`). A computed property with no setter has no writable key
+    /// path to recover. The first expectation is the second's precondition: a cast to a value type
+    /// the key path does not have is `nil` whatever the setter.
     ///
     /// **Mutation:** put back `private(set) var commanded: CommandedTarget?`, assigned by
-    /// `record(_:)`, in place of the view and its storage. Run: red here, on the cast.
+    /// `record(_:)`, in place of the view and its storage. Run: red here, on the cast, which
+    /// succeeds from this file.
     @Test("No key path to the commanded target is writable")
     func noKeyPathToTheCommandedTargetIsWritable() {
         let path: AnyKeyPath = \Held.commanded
@@ -159,8 +167,9 @@ struct ReclamationHeldFanAccessTests {
     ///
     /// **Mutations:** add `mutating func force(_ target: CommandedTarget) { storedCommanded =
     /// target }`; move `record(_:)`'s assignment into `command(_:)`, after its guard; write
-    /// `self[keyPath: \.storedCommanded] = nil` in `recordReadFailure()`. Run: red on the whole
-    /// file's assignment count, on `record(_:)`'s, and on the mention count, respectively.
+    /// `self[keyPath: \.storedCommanded] = nil` in `recordReadFailure()`. Run: red on the file's
+    /// assignment count and the mention count; on `record(_:)`'s count, the only one of the three;
+    /// and on the mention count, the only one of the three.
     @Test("The commanded target's storage is assigned in one place, record(_:)")
     func theStorageIsAssignedOnlyInRecord() throws {
         let code = SeamScanner.strippingAllComments(
@@ -284,8 +293,13 @@ struct ReclamationHeldFanAccessTests {
     /// **What it does not:** a name in backticks; a name that starts with a letter outside ASCII,
     /// which is an ordinary identifier to Swift (``enum Éackdoor``); and a listed type moved inside
     /// `HeldFan`, because the list says which types exist and not where they sit (`Judgement`).
-    /// None of them can assign `commanded`, which has no setter. An assignment to the storage from
-    /// any of them is `theStorageIsAssignedOnlyInRecord`'s.
+    /// None of them can assign `commanded`, which has no setter: measured for the first two
+    /// (#612), inferred for the third. An assignment to the storage from any of them is
+    /// `theStorageIsAssignedOnlyInRecord`'s. Measured at full scope (#612): ``enum `Backdoor` ``
+    /// and `enum Éackdoor`, each assigning `storedCommanded`, leave this test green and are red on
+    /// the count. Written as the formatter wraps them, `swift format lint --strict` exits 0 on
+    /// either, `IdentifiersMustBeASCII` notwithstanding, and SwiftLint exits 0 with one `nesting`
+    /// warning.
     ///
     /// **Mutation:** add `enum Backdoor { static func force(_ fan: inout HeldFan, to target:
     /// CommandedTarget) { fan.storedCommanded = target } }` to `HeldFan`'s body. Run: red here.
