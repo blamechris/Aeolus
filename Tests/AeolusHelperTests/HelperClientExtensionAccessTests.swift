@@ -7,9 +7,9 @@ import Testing
 /// `HelperClientAccessTests` pins each non-private member as spelled, which closes a widening
 /// written on the member's own line or the one above it. It cannot see one written on the block:
 /// `public extension HelperClient {` is `public` for every member inside, and each member's line
-/// reads as it did. Measured: that edit on `HelperClient+Translation.swift` made `translate`
-/// callable from the app and `fanctl` and left the access and seam suites green, and `swift
-/// format lint --recursive --strict` exit 0. So the headers are pinned here, as written.
+/// reads as it did. Measured: that edit on `HelperClient+Translation.swift` left the access and
+/// seam suites green, and `swift format lint --strict` on the file exited 0. So the headers are
+/// pinned here, as written.
 ///
 /// The two extensions are the verbs, and the translation of the transport's failures. A third is
 /// `HelperClientAccessTests.theScannedFilesAreEveryFileTheClientIsIn`'s to notice, and this test
