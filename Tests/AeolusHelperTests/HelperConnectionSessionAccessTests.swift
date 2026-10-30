@@ -38,11 +38,31 @@ import Testing
 /// because until [#236](https://github.com/blamechris/Aeolus/issues/236) that list was
 /// hand-written and a *fourth* file was scanned by nothing.
 ///
+/// ## Each acknowledged member, as spelled
+///
+/// The two exhaustive tests compare the non-private members **as spelled**
+/// ([#607](https://github.com/blamechris/Aeolus/issues/607)), the way `HelperClientAccessTests`
+/// has since [#604](https://github.com/blamechris/Aeolus/issues/604). An entry is the modifier
+/// run, the introducer and the key: `let authority`, `var messageCount`, `func
+/// countDeliveredMessage()`. So `public` or `package` on an acknowledged member, or any other
+/// modifier added to it, is a different string and red, like a new member. The lists held bare
+/// keys before, which a respelled member matched: a member acknowledged as `internal` could be
+/// given a wider access with this suite green. The helper is an executable target, so `public`
+/// reaches no other module today, but it is a change this suite exists to make visible.
+///
 /// ## What this suite cannot see, stated rather than implied
 ///
 /// It reads access levels, never call sites. The compiler is what actually stops a sibling
 /// file assigning to `hasInvalidated` — `private` is file-scoped and there is no way around
 /// it — and this suite's job is to notice the day somebody makes that assignment *possible*.
+///
+/// It reads a member at four spaces, so **a member in the formatter's two-line spelling** — a
+/// modifier alone on a line, the declaration under it at eight — is in no population here,
+/// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
+/// Only an acknowledged member (it goes missing) and the three that `mustStayPrivate` names,
+/// which `declaration(of:in:from:)` judges with the line above, are guarded in that spelling.
+/// An `extension`'s own modifier is on no member's line either, so `package extension
+/// HelperConnectionSession {` is read by nothing here.
 @Suite("The connection's own state stays private to HelperConnectionSession.swift")
 struct HelperConnectionSessionAccessTests {
 
@@ -99,13 +119,16 @@ struct HelperConnectionSessionAccessTests {
     /// are what the tests and the log read. A **stored** property appearing in this list is
     /// the failure to argue about, because that is the shape that hands a caller an
     /// assignment.
+    ///
+    /// **Spelled as declared** (#607), so a respelling has to be re-stated here: `let authority`
+    /// and `public let authority` are two entries, and only the first is on the list.
     private static let acknowledgedInternalProperties: Set<String> = [
-        "id",
-        "authority",
-        "log",
-        "handshakeState",
-        "messageCount",
-        "isInvalidated",
+        "let id",
+        "let authority",
+        "let log",
+        "var handshakeState",
+        "var messageCount",
+        "var isInvalidated",
     ]
 
     /// Every method of `HelperConnectionSession` that is not `private`, and what each is.
@@ -125,23 +148,25 @@ struct HelperConnectionSessionAccessTests {
     /// `invalidate(reopening: Bool)` — which sets `hasInvalidated = false` and clears
     /// `negotiated`, reopening both gates — collapsed onto it under a bare-name key and left
     /// 38 tests in 4 suites green. A parameter's *type* is in the key for the reason
-    /// `SeamScanner.Function.key` records: labels alone cannot see an overload.
+    /// `SeamScanner.Function.key` records: labels alone cannot see an overload. And **as
+    /// declarations since #607**: the modifier run and `func` stand in front of the signature,
+    /// because a key cannot see an access level.
     private static let acknowledgedInternalMethods: Set<String> = [
-        "hello(payload: Data)",
-        "invalidate()",
-        "countDeliveredMessage()",
-        "snapshot()",
-        "acquireLease(payload: Data)",
-        "renewLease(id: String)",
-        "releaseLease(id: String)",
-        "apply(settings: Data, leaseID: String)",
-        "restoreAllToAutomatic()",
-        "handshakeRefusal(message: String)",
-        "invalidationRefusal(message: String)",
-        "handshakeAcknowledgementRefusal(message: String)",
-        "invalidationAcknowledgementRefusal(message: String)",
-        "refuse(_: AeolusXPCFault, message: String)",
-        "acknowledgeRefusal(_: AeolusXPCFault, message: String)",
+        "func hello(payload: Data)",
+        "func invalidate()",
+        "func countDeliveredMessage()",
+        "func snapshot()",
+        "func acquireLease(payload: Data)",
+        "func renewLease(id: String)",
+        "func releaseLease(id: String)",
+        "func apply(settings: Data, leaseID: String)",
+        "func restoreAllToAutomatic()",
+        "func handshakeRefusal(message: String)",
+        "func invalidationRefusal(message: String)",
+        "func handshakeAcknowledgementRefusal(message: String)",
+        "func invalidationAcknowledgementRefusal(message: String)",
+        "func refuse(_: AeolusXPCFault, message: String)",
+        "func acknowledgeRefusal(_: AeolusXPCFault, message: String)",
     ]
 
     /// The file set is a claim about the tree, so it is read off the tree.
@@ -204,40 +229,35 @@ struct HelperConnectionSessionAccessTests {
 
     @Test("Only the acknowledged properties of the connection session are internal")
     func onlyTheAcknowledgedPropertiesAreInternal() throws {
-        let internalProperties = Set(
-            try MemberAccessScan.members(in: Self.sessionFiles, keyword: .property)
-                .filter { !$0.isPrivate }
-                .map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.sessionFiles, keyword: .property)
 
         #expect(
-            internalProperties == Self.acknowledgedInternalProperties,
+            found == Self.acknowledgedInternalProperties,
             """
-            the internal properties of HelperConnectionSession changed: found \
-            \(internalProperties.sorted()), acknowledged \
-            \(Self.acknowledgedInternalProperties.sorted()). Widening one is a decision \
-            about what the rest of AeolusHelper may read — or, if it is stored, write — on \
-            the privilege boundary's per-connection state. Say why here, in the suite that \
-            records why the acknowledged ones were acceptable.
+            the non-private properties of HelperConnectionSession changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalProperties)). \
+            Widening one, or respelling it, is a decision about what the rest of AeolusHelper \
+            may read — or, if it is stored, write — on the privilege boundary's per-connection \
+            state. Say why here, in the suite that records why the acknowledged ones were \
+            acceptable, and re-state the entry as it is now written.
             """
         )
     }
 
     @Test("Only the acknowledged methods of the connection session are internal")
     func onlyTheAcknowledgedMethodsAreInternal() throws {
-        let internalMethods = Set(
-            try MemberAccessScan.members(in: Self.sessionFiles, keyword: .method)
-                .filter { !$0.isPrivate }
-                .map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.sessionFiles, keyword: .method)
 
         #expect(
-            internalMethods == Self.acknowledgedInternalMethods,
+            found == Self.acknowledgedInternalMethods,
             """
-            the internal methods of HelperConnectionSession changed: found \
-            \(internalMethods.sorted()), acknowledged \
-            \(Self.acknowledgedInternalMethods.sorted()). A method of this actor that is \
-            not private is callable from every file in AeolusHelper, and inside it \
-            `negotiated`, `deliveredMessages` and `hasInvalidated` are all in scope — say \
-            why here.
+            the non-private methods of HelperConnectionSession changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalMethods)). A method \
+            of this actor that is not private is callable from every file in AeolusHelper, and \
+            inside it `negotiated`, `deliveredMessages` and `hasInvalidated` are all in scope — \
+            say why here, and re-state the entry as it is now written.
             """
         )
     }
