@@ -173,8 +173,9 @@ public struct KeyCountCrossCheck: Sendable, Hashable {
     /// `#KEY`'s own decoded value.
     public let declaredCount: Int
     /// The number of indices `0..<declaredCount` the firmware answered with a key code:
-    /// one `key(at:)` returned, or one it refused as `SMCError.malformedKeyCode`, which
-    /// counts too (#623). See `KeyTableEntry.isWalked`.
+    /// one `key(at:)` returned, plus each nonzero one it refused as
+    /// `SMCError.malformedKeyCode`, while there are no more than
+    /// `KeyTableWalk.maximumWalkedRefusedCodes` of those (#623). See `KeyTableWalk.walkedCount`.
     public let walkedCount: Int
     /// Whether a key exists at index `declaredCount` — one past the declared bound.
     ///

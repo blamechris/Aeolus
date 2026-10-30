@@ -5,17 +5,18 @@ import os
 /// cross-check (ADR 0003) counts it.
 ///
 /// `SMCConnection.verifyKeyCountCrossCheck()` and `SMCSensorProvider.readAll()` each walk the
-/// table and sort every index into one of these. The two properties below are the whole of
-/// how the walk counts, and they deliberately disagree about `.refused`.
+/// table and sort every index into one of these. `KeyTableWalk.walkedCount` says how the walk
+/// counts them inside the bound, and `isKeyPastDeclaredCount` how the probe one past it does.
+/// The two deliberately disagree about `.refused`.
 enum KeyTableEntry: Sendable, Equatable {
     /// A code `SMCKey` represents.
     case key(SMCKey)
-    /// A code `SMCKey` refuses, because a byte is outside `SMCKey.permittedBytes`: a C0
+    /// A nonzero code `SMCKey` refuses, because a byte is outside `SMCKey.permittedBytes`: a C0
     /// control, DEL, or anything past ASCII. The firmware answered for the index, but the
     /// answer has no name in this project. `key(at:)` reports it as `SMCError.malformedKeyCode`.
     case refused(FourCharCode)
-    /// No code at all: the connection failed, the firmware's result byte was not zero, or the
-    /// reply was cut short.
+    /// No code the firmware can be shown to have written: the connection failed, the firmware's
+    /// result byte was not zero, the reply was cut short, or the code is zero.
     case unanswered
 
     /// Looks `index` up with `keyAt`, and sorts what comes back.
@@ -36,48 +37,32 @@ enum KeyTableEntry: Sendable, Equatable {
         }
     }
 
+    /// Sorts a lookup that threw.
+    ///
+    /// **A code of zero is `.unanswered`, not `.refused`.** `SMCConnection`'s wire call decodes
+    /// its reply from a zero-filled buffer and reads result byte 0 as success, so a reply whose
+    /// key field the firmware never wrote reads as code zero, and nothing tells it apart from
+    /// an answer of zero. A refused code counts as walked on the strength of "the firmware
+    /// answered for this index", and zero cannot show that. At the probe this changes nothing:
+    /// a refused code is no key there either.
     private init(failure: any Error) {
-        guard case SMCError.malformedKeyCode(let code) = failure else {
+        guard case SMCError.malformedKeyCode(let code) = failure, code != 0 else {
             self = .unanswered
             return
         }
         self = .refused(code)
     }
 
-    /// Whether the walk over `0..<declaredCount` counts this index as walked.
-    ///
-    /// **A refused code is walked (#623).** `#KEY` declared an entry at this index and the
-    /// firmware answered with one; all that failed is this project's alphabet. Until #623 the
-    /// walk skipped it uncounted, so one such code anywhere in a table failed the cross-check,
-    /// logged a fault blaming ADR 0003's byte-order hypothesis for an alphabet decision (#620),
-    /// and left discovery incomplete. `knownKeys` then stayed `nil`, and a key the machine
-    /// lacks read as `.readFailed` rather than `.keyNotFound`.
-    ///
-    /// The cost is on the other side of the tripwire. If `#KEY` overcounts and a firmware
-    /// answers the indices past its real table with refused codes, this counts them and the
-    /// cross-check matches. The refused-code line `KeyTableWalk.finish(probe:)` logs is then
-    /// the only record. On `Mac16,5` (macOS 27.2) the firmware does not answer past its table
-    /// at all: `READ_INDEX` at 3,514, 3,515 and 3,614 each returned result byte `0xB8`, which
-    /// is `.unanswered` here and still fails the cross-check.
-    ///
-    /// `.unanswered` is not walked: nothing answered for the index.
-    var isWalked: Bool {
-        switch self {
-        case .key, .refused: return true
-        case .unanswered: return false
-        }
-    }
-
     /// Whether this entry, found at index `declaredCount`, shows a key past the bound `#KEY`
     /// declared. See `KeyCountCrossCheck.keyExistsPastDeclaredCount`.
     ///
-    /// **Only a key does. A refused code does not, which is the opposite of `isWalked`, and
-    /// deliberately so (#623).** The probe asks whether `#KEY` undercounts, so that the walk
-    /// stopped short of a key it should have recorded. A refused code could never have been
-    /// recorded: nothing can name it, so it is in no reading and no discovered key set. And a
-    /// firmware that answered past its table with a filler code would fail the cross-check on
-    /// every walk if the filler counted: zero is the obvious filler, and `SMCKey` refuses zero.
-    /// That is #623's failure moved one index over.
+    /// **Only a key does. A refused code does not, though inside the bound one can count as
+    /// walked (`KeyTableWalk.walkedCount`), and that is deliberate (#623).** The probe asks
+    /// whether `#KEY` undercounts, so that the walk stopped short of a key it should have
+    /// recorded. A refused code could never have been recorded: nothing can name it, so it is
+    /// in no reading and no discovered key set. And a firmware that answered past its table
+    /// with a filler code would fail the cross-check on every walk if the filler counted. That
+    /// is #623's failure moved one index over.
     ///
     /// The probe reads one index, and always has. Whether a real key sits past a refused code
     /// at `declaredCount`, it does not look.
@@ -89,7 +74,7 @@ enum KeyTableEntry: Sendable, Equatable {
     }
 }
 
-/// One index the walk counted, whose code `SMCKey` refuses.
+/// One index the walk found, whose code `SMCKey` refuses.
 struct RefusedKeyCode: Sendable, Equatable {
     let index: Int
     let code: FourCharCode
@@ -101,26 +86,72 @@ struct RefusedKeyCode: Sendable, Equatable {
 /// `SMCSensorProvider.readAll(declaredCount:keyAt:)`, which walk on either side of the actor:
 /// the cross-check inside it, and `readAll()` from outside, one hop per index, so a
 /// supervisor read can take its turn between two of them.
-struct KeyTableWalk {
+struct KeyTableWalk: Sendable {
     let declaredCount: Int
-    private(set) var walkedCount = 0
-    private(set) var refusedCodes: [RefusedKeyCode] = []
+    /// Indices that resolved to a key.
+    private(set) var keyCount = 0
+    /// Indices whose code `SMCKey` refused, all of them.
+    private(set) var refusedCodeCount = 0
+    /// The first `maximumListedRefusedCodes` refused codes, for the log line. The rest are
+    /// counted in `refusedCodeCount` and not kept.
+    private(set) var listedRefusedCodes: [RefusedKeyCode] = []
+
+    /// The most refused codes a walk counts as walked. Past it, the walk counts none of them.
+    ///
+    /// A refused code is walked on the reading that the firmware holds a key this project's
+    /// alphabet cannot name (#623). That reading is credible for a few. A misread of the
+    /// reply's key field refuses on the order of every index: a field read one byte off leaves
+    /// a zero byte in every code, which `SMCKey` refuses. Counting those would let a walk that
+    /// resolved no key at all match `#KEY` and complete discovery with an empty key set. Every
+    /// named read would then report its key absent, and a Mac with fans would be reported as
+    /// having none (the #627 review). Past the cap the walk does what it did before #623: the
+    /// cross-check fails, its fault is logged, and discovery does not complete.
+    ///
+    /// **Why 8.** `Mac16,5` refuses none of its 3,514 codes (macOS 27.2). Eight leaves room for
+    /// a small family of unrepresentable keys on a table nobody here has read. It is also under
+    /// a quarter of one percent of this table, so a misread anywhere near a real table's size
+    /// is far past it. A table that really holds more than eight loses discovery, as one with a
+    /// single refused code did before #623. That fails toward `.readFailed`, never toward a
+    /// false `.keyNotFound`.
+    ///
+    /// **What it still lets through.** Up to eight refused codes are counted, wherever they sit.
+    /// So the cross-check cannot see `#KEY` overcounting by eight or fewer when the firmware
+    /// answers each index past its real table with a nonzero refused code; a zero filler is
+    /// `.unanswered` and still fails it. Nor can it see a misread that refuses eight codes or
+    /// fewer. On `Mac16,5` the firmware answers past its table with result byte `0xB8`, which
+    /// is `.unanswered`. Either way the refused-code line is logged.
+    static let maximumWalkedRefusedCodes = 8
 
     init(declaredCount: Int) {
         self.declaredCount = declaredCount
     }
 
-    /// Counts `entry`, found at `index`, and returns its key if it has one. A refused code
+    /// Whether this walk's refused codes count as walked: there are at most
+    /// `maximumWalkedRefusedCodes` of them.
+    var refusedCodesAreWalked: Bool {
+        refusedCodeCount <= Self.maximumWalkedRefusedCodes
+    }
+
+    /// The indices `0..<declaredCount` this walk counts as walked, for
+    /// `KeyCountCrossCheck.walkedCount`: every key, and every refused code while there are no
+    /// more than `maximumWalkedRefusedCodes`. An `.unanswered` index never counts.
+    var walkedCount: Int {
+        keyCount + (refusedCodesAreWalked ? refusedCodeCount : 0)
+    }
+
+    /// Records `entry`, found at `index`, and returns its key if it has one. A refused code
     /// returns `nil`, so a caller has nothing to put in a reading or a discovered key set.
+    /// Whether it counts as walked is decided in `walkedCount`, once the whole walk is known.
     mutating func record(_ entry: KeyTableEntry, at index: Int) -> SMCKey? {
-        if entry.isWalked {
-            walkedCount += 1
-        }
         switch entry {
         case .key(let key):
+            keyCount += 1
             return key
         case .refused(let code):
-            refusedCodes.append(RefusedKeyCode(index: index, code: code))
+            refusedCodeCount += 1
+            if listedRefusedCodes.count < Self.maximumListedRefusedCodes {
+                listedRefusedCodes.append(RefusedKeyCode(index: index, code: code))
+            }
             return nil
         case .unanswered:
             return nil
@@ -138,7 +169,7 @@ struct KeyTableWalk {
             declaredCount: declaredCount, walkedCount: walkedCount,
             keyExistsPastDeclaredCount: probe.isKeyPastDeclaredCount)
         SMCConnection.logCrossCheck(result)
-        if let message = Self.refusedCodesMessage(refusedCodes, declaredCount: declaredCount) {
+        if let message = refusedCodesMessage() {
             Self.logger.error("\(message, privacy: .public)")
         }
         return result
@@ -146,10 +177,11 @@ struct KeyTableWalk {
 
     private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "SMCConnection")
 
-    /// How many refused codes the log line lists; the rest are counted. A single unified-log
-    /// line is truncated past about a kilobyte, and a table this project has never seen could
-    /// refuse every entry. Listing the first few and counting the rest says so on the line,
-    /// where silent truncation would not.
+    /// How many refused codes the walk keeps and the log line lists; the rest are counted. A
+    /// single unified-log line is truncated past about a kilobyte, and a table this project has
+    /// never seen could refuse every entry. Listing the first few and counting the rest says so
+    /// on the line, where silent truncation would not. A formatting limit only: what counts as
+    /// walked is `maximumWalkedRefusedCodes`.
     static let maximumListedRefusedCodes = 16
 
     /// The line `finish(probe:)` logs, or `nil` when no code was refused.
@@ -161,18 +193,27 @@ struct KeyTableWalk {
     /// and the three bytes `E2 80 A8` decode to U+2028. A `UInt32` in hexadecimal is drawn from
     /// `0`–`9`, `a`–`f` and the `0x` before it, so nothing in it can break or hide a line, and
     /// it is logged `.public` for that reason.
-    static func refusedCodesMessage(_ refused: [RefusedKeyCode], declaredCount: Int) -> String? {
-        guard !refused.isEmpty else { return nil }
-        let listed = refused.prefix(maximumListedRefusedCodes)
-            .map { "index \($0.index): \(hexadecimal($0.code))" }
+    func refusedCodesMessage() -> String? {
+        guard refusedCodeCount > 0 else { return nil }
+        let listed =
+            listedRefusedCodes
+            .map { "index \($0.index): \(Self.hexadecimal($0.code))" }
             .joined(separator: ", ")
-        let unlisted = refused.count - min(refused.count, maximumListedRefusedCodes)
+        let unlisted = refusedCodeCount - listedRefusedCodes.count
         let more = unlisted > 0 ? ", and \(unlisted) more" : ""
+        let counted =
+            refusedCodesAreWalked
+            ? "Each counts as walked, since the firmware answered for it"
+            : """
+            None counts as walked: more than \(Self.maximumWalkedRefusedCodes) is likelier a \
+            misread of the index table than keys SMCKey cannot name, so the #KEY cross-check \
+            is left to fail on them
+            """
         return """
-            #KEY walk: \(refused.count) of \(declaredCount) index-table entries returned a key \
-            code SMCKey cannot represent, with a byte outside printable ASCII: \(listed)\(more). \
-            Each counts as walked, since the firmware answered for it, and none is in the \
-            readings or the discovered key set. This is not the ADR 0003 byte-order cross-check.
+            #KEY walk: \(refusedCodeCount) of \(declaredCount) index-table entries returned a \
+            key code SMCKey cannot represent, with a byte outside printable ASCII: \
+            \(listed)\(more). \(counted). None is in the readings or the discovered key set. \
+            This line is not the ADR 0003 byte-order cross-check.
             """
     }
 
@@ -195,7 +236,7 @@ extension SMCConnection {
     }
 
     /// Everything `verifyKeyCountCrossCheck()` does once it has `#KEY`: walk `0..<declaredCount`
-    /// with `keyAt`, probe index `declaredCount`, log, and return the cross-check.
+    /// with `keyAt`, probe index `declaredCount`, log, and return the tally with the cross-check.
     ///
     /// Static, with the lookup a parameter, because `SMCConnection` has no scripted transport:
     /// this is the seam through which a test hands the walk an index table no real Mac has
@@ -205,11 +246,19 @@ extension SMCConnection {
     /// this is pinned only on hardware, by `SMCConnectionMac165Tests`'s live cross-check.
     static func walkKeyTable(
         declaredCount: Int, keyAt: (Int) throws -> SMCKey
-    ) -> KeyCountCrossCheck {
+    ) -> (tally: KeyTableWalk, crossCheck: KeyCountCrossCheck) {
         var walk = KeyTableWalk(declaredCount: declaredCount)
         for index in 0..<declaredCount {
             _ = walk.record(KeyTableEntry(lookingUp: index, in: keyAt), at: index)
         }
-        return walk.finish(probe: KeyTableEntry(lookingUp: declaredCount, in: keyAt))
+        let crossCheck = walk.finish(probe: KeyTableEntry(lookingUp: declaredCount, in: keyAt))
+        return (walk, crossCheck)
+    }
+
+    /// `verifyKeyCountCrossCheck()`'s walk with its tally, so the live test on `Mac16,5` can
+    /// assert that every entry in the real table was a key: none refused, none unanswered.
+    /// Internal; the public method returns only the cross-check.
+    func walkKeyTable() throws -> (tally: KeyTableWalk, crossCheck: KeyCountCrossCheck) {
+        Self.walkKeyTable(declaredCount: try keyCount(), keyAt: key(at:))
     }
 }

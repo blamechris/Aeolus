@@ -175,8 +175,10 @@ public struct SMCSensorProvider: SensorProvider {
     /// that is too small walks and succeeds on every index inside its own bound, so that
     /// alone cannot detect undercounting — only the probe can.
     ///
-    /// An index whose code `SMCKey` refuses counts as walked, and goes into no reading and
-    /// no discovered key set; at the probe it counts as no key (#623). See `KeyTableEntry`.
+    /// An index whose nonzero code `SMCKey` refuses goes into no reading and no discovered key
+    /// set. It counts as walked while the walk holds at most
+    /// `KeyTableWalk.maximumWalkedRefusedCodes` of them, and at the probe it counts as no key
+    /// (#623). See `KeyTableWalk.walkedCount`.
     public func readAll() async throws -> [SensorReading] {
         try await connection.open()
         let count = try await connection.keyCount()

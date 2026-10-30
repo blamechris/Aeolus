@@ -666,11 +666,12 @@ public actor SMCConnection {
     ///   fail; `KeyCountCrossCheck.keyExistsPastDeclaredCount` carries the result, and
     ///   `matches` folds it in, making the tripwire two-sided.
     ///
-    /// - Note: A code `SMCKey` refuses counts as walked inside the bound, and as no key at the
-    ///   probe (#623). `KeyTableEntry.isWalked` and `isKeyPastDeclaredCount` say why the two
-    ///   disagree; `walkKeyTable(declaredCount:keyAt:)` is the walk.
+    /// - Note: A nonzero code `SMCKey` refuses counts as walked inside the bound, while a walk
+    ///   holds at most `KeyTableWalk.maximumWalkedRefusedCodes` of them, and as no key at the
+    ///   probe (#623). `KeyTableWalk.walkedCount` and `KeyTableEntry.isKeyPastDeclaredCount`
+    ///   say why; `walkKeyTable(declaredCount:keyAt:)` is the walk.
     public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
-        Self.walkKeyTable(declaredCount: try keyCount(), keyAt: key(at:))
+        try walkKeyTable().crossCheck
     }
 
     /// Logs loudly when a `KeyCountCrossCheck` disagrees; silent when it matches. Shared

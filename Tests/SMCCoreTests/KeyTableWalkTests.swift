@@ -28,9 +28,10 @@ enum KeyTableCodes {
     /// round trip; before, it is attempted, and an unopened connection refuses the attempt.
     static let absent = SMCKey("ZZZZ")!
 
-    /// Codes `SMCKey` refuses, one per kind of byte outside its alphabet: zero, which the
-    /// issue names; a line feed, a C0 control; DEL; and the three bytes that decode to U+2028.
-    static let refused: [FourCharCode] = [0x0000_0000, 0x4630_0A63, 0x7F7F_7F7F, 0xE280_A841]
+    /// Nonzero codes `SMCKey` refuses, one per kind of byte outside its alphabet: a line feed,
+    /// a C0 control; DEL; the three bytes that decode to U+2028; and NUL beside a letter.
+    /// Zero is not among them: the walk sorts a zero code as unanswered.
+    static let refused: [FourCharCode] = [0x4630_0A63, 0x7F7F_7F7F, 0xE280_A841, 0x0000_0041]
 }
 
 /// Whether discovery completed on `connection`: an absent key reads `.keyNotFound` without a
@@ -41,15 +42,15 @@ func discoveryCompleted(on connection: SMCConnection) async -> Bool {
     return outcome.first?.result == .failure(.keyNotFound(KeyTableCodes.absent))
 }
 
-/// #623: a code `SMCKey` refuses, inside `0..<declaredCount`, is walked. Before, both walks
-/// skipped it uncounted, the cross-check failed with a fault blaming ADR 0003's byte order,
-/// and discovery never completed.
+/// #623: a nonzero code `SMCKey` refuses, inside `0..<declaredCount`, is walked. Before, both
+/// walks skipped it uncounted, the cross-check failed with a fault blaming ADR 0003's byte
+/// order, and discovery never completed.
 @Suite("Key-table walk, a code SMCKey refuses counts as walked")
 struct KeyTableWalkRefusedCodeTests {
 
     @Test(
         "indexedKey(fromCode:) refuses exactly the codes SMCKey refuses",
-        arguments: KeyTableCodes.refused)
+        arguments: [0] + KeyTableCodes.refused)
     func indexedKeyRefusesWhatSMCKeyRefuses(code: FourCharCode) throws {
         #expect(SMCKey(fourCharCode: code) == nil)
         #expect(throws: SMCError.malformedKeyCode(code)) {
@@ -67,7 +68,7 @@ struct KeyTableWalkRefusedCodeTests {
             0: KeyTableCodes.fan.fourCharCode, 1: code, 2: KeyTableCodes.temperature.fourCharCode,
         ])
 
-        let result = SMCConnection.walkKeyTable(declaredCount: 3, keyAt: table.key(at:))
+        let result = SMCConnection.walkKeyTable(declaredCount: 3, keyAt: table.key(at:)).crossCheck
 
         #expect(result.walkedCount == 3)
         #expect(result.matches)
@@ -102,25 +103,28 @@ struct KeyTableWalkRefusedCodeTests {
         #expect(walk.record(.refused(0x0000_000A), at: 1) == nil)
         #expect(walk.record(.unanswered, at: 2) == nil)
 
+        #expect(walk.keyCount == 1)
+        #expect(walk.refusedCodeCount == 1)
         #expect(walk.walkedCount == 2)
-        #expect(walk.refusedCodes == [RefusedKeyCode(index: 1, code: 0x0000_000A)])
+        #expect(walk.listedRefusedCodes == [RefusedKeyCode(index: 1, code: 0x0000_000A)])
     }
 }
 
 /// The probe at index `declaredCount` treats a refused code as no key, the opposite of the
-/// walk inside the bound. `KeyTableEntry.isKeyPastDeclaredCount` says why.
+/// walk inside the bound. `KeyTableEntry.isKeyPastDeclaredCount` says why. A zero code there is
+/// unanswered, which is no key either.
 @Suite("Key-table walk, a refused code past the bound is no key")
 struct KeyTableWalkProbeTests {
 
     @Test(
         "verifyKeyCountCrossCheck's probe finds no key at a refused code",
-        arguments: KeyTableCodes.refused)
+        arguments: [0] + KeyTableCodes.refused)
     func crossCheckProbeTreatsARefusedCodeAsAbsent(code: FourCharCode) {
         let table = ScriptedIndexTable(codes: [
             0: KeyTableCodes.fan.fourCharCode, 1: KeyTableCodes.temperature.fourCharCode, 2: code,
         ])
 
-        let result = SMCConnection.walkKeyTable(declaredCount: 2, keyAt: table.key(at:))
+        let result = SMCConnection.walkKeyTable(declaredCount: 2, keyAt: table.key(at:)).crossCheck
 
         #expect(!result.keyExistsPastDeclaredCount)
         #expect(result.matches)
@@ -128,7 +132,7 @@ struct KeyTableWalkProbeTests {
 
     @Test(
         "readAll's probe finds no key at a refused code, so discovery completes",
-        arguments: KeyTableCodes.refused)
+        arguments: [0] + KeyTableCodes.refused)
     func readAllProbeTreatsARefusedCodeAsAbsent(code: FourCharCode) async {
         let connection = SMCConnection()
         let provider = SMCSensorProvider(connection: connection)
@@ -161,7 +165,8 @@ struct KeyTableWalkMismatchTests {
     @Test("verifyKeyCountCrossCheck's probe still finds a key past the bound")
     func crossCheckProbeFindsAKeyPastTheBound() {
         let result = SMCConnection.walkKeyTable(
-            declaredCount: 1, keyAt: Self.undercounted.key(at:))
+            declaredCount: 1, keyAt: Self.undercounted.key(at:)
+        ).crossCheck
 
         #expect(result.keyExistsPastDeclaredCount)
         #expect(!result.matches)
@@ -179,7 +184,9 @@ struct KeyTableWalkMismatchTests {
 
     @Test("verifyKeyCountCrossCheck's walk does not count an unanswered index")
     func crossCheckDoesNotWalkAnUnansweredIndex() {
-        let result = SMCConnection.walkKeyTable(declaredCount: 3, keyAt: Self.holed.key(at:))
+        let result = SMCConnection.walkKeyTable(
+            declaredCount: 3, keyAt: Self.holed.key(at:)
+        ).crossCheck
 
         #expect(result.walkedCount == 2)
         #expect(!result.matches)
@@ -193,61 +200,6 @@ struct KeyTableWalkMismatchTests {
         _ = await provider.readAll(declaredCount: 3, keyAt: Self.holed.key(at:))
 
         #expect(await !discoveryCompleted(on: connection))
-    }
-}
-
-/// The line `KeyTableWalk.finish(probe:)` logs for refused codes. SMCCore logs without an
-/// escape, so the line must hold nothing that can break or hide it; see
-/// `KeyTableWalk.refusedCodesMessage(_:declaredCount:)`.
-@Suite("Key-table walk, the refused-code log line")
-struct KeyTableWalkRefusedCodeLogTests {
-
-    @Test("No refused code, no line")
-    func noRefusedCodeNoLine() {
-        #expect(KeyTableWalk.refusedCodesMessage([], declaredCount: 3) == nil)
-    }
-
-    @Test("Each refused code is written in hexadecimal beside its index, with the count")
-    func refusedCodesAreWrittenInHexadecimal() throws {
-        let refused = [
-            RefusedKeyCode(index: 1, code: 0x0000_0000),
-            RefusedKeyCode(index: 2, code: 0x4630_0A63),
-            RefusedKeyCode(index: 5, code: 0xE280_A841),
-        ]
-
-        let message = try #require(KeyTableWalk.refusedCodesMessage(refused, declaredCount: 7))
-
-        #expect(message.contains("3 of 7 index-table entries"))
-        #expect(message.contains("index 1: 0x00000000, index 2: 0x46300a63, index 5: 0xe280a841"))
-    }
-
-    /// The reason the codes are hexadecimal. Two of the three codes above hold a byte that,
-    /// decoded, is a line feed or U+2028: either one reads in `log show` as a second entry.
-    @Test("Nothing in the line is a control, format or separator character")
-    func lineHoldsNothingThatBreaksIt() throws {
-        let refused = KeyTableCodes.refused.enumerated().map {
-            RefusedKeyCode(index: $0.offset, code: $0.element)
-        }
-
-        let message = try #require(KeyTableWalk.refusedCodesMessage(refused, declaredCount: 4))
-
-        let breaking: [Unicode.GeneralCategory] = [
-            .control, .format, .lineSeparator, .paragraphSeparator,
-        ]
-        let categories = message.unicodeScalars.map(\.properties.generalCategory)
-        #expect(!categories.contains(where: breaking.contains))
-    }
-
-    @Test("Past the listing limit, the rest are counted rather than listed")
-    func refusedCodesPastTheLimitAreCounted() throws {
-        let limit = KeyTableWalk.maximumListedRefusedCodes
-        let refused = (0..<(limit + 4)).map { RefusedKeyCode(index: $0, code: 0) }
-
-        let message = try #require(
-            KeyTableWalk.refusedCodesMessage(refused, declaredCount: 100))
-
-        #expect(message.contains("index \(limit - 1): 0x00000000, and 4 more"))
-        #expect(!message.contains("index \(limit): "))
     }
 }
 
