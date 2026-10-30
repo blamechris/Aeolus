@@ -113,13 +113,15 @@ struct HelperClientTests {
     /// is already enqueued and serial with it. There is no ordering left for luck to pick.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, replace
-    /// `handshake ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
+    /// `handshake?.task ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
     /// worth writing down because it is not the obvious one. Two `hello`s go out on one
-    /// connection and the helper refuses the second with `invalidParameter`; that refusal is
-    /// a failed handshake, so this client's own rule takes the connection down with it, and
-    /// the verb still in flight surfaces as `connectionAbandoned` (measured at #421; it was
-    /// `helperUnreachable(code: 4099)` before #413). The message count is the backstop
-    /// assertion at 4 rather than 3.
+    /// connection and the helper refuses the second with `invalidParameter`. Since #588 that
+    /// refusal meets the first `hello`'s recorded reply, so it leaves the connection
+    /// (`performHandshake`), and the refused verb is caught with `invalidParameter` itself: 10 of
+    /// 10 runs, alone and in this suite. Before #588 the refusal took the connection down, and the
+    /// verb still in flight surfaced as `connectionAbandoned` (measured at #421, and again with
+    /// #588's clause deleted; it was `helperUnreachable(code: 4099)` before #413). The message
+    /// count is the backstop assertion at 4 rather than 3.
     @Test("Two verbs racing on a cold connection send one hello between them")
     func racingVerbsShareOneHandshake() async throws {
         let releaseHandshake = AsyncSignal()
@@ -482,7 +484,7 @@ struct HelperClientTests {
         // helper snapshot as current — would be a licence granted in exactly the situation
         // `docs/SAFETY.md` § 4 calls expected.
         //
-        // **Mutation:** in `HelperClient.translate(_:on:)`, delete the
+        // **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`, delete the
         // `case .helperNeverAnswered` arm. Run: red here — the health stays `.handshaken`
         // and the wedged connection is kept.
         let health = await client.health

@@ -45,3 +45,26 @@ actor HelloRepliesHeldInTurn: HandshakeReplyHold {
         try? await signals[mine].wait()
     }
 }
+
+/// Holds the first call of one of `HelperClient`'s suite holds until `release` fires, lets every
+/// later call through, and counts them all.
+///
+/// Run as `handshakeRelayHold`, it holds the first caller's relay, and `started` is how many
+/// callers have joined a handshake or started one. Run as `receivedHelloReplyHold`, it holds the
+/// first `hello`'s answer once the client has it, and `started` is how many answers have arrived.
+/// Run as `handshakeStartHold`, it holds the first handshake before its `hello` goes, and `started`
+/// is how many handshakes have started (#588).
+actor FirstCallHeld {
+
+    let release = AsyncSignal()
+    private var count = 0
+
+    /// How many calls have started.
+    var started: Int { count }
+
+    func hold() async {
+        count += 1
+        guard count == 1 else { return }
+        try? await release.wait()
+    }
+}

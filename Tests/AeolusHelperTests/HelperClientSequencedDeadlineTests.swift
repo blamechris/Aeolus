@@ -141,7 +141,7 @@ struct HelperClientSequencedDeadlineTests {
     /// snapshot was waiting for its turn on that connection. It must not be left waiting, and it
     /// must not be told the helper is not installed, which is what the client's own `invalidate()`
     /// says when it reaches a parked message as 4099. Health stays `.unresponsive`: the snapshot's
-    /// answer passes through `translate(_:on:)` as itself and is not a second timeout.
+    /// answer passes through `translate(_:on:sentAfter:)` as itself and is not a second timeout.
     ///
     /// **Mutation:** in `HelperClient.discardConnection`, delete
     /// `inFlight.abandonAll(on: generation, answering: verdict)`, which leaves the parked snapshot

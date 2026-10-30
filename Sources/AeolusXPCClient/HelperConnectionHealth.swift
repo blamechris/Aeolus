@@ -102,8 +102,8 @@ extension HelperConnectionHealth {
     /// which is **not** the same set as "failures the transport did not classify" — an earlier
     /// version of this comment claimed it was, and was wrong about two arms:
     ///
-    /// - The three arms of `HelperClient.translate(_:on:)` that call `discardConnection` move the
-    ///   generation, so the `catch` guard declines and this is genuinely not consulted.
+    /// - The three arms of `HelperClient.translate(_:on:sentAfter:)` that call `discardConnection`
+    ///   move the generation, so the `catch` guard declines and this is genuinely not consulted.
     /// - **4097 does reach here.** `connectionWasInterrupted` keeps its connection and does
     ///   not move the generation, so the `catch` runs and the verdict becomes `.invalidated`,
     ///   overwriting the `.interrupted` published a moment earlier. That is correct — the

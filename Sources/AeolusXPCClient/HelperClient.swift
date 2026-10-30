@@ -40,7 +40,8 @@ import Foundation
 /// is **discarded**: the peer is a new process, it has negotiated nothing with this client,
 /// and anything the old one was holding is gone. The next message re-runs `hello`. The answer to
 /// a `hello` sent before the interruption, and not yet recorded when it is handled, is never
-/// recorded at all (#585, `performHandshake`).
+/// recorded at all (#585, `performHandshake`). A handshake whose `hello` has not gone is kept, and
+/// a 4097 on a message sent before the last interruption counted is not counted again (#588).
 ///
 /// **Invalidation (4099)** means the connection will never work again. It is dropped, and
 /// the next message builds a new one — once.
@@ -91,7 +92,7 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **249 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **251 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. Seventeen were added after this section was written: the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
 /// deadline (#325). Nine more are the message each send names, the answer a discard gives what
@@ -109,7 +110,12 @@ import Foundation
 /// first from being recorded. That would have put the actor's body at 253, so a function in it
 /// that read none of its state, the health a failed handshake leaves, moved out to
 /// `HelperConnectionHealth.afterFailedHandshake(for:)`. That was nine lines, and took them to 249
-/// and 244. The count of code lines in the file, 229 when this section was written, did not
+/// and 244. #588 added seven: one marks a handshake's `hello` as gone, one carries the notices
+/// counted at a send to its failure, four let the suite hold a handshake before it starts, and one
+/// moves the reply's hold into `exchange`, to hold a failure too. The `hello`'s request, reading
+/// nothing of the actor's, moved to `HelperClientPayload.hello(describing:)`: five lines. That
+/// took them to 251 and 246, and the file to 10 lines under the 1000-line `file_length` error,
+/// which fails CI. The count of code lines in the file, 229 when this section was written, did not
 /// move when the section was added — the file grew by fifty-odd lines and by none of the thing
 /// the threshold is worth measuring, which is the whole argument in one measurement. Neither
 /// warning is suppressed, deliberately — no `swiftlint:disable`, no `file_length` or
@@ -127,8 +133,8 @@ import Foundation
 ///   `HelperClientVerbs.swift` holds all six, written over `withHandshakenProxy` and
 ///   `withProxy`, and no verb touches this client's state. Its own comment records that it
 ///   was split along a seam rather than along a line count.
-/// - **`translate(_:on:)` and the transport mapping** would move eighty-odd lines and need
-///   `hasEverHandshaken` widened — a stored input one arm of it decides on — and
+/// - **`translate(_:on:sentAfter:)` and the transport mapping** would move eighty-odd lines and
+///   need `hasEverHandshaken` widened — a stored input one arm of it decides on — and
 ///   `discardConnection` with it, which is the single function that invalidates the
 ///   connection and moves the generation. Reshaping it to return a verdict the actor then
 ///   applies splits the classification from its consequence, which its own comment treats as
@@ -197,8 +203,8 @@ public actor HelperClient {
     /// caller has made that choice.
     private let handshakeRelayHold: (@Sendable () async -> Void)?
 
-    /// What `performHandshake` runs once it has a `hello`'s reply in hand and before it records
-    /// it: `nil`, so nothing, everywhere but the suite
+    /// What `exchange` runs once a `hello` has been answered, and before anything acts on the
+    /// answer: `nil`, so nothing, everywhere but the suite
     /// ([#585](https://github.com/blamechris/Aeolus/issues/585)).
     ///
     /// A reply and the interruption that follows its helper's death are both queued on this actor,
@@ -207,7 +213,19 @@ public actor HelperClient {
     /// reply here while the helper dies. Holding it holds that one handshake and nothing else: the
     /// `hello` has been answered, so its deadline has ended, and the actor is free for the
     /// interruption.
+    ///
+    /// It holds a failure too, before `translate(_:on:sentAfter:)` reads it (#588): a 4097 there is
+    /// a death notice as well as an answer, and #588's late notice is one of those.
     private let receivedHelloReplyHold: (@Sendable () async -> Void)?
+
+    /// What a handshake runs before anything else, its guard included: `nil`, so nothing,
+    /// everywhere but the suite ([#588](https://github.com/blamechris/Aeolus/issues/588)).
+    ///
+    /// A handshake's task runs once its caller has suspended, so a notice already queued on this
+    /// actor can be handled before its `hello` goes. A test cannot ask the executor for that order,
+    /// so it holds the task here. That holds one handshake whose `hello` has not gone, so no
+    /// deadline runs for it, and leaves the actor free.
+    private let handshakeStartHold: (@Sendable () async -> Void)?
 
     /// Every message in flight, and when each one's deadline starts: at its send, or for a
     /// message the helper sequences, when the sequenced messages sent before it have settled
@@ -216,7 +234,15 @@ public actor HelperClient {
 
     private var connection: NSXPCConnection?
     private var negotiatedReply: HelloReply?
-    private var handshake: Task<HelloReply, Error>?
+
+    /// The connection's handshake, which every caller that needs one shares, and whether its
+    /// `hello` has gone.
+    ///
+    /// An interruption empties the slot only of a handshake whose `hello` has gone (#588). One that
+    /// has not sent it sends it after the interruption, to a process that outlived the death, so
+    /// the next caller joins it. Emptied, it let the next caller start a second handshake, which
+    /// negotiated the session; the first `hello`, refused there, then took the connection with it.
+    private var handshake: (task: Task<HelloReply, Error>, hasSent: Bool)?
 
     /// Whether a `hello` has ever succeeded on the **current connection object**, as
     /// distinct from whether one is in force now.
@@ -227,8 +253,12 @@ public actor HelperClient {
     /// time a failed message is being explained, the reply may already be gone.
     private var hasEverHandshaken = false
 
-    /// How many interruptions this actor has handled. It moves in `connectionWasInterrupted`, and
+    /// How many death notices this actor has counted. It moves in `connectionWasInterrupted`, and
     /// nowhere else.
+    ///
+    /// Notices, not deaths: one death is the interruption handler's notice and a 4097 for each
+    /// message in flight to it, and a 4097 on a message sent before the last notice counted is not
+    /// counted (`translate(_:on:sentAfter:)`, #588). `exchange` reads this at every send for that.
     ///
     /// An interruption keeps the generation, so the generation cannot say whether the process that
     /// answered a `hello` is still the one on the other end. `performHandshake` reads this before
@@ -257,8 +287,8 @@ public actor HelperClient {
     ///
     /// The generation travels with the connection rather than being read back off the actor
     /// at the point of use, because what it identifies is exactly the thing that may have
-    /// been replaced by the time it is read. `translate(_:on:)` is the case that made this a
-    /// type: it runs when a message has *already* failed, which is precisely when a later
+    /// been replaced by the time it is read. `translate(_:on:sentAfter:)` is the case that made
+    /// this a type: it runs when a message has *already* failed, which is precisely when a later
     /// connection may already be live and handshaken, and a bare `self.generation` there
     /// reduces `guard generation == self.generation` to `guard x == x` — a guard that reads
     /// as protection and holds nothing.
@@ -299,9 +329,10 @@ public actor HelperClient {
     /// can run out for a client that did nothing wrong. Production has one clock and no way to
     /// name another.
     ///
-    /// `holdingHandshakeRelays` and `holdingReceivedHelloReplies` are the suite's for the same
-    /// reason, and production has no way to name either: the public initialiser leaves both `nil`
-    /// (`handshakeRelayHold`, `receivedHelloReplyHold`).
+    /// `holdingHandshakeRelays`, `holdingReceivedHelloReplies` and `holdingHandshakeStarts` are
+    /// the suite's for the same reason, and production has no way to name any of them: the public
+    /// initialiser leaves all three `nil` (`handshakeRelayHold`, `receivedHelloReplyHold`,
+    /// `handshakeStartHold`).
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
@@ -309,7 +340,8 @@ public actor HelperClient {
         deadlines: HelperClientDeadlines,
         clock: any Clock<Duration>,
         holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil,
-        holdingReceivedHelloReplies replyHold: (@Sendable () async -> Void)? = nil
+        holdingReceivedHelloReplies replyHold: (@Sendable () async -> Void)? = nil,
+        holdingHandshakeStarts startHold: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.pinning = pinning
@@ -317,6 +349,7 @@ public actor HelperClient {
         self.deadlines = deadlines
         self.handshakeRelayHold = relayHold
         self.receivedHelloReplyHold = replyHold
+        self.handshakeStartHold = startHold
         self.inFlight = InFlightMessages(clock: clock)
         let healthSignal = HealthSignal(startingWith: .idle)
         self.healthSignal = healthSignal
@@ -339,7 +372,7 @@ public actor HelperClient {
 
     /// Which connection this client is on, for a suite that has to name one.
     ///
-    /// `internal`, like `translate(_:on:)` and the two handlers, and for the same reason:
+    /// `internal`, like `translate(_:on:sentAfter:)` and the two handlers, and for the same reason:
     /// the generation is the parameter every one of those guards turns on, so a test that
     /// could not name it could only assert them by accident. Nothing outside this module
     /// can see it and nothing inside it reads it except the guards themselves.
@@ -494,9 +527,10 @@ public actor HelperClient {
     /// **A cancelled caller leaves `handshake` in place**, because the `hello` it names may still
     /// be in flight. Clearing it would let the next caller send a second `hello` on this
     /// connection, which the helper refuses, and a refused handshake takes its connection with it
-    /// (`performHandshake`): a teardown caused by a caller going away, which `translate(_:on:)`
-    /// refuses to allow for every other message. Only a caller handed the handshake's own outcome
-    /// clears it, and only while the slot still names that handshake (below).
+    /// (`performHandshake`): a teardown caused by a caller going away, which
+    /// `translate(_:on:sentAfter:)` refuses to allow for every other message. Only a caller handed
+    /// the handshake's own outcome clears it, and only while the slot still names that handshake
+    /// (below).
     ///
     /// **When the last waiter goes, the handshake still runs**, to its answer or to its own
     /// deadline, as if someone were waiting. Cancelling it instead would end it without a
@@ -509,11 +543,13 @@ public actor HelperClient {
     ///
     /// ## A caller that resumes after its helper died
     ///
-    /// An interruption keeps the connection and its generation and empties the slot, so the next
-    /// caller starts a second handshake on the same connection, for the process that replaced the
-    /// one that died. A caller of the first handshake can resume after that, because when a caller
-    /// resumes is the runtime's choice. Two rules hold for it
-    /// ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    /// An interruption keeps the connection and its generation and empties the slot of a
+    /// handshake whose `hello` has gone, so the next caller starts a second handshake on the same
+    /// connection, for the process that replaced the one that died. A handshake whose `hello` has
+    /// not gone stays in the slot, and the next caller joins it (`handshake`,
+    /// [#588](https://github.com/blamechris/Aeolus/issues/588)). A caller of the first handshake
+    /// can resume after the second has started, because when a caller resumes is the runtime's
+    /// choice. Two rules hold for it ([#582](https://github.com/blamechris/Aeolus/issues/582)).
     ///
     /// **It clears the slot only of its own handshake**, compared by identity (`Task` is
     /// `Equatable` on the task, not on its result). Comparing generations, as this did before,
@@ -538,8 +574,8 @@ public actor HelperClient {
 
         let generation = live.generation
         let task =
-            handshake ?? Task { try await self.performHandshake(generation: generation) }
-        handshake = task
+            handshake?.task ?? Task { try await self.performHandshake(generation: generation) }
+        if handshake == nil { handshake = (task, hasSent: false) }
         // `nil` is this caller's cancellation: the latch has no deadline, the handshake has.
         let waiter = PendingReply<Result<HelloReply, Error>?>(ifNothingArrives: nil)
         Task.detached(priority: Task.currentPriority) { [hold = handshakeRelayHold] in
@@ -547,7 +583,7 @@ public actor HelperClient {
             waiter.deliver(await task.result)
         }
         guard let outcome = await waiter.waitForAnswer() else { throw CancellationError() }
-        if handshake == task { handshake = nil }
+        if handshake?.task == task { handshake = nil }
         _ = try outcome.get()
         // The helper that answered died before this caller resumed: see above.
         if self.generation == generation, negotiatedReply == nil {
@@ -587,6 +623,16 @@ public actor HelperClient {
     /// whether the peer recorded it is the peer's state, not the transport's — so the
     /// handshake path spends one extra connection setup rather than reasoning about it.
     ///
+    /// ## Unless a newer handshake has been recorded on it since
+    ///
+    /// An interruption empties the slot of a handshake whose `hello` has gone, so a second one can
+    /// be recorded, with the replacement, while the first waits for its answer (#588). The first
+    /// then fails against the process that died, when the late 4097 for its `hello` arrives, and
+    /// taking the connection then took a live, handshaken one, with any lease the helper held on
+    /// it. So a reply recorded at its generation keeps the connection. It is necessarily a newer
+    /// handshake's: one starts only with none recorded, and one cleared from the slot by an
+    /// interruption cannot record its own, because the interruption moved `interruptions`.
+    ///
     /// ## A reply from a process that died before it was recorded is not recorded
     ///
     /// If the helper answers `hello` and then dies, its reply and the interruption are both queued
@@ -605,24 +651,27 @@ public actor HelperClient {
     /// did answer: a 4097 on this connection is then a restart, as it is when the reply was
     /// recorded before the death.
     ///
-    /// The count cannot tell an interruption that came after the reply from one that came before
-    /// the send and reached this actor only after the `hello` had gone to the replacement. That
-    /// reply is dropped too. The replacement then refuses the next `hello`, the refusal takes the
-    /// connection (above), and the call after it builds another. No lease is lost to it, because
-    /// nothing was negotiated on the connection for a lease to be acquired over. It is what the
-    /// same late interruption already does when it lands after the reply was recorded, and clears
-    /// it. Recording instead is the wedge above, which nothing ends.
+    /// **That costs a failure of its own, which #585 introduced.** The count cannot tell a notice
+    /// of a death after the send from a late first notice of one before it, which reached this
+    /// actor after the `hello` had gone to the replacement. That reply is dropped too, where
+    /// before #585 it was recorded. The first caller is told `helperRestarted`. The next caller's
+    /// `hello` is refused by the replacement, which negotiated the first, and the refusal takes
+    /// the connection (above). The call after that is served on a new one. That is two failed
+    /// calls and one reconnect, and no lease lost, because nothing was negotiated for one to be
+    /// acquired over. The trade is right: this window cannot be told from #585's, and recording
+    /// in #585's is the wedge above, which nothing ends. `HelperClientStaleHandshakeTests` runs the
+    /// recovery. Since #588, a second notice of a death already counted no longer reaches this
+    /// window (`translate(_:on:sentAfter:)`). A late first notice still does.
     private func performHandshake(generation: UInt64) async throws -> HelloReply {
+        await handshakeStartHold?()
         guard generation == self.generation, let connection else {
             throw HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
         }
         let live = ConnectionGeneration(connection: connection, generation: generation)
-        let request = try HelperClientPayload.encode(
-            HelloRequest(
-                clientProtocolVersion: AeolusXPCVersion.current,
-                clientDescription: clientDescription
-            )
-        )
+        let request = try HelperClientPayload.hello(describing: clientDescription)
+        // The slot names this handshake: it was stored as it was made, and only a discard, which
+        // the guard rules out, empties it of one whose `hello` has not gone. The send is next.
+        handshake?.hasSent = true
         let interruptions = self.interruptions
         do {
             let data: Data = try await exchange(
@@ -632,7 +681,6 @@ public actor HelperClient {
                     resolve(HelperClientPayload.outcome(data, error))
                 }
             }
-            await receivedHelloReplyHold?()
             let reply = try HelperClientPayload.decode(HelloReply.self, from: data)
 
             // Discarded rather than stored if the connection was replaced while this was in
@@ -649,8 +697,8 @@ public actor HelperClient {
             // Still held at this generation means nothing above tore it down — the peer
             // answered `hello`, or refused it, on a session that may now have recorded the
             // handshake. See this function's own documentation for why that is fatal to the
-            // connection rather than to the message.
-            if generation == self.generation, self.connection != nil {
+            // connection rather than to the message, and why a newer reply recorded is not.
+            if generation == self.generation, self.connection != nil, negotiatedReply == nil {
                 let health = HelperConnectionHealth.afterFailedHandshake(for: error)
                 discardConnection(generation, as: health, answering: .connectionAbandoned)
             }
@@ -677,6 +725,9 @@ public actor HelperClient {
     /// both blocks below.
     /// A caller cancelled here leaves the message in flight with its deadline still running,
     /// because the messages behind it are waiting for it to settle; see `InFlightMessages`.
+    ///
+    /// **The notices counted before the send travel with the message** (#588), read in the same
+    /// synchronous stretch as the send, as the generation is: see `translate(_:on:sentAfter:)`.
     private func exchange<Answer: Sendable>(
         _ message: HelperMessage,
         on live: ConnectionGeneration,
@@ -688,6 +739,7 @@ public actor HelperClient {
         // The latch it is answered through, with its two fallbacks, is the message's too.
         let sent = inFlight.admit(
             message, on: live.generation, within: deadline, answering: Answer.self)
+        let notices = interruptions
         let proxy = live.connection.remoteObjectProxyWithErrorHandler { sent.settle(.failure($0)) }
         guard let typed = proxy as? any AeolusXPCProtocol else {
             throw sent.failing(
@@ -696,11 +748,13 @@ public actor HelperClient {
         }
         send(typed, sent.settle)
 
-        switch await sent.answer() {
+        let outcome = await sent.answer()
+        if message == .hello { await receivedHelloReplyHold?() }
+        switch outcome {
         case .success(let answer):
             return answer
         case .failure(let error):
-            throw translate(error, on: live.generation)
+            throw translate(error, on: live.generation, sentAfter: notices)
         }
     }
 
@@ -719,11 +773,14 @@ public actor HelperClient {
     /// interleaving the field exists for — and reading `self.generation` here would make
     /// every guard below compare a value with itself.
     ///
+    /// `notices` is how many death notices had been counted when the message was sent, threaded in
+    /// from `exchange` for the same reason; only the 4097 arm reads it (#588).
+    ///
     /// Reachable from the suite for the same reason the two handlers below are: one arm of
     /// this switch — `NSXPCConnectionReplyInvalid` — cannot be provoked over a real
     /// connection at all, and an arm that decides whether a live connection survives is not
     /// one this project is willing to ship untested.
-    func translate(_ error: Error, on generation: UInt64) -> Error {
+    func translate(_ error: Error, on generation: UInt64, sentAfter notices: UInt64) -> Error {
         // **Cancellation is not a teardown, and this is the line that keeps it from
         // becoming one.** It is a statement about the caller — a view that navigated away,
         // a `fanctl` that was interrupted — and none about the helper, which may be healthy
@@ -775,8 +832,21 @@ public actor HelperClient {
             // and claiming the former about a peer this connection never handshook with
             // would be inventing a helper. What settles it is whether this connection object
             // ever completed a handshake.
+            //
+            // It is a death notice only on a message sent after every notice counted so far
+            // (#588). One death is several notices, the interruption handler's and a 4097 for each
+            // message in flight to it, reaching this actor in no set order. A message sent before
+            // the last notice counted went out before a death was heard of, so this is a second
+            // notice of a death already counted, or one whose handler's notice is still to come.
+            // Counted again, it cleared a handshake recorded since with the replacement, and the
+            // next verb's `hello` was refused and took the connection. No death goes uncounted:
+            // each fires the interruption handler, with messages in flight or without (measured;
+            // see the suite's `killHelperSideOfEveryConnection`). The cost is narrower: a message
+            // that reached a replacement before an earlier death was counted, a handshake recorded
+            // with it, and the replacement dying too. Until its handler's notice, a gated verb then
+            // reaches the next process with no `hello`, and is refused without a teardown.
             let hadSpokenToAHelper = hasEverHandshaken
-            connectionWasInterrupted(generation)
+            if notices == interruptions { connectionWasInterrupted(generation) }
             return hadSpokenToAHelper
                 ? HelperClientError.helperRestarted
                 : HelperClientError.helperUnreachable(code: nsError.code)
@@ -815,6 +885,8 @@ public actor HelperClient {
     /// It is counted too, so that the reply to a `hello` sent before it, which the old process may
     /// have sent, is not recorded after it (`interruptions`, #585).
     ///
+    /// It empties the slot only of a handshake whose `hello` has gone (`handshake`, #588).
+    ///
     /// Reachable from the suite rather than `private`, because this and
     /// `connectionWasInvalidated` are **libxpc's entry points into this actor** and the
     /// interleaving `generation` exists to survive — a dead connection's handler arriving
@@ -824,7 +896,7 @@ public actor HelperClient {
         guard generation == self.generation else { return }
         interruptions &+= 1
         negotiatedReply = nil
-        handshake = nil
+        if handshake?.hasSent == true { handshake = nil }
         publish(.interrupted)
     }
 
@@ -886,8 +958,8 @@ public actor HelperClient {
     /// tearing down whatever has been built since.
     ///
     /// **Every message still in flight on it is answered `verdict` first** (#413). The
-    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:)` reads a 4099
-    /// as a helper that is not installed or not yet approved — so a message this client killed
+    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:sentAfter:)` reads a
+    /// 4099 as a helper that is not installed or not yet approved — so a message this client killed
     /// itself, answered by its own invalidation, would be misdiagnosed. Each caller says what
     /// is true instead: `connectionAbandoned` when the client chose to give up, and the
     /// transport's own verdict when the transport ended the connection. Answering them settles
