@@ -39,11 +39,12 @@ import Testing
 ///
 /// A member is read at four spaces once the type's own indent is dropped, so **a member in the
 /// formatter's two-line spelling** — a modifier alone on a line, the declaration under it at
-/// eight — is in no population here, whether new or already there
-/// ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a view written so goes
-/// missing from its list and is red; a new member is seen by nothing here. An `extension`'s own
-/// modifier is on no member's line, so `package extension LeaseAuthority {` is read by nothing
-/// here.
+/// twelve in the source, eight once the indent is dropped — is in no population here, whether
+/// new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a
+/// view written so goes missing from its list and is red; a new member is seen by nothing here.
+/// An `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)). `package extension LeaseAuthority {` alone does not compile against an
+/// internal actor, so a widening starts at the actor's own declaration, and that suite pins both.
 @Suite("The lease core's registers and sleep seal are values the actor reaches only by member")
 struct LeaseAuthorityRegistersAccessTests {
 
@@ -346,9 +347,6 @@ struct LeaseAuthorityRegistersAccessTests {
     /// LeaseAuthority`, and `MemberAccessScan` reads four. Dropping one level brings them to four
     /// and the extension's own declarations to none, which `LeaseAuthorityAccessTests` scans.
     private static func membersSource(of type: ValueType) throws -> String {
-        try MemberAccessScan.strippedSource(of: type.file)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.hasPrefix("    ") ? String($0.dropFirst(4)) : String($0) }
-            .joined(separator: "\n")
+        try MemberAccessScan.outdentedSource(of: type.file)
     }
 }

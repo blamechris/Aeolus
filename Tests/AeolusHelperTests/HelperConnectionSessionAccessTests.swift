@@ -61,8 +61,10 @@ import Testing
 /// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
 /// Only an acknowledged member (it goes missing) and the three that `mustStayPrivate` names,
 /// which `declaration(of:in:from:)` judges with the line above, are guarded in that spelling.
-/// An `extension`'s own modifier is on no member's line either, so `package extension
-/// HelperConnectionSession {` is read by nothing here.
+/// An `extension`'s own modifier is on no member's line either: `HelperActorHeaderAccessTests`
+/// reads it ([#610](https://github.com/blamechris/Aeolus/issues/610)). `package extension HelperConnectionSession {`
+/// alone does not compile against an internal actor, so a widening starts at the actor's own
+/// declaration, and that suite pins both.
 @Suite("The connection's own state stays private to HelperConnectionSession.swift")
 struct HelperConnectionSessionAccessTests {
 

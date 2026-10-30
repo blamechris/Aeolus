@@ -45,15 +45,16 @@ import Testing
 /// ## Where the parse lives
 ///
 /// In `MemberAccessScan`, shared with `HelperConnectionSessionAccessTests` since
-/// [#98](https://github.com/blamechris/Aeolus/issues/98) split
-/// `HelperConnectionSession.swift` the same way and needed the same guard. It records why
-/// the modifier run is parsed rather than assumed absent — `private(set) var table` is the
-/// spelling that motivated it — why an attribute is skipped by its parentheses rather than by
-/// its whitespace, why a method's key carries its signature, and why a method is scanned as
-/// well as a property:
-/// `WriteVerbAllowlistTests` filters its population on `isAsync || mentions(anyOf: permits)`,
-/// so `func forceRelease(fanAt: Int) { table.remove(...) }` added here would be reachable
-/// from every file in `AeolusHelper` and caught by nothing else.
+/// [#98](https://github.com/blamechris/Aeolus/issues/98) split `HelperConnectionSession.swift` the
+/// same way and needed the same guard. It records why the modifier run is parsed rather than
+/// assumed absent — `private(set) var table` is the spelling that motivated it — why an attribute
+/// is skipped by its parentheses rather than by its whitespace, why a method's key carries its
+/// signature, and why a method is scanned as well as a property: `WriteVerbAllowlistTests` filters
+/// its population on `isAsync || mentions(anyOf: permits)`, so `func forceRelease(fanAt: Int) {
+/// table.remove(...) }` added here would be reachable from every file in `AeolusHelper` and caught
+/// by nothing else. Two files here declare nested types, whose members sit at eight spaces, so only
+/// the actor's own sit at the four the scan reads: its precondition. Computed properties are
+/// counted on purpose: `fansAeolusIsAccountableFor` is one, and the widening most worth watching.
 ///
 /// ## As spelled, and what that does not reach
 ///
@@ -68,8 +69,8 @@ import Testing
 /// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
 /// Only an acknowledged member (it goes missing) and the ones `mustStayPrivate` names, which
 /// `declaration(of:in:from:)` judges with the line above, are guarded in that spelling. An
-/// `extension`'s own modifier is on no member's line, so `package extension LeaseAuthority {` is
-/// read by nothing here.
+/// `extension`'s own modifier is `HelperActorHeaderAccessTests`' (#610); `package extension
+/// LeaseAuthority {` alone does not compile against an internal actor.
 @Suite("The lease core's registry stays private to LeaseAuthority.swift")
 struct LeaseAuthorityAccessTests {
 

@@ -68,8 +68,10 @@ import Testing
 /// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
 /// Only an acknowledged member (it goes missing) and the ones `mustStayPrivate` names, which
 /// `declaration(of:in:from:)` judges with the line above, are guarded in that spelling. An
-/// `extension`'s own modifier is on no member's line, so `package extension ReclamationWatchdog
-/// {` is read by nothing here. `HeldFan`'s members sit at eight spaces and are in no population.
+/// `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)). `package extension ReclamationWatchdog {` alone does not compile against an
+/// internal actor, so a widening starts at the actor's own declaration, and that suite pins both.
+/// `HeldFan`'s members sit at eight spaces and are `ReclamationHeldFanAccessTests`'.
 @Suite("§ 5's registry stays private to the watchdog and is reached only through its members")
 struct ReclamationWatchdogAccessTests {
 
