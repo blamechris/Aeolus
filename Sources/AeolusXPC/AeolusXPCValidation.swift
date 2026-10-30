@@ -219,8 +219,9 @@ public enum AeolusXPCValidation {
     /// There is deliberately no `validate(_: [FanSetting])` beside it. What makes a
     /// setting acceptable — the fan exists, its bounds are plausible, the requested speed
     /// clamps into the firmware envelope — is hardware state, so it belongs to whatever
-    /// owns the enumeration and the clamp, not to a pure function over the payload. E2
-    /// has no write path for it to be acceptable *to*; E5 owns that check.
+    /// owns the enumeration and the clamp, not to a pure function over the payload. The
+    /// one pure part is the shape of a curve's sensor keys, which the helper checks next
+    /// with `validateSensorKeys(in:)` (#566).
     ///
     /// The envelope is bounded before anything is decoded — see `AeolusXPCPayloadBounds`.
     ///

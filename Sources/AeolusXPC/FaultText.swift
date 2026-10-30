@@ -29,7 +29,9 @@ public enum FaultText {
     ///
     /// It is also the set the helper **refuses** in a client-chosen description
     /// (`AeolusXPCValidation.validateDescription`, #483): one rule, applied by refusing it on
-    /// the way in, removing it on the way out, and escaping it in a helper log line.
+    /// the way in, removing it on the way out, and escaping it in a helper log line. The helper
+    /// refuses the same set in a curve's sensor key, as half of a narrower alphabet
+    /// (`AeolusXPCValidation.isSensorKeyScalar`, #566).
     public static func isRemovedFromDisplay(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.properties.generalCategory {
         case .control, .format, .lineSeparator, .paragraphSeparator:
