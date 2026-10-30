@@ -112,10 +112,10 @@ import Foundation
 /// `HelperConnectionHealth.afterFailedHandshake(for:)`. That was nine lines, and took them to 249
 /// and 244. #588 added seven: one marks a handshake's `hello` as gone, one carries the notices
 /// counted at a send to its failure, four let the suite hold a handshake before it starts, and one
-/// holds a `hello`'s failure where its reply was held. The `hello`'s request, which read nothing of
-/// the actor's, moved to `HelperClientPayload.hello(describing:)`, five lines, which took them to
-/// 251 and 246. The file is then 10 lines under SwiftLint's 1000-line `file_length` error, which
-/// fails CI. The count of code lines in the file, 229 when this section was written, did not
+/// moves the reply's hold into `exchange`, to hold a failure too. The `hello`'s request, reading
+/// nothing of the actor's, moved to `HelperClientPayload.hello(describing:)`: five lines. That
+/// took them to 251 and 246, and the file to 10 lines under the 1000-line `file_length` error,
+/// which fails CI. The count of code lines in the file, 229 when this section was written, did not
 /// move when the section was added — the file grew by fifty-odd lines and by none of the thing
 /// the threshold is worth measuring, which is the whole argument in one measurement. Neither
 /// warning is suppressed, deliberately — no `swiftlint:disable`, no `file_length` or
