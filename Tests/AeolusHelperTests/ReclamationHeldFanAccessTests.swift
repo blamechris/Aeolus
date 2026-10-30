@@ -60,7 +60,8 @@ import Testing
 ///
 /// Each limit says how it is known: measured at full scope (the whole `AeolusHelperTests`
 /// target), measured under a filter (named suites only), or inferred (not run). None of them is a
-/// route to assigning `commanded`.
+/// route to assigning `commanded` a target past the floor check. One, replacing the whole record,
+/// is a route to clearing or replaying it.
 ///
 /// - **A member in the formatter's two-line spelling** (a modifier alone on a line, the
 ///   declaration under it at twelve spaces in the source, eight once the level is removed) is in
@@ -74,8 +75,13 @@ import Testing
 ///   reaches only members that are internal already.
 /// - **A write that does not name the storage.** `self = HeldFan(lease: lease)`, or `self` assigned
 ///   another record, in a mutating method replaces the whole record, storage and all, and the
-///   count does not see it: inferred, not run. It can store only `nil` or a value some record's
-///   `record(_:)` took. No issue: it cannot carry a target past the floor check.
+///   count does not see it. It is a route to clearing or replaying `commanded`, not past the
+///   floor: the storage can take only `nil` or a value some record's `record(_:)` took (inferred,
+///   not run). Clearing it so in `recordReadFailure()`, every counter copied across, is red in
+///   `ReclamationRecordIntegrityTests.aReadFailureLeavesTheRecordsTarget` and
+///   `.aDivergenceABlindCycleHidIsCaughtAfterIt`, and nowhere else: measured at full scope
+///   (#612). The same replacement in another method, or a replay of another record's
+///   target, is caught only where a behaviour test reads the result: inferred. No issue.
 /// - **`HeldFan`'s own declaration and its sibling's.** `struct HeldFan` and `enum Judgement` are
 ///   read by no suite. Their access is capped by the actor's, which `HelperActorHeaderAccessTests`
 ///   pins: `public struct HeldFan` compiles and leaves this target green, measured at full scope
@@ -163,7 +169,11 @@ struct ReclamationHeldFanAccessTests {
     /// backticks, `self.` or whitespace between. The mention count is there for a write spelled
     /// another way, as an `inout` argument or through a key path. It sees names, not writes, so a
     /// new read of the storage is red too: read `commanded` instead. It does not see a write that
-    /// never names the storage (in the suite's limits).
+    /// never names the storage (in the suite's limits), and it does not see order: the assignment
+    /// moved above `record(_:)`'s guard is still one assignment in its body.
+    /// `ReclamationRecordIntegrityTests` is what holds the floor check's position: that move is red
+    /// on 23 expectations across its three floor tests, and nowhere else, measured at full scope
+    /// (#612). This test stays green on it.
     ///
     /// **Mutations:** add `mutating func force(_ target: CommandedTarget) { storedCommanded =
     /// target }`; move `record(_:)`'s assignment into `command(_:)`, after its guard; write

@@ -1415,7 +1415,7 @@ RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
 is a get-only view of storage private to `HeldFan`, and `record(_:)`, which holds the check, is the
 one assignment to it. The compiler refuses an assignment to `commanded`, and to the storage from
 another file; no key path to `commanded` is writable at run time; and the one assignment in
-`HeldFan`'s own file is a lexical count, which catches accidents
+`HeldFan`'s own file is held by a lexical count, which catches accidents
 ([#612](https://github.com/blamechris/Aeolus/issues/612), `ReclamationHeldFanAccessTests`).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
