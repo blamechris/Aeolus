@@ -89,100 +89,55 @@ import Foundation
 /// waited for may have been answered by the process that died while the replacement's is still
 /// unanswered, and that caller sends nothing (#582, `handshakenConnection()`).
 ///
-/// ## Why this is one long file, and where the split stops
+/// ## Why this file is still long, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **251 of its lines are code**; the rest is the reasoning around them, and the
-/// rule counts comment lines. Seventeen were added after this section was written: the clock the
-/// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). Nine more are the message each send names, the answer a discard gives what
-/// was still in flight, the refusal to send on a connection already given up, and the suite's
-/// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
-/// owns its state outright and so widens nothing here. Three more made a health stream's
-/// removal wait for its registration (#532), and put the actor's body at 253 lines, three over
-/// SwiftLint's 250-line `type_body_length` warning. That took the file to 258 code lines. #541
-/// then gave the health signal's state a type of its own (`HealthSignal`, below), which took the
-/// file to 239 and the actor's body to 234. Three more are the latch a caller waiting on the
-/// handshake is cancelled out of (#576), which took them to 242 and 237. Nine more are #582's:
-/// six let the suite hold one caller's handshake relay, and three keep a caller whose helper died
-/// before it resumed from sending, which took them to 251 and 246. #585 added seven: four let the
-/// suite hold a `hello`'s reply before it is recorded, and three keep a reply whose helper died
-/// first from being recorded. That would have put the actor's body at 253, so a function in it
-/// that read none of its state, the health a failed handshake leaves, moved out to
-/// `HelperConnectionHealth.afterFailedHandshake(for:)`. That was nine lines, and took them to 249
-/// and 244. #588 added seven: one marks a handshake's `hello` as gone, one carries the notices
-/// counted at a send to its failure, four let the suite hold a handshake before it starts, and one
-/// moves the reply's hold into `exchange`, to hold a failure too. The `hello`'s request, reading
-/// nothing of the actor's, moved to `HelperClientPayload.hello(describing:)`: five lines. That
-/// took them to 251 and 246, and the file to 10 lines under the 1000-line `file_length` error,
-/// which fails CI. The count of code lines in the file, 229 when this section was written, did not
-/// move when the section was added — the file grew by fifty-odd lines and by none of the thing
-/// the threshold is worth measuring, which is the whole argument in one measurement. Neither
-/// warning is suppressed, deliberately — no `swiftlint:disable`, no `file_length` or
-/// `type_body_length` override in `.swiftlint.yml` — because a file, or a body, that grew by two
-/// hundred lines of *logic* should draw exactly the attention this one drew.
+/// purpose: most of it is the reasoning around the code, and the rule counts comment lines.
+/// Neither warning is suppressed — no `swiftlint:disable`, no `file_length` or
+/// `type_body_length` override in `.swiftlint.yml` — because a file, or a body, that grew by
+/// two hundred lines of *logic* should draw exactly the attention this one drew.
 ///
-/// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
-/// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
-/// actor reachable from a sibling file — and D36 is that stored state stays `private` and is
-/// mutated only from its declaring file, while only what a sibling *must* call widens to
-/// `internal`. Trading that for a line count is the wrong side of the trade anywhere, and
-/// this is the privilege boundary, which is why #237 declined it too. What was weighed:
+/// It drew it at 990 lines ([#600](https://github.com/blamechris/Aeolus/issues/600)): ten
+/// under the 1000-line `file_length` error, which fails CI, with the actor's body at 246 of the
+/// 250-line `type_body_length` warning, after #584, #587 and #599 had each moved code out only
+/// to fit. [#242](https://github.com/blamechris/Aeolus/issues/242) had refused a split at the
+/// 400-line warning, and [#237](https://github.com/blamechris/Aeolus/issues/237) before it:
+/// Swift `private` is file-scoped, so every seam needs a member of this actor reachable from a
+/// sibling file, and D36 is that stored state stays `private` and is mutated only from its
+/// declaring file. Trading that for a warning's line count was the wrong side of the trade. An
+/// error that fails CI is a different one, and #600 took the smallest split that clears it.
 ///
-/// - **The verbs are already gone**, and that was the seam worth having.
-///   `HelperClientVerbs.swift` holds all six, written over `withHandshakenProxy` and
-///   `withProxy`, and no verb touches this client's state. Its own comment records that it
-///   was split along a seam rather than along a line count.
-/// - **`translate(_:on:sentAfter:)` and the transport mapping** would move eighty-odd lines and
-///   need `hasEverHandshaken` widened — a stored input one arm of it decides on — and
-///   `discardConnection` with it, which is the single function that invalidates the
-///   connection and moves the generation. Reshaping it to return a verdict the actor then
-///   applies splits the classification from its consequence, which its own comment treats as
-///   one thing, and writes more lines into a new file than it takes out of this one.
-/// - **The connection's own lifecycle cannot leave this file at all**, and that is the
-///   compiler's ruling rather than a rule anybody chose. `exchange`, `liveConnection` and
-///   `handshakenConnection` each take or return `ConnectionGeneration`, which is `private`
-///   and nested; widening one without widening that type is *"method must be declared
-///   private because its parameter uses a private type"*. Anything built on those three
-///   stays here, so a split would have to start by publishing the type whose whole purpose
-///   is that a generation travels with its connection instead of being read back off the
-///   actor. `HelperClientAccessTests` records the attempt.
-/// - **The health signal** — `currentHealth`, `observers`, `publish`, `observe`,
-///   `stopObserving` — was the one slice that could own its state outright in a type of its
-///   own rather than borrowing this actor's, so it was the one that would widen nothing. When
-///   this was written (#268) it was worth about twenty-five lines, against a file of 665 lines,
-///   some 265 past the 400-line `file_length` warning, in exchange for an indirection on the
-///   path that reports whether this client can see the helper at all. Not worth doing for a
-///   line count; worth reconsidering on its own merits if the signal grows.
-///
-///   It grew by three lines in #532, which made a stream's removal wait for its registration.
-///   #534 noted that the growth went unremarked here; it did not take the split question up.
-///   Those three lines existed because `observers` was this actor's state and
-///   `healthUpdates()`, which registers and removes observers, is `nonisolated`, so each reached
-///   it through a task, and two tasks reach the actor in no set order. That was the merit, and
-///   #541 took it: `HealthSignal` owns the value now and the observers under a lock, so a
-///   stream registers in its builder and leaves in its termination handler, both synchronously,
-///   and the race the three lines ordered cannot happen. The indirection is the cost #268
-///   weighed, paid for the race rather than for a line count. It widened nothing:
-///   `healthSignal` and `healthStreams` are `private`, held so by `HelperClientAccessTests`; the
-///   signal's publishing half is not `Sendable`, so only this actor publishes; and `publish(_:)`
-///   stays here as the one way the health changes, which `health` reads.
-///
-/// The threshold is not this file's problem in particular either. Over thirty files in the tree
-/// are past it, ten-odd of them under `Sources`, and **four of those are longer than this
-/// one** — `ReclamationWatchdog` at 980, `LeaseAuthority` at 884, `SMCConnection` at 813 and
-/// `SMCReadScheduler` at 679. Those four are the argument; the tally is left approximate on
-/// purpose, because it moves on merges that have nothing to do with this file — it went up by
-/// one, in `AeolusXPC`, between this section being written and the branch being brought up to
-/// date. Splitting whichever file a review round happened to open, at the cost of the access
-/// rule, buys a tidier number and a wider gate.
+/// - **The verbs** left first, and that was the seam worth having. `HelperClientVerbs.swift`
+///   holds all six, written over `withHandshakenProxy` and `withProxy`, and no verb touches this
+///   client's state.
+/// - **`translate(_:on:sentAfter:)`** moved to `HelperClient+Translation.swift`, as a move and
+///   nothing else. It reads `hasEverHandshaken` and `interruptions` and writes neither, and
+///   changes the connection only through `connectionWasInterrupted(_:)` and `discardConnection`.
+///   So it cost three widenings: the two properties are `private(set)`, readable from a sibling
+///   file and still written only here, and `discardConnection` — the single function that
+///   invalidates the connection and moves the generation — is `internal`, with that file its one
+///   caller outside this one.
+/// - **The health signal** was the one slice that could own its state outright in a type of its
+///   own, so it widened nothing. `HealthSignal` owns the value and the observers under a lock
+///   (#541); `healthSignal` and `healthStreams` are `private`, the signal's publishing half is
+///   not `Sendable`, so only this actor publishes, and `publish(_:)` stays here as the one way
+///   the health changes, which `health` reads.
+/// - **The connection's own lifecycle cannot leave this file**, and the compiler's ruling is part
+///   of why. `exchange`, `liveConnection` and `handshakenConnection` each take or return
+///   `ConnectionGeneration`, which is `private` and nested; widening one without widening that
+///   type is *"method must be declared private because its parameter uses a private type"*. The
+///   other part is D36's. The handshake (`handshakenConnection`, `performHandshake`) writes
+///   `negotiatedReply`, `handshake` and `hasEverHandshaken`, and a sibling file that could write
+///   them could mark a connection handshaken that negotiated nothing. Moving it would make three
+///   of the nine properties `HelperClientAccessTests` holds writable from every file in
+///   `AeolusXPCClient`, and that is a decision for a safety review, not a line count. It would
+///   take about 190 lines with it.
 ///
 /// **`HelperClientAccessTests` is what makes the decision keepable.** The lesson D36 exists
-/// because of is #128's — a paragraph is not enforcement — and until #242 nothing asserted
-/// access anywhere in this target, so a later split could have widened every property named
-/// above with the whole suite green. Each is now held `private` by a test, and the two
-/// exhaustive halves beside it report a member that stops being private whether or not
-/// anybody thought to list it.
+/// because of is #128's — a paragraph is not enforcement — and the paragraph above is held by
+/// that suite: seven of the properties are `private`, two are `private(set)`, and the two
+/// exhaustive halves beside them report a member that stops being private whether or not
+/// anybody thought to list it, in every file the actor is written in.
 public actor HelperClient {
 
     private let transport: HelperClientTransport
@@ -251,7 +206,11 @@ public actor HelperClient {
     /// has to be separate from `negotiatedReply` because that is cleared by the very event
     /// being classified — libxpc fires the interruption handler on its own thread, so by the
     /// time a failed message is being explained, the reply may already be gone.
-    private var hasEverHandshaken = false
+    ///
+    /// `private(set)` since [#600](https://github.com/blamechris/Aeolus/issues/600):
+    /// `translate(_:on:sentAfter:)`, in `HelperClient+Translation.swift`, decides on it, so its
+    /// getter is readable there. Only this file writes it.
+    private(set) var hasEverHandshaken = false
 
     /// How many death notices this actor has counted. It moves in `connectionWasInterrupted`, and
     /// nowhere else.
@@ -263,7 +222,9 @@ public actor HelperClient {
     /// An interruption keeps the generation, so the generation cannot say whether the process that
     /// answered a `hello` is still the one on the other end. `performHandshake` reads this before
     /// it sends `hello`, and records the reply only if it has not moved since (#585).
-    private var interruptions: UInt64 = 0
+    ///
+    /// `private(set)` for `hasEverHandshaken`'s reason: `translate(_:on:sentAfter:)` reads it.
+    private(set) var interruptions: UInt64 = 0
 
     /// The connection's health, and its observers, under a lock of their own (#541). Published to
     /// only by `publish(_:)`, on this actor. See `HealthSignal`.
@@ -758,126 +719,6 @@ public actor HelperClient {
         }
     }
 
-    // MARK: - What the transport's failures mean
-
-    /// Turns whatever came back into something a caller can act on.
-    ///
-    /// A refusal the helper authored is thrown **as itself**: `AeolusXPCFault` carries its
-    /// own vocabulary, `versionMismatch` carries both sides' ranges, and wrapping either
-    /// would flatten "the helper said no" into "something went wrong". Everything else is a
-    /// statement about the connection, and this is the one place that decides which.
-    ///
-    /// `generation` is the connection the failed message was sent on, threaded in from
-    /// `exchange` rather than read off the actor. By the time a failure is being explained,
-    /// a later connection may already be live and handshaken — that is precisely the
-    /// interleaving the field exists for — and reading `self.generation` here would make
-    /// every guard below compare a value with itself.
-    ///
-    /// `notices` is how many death notices had been counted when the message was sent, threaded in
-    /// from `exchange` for the same reason; only the 4097 arm reads it (#588).
-    ///
-    /// Reachable from the suite for the same reason the two handlers below are: one arm of
-    /// this switch — `NSXPCConnectionReplyInvalid` — cannot be provoked over a real
-    /// connection at all, and an arm that decides whether a live connection survives is not
-    /// one this project is willing to ship untested.
-    func translate(_ error: Error, on generation: UInt64, sentAfter notices: UInt64) -> Error {
-        // **Cancellation is not a teardown, and this is the line that keeps it from
-        // becoming one.** It is a statement about the caller — a view that navigated away,
-        // a `fanctl` that was interrupted — and none about the helper, which may be healthy
-        // and about to answer. Acting on it would invalidate the connection, and the helper
-        // releases a connection's leases when it dies: the fans would hand back to automatic
-        // because somebody changed tabs. It is thrown as itself, the way every other
-        // cancelled `async` call in Swift reports.
-        //
-        // The message stays at the head of the helper's queue and that is deliberate. Its
-        // deadline outlives its caller (`InFlightMessages`), so the next sequenced verb waits
-        // for it to settle: answered, or cut off by that deadline, which with nobody waiting
-        // discards nothing. The next verb then hits its **own** deadline and discards — one
-        // extra deadline on a genuinely wedged helper for each cancelled message ahead of it,
-        // which is the price of never tearing down a healthy one. Several orphans add up; #419
-        // is the design note the app's control UI settles before it pipelines.
-        if error is CancellationError { return error }
-        if let clientError = error as? HelperClientError {
-            if case .helperNeverAnswered = clientError {
-                // The helper accepted this message and never answered it, which on the
-                // wedged `io_connect_t` of `docs/SAFETY.md` § 4 is the expected case rather
-                // than an exotic one. The message is still at the head of this connection's
-                // queue with nothing able to discard it, and since D25 the helper answers a
-                // connection's messages in the order they were sent — so every later gated
-                // verb would queue behind it and time out too, permanently. The connection
-                // goes; the next call builds another, once, when the caller asks again.
-                //
-                // Everything else in flight on it goes too, and is told so: the client's own
-                // `invalidate()` would reach each of them as 4099, which reads as a helper
-                // that was never there (#413).
-                discardConnection(generation, as: .unresponsive, answering: .connectionAbandoned)
-            }
-            // `connectionAbandoned` passes through here untouched, which is why a message a
-            // discard answered never counts as a second timeout: it moves no generation and
-            // publishes no health.
-            return clientError
-        }
-        if let fault = AeolusXPCFault(nsError: error as NSError) { return fault }
-
-        let nsError = error as NSError
-        guard nsError.domain == NSCocoaErrorDomain else {
-            return HelperClientError.helperUnreachable(code: nsError.code)
-        }
-        switch nsError.code {
-        case XPCTransportCode.interrupted:
-            // 4097 does not by itself mean a helper died: measured on `Mac16,5` /
-            // macOS 26.6.2, a listener whose delegate **refuses** the connection is reported
-            // to the client as an interruption too, not as an invalidation. So the code
-            // alone cannot tell "the helper restarted under me" from "nothing ever answered",
-            // and claiming the former about a peer this connection never handshook with
-            // would be inventing a helper. What settles it is whether this connection object
-            // ever completed a handshake.
-            //
-            // It is a death notice only on a message sent after every notice counted so far
-            // (#588). One death is several notices, the interruption handler's and a 4097 for each
-            // message in flight to it, reaching this actor in no set order. A message sent before
-            // the last notice counted went out before a death was heard of, so this is a second
-            // notice of a death already counted, or one whose handler's notice is still to come.
-            // Counted again, it cleared a handshake recorded since with the replacement, and the
-            // next verb's `hello` was refused and took the connection. No death goes uncounted:
-            // each fires the interruption handler, with messages in flight or without (measured;
-            // see the suite's `killHelperSideOfEveryConnection`). The cost is narrower: a message
-            // that reached a replacement before an earlier death was counted, a handshake recorded
-            // with it, and the replacement dying too. Until its handler's notice, a gated verb then
-            // reaches the next process with no `hello`, and is refused without a teardown.
-            let hadSpokenToAHelper = hasEverHandshaken
-            if notices == interruptions { connectionWasInterrupted(generation) }
-            return hadSpokenToAHelper
-                ? HelperClientError.helperRestarted
-                : HelperClientError.helperUnreachable(code: nsError.code)
-        case XPCTransportCode.replyInvalid:
-            // 4101 is the one code here that is **about the message, not the connection**:
-            // the reply could not be delivered, and the connection is still alive and still
-            // handshaken. Letting it fall into the arm below would drop a live connection's
-            // only reference — orphaning the helper-side session, and any lease bound to
-            // it, until the 120 s TTL expired. That would collapse the two teardown paths
-            // `AeolusXPCProtocol` requires to be independent into one, on a failure that
-            // cost nothing but a single answer.
-            return HelperClientError.replyNotDelivered
-        case XPCTransportCode.codeSigningRequirementFailure:
-            discardConnection(generation, as: .refused, answering: .helperSignatureRejected)
-            return HelperClientError.helperSignatureRejected
-        default:
-            // Every other transport code, 4099 included: the connection failed and no
-            // message was delivered. The code is carried rather than mapped, because a
-            // reason this build has not heard of must still reach a log line.
-            //
-            // The 4099 the client's **own** `invalidate()` produces does not arrive here. The
-            // discard answered every message on that connection first (`InFlightMessages`),
-            // so each latch already held its answer when the 4099 reached it (#413). What
-            // arrives is the transport's own report, and the messages still in flight beside
-            // the one that carried it are given the same answer.
-            let unreachable = HelperClientError.helperUnreachable(code: nsError.code)
-            discardConnection(generation, as: .invalidated, answering: unreachable)
-            return unreachable
-        }
-    }
-
     // MARK: - Giving up on a connection
 
     /// The helper process was replaced. Keep the connection, drop what the old one said.
@@ -964,7 +805,11 @@ public actor HelperClient {
     /// is true instead: `connectionAbandoned` when the client chose to give up, and the
     /// transport's own verdict when the transport ended the connection. Answering them settles
     /// them too, so no message stays waiting for a turn on a connection that is gone.
-    private func discardConnection(
+    ///
+    /// `internal` since [#600](https://github.com/blamechris/Aeolus/issues/600), for
+    /// `translate(_:on:sentAfter:)` in `HelperClient+Translation.swift`, which is its one caller
+    /// outside this file.
+    func discardConnection(
         _ generation: UInt64, as health: HelperConnectionHealth,
         answering verdict: HelperClientError
     ) {
