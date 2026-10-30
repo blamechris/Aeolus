@@ -152,8 +152,16 @@ struct HelperClientAccessTests {
     /// past this one, since `private(set) var` and a bare `var` are the same to it: writable from
     /// every file in the target. This list is the only thing that notices.
     ///
-    /// **Mutation:** respell `private(set) var interruptions: UInt64 = 0` as
-    /// `var interruptions: UInt64 = 0`. Run: red on `theClientsMutableStateStaysPrivate` alone.
+    /// **The check is an equality on the whole declaration, not a prefix.** **Mutation:** respell
+    /// `private(set) var interruptions: UInt64 = 0` as `var interruptions: UInt64 = 0`. Run: red
+    /// on `theClientsMutableStateStaysPrivate` alone. **Mutation:** respell it as
+    /// `private(set) nonisolated(unsafe) var interruptions: UInt64 = 0`, which compiles and draws
+    /// SwiftLint's `modifier_order` warning and nothing else. Run: red on the same test alone.
+    /// With a prefix check, `hasPrefix("private(set) ")`, this was green on all four tests of the
+    /// suite, and the #603 review's probe, a free function in a sibling file, rewound
+    /// `interruptions` through an `as? ReferenceWritableKeyPath` cast (`before=1 cast=true
+    /// after=0`). **Mutation:** respell it as `private(set) public var interruptions: UInt64 =
+    /// 0`. Run: red on the same test alone; a prefix check passed this too.
     private static let mustHaveAPrivateSetter = [
         "var hasEverHandshaken = false",
         "var interruptions: UInt64 = 0",
@@ -340,12 +348,13 @@ struct HelperClientAccessTests {
             let declaration = try MemberAccessScan.declaration(
                 of: member, in: code, from: Self.declaringFile)
             #expect(
-                declaration.hasPrefix("private(set) "),
+                declaration == "private(set) \(member)",
                 """
-                `\(declaration)` is no longer `private(set)`. A sibling file may read it, as \
-                `translate(_:on:sentAfter:)` does, and may not write it: a writable \
+                `\(declaration)` is not exactly `private(set) \(member)`. A sibling file may read \
+                it, as `translate(_:on:sentAfter:)` does, and may not write it: a writable \
                 `hasEverHandshaken` invents a helper this client never spoke to, and a \
-                writable `interruptions` can be wound back past a death.
+                writable `interruptions` can be wound back past a death. It is an equality, not \
+                a prefix, because a modifier added beside `private(set)` can widen it.
                 """
             )
         }

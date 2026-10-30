@@ -7,14 +7,14 @@ import Foundation
 /// Moved out of `HelperClient.swift` by
 /// [#600](https://github.com/blamechris/Aeolus/issues/600), when that file stood ten lines under
 /// SwiftLint's 1000-line `file_length` error. It is a move and nothing else: the function below
-/// is the same text it was there. What it needed from the actor, and so what that file widened
+/// is the same code it was there. What it needed from the actor, and so what that file widened
 /// for it, is `HelperClient.swift`'s account of where the split stops.
 ///
-/// It is in this file rather than the actor's because it is the one piece of the actor that
-/// **reads** its state and writes none of it directly. It reads `hasEverHandshaken` and
-/// `interruptions`, whose setters stay `private` to the declaring file. Everything it changes it
-/// changes through the two functions that own that change, `connectionWasInterrupted(_:)` and
-/// `discardConnection(_:as:answering:)`, which stay where the storage is.
+/// It could leave that file for the price of two getters and one function because it reads
+/// `hasEverHandshaken` and `interruptions` and writes neither, and their setters stay `private`
+/// to the declaring file. Everything it changes it changes through the two functions that own
+/// that change, `connectionWasInterrupted(_:)` and `discardConnection(_:as:answering:)`, which
+/// stay where the storage is.
 extension HelperClient {
 
     // MARK: - What the transport's failures mean
@@ -35,7 +35,8 @@ extension HelperClient {
     /// `notices` is how many death notices had been counted when the message was sent, threaded in
     /// from `exchange` for the same reason; only the 4097 arm reads it (#588).
     ///
-    /// Reachable from the suite for the same reason the two handlers below are: one arm of
+    /// Reachable from the suite for the same reason the two handlers in `HelperClient.swift`
+    /// (`connectionWasInterrupted(_:)` and `connectionWasInvalidated(_:)`) are: one arm of
     /// this switch — `NSXPCConnectionReplyInvalid` — cannot be provoked over a real
     /// connection at all, and an arm that decides whether a live connection survives is not
     /// one this project is willing to ship untested.
@@ -100,9 +101,12 @@ extension HelperClient {
             // Counted again, it cleared a handshake recorded since with the replacement, and the
             // next verb's `hello` was refused and took the connection. No death goes uncounted,
             // on this premise: each fires the interruption handler, with messages in flight or
-            // without. That is the contract Apple documents for
-            // `NSXPCConnection.interruptionHandler`, which runs when the remote process exits or
-            // crashes. The suite bears it out only as far as a harness can: its
+            // without. "With messages in flight or without" is this code's own reading. Apple's
+            // part is the header's description of the handler, "A block that is called if the
+            // remote process exits or crashes." (Foundation.framework/Headers/NSXPCConnection.h).
+            // The same header disclaims any guarantee of ordering between that handler and the
+            // replies and other handlers on its queue, which is the "no set order" above. The
+            // suite bears the premise out only as far as a harness can: its
             // `killHelperSideOfEveryConnection` invalidates the listener-side connection inside
             // the test process, and no helper process exits. The cost is narrower: a message that
             // reached a replacement before an earlier death was counted, a handshake recorded
