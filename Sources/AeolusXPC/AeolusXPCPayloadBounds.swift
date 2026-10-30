@@ -112,8 +112,8 @@ public enum AeolusXPCPayloadBounds {
 
     /// An SMC key is four bytes — `TC0P`, `F0Ac` — and since #566 the helper refuses any
     /// other length (`AeolusXPCValidation.sensorKeyUTF8Bytes`). Named so the sensor-key term
-    /// below says what it is measuring.
-    static let smcKeyCharacters = AeolusXPCValidation.sensorKeyUTF8Bytes
+    /// below says what it is measuring: bytes, which is what `stringBytes(utf8Cap:)` takes.
+    static let smcKeyUTF8Bytes = AeolusXPCValidation.sensorKeyUTF8Bytes
 
     /// `SensorGroup.Aggregation`'s longest raw value is `maximum`, seven characters. Eight
     /// so that a third aggregation one character longer needs no arithmetic here.
@@ -178,7 +178,7 @@ public enum AeolusXPCPayloadBounds {
         objectBytes(keys: ["sensorKeys", "aggregation"])
         + arrayBytes(
             count: maxSensorKeysPerCurve,
-            elementBytes: stringBytes(utf8Cap: smcKeyCharacters))
+            elementBytes: stringBytes(utf8Cap: smcKeyUTF8Bytes))
         + stringBytes(utf8Cap: maxAggregationBytes)
 
     // MARK: - The check
