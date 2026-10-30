@@ -54,6 +54,18 @@ import Testing
 /// `SeamScanner.Function.key` records at length: a label-only key cannot see an overload
 /// either, and that defect has already landed once in this repository.
 ///
+/// ## Why a member carries its spelling, not just its key
+///
+/// `Member.key` is the name, or the name and parameter types: enough to tell two members apart,
+/// and blind to how either is exposed. An acknowledged list keyed on it passes `public func
+/// discardConnection` for `func discardConnection`, so a member acknowledged as `internal` could
+/// be made callable from the app with every access test green
+/// ([#604](https://github.com/blamechris/Aeolus/issues/604)). `Member.spelling` is the modifier
+/// run, in source order and including any modifier-only line above, then the introducer, then
+/// the key, and a list that holds it fails on a respelling as it does on a new member. What it
+/// still cannot see is a modifier on the `extension` a member sits in, which is on no member's
+/// line: `public extension HelperClient {` is `extensionHeaders(of:inTarget:)`'s.
+///
 /// ## The four-space indent, and the gate that actually holds it
 ///
 /// A member is recognised at exactly four spaces of indent. Nothing here enforces that —
@@ -62,6 +74,13 @@ import Testing
 /// Swift. A member written at any other indent is therefore invisible to this scan and red in
 /// that gate, and the two facts are one sentence apart here because a scan whose precondition
 /// is held somewhere else reads as though it held the precondition itself.
+///
+/// **One spelling is the exception, and the formatter is not its gate:** a modifier alone on a
+/// line, the declaration beneath it at eight spaces, is what `swift format` writes for a
+/// declaration broken after its modifier, and it passes `--strict`. The declaration line is
+/// read as a nested member and skipped, so a *new* member written so is in no population
+/// ([#605](https://github.com/blamechris/Aeolus/issues/605)); an acknowledged one goes missing,
+/// which an exact list notices. `MemberAccessScanSpellingTests` pins this as a limit.
 enum MemberAccessScan {
 
     enum Keyword {
@@ -78,6 +97,13 @@ enum MemberAccessScan {
         /// sharing a name are two entries — see the type's doc comment for the mutation that
         /// made this necessary.
         let key: String
+        /// The declaration as the scan reads it, for an acknowledged list that pins access exactly:
+        /// the modifier run in source order — attributes, `public`, `private(set)`, and any
+        /// modifier-only line above — then `let`, `var` or `func`, then `key`. So `public var
+        /// negotiated`, `private(set) var interruptions`, and `nonisolated public func
+        /// healthUpdates()`. A respelling is a different string by design: see the type's
+        /// account of why a bare key could not see a widening.
+        let spelling: String
     }
 
     /// Where a type's members may be written: its own declaration, and every extension of it.
@@ -165,44 +191,29 @@ enum MemberAccessScan {
     /// no fixture named an attribute with a space in it, and none named two methods sharing a
     /// name, so nothing reported that neither could be seen.
     static func members(inSource code: String, keyword: Keyword) -> [Member] {
-        var found: [Member] = []
-        var lineStart = code.startIndex
-
-        while true {
-            let lineEnd = code[lineStart...].firstIndex(of: "\n") ?? code.endIndex
-            if let member = member(in: code[lineStart..<lineEnd], keyword: keyword) {
-                found.append(member)
-            }
-            guard lineEnd < code.endIndex else { break }
-            lineStart = code.index(after: lineEnd)
+        let lines = code.split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.indices.compactMap { index in
+            member(
+                in: lines[index], preceded: precedingModifiers(above: index, in: lines),
+                keyword: keyword)
         }
-        return found
     }
 
     /// One line, classified — or `nil` when it declares nothing of the requested kind.
     ///
     /// `line` must be a slice of the whole file: a method's signature is parsed from
     /// `line.base`, because the formatter wraps a parameter list that does not fit and a
-    /// line-local parse would key every wrapped declaration on an empty clause.
-    static func member(in line: Substring, keyword: Keyword) -> Member? {
+    /// line-local parse would key every wrapped declaration on an empty clause. `preceded` is the
+    /// modifier tokens of the modifier-only lines directly above, which belong to this declaration
+    /// and are read ahead of the line's own — see `MemberAccessScanModifiers.swift`.
+    static func member(
+        in line: Substring, preceded: [Substring] = [], keyword: Keyword
+    ) -> Member? {
         guard line.hasPrefix("    "), !line.hasPrefix("     ") else { return nil }
-        var tokens = line.drop(while: { $0 == " " }).split(separator: " ")
-        var isPrivate = false
-
-        while let token = tokens.first {
-            let head = String(token.prefix { $0 != "(" })
-            if token.hasPrefix("@") {
-                dropAttribute(from: &tokens)
-            } else if head == "private" || head == "fileprivate" {
-                // `private(set)` leaves the getter internal, so only the bare form answers.
-                if head.count == token.count { isPrivate = true }
-                tokens.removeFirst()
-            } else if ignorableModifiers.contains(head) {
-                tokens.removeFirst()
-            } else {
-                break
-            }
-        }
+        let written = preceded + line.drop(while: { $0 == " " }).split(separator: " ")
+        var tokens = written
+        let isPrivate = consumeModifiers(from: &tokens)
+        let modifiers = written.dropLast(tokens.count).map(String.init)
 
         let introducers: Set<String> = keyword == .property ? ["let", "var"] : ["func"]
         guard tokens.count > 1, introducers.contains(String(tokens[0])) else { return nil }
@@ -210,14 +221,12 @@ enum MemberAccessScan {
         let name = tokens[1].prefix { $0.isLetter || $0.isNumber || $0 == "_" }
         guard !name.isEmpty else { return nil }
 
-        switch keyword {
-        case .property:
-            return Member(name: String(name), isPrivate: isPrivate, key: String(name))
-        case .method:
-            return Member(
-                name: String(name), isPrivate: isPrivate,
-                key: signature(named: String(name), after: name.endIndex, in: line.base))
-        }
+        let key =
+            keyword == .property
+            ? String(name) : signature(named: String(name), after: name.endIndex, in: line.base)
+        return Member(
+            name: String(name), isPrivate: isPrivate, key: key,
+            spelling: (modifiers + [String(tokens[0]), key]).joined(separator: " "))
     }
 
     /// One file's source with comments stripped, resolved by basename across `Sources`.
@@ -243,7 +252,8 @@ enum MemberAccessScan {
         return SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
     }
 
-    /// The one line of `code` declaring `member`, trimmed, as the guard naming it spelled it.
+    /// The declaration of `member`, as the guard naming it spelled it: the one line of `code`
+    /// that contains it, trimmed, **behind any modifier-only lines directly above it**.
     ///
     /// Both suites name a handful of members whose privacy is load-bearing and judge the line
     /// each one is declared on. **Exactly one** line may contain the fragment, for the same
@@ -258,14 +268,24 @@ enum MemberAccessScan {
     ///
     /// Zero matches is the other direction, and was always checked: a guard naming a member
     /// that has been renamed away asserts nothing while still reading like protection.
+    ///
+    /// **The line above is part of the declaration** (#604). `nonisolated(unsafe)` alone on a
+    /// line, then `    private(set) var interruptions: UInt64 = 0`, judged only the second line and
+    /// passed an equality on it, with the first a modifier that rewinds the counter. The run is
+    /// read as `MemberAccessScanModifiers.swift` describes, and joined to the line with a space, so
+    /// the judged text is `nonisolated(unsafe) private(set) var interruptions: UInt64 = 0`.
+    /// A caller that checks `hasPrefix("private ")` is red for the same modifier ahead of
+    /// `private`, as it already was written on one line; the tree has no such line.
+    ///
+    /// **A trailing comment on the declaration line stays in the judged text**, because
+    /// `SeamScanner.strippingComments` drops whole-line comments only. An equality fails
+    /// closed on it, and a caller's message says to put the comment on the line above.
     static func declaration(
         of member: String, in code: String, from file: String
     ) throws -> String {
-        let matches =
-            code
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { $0.contains(member) }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let lines = code.split(separator: "\n", omittingEmptySubsequences: false)
+        let trimmed = lines.map { $0.trimmingCharacters(in: .whitespaces) }
+        let matches = lines.indices.filter { lines[$0].contains(member) }
         let reason =
             matches.isEmpty
             ? """
@@ -274,14 +294,16 @@ enum MemberAccessScan {
             nothing
             """
             : """
-            matches \(matches.count) of them: \(matches). This guard judges one line, so a \
-            second — a nested type's member, or a second declaration of the same shape — \
-            decides which of them is judged and leaves the other unguarded
+            matches \(matches.count) of them: \(matches.map { trimmed[$0] }). This guard \
+            judges one line, so a second — a nested type's member, or a second declaration of \
+            the same shape — decides which of them is judged and leaves the other unguarded
             """
 
-        return try #require(
+        let index = try #require(
             matches.count == 1 ? matches[0] : nil,
             "`\(member)` has to be declared on exactly one line of \(file), and \(reason).")
+        let modifiers = precedingModifiers(above: index, in: lines).map(String.init)
+        return (modifiers + [trimmed[index]]).joined(separator: " ")
     }
 
     /// The accessor block of the member-indent `var name:` in `code`, braces included — or `nil`
@@ -326,17 +348,6 @@ enum MemberAccessScan {
     }
 
     // MARK: - Parsing
-
-    /// Drops one attribute from the head of the modifier run, counting parentheses rather than
-    /// whitespace — see the type's doc comment for the spelling that made the difference.
-    private static func dropAttribute(from tokens: inout [Substring]) {
-        var depth = 0
-        repeat {
-            let token = tokens.removeFirst()
-            depth += token.filter { $0 == "(" }.count
-            depth -= token.filter { $0 == ")" }.count
-        } while depth > 0 && !tokens.isEmpty
-    }
 
     /// `name(label: Type, label: Type)` for the method whose name ends at `nameEnd` in `code`.
     ///
