@@ -306,6 +306,15 @@ struct CriticalTemperatureCacheTests {
     /// assertion is about the mechanism and not about which task the pool happened to run
     /// first.
     ///
+    /// **Two waits, because two facts.** `coalescedSightings` is the cache's own count, and it
+    /// reaches eleven as soon as the eleven joiners have arrived — which says nothing about
+    /// the flight's *read*. That is an unstructured task `sighting()` starts and does not
+    /// wait for, so on a loaded pool it can reach the source after the eleventh joiner, and
+    /// `source.reads` is then 0. One red release run did exactly that
+    /// ([#629](https://github.com/blamechris/Aeolus/issues/629)). The second wait is for the
+    /// source to have been asked, and it is `>= 1` rather than `== 1` so that a second read
+    /// is red on the `== 1` claim below instead of timing out as a flight that never started.
+    ///
     /// **Mutation:** delete the `if let joined = inFlight` branch from `sighting()`. Run:
     /// red — twelve reads, twelve outstanding at once, and the wait for the coalesced count
     /// times out.
@@ -320,6 +329,10 @@ struct CriticalTemperatureCacheTests {
             await cache.coalescedSightings == 11
         }
         #expect(settled, "the storm never coalesced onto one read")
+        let started = await yieldUntil("the one flight to reach the source") {
+            await source.reads >= 1
+        }
+        #expect(started, "the flight never asked the source for a read")
         #expect(await source.reads == 1, "each grant issued its own read")
         #expect(await source.peakOutstanding <= 1)
 
@@ -329,7 +342,9 @@ struct CriticalTemperatureCacheTests {
             #expect(served?.readings.isEmpty == false, "grant \(index) was served nothing")
         }
 
-        #expect(await source.reads == 1, "a joiner read after the flight it joined finished")
+        #expect(
+            await source.reads == 1,
+            "the storm cost a second read, from a joiner or from the flight itself")
         #expect(await cache.readsIssued == 1)
     }
 
