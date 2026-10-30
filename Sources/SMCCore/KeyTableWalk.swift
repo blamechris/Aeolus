@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// What `READ_INDEX` gave back for one index of the key table, sorted the way the `#KEY`
