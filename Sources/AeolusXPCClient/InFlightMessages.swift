@@ -25,8 +25,8 @@ import os
 /// through the error handler, do not move it.
 ///
 /// What the deadline itself is, and when it runs out, is unchanged: `HelperClientDeadlines` picks
-/// the figure, `helperNeverAnswered` is the answer, and the caller's `translate(_:on:)` discards
-/// the connection. Only the instant it is counted from moves.
+/// the figure, `helperNeverAnswered` is the answer, and the caller's `translate(_:on:sentAfter:)`
+/// discards the connection. Only the instant it is counted from moves.
 ///
 /// ## Each connection has its own order
 ///
@@ -49,9 +49,9 @@ import os
 ///
 /// So the deadline belongs to the **message**, not to its caller. It keeps running when the caller
 /// goes, and when it runs out it settles the message and passes the turn. It does not discard the
-/// connection, because cancellation is not a teardown (`translate(_:on:)`): with nobody waiting,
-/// nothing reports the cut-off, and the message behind it then gets its own deadline. A healthy
-/// helper is never torn down for a caller that left.
+/// connection, because cancellation is not a teardown (`translate(_:on:sentAfter:)`): with nobody
+/// waiting, nothing reports the cut-off, and the message behind it then gets its own deadline. A
+/// healthy helper is never torn down for a caller that left.
 ///
 /// **What a wedged helper costs is one deadline per orphan, not one in all.** Each cancelled
 /// sequenced message ahead of a live read settles only when its own deadline runs out, and only
@@ -87,8 +87,8 @@ import os
 /// `abandonAll(on:answering:)` is how `HelperClient.discardConnection` settles a generation, and it
 /// answers each message **before** the connection is invalidated. That order is the point. The
 /// client's own `invalidate()` comes back to every message still parked on the connection as 4099,
-/// which `translate(_:on:)`'s default arm reads as "the helper is not installed or not yet
-/// approved": a message the client killed itself, misdiagnosed as a helper that was never there
+/// which `translate(_:on:sentAfter:)`'s default arm reads as "the helper is not installed or not
+/// yet approved": a message the client killed itself, misdiagnosed as a helper that was never there
 /// (#413's comment). Answered first, each one carries what is true instead, and the 4099 that
 /// follows finds its latch already resolved.
 ///
@@ -189,7 +189,7 @@ final class InFlightMessages: Sendable {
     ) -> Admission<Answer> {
         // Two fallbacks, because the two ways of giving up are different events and the
         // deadline's is acted on. A caller that was cancelled has said nothing about the
-        // helper; see `HelperClient.translate(_:on:)`.
+        // helper; see `HelperClient.translate(_:on:sentAfter:)`.
         let pending = PendingReply<Result<Answer, Error>>(
             ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline)),
             ifCancelled: .failure(CancellationError())

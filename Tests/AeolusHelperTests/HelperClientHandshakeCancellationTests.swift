@@ -18,7 +18,8 @@ import Testing
 /// handshake's deadline out. A caller that comes back here came back because it was cancelled.
 ///
 /// What each test leaves standing is as much its claim as what it ends. Cancelling a caller is not
-/// a teardown (`HelperClient.translate(_:on:)`), and the handshake belongs to the connection.
+/// a teardown (`HelperClient.translate(_:on:sentAfter:)`), and the handshake belongs to the
+/// connection.
 @Suite("A caller cancelled while it waits for the handshake", .timeLimit(.minutes(1)))
 struct HelperClientHandshakeCancellationTests {
 

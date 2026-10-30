@@ -113,7 +113,7 @@ struct HelperClientTests {
     /// is already enqueued and serial with it. There is no ordering left for luck to pick.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, replace
-    /// `handshake ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
+    /// `handshake?.task ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
     /// worth writing down because it is not the obvious one. Two `hello`s go out on one
     /// connection and the helper refuses the second with `invalidParameter`; that refusal is
     /// a failed handshake, so this client's own rule takes the connection down with it, and
@@ -482,7 +482,7 @@ struct HelperClientTests {
         // helper snapshot as current — would be a licence granted in exactly the situation
         // `docs/SAFETY.md` § 4 calls expected.
         //
-        // **Mutation:** in `HelperClient.translate(_:on:)`, delete the
+        // **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`, delete the
         // `case .helperNeverAnswered` arm. Run: red here — the health stays `.handshaken`
         // and the wedged connection is kept.
         let health = await client.health

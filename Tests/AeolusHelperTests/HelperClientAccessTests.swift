@@ -125,7 +125,7 @@ struct HelperClientAccessTests {
     private static let mustStayPrivate = [
         "var connection: NSXPCConnection?",
         "var negotiatedReply: HelloReply?",
-        "var handshake: Task<HelloReply, Error>?",
+        "var handshake: (task: Task<HelloReply, Error>, hasSent: Bool)?",
         "var hasEverHandshaken = false",
         "var interruptions: UInt64 = 0",
         "var generation: UInt64 = 0",
@@ -180,8 +180,8 @@ struct HelperClientAccessTests {
     ///   that question — the verbs already work over exactly this interface and reach no
     ///   state through it. `withProxy` is additionally held to one caller by
     ///   `HelperClientSeamTests.theUnhandshakenProxyHasExactlyOneCaller`.
-    /// - `translate(_:on:)`, `connectionWasInterrupted` and `connectionWasInvalidated` are
-    ///   `internal` so the suite can reach them, and each says so where it is declared: the
+    /// - `translate(_:on:sentAfter:)`, `connectionWasInterrupted` and `connectionWasInvalidated`
+    ///   are `internal` so the suite can reach them, and each says so where it is declared: the
     ///   two handlers are libxpc's entry points into this actor and the interleaving
     ///   `generation` exists to survive cannot be provoked on demand over a real connection,
     ///   and one arm of `translate` — `NSXPCConnectionReplyInvalid` — cannot be provoked at
@@ -202,7 +202,7 @@ struct HelperClientAccessTests {
     /// **Mutation:** drop the `private` from `private func discardConnection(`, whose signature
     /// is `(_ generation: UInt64, as health: HelperConnectionHealth, answering verdict:
     /// HelperClientError)` since #413 — chosen because it is exactly what moving
-    /// `translate(_:on:)` to a sibling file would cost. Run: red on
+    /// `translate(_:on:sentAfter:)` to a sibling file would cost. Run: red on
     /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
     /// `discardConnection(_: UInt64, as: HelperConnectionHealth, answering: HelperClientError)`.
     ///
@@ -229,7 +229,7 @@ struct HelperClientAccessTests {
             + "(Result<Answer, Error>) -> Void) -> Void)",
         "withProxy(_: HelperMessage, _: (any AeolusXPCProtocol, @escaping @Sendable "
             + "(Result<Void, Error>) -> Void) -> Void)",
-        "translate(_: Error, on: UInt64)",
+        "translate(_: Error, on: UInt64, sentAfter: UInt64)",
         "connectionWasInterrupted(_: UInt64)",
         "connectionWasInvalidated(_: UInt64)",
     ]

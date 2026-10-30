@@ -85,7 +85,7 @@ struct HelperClientTeardownTests {
     /// round is answering.
     ///
     /// **Mutation:** delete the `case XPCTransportCode.replyInvalid` arm from
-    /// `HelperClient.translate(_:on:)`. Run: red three times over — the error becomes
+    /// `HelperClient.translate(_:on:sentAfter:)`. Run: red three times over — the error becomes
     /// `helperUnreachable(code: 4101)`, `negotiated` is cleared, and the next call builds a
     /// second connection.
     @Test("A reply that could not be delivered costs the message, not the connection")
@@ -99,8 +99,9 @@ struct HelperClientTeardownTests {
 
         let undeliverable = NSError(
             domain: NSCocoaErrorDomain, code: XPCTransportCode.replyInvalid)
+        // Sent with no death notice counted: nothing has died. Only a 4097 reads it.
         let translated = await client.translate(
-            undeliverable, on: await client.currentGeneration)
+            undeliverable, on: await client.currentGeneration, sentAfter: 0)
 
         #expect(translated as? HelperClientError == .replyNotDelivered)
         #expect(
@@ -245,7 +246,7 @@ struct HelperClientTeardownTests {
     /// run it out. It used to be 250 ms on the wall clock, and main went red on `bacad45` when the
     /// second verb's came back `helperNeverAnswered(after: 0.25 seconds)` on a saturated runner.
     ///
-    /// **Mutation:** in `HelperClient.translate(_:on:)`, delete the `case
+    /// **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`, delete the `case
     /// .helperNeverAnswered` arm that discards the connection. Run: red on this
     /// expectation — `acquireLease` queues behind the parked snapshot and never comes back, so the
     /// wait for it fails, and the cancelled call is told `CancellationError` instead of the fault.
@@ -399,8 +400,8 @@ extension HelperClientTeardownTests {
     ///
     /// This is the trap the deadline remedy set. `PendingReply` gives up for two reasons —
     /// the deadline fired, or the caller's task was cancelled — and until the fallbacks were
-    /// separated both produced `helperNeverAnswered`, which `translate(_:on:)` now acts on by
-    /// invalidating the connection. So a SwiftUI view whose `.task` was cancelled by
+    /// separated both produced `helperNeverAnswered`, which `translate(_:on:sentAfter:)` now acts
+    /// on by invalidating the connection. So a SwiftUI view whose `.task` was cancelled by
     /// navigating away tore down a healthy, handshaken connection, and the helper released
     /// **every lease bound to it**: the fans handed back to automatic because a user changed
     /// tabs.
@@ -412,7 +413,7 @@ extension HelperClientTeardownTests {
     /// reader invariant that ADR exists to protect, broken by a cancellation.
     ///
     /// The distinction is drawn at the producer rather than guessed at afterwards: the
-    /// cancellation fallback is a `CancellationError`, and `translate(_:on:)` passes it
+    /// cancellation fallback is a `CancellationError`, and `translate(_:on:sentAfter:)` passes it
     /// through untouched. **Nothing about the deadline changes** — a helper that genuinely
     /// does not answer still costs its connection.
     ///
@@ -450,12 +451,12 @@ extension HelperClientTeardownTests {
 
         // What the caller is *told* is a second assertion, and it needs its own mutation.
         // Separating the fallbacks is what saves the connection; passing the cancellation
-        // through `translate(_:on:)` untouched is what stops the client reporting
+        // through `translate(_:on:sentAfter:)` untouched is what stops the client reporting
         // `helperUnreachable` — a statement that the helper did not answer, about a helper
         // that was never given the chance to fail.
         //
         // **Mutation:** delete `if error is CancellationError { return error }` from
-        // `translate(_:on:)`. Run: red here alone — the teardown expectations below stay
+        // `translate(_:on:sentAfter:)`. Run: red here alone — the teardown expectations below stay
         // green, because a bridged `CancellationError` is not in `NSCocoaErrorDomain` and so
         // misses the arm that discards. That is exactly why this expectation exists: the
         // first version of this test asserted only the teardown and the mutation survived it.

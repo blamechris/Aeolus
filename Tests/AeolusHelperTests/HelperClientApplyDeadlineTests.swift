@@ -222,9 +222,10 @@ struct HelperClientApplyDeadlineTests {
     /// manual control it held; and the helper must see the connection go.
     ///
     /// **Mutation:** put `helperNeverAnswered`'s description back to its text before #325. Run:
-    /// red on the description alone. **Mutation:** in `HelperClient.translate(_:on:)`, delete the
-    /// `discardConnection(generation, as: .unresponsive, …)` in the `.helperNeverAnswered` arm.
-    /// Run: red on the health, on the generation, and on the helper's sighting of the connection.
+    /// red on the description alone. **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`,
+    /// delete the `discardConnection(generation, as: .unresponsive, …)` in the
+    /// `.helperNeverAnswered` arm. Run: red on the health, on the generation, and on the helper's
+    /// sighting of the connection.
     @Test("An apply past its deadline says control ended")
     func anApplyPastItsDeadlineSaysControlEnded() async throws {
         let parked = try await ParkedApply.sending([Self.fan(0)])

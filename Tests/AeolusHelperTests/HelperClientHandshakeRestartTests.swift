@@ -38,11 +38,11 @@ struct HelperClientHandshakeRestartTests {
     /// What the first caller came back with is the next test's claim, not this one's.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, restore `if self.generation ==
-    /// generation { handshake = nil }` for `if handshake == task { handshake = nil }`. Run: red on
-    /// the third caller, refused with `invalidParameter` ("the handshake has already completed on
-    /// this connection"), on the second, told `connectionAbandoned`, on the count of `hello`s
-    /// (three), on the health (`.refused`) and on the generation. The other three tests stay
-    /// green.
+    /// generation { handshake = nil }` for `if handshake?.task == task { handshake = nil }`. Run:
+    /// red on the third caller, refused with `invalidParameter` ("the handshake has already
+    /// completed on this connection"), on the second, told `connectionAbandoned`, on the count of
+    /// `hello`s (three), on the health (`.refused`) and on the generation. The other three tests
+    /// stay green.
     @Test("A late caller of the first handshake does not clear the second from the slot")
     func aLateCallerLeavesTheNextHandshakeInTheSlot() async throws {
         let schedule = try await Self.lateCallerAfterTheHelperDied()
@@ -197,7 +197,7 @@ struct HelperClientHandshakeRestartTests {
     /// A 4097 on it is then `helperRestarted`, as it is when the answer was recorded first and the
     /// interruption cleared it. Read as `helperUnreachable`, the client would have told the first
     /// caller the helper restarted and would tell the next that it may not be installed, about the
-    /// same helper. The 4097 is handed to `translate(_:on:)` directly, as
+    /// same helper. The 4097 is handed to `translate(_:on:sentAfter:)` directly, as
     /// `HelperClientTeardownTests` hands it a 4101: a message cannot be made to fail with one on
     /// demand.
     ///
@@ -216,7 +216,9 @@ struct HelperClientHandshakeRestartTests {
             try await first.value
         }
         let interrupted = NSError(domain: NSCocoaErrorDomain, code: XPCTransportCode.interrupted)
-        let classified = await schedule.client.translate(interrupted, on: schedule.generation)
+        // Sent after the one death notice counted, the interruption the schedule waited for.
+        let classified = await schedule.client.translate(
+            interrupted, on: schedule.generation, sentAfter: 1)
 
         #expect(
             classified as? HelperClientError == .helperRestarted,
@@ -341,26 +343,5 @@ struct HelperClientHandshakeRestartTests {
         return ReplyHeld(
             harness: harness, client: client, replies: replies, first: first,
             generation: generation)
-    }
-}
-
-/// Holds the first call of one of `HelperClient`'s suite holds until `release` fires, lets every
-/// later call through, and counts them all.
-///
-/// Run as `handshakeRelayHold`, it holds the first caller's relay, and `started` is how many
-/// callers have joined a handshake or started one. Run as `receivedHelloReplyHold`, it holds the
-/// first `hello`'s reply once the client has it, and `started` is how many replies have arrived.
-private actor FirstCallHeld {
-
-    let release = AsyncSignal()
-    private var count = 0
-
-    /// How many calls have started.
-    var started: Int { count }
-
-    func hold() async {
-        count += 1
-        guard count == 1 else { return }
-        try? await release.wait()
     }
 }
