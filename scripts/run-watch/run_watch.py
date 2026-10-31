@@ -49,7 +49,6 @@ EXPLAIN_BEFORE = 2.0  # rule 3: a Wrote line this long before the sample explain
 EXPLAIN_AFTER = 0.5  # rule 3: or this long after
 JUDGE_AFTER = 2.0  # rule 3: explanations are judged this long after the sample
 MODE_SECONDS = 2.0  # rule 3: F0Md outside {0, 3} for this long
-HOLD_END_GRACE = 0.5  # rule 3: a sample may read the held mode this long after the restore's stamp
 TARGET_MOVE_RPM = 1.0  # rule 3: F0Tg moving more than this during a hold
 
 VERIFY_ESCALATE_SECONDS = 10.0  # rule 4: no VERIFY verdict by then is RESET
@@ -125,7 +124,7 @@ def _spawn(argv, capture=False, timeout=None):
 FanSample = namedtuple("FanSample", "t v")
 PackageSample = namedtuple("PackageSample", "t hottest f")
 LogLine = namedtuple("LogLine", "t level msg foreign")
-CtxLine = namedtuple("CtxLine", "t kind step target pid raw")
+CtxLine = namedtuple("CtxLine", "t kind step target pid raw bad_target", defaults=(None,))
 
 _ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$")
 _LOG_TS_RE = re.compile(
@@ -136,6 +135,8 @@ _WROTE_RE = re.compile(
     r"^Wrote (?P<key>\S+) = (?P<bytes>.*?): answered (?P<answer>.*), in (?P<dur>\S+) seconds\.$",
     re.S)
 _DURATION_RE = re.compile(r"^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
+_RPM_RE = re.compile(r"^\d+(?:\.\d+)?$")
+_REFUSED_RE = re.compile(r"^The engagement of fan \d+ was refused after \d+ attempt\(s\): ")
 _TEMPERATURE_KEY = re.compile(r"^T[A-Za-z0-9]{3}$")
 
 
@@ -172,10 +173,25 @@ def parse_duration_seconds(text):
     return value if math.isfinite(value) else None
 
 
+def _byte(data):
+    """The value of a one-byte write's data text (`0x1`), or None for anything else."""
+    m = re.fullmatch(r"0x([0-9a-fA-F]{1,2})", data.strip()) if isinstance(data, str) else None
+    return int(m.group(1), 16) if m else None
+
+
 def parse_wrote(msg):
     """(key, bytes, answer, duration text) of a `Wrote` line, or None if it does not parse."""
     m = _WROTE_RE.match(msg)
     return (m.group("key"), m.group("bytes"), m.group("answer"), m.group("dur")) if m else None
+
+
+def parse_rpm(text):
+    """A CTX target as RPM: a plain decimal above 0, or None. `5,777`, `5777rpm`, `nan`, `inf`,
+    `1e3`, `-5` and `0` are all refused, never read as something else."""
+    if not isinstance(text, str) or not _RPM_RE.match(text):
+        return None
+    value = float(text)
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def _number(reading):
@@ -216,6 +232,14 @@ def parse_fan_line(raw):
             if number is not None:
                 values[reading["key"]] = number
     return FanSample(t, values)
+
+
+def parse_stop_line(raw):
+    """The time of a sampler's own `stop` line (its file's last), or None for any other line."""
+    record = _record(raw)
+    if record is None or record.get("kind") != "stop":
+        return None
+    return parse_iso_utc(record.get("wallClockUTC"))
 
 
 def parse_package_line(raw):
@@ -275,17 +299,16 @@ def parse_ctx_line(raw, arrival=None):
         if "=" in token:
             name, _, value = token.partition("=")
             fields[name] = value
-    kind, step, target, pid = tokens[0], fields.get("step"), None, None
+    kind, step, target, pid, bad_target = tokens[0], fields.get("step"), None, None, None
     if kind.startswith("step="):
         kind = "step"
     if fields.get("target", "none") != "none":
-        try:
-            target = float(fields["target"])
-        except ValueError:
-            target = None
+        target = parse_rpm(fields["target"])
+        if target is None:
+            bad_target = fields["target"]
     if fields.get("pid", "").isdigit():
         pid = int(fields["pid"])
-    return CtxLine(t, kind, step, target, pid, m.group("body"))
+    return CtxLine(t, kind, step, target, pid, m.group("body"), bad_target)
 
 
 # --------------------------------------------------------------------------------------------
@@ -376,11 +399,16 @@ class Watcher:
     """The rules, as a function of the events fed to it. It has no clock of its own: `now` is
     the latest time any event or `advance` has carried, so a replay and a live run take the
     same path. Every `check_*` method is one rule's check, and removing a method's body
-    removes that check and nothing else (the dry run's D4 does exactly that)."""
+    removes that check and nothing else (the dry run's D4 does exactly that).
 
-    def __init__(self, out, speak=False):
+    With `guard` (the live loop) a check that raises is heard once as "watcher error" and the
+    checks after it still run; without it (a replay, the tests) it raises, so a bug is seen."""
+
+    def __init__(self, out, speak=False, guard=False):
         self.out = out
         self.speak = speak
+        self.guard = guard
+        self.error_counts = {}
         self.say_queue = []
         self.muted = False
         self.now = None
@@ -407,7 +435,10 @@ class Watcher:
         self.step = None
         self.target = None
         self.step_t = None
-        self.load_active = False
+        self.load_active = False  # the load is running: load-start to load-stop
+        self.load_window = False  # 74 C applies: load-start to the first step=none after load-stop
+        self.load_stopped = False  # load-stop has come, and the window ends at the next step=none
+        self.bad_target = None  # the text of an unreadable CTX target, until a valid step line
         self.t_L = None
         self.b = None
         self.b_due = None
@@ -422,7 +453,6 @@ class Watcher:
         # derived from the helper's log
         self.hold_active = False
         self.hold_since = None
-        self.hold_ended_t = None
         self.engage_t = None
         self.restore_t = None
         self.clean_since = None
@@ -433,7 +463,7 @@ class Watcher:
         self.r2_since = {0: None, 1: None}
         self.tg_hit_t = None
         self.r2_held_since = None
-        self.f0_bad_since = None
+        self.f0_unjudged = deque()  # (t, mode) of out-of-set samples not yet old enough to judge
         self.r4_pending = []
         self.r10_since = None
         self.r11 = None
@@ -499,14 +529,32 @@ class Watcher:
         state.active = False
         self.out.line(self.now, "CLEAR", "%s no longer holds" % state.title)
 
-    def internal_error(self, error):
+    def internal_error(self, error, where="the live loop"):
         """A rule raised. The live loop goes on, and the operator is told once per episode: a
-        watcher that dies is only heard by the companion ten seconds later."""
-        trace = " | ".join(traceback.format_exc().strip().splitlines()[-4:])
-        self.out.line(self._stamp(), "ERROR", trace)
+        watcher that dies is only heard by the companion ten seconds later. A bug that raises on
+        every sample would write ten traceback lines a second into the file the operator is
+        reading, so a traceback is written for its first occurrence and every thousandth."""
+        key = (where, type(error).__name__, str(error)[:200])
+        count = self.error_counts[key] = self.error_counts.get(key, 0) + 1
+        if count == 1 or count % 1000 == 0:
+            trace = " | ".join(traceback.format_exc().strip().splitlines()[-4:])
+            self.out.line(self._stamp(), "ERROR", "%s (%s, occurrence %d)" % (trace, where, count))
         state = self.alerts.get("x-internal")
         if state is None or not state.active:
-            self.event("x-internal", "WATCHER ERROR", "%s: %s" % (type(error).__name__, error))
+            self.event(
+                "x-internal", "WATCHER ERROR",
+                "%s raised %s: %s; the other checks still run" % (where, type(error).__name__, error))
+
+    def _guard(self, check, *args):
+        """Run one check. Live, a check that raises is heard and the next one still runs: one
+        persistent bug must not silence rules 3, 4, 9 and 10 as well."""
+        if not self.guard:
+            check(*args)
+            return
+        try:
+            check(*args)
+        except Exception as error:  # noqa: BLE001  a bug in a rule must be heard, not fatal
+            self.internal_error(error, getattr(check, "__name__", "a check"))
 
     def active_alerts(self):
         return sorted(s.title for s in self.alerts.values() if s.active)
@@ -536,20 +584,23 @@ class Watcher:
         self.fan_samples += 1
         self.fan_hist.append(sample)
         self._trim(self.fan_hist, sample.t)
-        self._track_restore()
-        self._track_r11_release(sample)
-        self.check_r2_automatic(sample)
-        self.check_r2_held(sample)
-        self.check_r3_ftst(sample)
-        self.check_r3_f1_mode(sample)
-        self.check_r3_f0_mode(sample)
-        self.check_r3_hold(sample)
-        self.check_r4_verdict(sample)
-        self.check_r9_f1_follows(sample)
-        self.check_r10_floor(sample)
-        self.check_x_no_context(sample)
-        self.check_r11_time()
-        self._judge_pending()
+        self.ended_sources.discard("fans")  # a sampler that has started again is no longer over
+        guard = self._guard
+        guard(self._track_restore)
+        guard(self._track_r11_release, sample)
+        guard(self.check_r2_automatic, sample)
+        guard(self.check_r2_held, sample)
+        guard(self.check_r3_ftst, sample)
+        guard(self.check_r3_f1_mode, sample)
+        guard(self.check_r3_f0_mode, sample)
+        guard(self.check_r3_hold, sample)
+        guard(self.check_r4_verdict, sample)
+        guard(self.check_r9_f1_follows, sample)
+        guard(self.check_r10_floor, sample)
+        guard(self.check_x_no_context, sample)
+        guard(self.check_r11_time)
+        guard(self._judge_f0_modes)
+        guard(self._judge_pending)
 
     def check_r2_automatic(self, s):
         """Rule 2: an automatic fan whose actual speed stays under 0.8 of its target."""
@@ -605,25 +656,33 @@ class Watcher:
         self.level("r3-f1md", "ABORT 3", bad, "F1Md reads %s, outside {0, 3}" % mode)
 
     def check_r3_f0_mode(self, s):
-        """Rule 3: F0Md outside {0, 3} for 2 s with no explaining line. F0Md = 1 during a hold
-        is exempt."""
+        """Rule 3: F0Md outside {0, 3} for 2 s with no explaining line.
+
+        `F0Md = 1` while a hold is active is the hold, and is exempt: it does not count towards
+        the 2 s, so the clock starts when the hold ends, not when it began. A restore that did
+        not take is therefore heard 2 s after the restore, whether the hold lasted 30 s or 120.
+        A readback that lags the restore's stamp is absorbed by the same 2 s, so there is no
+        separate grace. Each out-of-set sample waits to be judged (`_judge_f0_modes`)."""
         mode = s.v.get("F0Md")
-        if mode is None or mode in SAFE_MODES:
-            self.f0_bad_since = None
+        if mode is None or mode in SAFE_MODES or (mode == 1 and self.hold_active):
+            self.f0_unjudged.clear()
             self.level("r3-f0md", "ABORT 3", False)
             return
-        if self.f0_bad_since is None:
-            self.f0_bad_since = s.t
-        since = self.f0_bad_since
-        lasted = s.t - since >= MODE_SECONDS
-        # A sample can still read 1 for a moment after the restore's log stamp: the stamp is
-        # taken when the write returns, the sample when its own read did.
-        recent = self.hold_ended_t is not None and s.t - self.hold_ended_t <= HOLD_END_GRACE
-        exempt = mode == 1 and (self.hold_active or recent)
-        explained = self._wrote("F0Md", since - EXPLAIN_BEFORE, since + EXPLAIN_AFTER)
-        self.level(
-            "r3-f0md", "ABORT 3", lasted and not exempt and not explained,
-            "F0Md has read %s since %s with no `Wrote F0Md` near it" % (mode, format_time(since)))
+        self.f0_unjudged.append((s.t, mode))
+
+    def _judge_f0_modes(self):
+        """Judge each out-of-set F0Md sample once it is 2 s old, if the mode has stayed out of the
+        set the whole time (a sample that returns to the set clears the queue). The explanation is
+        a `Wrote F0Md` of the value read, in that sample's own window [t - 2 s, t + 0.5 s]: an old
+        write cannot explain a later reading, and a write of 0x0 does not explain a reading of 1."""
+        delay = max(MODE_SECONDS, JUDGE_AFTER)
+        while self.f0_unjudged and self.f0_unjudged[0][0] + delay <= self.now:
+            t, mode = self.f0_unjudged.popleft()
+            explained = self._wrote_value("F0Md", mode, t - EXPLAIN_BEFORE, t + EXPLAIN_AFTER)
+            self.level(
+                "r3-f0md", "ABORT 3", not explained,
+                "F0Md read %g at %s and has stayed outside {0, 3} for %.0f s, with no `Wrote F0Md = "
+                "0x%x` in [-2 s, +0.5 s] of that sample" % (mode, format_time(t), delay, int(mode)))
 
     def check_r3_hold(self, s):
         """Rule 3, during a hold: F0Tg moved more than 1 RPM, or F0Md left 1, with no `Wrote`
@@ -683,6 +742,7 @@ class Watcher:
         self._bump(p.t)
         self.pkg_last_t = p.t
         self.package_samples += 1
+        self.ended_sources.discard("package")
         if p.hottest is not None:
             self.hottest = p.hottest
             self.pkg_hist.append((p.t, p.hottest))
@@ -690,12 +750,12 @@ class Watcher:
         mn = p.f.get("F0Mn")
         if mn is not None and mn > 0:
             self.f0mn = mn
-        self._resolve_b()
+        self._guard(self._resolve_b)
         if p.hottest is not None:
-            self.check_r1_absolute(p.hottest)
-            self.check_r1_loaded(p.hottest)
-            self.check_r1_rise(p.hottest)
-            self.check_r11_temperature(p.hottest)
+            self._guard(self.check_r1_absolute, p.hottest)
+            self._guard(self.check_r1_loaded, p.hottest)
+            self._guard(self.check_r1_rise, p.hottest)
+            self._guard(self.check_r11_temperature, p.hottest)
 
     def check_r1_absolute(self, hottest):
         self.level(
@@ -703,14 +763,18 @@ class Watcher:
             "hottest curated %.1f C is above %.0f C" % (hottest, TEMP_ABSOLUTE))
 
     def check_r1_loaded(self, hottest):
+        """74 C holds in a load window: from load-start to the first step=none after load-stop.
+        The machine leaves a load heat-soaked, so the window outlasts the load itself."""
         self.level(
-            "r1-loaded", "ABORT 1", self.load_active and hottest > TEMP_LOADED,
-            "hottest curated %.1f C is above %.0f C under load" % (hottest, TEMP_LOADED))
+            "r1-loaded", "ABORT 1", self.load_window and hottest > TEMP_LOADED,
+            "hottest curated %.1f C is above %.0f C in a load window" % (hottest, TEMP_LOADED))
 
     def check_r1_rise(self, hottest):
+        """B + 10 holds only in a step that no load window covers: a baseline taken at rest never
+        applies again after a load in the same step."""
         limit = None if self.b is None else self.b + TEMP_RISE
         rising = (
-            self.step is not None and not self.load_active and limit is not None
+            self.step is not None and not self.load_window and limit is not None
             and hottest > limit)
         self.level(
             "r1-rise", "ABORT 1", rising,
@@ -736,35 +800,36 @@ class Watcher:
                     "predicate is missing its process clause (F1)" % HELPER_PROCESS, "WARN")
             return
         msg = line.msg
-        self.check_x_fault(line)
-        self.check_r4_refused(line)
-        self.check_r7_prep_step(line)
+        self._guard(self.check_x_fault, line)
+        self._guard(self.check_r4_refused, line)
+        self._guard(self.check_r7_prep_step, line)
         if msg.startswith("Wrote"):
-            self.check_r5_write(line)
+            self._guard(self.check_r5_write, line)
             wrote = parse_wrote(msg)
             if wrote is not None:
-                self._track_write(line.t, wrote)
+                self._guard(self._track_write, line.t, wrote)
 
     def check_x_fault(self, line):
-        """Any `Fault` line from the helper. After CTX end it is a warning: the reinstall of the
-        main build logs some."""
+        """Any `Fault` line from the helper, at every stage of the run: a refused exit restore is
+        the one that matters most after the last step, and nothing is left to end by then."""
         if line.level != "Fault":
             return
         text = line.msg if len(line.msg) <= 300 else line.msg[:300] + "..."
-        if self.ended:
-            self.note("helper Fault line after CTX end: %s" % text, "WARN")
-        else:
-            self.event("x-fault", "HELPER FAULT", text)
+        self.event("x-fault", "HELPER FAULT", text)
 
     def check_r4_refused(self, line):
-        """Rule 4: an engagement refused, or an undo that could not be made."""
+        """Rule 4: an engagement refused, or an undo that could not be made. The phrases are
+        read where the helper puts them: the line begins `The engagement of fan N was refused
+        after M attempt(s): <detail>.`, and its outcome is the sentence after the detail, which is
+        the last. Nothing the detail quotes can stand in for the outcome."""
         msg = line.msg
-        if "Could not undo the engagement" in msg:
+        if msg.startswith("Could not undo the engagement of fan "):
             self.event("r4-reset", "ABORT 4 — RESET", "the hand-back of an engagement was refused")
-        elif "The engagement of fan" in msg and "was refused after" in msg:
-            if "Nothing was written." in msg:
+        elif _REFUSED_RE.match(msg):
+            outcome = msg.rsplit(". ", 1)[-1]
+            if outcome == "Nothing was written.":
                 self.note("an engagement was refused and nothing was written (not an abort)")
-            elif "the restore landed" in msg:
+            elif outcome.endswith("the restore landed."):
                 self.r4_pending.append((line.t, msg))
                 for s in self.fan_hist:  # the sample may have arrived before the line did
                     if s.t >= line.t:
@@ -817,17 +882,23 @@ class Watcher:
 
     def check_r7_prep_step(self, line):
         """Rule 7: a second preparation-step line after CTX armed."""
-        if self.armed and not self.ended and line.t > self.armed_t and (
+        if self.armed and line.t > self.armed_t and (
                 "The write path's preparation step" in line.msg):
             self._r7_fire("a second preparation-step line appeared")
 
     def _r7_fire(self, why):
+        """During a hold, ABORT 7, whatever CTX says. Otherwise HELPER RESTARTED, except after
+        CTX end: the reinstall of the main build replaces the helper by design, so a restart is a
+        note there. That is the one thing CTX end changes."""
+        if self.ended and not self.hold_active:
+            self.note("after CTX end: %s (the reinstall replaces the helper)" % why)
+            return
         title = "ABORT 7" if self.hold_active else "HELPER RESTARTED"
         self.event("r7", title, why)
 
     def _track_write(self, t, wrote):
         key, data, answer = wrote[0], wrote[1], wrote[2]
-        self.writes.append((t, key))
+        self.writes.append((t, key, data))
         self._trim(self.writes, t, key=lambda item: item[0])
         if key != "F0Md":
             return
@@ -842,21 +913,26 @@ class Watcher:
                 self.hold_active = True
                 self.hold_since = self.hold_since or t
         elif data == "0x0":
-            if self.hold_active:
-                self.hold_ended_t = t
             self.hold_active, self.hold_since = False, None
             if self.engage_t is not None:
                 self.restore_t, self.clean_since = t, None
                 self._track_restore()
 
     def _wrote(self, key, lo, hi):
-        return any(k == key and lo <= t <= hi for t, k in self.writes)
+        """Whether any `Wrote <key>` is stamped in [lo, hi]."""
+        return any(k == key and lo <= t <= hi for t, k, _ in self.writes)
+
+    def _wrote_value(self, key, value, lo, hi):
+        """Whether a `Wrote <key>` of the one-byte `value` is stamped in [lo, hi]."""
+        return any(
+            k == key and lo <= t <= hi and _byte(data) == value for t, k, data in self.writes)
 
     # ---------------------------------------------------------------- events: CTX and polls
 
     def on_ctx(self, c):
         self._bump(c.t)
         kind = c.kind
+        self._guard(self.check_x_bad_context, c)
         if kind == "armed":
             self.armed, self.armed_t = True, c.t
             self.armed_pids = frozenset([c.pid]) if c.pid else self.last_pgrep
@@ -864,20 +940,26 @@ class Watcher:
         elif kind == "step":
             if c.step in (None, "none"):
                 self.step, self.target, self.b, self.b_due = None, None, None, None
+                if self.load_stopped:  # the first step=none after load-stop ends the load window
+                    self.load_window = self.load_stopped = False
                 self.info("CTX step=none")
             else:
                 self.step, self.target, self.step_t = c.step, c.target, c.t
                 self.tg_hit_t, self.r2_held_since = None, None
                 self.b, self.b_due = None, c.t
-                self._resolve_b()
+                self._guard(self._resolve_b)
                 self.info("CTX step=%s target=%s" % (c.step, "none" if c.target is None else "%g" % c.target))
         elif kind == "load-start":
-            self.load_active, self.t_L = True, c.t
+            self.load_active, self.load_window, self.load_stopped, self.t_L = True, True, False, c.t
             if c.step == "1d":
                 self.r11 = {"t_L": c.t, "warned": False}
             self.info("CTX load-start step=%s" % c.step)
         elif kind == "load-stop":
             self.load_active = False
+            if self.step is None:  # no step is open to carry the window past the load
+                self.load_window = False
+            else:
+                self.load_stopped = True
             if self.r11 is not None:
                 self.r11 = None
                 self.level("r11-time", "ABORT 11 TIME", False)
@@ -887,24 +969,33 @@ class Watcher:
             self.event("test-alert", "TEST ALERT", "CTX test-alert: this is only a test", latch=0)
         elif kind == "end":
             self.ended = True
-            self.info("CTX end: the helper-restart, helper-fault and blind checks stand down")
-            for aid in ("r12-fans", "r12-package", "r12-logstream", "r7"):
-                if aid in self.alerts and self.alerts[aid].active:
-                    self.alerts[aid].active = False
+            self.info(
+                "CTX end: outside a hold, a helper restart is now a note; nothing else stands down")
         else:
             self.note("unknown CTX line: %s" % c.raw[:120])
+
+    def check_x_bad_context(self, c):
+        """A CTX line whose target cannot be read as RPM. An unreadable target would otherwise
+        leave rule 9 and the held-fan clause of rule 2 off with no word. It holds until a later
+        step line is valid, and is spoken."""
+        if c.kind == "step" or c.bad_target is not None:
+            self.bad_target = c.bad_target
+        self.level(
+            "x-bad-context", "BAD CONTEXT", self.bad_target is not None,
+            "the CTX target %r is not a number of RPM above 0: rule 9 and the held-fan clause of "
+            "rule 2 are off until a valid CTX step line is written" % (self.bad_target or "")[:40])
 
     def on_pgrep(self, t, pids):
         self._bump(t)
         if pids is not None:
             self.last_pgrep = frozenset(pids)
-        if pids is None or not self.armed or self.ended:
+        if pids is None or not self.armed:
             return
         if self.armed_pids is None:
             self.armed_pids = self.last_pgrep
             self.info("armed; helper PIDs %s" % sorted(self.armed_pids))
         else:
-            self.check_r7_restart(self.last_pgrep)
+            self._guard(self.check_r7_restart, self.last_pgrep)
 
     def check_r7_restart(self, pids):
         """Rule 7: after CTX armed, the helper's PID changes or disappears."""
@@ -916,7 +1007,7 @@ class Watcher:
         self._bump(t)
         self.pressure = level
         if level is not None:
-            self.check_r6_pressure(level)
+            self._guard(self.check_r6_pressure, level)
 
     def check_r6_pressure(self, level):
         self.level(
@@ -933,6 +1024,13 @@ class Watcher:
             self.pmset_first = text
             self.note("pmset -g therm changed: %s" % " | ".join(text.split("\n"))[:300])
 
+    def on_source_stop(self, name, t):
+        """A sampler's own `stop` line: that source is over, and is not a stalled recorder. This
+        is the only thing that ends rule 12's check for a source, whatever CTX says."""
+        self._bump(t)
+        self.ended_sources.add(name)
+        self.info("%s file: its sampler wrote its stop line; rule 12 no longer waits for it" % name)
+
     def on_logstream(self, t, alive):
         self._bump(t)
         self.logstream_alive = alive
@@ -945,16 +1043,18 @@ class Watcher:
         for aid, state in self.alerts.items():
             if state.kind == "event" and state.active and self.now >= state.latch_until:
                 state.active = False
-        self._judge_pending()
-        self._resolve_b()
-        self.check_r4_escalate()
-        self.check_r8_restore()
-        self.check_r11_time()
-        self.check_r12_blind()
-        self._pump_speech()
+        guard = self._guard
+        guard(self._judge_f0_modes)
+        guard(self._judge_pending)
+        guard(self._resolve_b)
+        guard(self.check_r4_escalate)
+        guard(self.check_r8_restore)
+        guard(self.check_r11_time)
+        guard(self.check_r12_blind)
+        guard(self._pump_speech)
         if self.next_status is not None and self.now >= self.next_status:
             self.next_status = self.now + STATUS_SECONDS
-            self.out.line(self.now, "STATUS", self.status_text())
+            guard(self._status)
 
     def check_r8_restore(self):
         """Rule 8: no verified restore 4 min after engage is a warning, 5 min is ABORT 8."""
@@ -984,8 +1084,9 @@ class Watcher:
             "F1Tg still reads 0 %.0f s after load-start step=1d" % elapsed)
 
     def check_r12_blind(self):
-        """Rule 12: the record has gone blind. During a hold it is an abort, otherwise a no-go."""
-        if self.ended or self.now is None:
+        """Rule 12: the record has gone blind. During a hold it is an abort, otherwise a no-go. No
+        CTX line stands it down: a source ends only with its own sampler's stop line."""
+        if self.now is None:
             return
         title = "ABORT 12" if self.hold_active else "BLIND — NO GO"
         fan_ref = self.fan_last_t if self.fan_last_t is not None else self.t_start
@@ -1083,6 +1184,9 @@ class Watcher:
                 state.next_speak = self.now + REPEAT_SECONDS
                 self.say_queue.append(_voice(state.title))
 
+    def _status(self):
+        self.out.line(self.now, "STATUS", self.status_text())
+
     def status_text(self):
         f = self.fan.v if self.fan is not None else {}
 
@@ -1090,7 +1194,7 @@ class Watcher:
             return "%s=%s" % (key, "?" if key not in f else "%g" % f[key])
 
         thresholds = ["T>%g" % TEMP_ABSOLUTE]
-        if self.load_active:
+        if self.load_window:
             thresholds.append("T>%g(load)" % TEMP_LOADED)
         elif self.step is not None and self.b is not None:
             thresholds.append("T>%.1f(B+10)" % (self.b + TEMP_RISE))
@@ -1112,7 +1216,9 @@ class Watcher:
 # Inputs: reading files, replaying them, tailing them.
 # --------------------------------------------------------------------------------------------
 
-PRIORITY = {"ctx": 0, "log": 1, "fan": 2, "package": 3, "poll": 4}
+PRIORITY = {
+    "ctx": 0, "log": 1, "fan": 2, "fan_stop": 2, "package": 3, "package_stop": 3, "poll": 4}
+STOP_KINDS = {"fans": "fan_stop", "package": "package_stop"}
 
 
 def read_lines(path):
@@ -1139,10 +1245,14 @@ def load_events(paths, replay_polls=None):
         sample = parse_fan_line(raw)
         if sample is not None:
             add(sample.t, "fan", sample)
+        elif (stop := parse_stop_line(raw)) is not None:
+            add(stop, "fan_stop", stop)
     for raw in read_lines(paths.get("package")):
         sample = parse_package_line(raw)
         if sample is not None:
             add(sample.t, "package", sample)
+        elif (stop := parse_stop_line(raw)) is not None:
+            add(stop, "package_stop", stop)
     for raw in read_lines(paths.get("helper_log")):
         line = parse_log_line(raw)
         if line is not None:
@@ -1164,6 +1274,10 @@ def dispatch(watcher, kind, payload):
         watcher.on_fan(payload)
     elif kind == "package":
         watcher.on_package(payload)
+    elif kind == "fan_stop":
+        watcher.on_source_stop("fans", payload)
+    elif kind == "package_stop":
+        watcher.on_source_stop("package", payload)
     elif kind == "log":
         watcher.on_log(payload)
     elif kind == "ctx":
@@ -1358,7 +1472,7 @@ def run_replay(args):
 def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
     paths = input_paths(args)
     out = Output(args.out)
-    watcher = Watcher(out)
+    watcher = Watcher(out, guard=True)
     watcher.muted = args.mute
     speaker = None if args.mute else Speaker(spawn)
     tails = {k: Tail(paths[k]) for k in ("fans", "package", "helper_log", "phases")}
@@ -1381,6 +1495,12 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
             kind, parse = parsers[name]
             for raw in tail.read_new(limit):
                 parsed = parse(raw, now) if kind == "ctx" else parse(raw)
+                if parsed is None and name in STOP_KINDS:
+                    stop = parse_stop_line(raw)
+                    if stop is not None:
+                        seq += 1
+                        events.append((stop, PRIORITY[STOP_KINDS[name]], seq, STOP_KINDS[name], stop))
+                    continue
                 if parsed is None or (kind == "ctx" and parsed.t is None):
                     continue
                 seq += 1

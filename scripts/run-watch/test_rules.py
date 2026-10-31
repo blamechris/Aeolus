@@ -22,6 +22,7 @@ LINE_REFUSED_UNDO = (
     "Its hand-back was refused, so the fan may still be off automatic control.")
 LINE_COULD_NOT_UNDO = (
     "Could not undo the engagement of fan 0: refused. The fan may still be off automatic control.")
+RESET, VERIFY = "ABORT 4 — RESET", "ABORT 4 — VERIFY"
 
 
 class Rule1Temperature(unittest.TestCase):
@@ -51,6 +52,65 @@ class Rule1Temperature(unittest.TestCase):
         w = replay(run.copy().patch_hottest(25, 26, 52.1))
         self.assertEqual(titles(w), ["ABORT 1"])
         self.assertIn("B + 10", w.raised[0].detail)
+
+    def run_1d(self):
+        """1d in the runbook's order: GO at rest, then the load, then L2 while the hold and the
+        step are still open, then V and step=none. The idle machine reads 42.0, so B is 42.0."""
+        run = idle(80).add_ctx(5, "step=1d target=5777 GO").add_ctx(15, "load-start step=1d")
+        return run.add_ctx(30, "load-stop").add_ctx(60, "step=none")
+
+    def test_a_rest_baseline_does_not_apply_again_after_a_load_in_the_same_step(self):
+        # 55 C is over B + 10 = 52 C, but the machine is heat-soaked from the load, and the load
+        # window holds until the step ends: only 74 C applies.
+        w = replay(self.run_1d().patch_hottest(40, 41, 55.0))
+        self.assertEqual(titles(w), [])
+        self.assertTrue(any("B = 42.00" in text for text in lines(w, "INFO")))  # B was taken
+
+    def test_74_holds_after_the_load_stops_until_the_first_step_none(self):
+        self.assertEqual(titles(replay(self.run_1d().patch_hottest(40, 41, 74.0))), [])
+        w = replay(self.run_1d().patch_hottest(40, 41, 74.1))
+        self.assertEqual(titles(w), ["ABORT 1"])
+        self.assertIn("load window", w.raised[0].detail)
+        self.assertAlmostEqual(first(w, "ABORT 1"), 40.0, 1)
+        # ... and after the step=none that ends the window, 74.1 C is rule 1's business no more
+        self.assertEqual(titles(replay(self.run_1d().patch_hottest(65, 66, 74.1))), [])
+
+    def test_the_window_ends_at_that_step_none_and_the_next_step_has_its_own_baseline(self):
+        run = self.run_1d().add_ctx(65, "step=1a target=3000 GO").patch_hottest(75, 76, 55.0)
+        w = replay(run)
+        self.assertEqual(titles(w), ["ABORT 1"])
+        self.assertIn("B + 10", w.raised[0].detail)
+
+    def run_1b(self):
+        """1b's order: the load starts first; 1b's step=none comes while it still runs; 1b' is
+        under load; L2 comes during 1b'; its step=none ends the window."""
+        run = idle(80).add_ctx(5, "load-start step=1b").add_ctx(10, "step=1b target=5777 GO")
+        run.add_ctx(25, "step=none").add_ctx(30, "step=1b' target=none GO")
+        return run.add_ctx(40, "load-stop").add_ctx(55, "step=none")
+
+    def test_a_step_none_before_load_stop_does_not_end_the_window(self):
+        # 1b' opens at 30 s with B taken under load; at 33 s 60 C is over B + 10 and under 74
+        self.assertEqual(titles(replay(self.run_1b().patch_hottest(33, 34, 60.0))), [])
+        self.assertEqual(titles(replay(self.run_1b().patch_hottest(33, 34, 74.1))), ["ABORT 1"])
+
+    def test_1b_prime_is_under_74_after_the_load_stops_too(self):
+        self.assertEqual(titles(replay(self.run_1b().patch_hottest(45, 46, 60.0))), [])
+        self.assertEqual(titles(replay(self.run_1b().patch_hottest(45, 46, 74.1))), ["ABORT 1"])
+        self.assertEqual(titles(replay(self.run_1b().patch_hottest(60, 61, 74.1))), [])
+
+    def test_a_load_stop_with_no_step_open_has_no_step_to_carry_the_window(self):
+        run = idle(60).add_ctx(5, "load-start step=1b").add_ctx(15, "load-stop")
+        run.add_ctx(20, "step=1a target=3000 GO").patch_hottest(40, 41, 55.0)
+        self.assertEqual(titles(replay(run)), ["ABORT 1"])  # a step no window covers: B + 10
+
+    def test_the_status_line_shows_74_for_as_long_as_the_window_lasts(self):
+        w = replay(self.run_1d())
+        status = [(t - synth.T0, text) for t, level, text in w.memory.lines if level == "STATUS"]
+        after_load_stop = [text for t, text in status if 40 <= t < 45]
+        after_step_none = [text for t, text in status if 65 <= t < 70]
+        self.assertEqual((len(after_load_stop), len(after_step_none)), (1, 1))
+        self.assertIn("T>74(load)", after_load_stop[0])
+        self.assertNotIn("T>74(load)", after_step_none[0])
 
     def test_rise_does_not_apply_before_a_go_after_step_none_or_under_load(self):
         run = idle(40).add_ctx(15, "step=1a target=3000 GO").add_ctx(30, "step=none")
@@ -113,6 +173,26 @@ class Rule2ActualSpeed(unittest.TestCase):
         self.assertTrue(25.0 <= first(w, "ABORT 2") <= 26.0, first(w, "ABORT 2"))
         # A stall during the spin-up allowance is not counted.
         self.assertEqual(titles(replay(held(7.0).scale_fan(15.2, 90, "F0Ac", 2.0))), [])
+
+    def test_a_held_fan_still_spinning_up_ten_seconds_after_its_target_is_not_an_abort(self):
+        # F0Tg reads the target at 5.1 s and the fan takes 12 s to reach 80 % of it. Counting
+        # starts 10 s in, so only 2 s of that is counted: a spin-up, not a stall. Without the
+        # allowance the same 12 s is counted whole and is ABORT 2 at 15.1 s.
+        run = idle(60).add_ctx(4.95, "step=1a target=3000 GO")
+        run.add_log(5.0, wrote("Ftst", "0x1")).add_log(5.03, wrote("F0Md", "0x1"))
+        run.add_log(5.06, wrote("F0Tg", "0x0 0x0 0x80 0x3f"))
+        run.patch_fan(5.1, 60, Ftst=1, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+        run.scale_fan(5.1, 17.1, "F0Ac", 0.5)
+        self.assertEqual(titles(replay(run)), [])
+
+    def test_fan_one_is_checked_during_a_hold(self):
+        # Apple's fan stalls while fan 0 is held: abort 2 is still the automatic fan's rule.
+        run = idle(60).hold(go=10, restore=50, target=3000)
+        run.patch_fan(10, 60, F1Tg=1458.0, F1Ac=1458.0).scale_fan(25, 40, "F1Ac", 0.5)
+        w = replay(run)
+        self.assertEqual(titles(w), ["ABORT 2"])
+        self.assertTrue(35.0 <= first(w, "ABORT 2") <= 35.3, first(w, "ABORT 2"))
+        self.assertIn("fan 1", w.raised[0].detail)
 
     def test_a_well_formed_hold_raises_nothing(self):
         run = idle(60).hold(go=10, restore=40, target=3000)
@@ -182,20 +262,70 @@ class Rule3Unexplained(unittest.TestCase):
         explained = hold(3002.0).add_log(19.9, wrote("F0Tg", "0x0"))
         self.assertNotIn("ABORT 3", titles(replay(explained)))
 
-    def test_a_long_holds_restore_is_not_an_abort_while_a_sample_still_reads_one(self):
-        # The write history is kept for 90 s, so by the restore of a two-minute hold the engage
-        # write that explained F0Md = 1 is gone. The restore's log stamp comes when the write
-        # returns; a sample read just before it can still say 1 for a moment, after the hold has
-        # ended. That must not be an abort.
-        run = idle(170).hold(go=10, restore=130, target=3000)
-        self.assertEqual(titles(replay(run)), [])
-        with mock.patch.object(rw, "HOLD_END_GRACE", 0.0):
-            self.assertIn("ABORT 3", titles(replay(run.copy())))
+    def restored(self, hold_seconds, lag=None, go=3.0):
+        """A hold of `hold_seconds` whose restore turn answers 0x00 and puts Ftst back to 0, with
+        F0Md still reading 1 afterwards: for `lag` seconds after the restore's stamp (a readback
+        that is late), or for good (a restore that did not take). Returns (run, restore)."""
+        restore = go + hold_seconds
+        run = idle(restore + 30.0, f0mn=1350.0)
+        run.hold(go=go, restore=restore, target=3000, close=False)
+        end = 1e9 if lag is None else restore + lag
+        run.patch_fan(restore + 0.2, end, Ftst=0, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+        return run, restore
 
-    def test_the_grace_ends_half_a_second_after_the_restore(self):
-        run = idle(170).hold(go=10, restore=130, target=3000)
-        late = run.copy().patch_fan(130.0, 133.0, F0Md=1)  # still 1 three seconds after the restore
-        self.assertIn("ABORT 3", titles(replay(late)))
+    def test_a_restore_that_did_not_take_is_heard_two_seconds_after_it_whatever_the_hold(self):
+        # F0Md stuck at 1 after the restore. The hold's own F0Md = 1 is exempt, so the 2 s clock
+        # starts when the hold ends. Before, it started at the engagement: a hold under 90 s was
+        # silent until ABORT 8, and a longer one was heard 0.6 s after the restore, before the
+        # readback could have caught up.
+        for hold in (30.0, 60.0, 85.0, 120.0):
+            with self.subTest(hold=hold):
+                run, restore = self.restored(hold)
+                w = replay(run)
+                self.assertEqual(titles(w), ["ABORT 3"])
+                late = first(w, "ABORT 3") - restore
+                self.assertTrue(2.0 <= late <= 4.5, late)
+
+    def test_a_restore_whose_readback_lags_is_not_an_abort(self):
+        for hold in (60.0, 120.0):
+            for lag in (0.7, 1.5):
+                with self.subTest(hold=hold, lag=lag):
+                    run, _ = self.restored(hold, lag=lag)
+                    self.assertEqual(titles(replay(run)), [])
+
+    def test_a_readback_that_lags_past_two_seconds_is_an_abort(self):
+        run, restore = self.restored(120.0, lag=2.5)
+        w = replay(run)
+        self.assertEqual(titles(w), ["ABORT 3"])
+        self.assertTrue(2.0 <= first(w, "ABORT 3") - restore <= 4.5)
+
+    def test_the_hold_itself_is_not_counted_towards_the_two_seconds(self):
+        # a long hold with F0Md = 1 throughout, restored cleanly: nothing, at any length
+        for hold in (30.0, 120.0):
+            run = idle(3.0 + hold + 30.0).hold(go=3.0, restore=3.0 + hold, target=3000)
+            self.assertEqual(titles(replay(run)), [], hold)
+
+    def test_a_write_of_another_value_does_not_explain_a_reading(self):
+        # F0Md reads 1 with no hold, 0.1 s after a `Wrote F0Md = 0x0`: that explains a 0
+        run = idle(30).add_ctx(5, "step=1a target=3000 GO").add_log(9.9, wrote("F0Md", "0x0"))
+        run.patch_fan(10, 13, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+        w = replay(run)
+        self.assertIn("ABORT 3", titles(w))
+        self.assertTrue(12.0 <= first(w, "ABORT 3") <= 12.2, first(w, "ABORT 3"))
+
+    def test_a_write_of_the_value_read_explains_it_for_its_own_window_only(self):
+        # a refused `Wrote F0Md = 0x1` (so no hold): the samples within 2 s after it are explained
+        # ...
+        def reading(write_at):
+            run = idle(30).add_ctx(5, "step=1a target=3000 GO")
+            run.add_log(write_at, wrote("F0Md", "0x1", answer="0x82"))
+            return run.patch_fan(10, 13, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+
+        self.assertNotIn("ABORT 3", titles(replay(reading(9.9))))
+        # ... and a write three seconds earlier no longer explains the reading
+        self.assertIn("ABORT 3", titles(replay(reading(7.0))))
+        # a write after the reading has run on for 2 s does not reach back to it either
+        self.assertIn("ABORT 3", titles(replay(reading(13.6))))
 
     def test_during_a_hold_the_mode_may_not_leave_one_unwritten(self):
         run = idle(40).add_ctx(4.9, "step=1a target=3000 GO").add_log(5, wrote("F0Md", "0x1"))
@@ -229,6 +359,36 @@ class Rule4Refused(unittest.TestCase):
         w = replay(self.refusal(LINE_REFUSED_LANDED).patch_fan(10.0, 10.2, F0Md=1))
         self.assertIn("ABORT 4 — RESET", titles(w))
         self.assertNotIn("ABORT 4 — VERIFY", titles(w))
+
+    def test_a_fan_one_mode_outside_the_set_in_the_first_sample_is_reset(self):
+        for value in (1, 2):
+            with self.subTest(F1Md=value):
+                w = replay(self.refusal(LINE_REFUSED_LANDED).patch_fan(10.0, 10.2, F1Md=value))
+                self.assertIn(RESET, titles(w))
+                self.assertNotIn(VERIFY, titles(w))
+
+    def test_a_phrase_the_detail_quotes_is_not_the_outcome(self):
+        # the detail says "the restore landed", the outcome (the last sentence) says it did not
+        quoted = (
+            "The engagement of fan 0 was refused after 3 attempt(s): the plane said the restore "
+            "landed. Its hand-back was refused, so the fan may still be off automatic control.")
+        w = replay(self.refusal(quoted))
+        self.assertEqual(titles(w), [RESET])
+
+    def test_a_nothing_was_written_in_the_detail_does_not_hide_a_landed_undo(self):
+        quoted = (
+            "The engagement of fan 0 was refused after 2 attempt(s): the plane said Nothing was "
+            "written. It was registered with § 3 and handed back, and the restore landed.")
+        w = replay(self.refusal(quoted))
+        self.assertEqual(titles(w), [VERIFY])
+
+    def test_another_lines_phrase_inside_a_detail_is_not_that_line(self):
+        quoted = (
+            "The engagement of fan 0 was refused after 1 attempt(s): see Could not undo the "
+            "engagement of fan 1. Nothing was written.")
+        w = replay(self.refusal(quoted))
+        self.assertEqual(titles(w), [])
+        self.assertTrue(any("nothing was written" in text for text in notes(w)))
 
     def test_a_dirty_sample_before_the_line_is_not_the_first_after_it(self):
         w = replay(self.refusal(LINE_REFUSED_LANDED).patch_fan(9.0, 9.95, Ftst=1))
@@ -460,6 +620,16 @@ class Rule9Rule10(unittest.TestCase):
         self.assertTrue(11.0 < first(w, "ABORT 10") <= 11.3, first(w, "ABORT 10"))
         self.assertNotIn("ABORT 10", titles(replay(self.floor(1.0))))
 
+    def test_a_recovery_above_the_floor_restarts_the_second(self):
+        # below the floor for 0.5 s, above it for 0.5 s, below it for 0.5 s: never a second at a
+        # time, so no abort. A recovery that did not restart the count would make it 1.1 s.
+        run = self.floor(0.0, tg=3000.0).patch_fan(10, 40, F0Md=1, F0Tg=3000.0)
+        run.patch_fan(10, 10.5, F0Tg=0.0).patch_fan(11, 11.5, F0Tg=0.0)
+        self.assertNotIn("ABORT 10", titles(replay(run)))
+        # the same dips run together are a second and a half
+        together = self.floor(0.0, tg=3000.0).patch_fan(10, 40, F0Md=1, F0Tg=3000.0)
+        self.assertIn("ABORT 10", titles(replay(together.patch_fan(10, 11.5, F0Tg=0.0))))
+
     def test_the_floor_is_the_packages_f0mn_once_read(self):
         self.assertIn("ABORT 10", titles(replay(self.floor(2.0, tg=1700, mn=1800.0))))
         self.assertNotIn("ABORT 10", titles(replay(self.floor(2.0, tg=1800, mn=1800.0))))
@@ -539,20 +709,139 @@ class Rule12Blind(unittest.TestCase):
         w = replay(run)
         self.assertIn("BLIND — NO GO", titles(w))
 
-    def test_nothing_after_ctx_end(self):
-        run = idle(40).add_ctx(15, "end").drop(20, 40, "fans").drop(20, 40, "package")
+    def test_a_sampler_that_stops_without_a_stop_line_is_blind(self):
+        run = idle(60).drop(20, 60, "fans")
+        self.assertEqual(set(titles(replay(run, mark_ended=False))), {"BLIND — NO GO"})
+
+    def test_a_samplers_own_stop_line_ends_its_source_and_only_that_one(self):
+        # an event at 59 s keeps the clock running after the samplers' last samples
+        run = idle(60).drop(20, 60, "fans").add_stop("fans", 20.0).add_poll(59, "pressure", level=0)
+        self.assertEqual(titles(replay(run, mark_ended=False)), [])
+        both = run.copy().drop(20, 60, "package").add_stop("package", 20.0)
+        self.assertEqual(titles(replay(both, mark_ended=False)), [])
+        # a stop line for the fans says nothing about the package file
+        other = run.copy().drop(20, 60, "package")
+        self.assertEqual(set(titles(replay(other, mark_ended=False))), {"BLIND — NO GO"})
+
+    def test_a_sampler_that_starts_again_after_its_stop_line_is_watched_again(self):
+        run = idle(80).drop(20, 40, "fans").add_stop("fans", 20.0).drop(60, 80, "fans")
+        w = replay(run, mark_ended=False)
+        self.assertEqual(set(titles(w)), {"BLIND — NO GO"})
+        self.assertTrue(61.9 <= first(w, "BLIND — NO GO") <= 62.3, first(w, "BLIND — NO GO"))
+
+
+class CtxEnd(unittest.TestCase):
+    """`CTX end` changes one thing: outside a hold, a helper restart is a note. Nothing else
+    stands down, and in a hold every abort stays armed."""
+
+    PREP = "The write path's preparation step enumerated 2 fan(s) [0, 1], found the force key"
+
+    def after_end(self, hold):
+        run = idle(60).add_ctx(3, "armed pid=100").add_poll(4, "pgrep", pids=[100])
+        run.add_ctx(8, "end")
+        return run.hold(go=10, restore=50, target=3000) if hold else run
+
+    def test_a_fan_gap_in_a_hold_is_abort_12(self):
+        w = replay(self.after_end(True).drop(25, 29, "fans"))
+        self.assertEqual(set(titles(w)), {"ABORT 12"})
+
+    def test_a_pid_change_in_a_hold_is_abort_7(self):
+        w = replay(self.after_end(True).add_poll(30, "pgrep", pids=[101]))
+        self.assertEqual(titles(w), ["ABORT 7"])
+        w = replay(self.after_end(True).add_poll(30, "pgrep", pids=[]))
+        self.assertEqual(titles(w), ["ABORT 7"])
+
+    def test_a_second_preparation_step_line_in_a_hold_is_abort_7(self):
+        w = replay(self.after_end(True).add_log(1, self.PREP).add_log(30, self.PREP))
+        self.assertEqual(titles(w), ["ABORT 7"])
+
+    def test_could_not_undo_in_a_hold_is_reset_and_a_fault(self):
+        w = replay(self.after_end(True).add_log(30, LINE_COULD_NOT_UNDO, "Fault"))
+        self.assertEqual(set(titles(w)), {RESET, "HELPER FAULT"})
+
+    def test_a_pid_change_with_no_hold_is_only_a_note(self):
+        w = replay(self.after_end(False).add_poll(30, "pgrep", pids=[101]))
+        self.assertEqual(titles(w), [])
+        self.assertTrue(any("after CTX end" in text and "[100] -> [101]" in text for text in notes(w)))
+
+    def test_a_vanished_helper_with_no_hold_is_only_a_note(self):
+        self.assertEqual(titles(replay(self.after_end(False).add_poll(30, "pgrep", pids=[]))), [])
+
+    def test_a_second_preparation_step_line_with_no_hold_is_only_a_note(self):
+        w = replay(self.after_end(False).add_log(1, self.PREP).add_log(30, self.PREP))
+        self.assertEqual(titles(w), [])
+        self.assertTrue(any("preparation-step" in text for text in notes(w)))
+
+    def test_without_the_end_line_the_same_pid_change_is_an_alert(self):
+        run = idle(60).add_ctx(3, "armed pid=100").add_poll(4, "pgrep", pids=[100])
+        self.assertEqual(titles(replay(run.add_poll(30, "pgrep", pids=[101]))), ["HELPER RESTARTED"])
+
+    def test_a_fault_with_no_hold_is_a_spoken_alert(self):
+        w = replay(self.after_end(False).add_log(30, "Could not restore Ftst", "Fault"), speak=True)
+        self.assertEqual(titles(w), ["HELPER FAULT"])
+        self.assertEqual(set(w.take_speech()), {"helper fault"})
+
+    def test_a_gap_with_no_hold_is_still_blind(self):
+        w = replay(self.after_end(False).drop(20, 24, "fans"))
+        self.assertEqual(set(titles(w)), {"BLIND — NO GO"})
+        w = replay(self.after_end(False).drop(20, 27, "package"))
+        self.assertEqual(set(titles(w)), {"BLIND — NO GO"})
+
+    def test_the_log_stream_dying_is_still_blind(self):
+        run = self.after_end(False).add_poll(5, "logstream", alive=True)
+        self.assertEqual(titles(replay(run.add_poll(30, "logstream", alive=False))), ["BLIND — NO GO"])
+
+    def test_a_reading_after_the_end_is_judged_as_before(self):
+        self.assertEqual(titles(replay(self.after_end(False).patch_hottest(30, 31, 90.0))), ["ABORT 1"])
+
+
+class BadContext(unittest.TestCase):
+    """A CTX target that cannot be read as RPM would switch off rule 9 and the held-fan clause of
+    rule 2 without a word. It is a spoken alert instead."""
+
+    def hold_with(self, text):
+        # Apple demands 5500 RPM of fan 1 during the hold: ABORT 9 if the target is 5777
+        run = idle(60).patch_fan(0, 60, F1Tg=5500.0, F1Ac=5500.0)
+        run.add_ctx(4.95, "step=1b target=%s GO" % text)
+        run.add_log(5.0, wrote("Ftst", "0x1")).add_log(5.03, wrote("F0Md", "0x1"))
+        run.add_log(5.06, wrote("F0Tg", "0x0 0x0 0x80 0x3f"))
+        return run.patch_fan(5.1, 60, Ftst=1, F0Md=1, F0Tg=5777.0, F0Ac=5777.0)
+
+    def test_a_target_that_is_not_rpm_is_bad_context(self):
+        for text in ("5,777", "5777rpm", "nan", "inf", "0", "-5", "1e3", "5_777", "5777.", "",
+                     "0x1691", "five"):
+            with self.subTest(target=text):
+                w = replay(self.hold_with(text))
+                self.assertIn("BAD CONTEXT", titles(w))
+                self.assertNotIn("ABORT 9", titles(w))  # the rule that is off, now heard about
+
+    def test_a_readable_target_is_not(self):
+        for text in ("5777", "5777.5", "100"):
+            with self.subTest(target=text):
+                self.assertNotIn("BAD CONTEXT", titles(replay(self.hold_with(text))))
+        self.assertIn("ABORT 9", titles(replay(self.hold_with("5777"))))  # and the rule is live
+
+    def test_none_is_not_bad_context(self):
+        run = idle(30).add_ctx(5, "step=1b' target=none GO")
         self.assertEqual(titles(replay(run)), [])
+
+    def test_it_is_spoken_and_a_valid_step_line_ends_it(self):
+        # the corrected line gives a target Apple's 5500 RPM is under 0.9 of, so rule 9 is quiet
+        w = replay(self.hold_with("5,777").add_ctx(9, "step=1b target=6500 GO"), speak=True)
+        self.assertEqual(titles(w), ["BAD CONTEXT"])
+        self.assertEqual(w.take_speech(), ["bad context"])
+        self.assertEqual(w.active_alerts(), [])
+        self.assertTrue(any("BAD CONTEXT no longer holds" in text for text in lines(w, "CLEAR")))
+
+    def test_a_bad_target_on_any_ctx_line_is_heard(self):
+        run = idle(30).add_ctx(5, "step=none target=abc")
+        self.assertIn("BAD CONTEXT", titles(replay(run)))
 
 
 class Extras(unittest.TestCase):
     def test_a_fault_line(self):
         w = replay(idle(30).add_log(10, "Liveness watchdog fired", "Fault"))
         self.assertEqual(titles(w), ["HELPER FAULT"])
-
-    def test_a_fault_after_end_is_a_warning(self):
-        w = replay(idle(30).add_ctx(5, "end").add_log(10, "Something", "Fault"))
-        self.assertEqual(titles(w), [])
-        self.assertEqual(len(lines(w, "WARN")), 1)
 
     def test_f0md_one_with_no_open_step(self):
         run = idle(30).add_log(9.9, wrote("F0Md", "0x1")).add_log(10.0, wrote("F0Tg", "0x0"))

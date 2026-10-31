@@ -229,6 +229,34 @@ class LiveLoop(unittest.TestCase):
         self.assertEqual(system.spoken().count("watcher error"), 3)
         self.assertIn(" ERROR ", read(os.path.join(directory, "watch.log")))
 
+    def test_one_rule_that_always_raises_does_not_silence_the_others(self):
+        # Each case breaks one check for good and puts a violation in front of a check that comes
+        # after it in the same event. The raising check is heard (once), and the later one still
+        # fires: before, the raise ended the whole event's dispatch.
+        cases = (
+            ("check_r2_automatic", "a fan sample", "ABORT 3",
+             lambda: idle(80).patch_fan(30, 30.1, F1Md=1)),
+            ("check_r1_absolute", "a package sample", "ABORT 1",
+             lambda: idle(80).add_ctx(5, "load-start step=1b").patch_hottest(30, 31, 74.1)),
+            ("check_x_fault", "a log line", "ABORT 4 — RESET",
+             lambda: idle(80).add_log(30, "Could not undo the engagement of fan 0: refused.", "Fault")),
+        )
+        for name, event, expected, build in cases:
+            with self.subTest(broken=name, event=event):
+                with mock.patch.object(rw.Watcher, name, side_effect=ValueError("always")):
+                    watcher, system, directory = live(build(), synth.T0 + 5, synth.T0 + 45)
+                found = [r.title for r in watcher.raised]
+                self.assertIn(expected, found)
+                self.assertEqual(found.count("WATCHER ERROR"), 1)
+                self.assertTrue(any("watcher error" in phrase for phrase in system.spoken()))
+
+    def test_a_check_that_raises_on_every_sample_writes_one_traceback_not_hundreds(self):
+        # 400 fan samples reach the broken check in this run; the operator is tailing watch.log
+        with mock.patch.object(rw.Watcher, "check_r2_automatic", side_effect=ValueError("always")):
+            watcher, _, directory = live(idle(80), synth.T0 + 5, synth.T0 + 45)
+        self.assertGreater(watcher.fan_samples, 300)
+        self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR "), 1)
+
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
             with self.assertRaises(ValueError):

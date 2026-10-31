@@ -15,6 +15,7 @@ from support import captures_dir
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "synthetic")
+SAY_PATH = "/usr/bin/say"
 
 
 def skeleton(value):
@@ -124,6 +125,14 @@ class WatcherDown(unittest.TestCase):
             with open(fake, "w", encoding="utf-8") as handle:
                 handle.write('#!/bin/sh\necho "$@" >> "%s"\n' % record)
             os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR)
+            # The shipped script calls /usr/bin/say and nothing the environment names, so the
+            # test runs a copy with that one path replaced by the recorder: no real say.
+            script = os.path.join(bin_dir, "watcher-down.sh")
+            with open(os.path.join(HERE, "watcher-down.sh"), encoding="utf-8") as handle:
+                shipped = handle.read()
+            self.assertEqual(shipped.count(SAY_PATH), 1)
+            with open(script, "w", encoding="utf-8") as handle:
+                handle.write(shipped.replace(SAY_PATH, fake))
             if beat_age is not None:
                 beat = os.path.join(d, "watch.hb")
                 with open(beat, "w", encoding="utf-8") as handle:
@@ -131,8 +140,8 @@ class WatcherDown(unittest.TestCase):
                 os.utime(beat, (time.time() - beat_age, time.time() - beat_age))
             args = [d] if defaults else [d, "1", "0.5"]
             child = subprocess.Popen(
-                ["/bin/sh", os.path.join(HERE, "watcher-down.sh")] + args,
-                env=dict(os.environ, SAY=fake), stdin=subprocess.DEVNULL,
+                ["/bin/sh", script] + args,
+                env=dict(os.environ), stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 time.sleep(seconds)
@@ -159,6 +168,13 @@ class WatcherDown(unittest.TestCase):
         # Run with no arguments but the directory: the first look is at once.
         self.assertEqual(self.run_companion(beat_age=8.0, seconds=1.0, defaults=True), [])
         self.assertEqual(self.run_companion(beat_age=12.0, seconds=1.0, defaults=True), ["watcher down"])
+
+    def test_it_speaks_through_the_systems_say_and_nothing_the_environment_names(self):
+        # An environment variable must not be able to choose the executable that runs on run day.
+        with open(os.path.join(HERE, "watcher-down.sh"), encoding="utf-8") as handle:
+            shipped = handle.read()
+        self.assertIn('%s "watcher down"' % SAY_PATH, shipped)
+        self.assertNotIn("SAY", shipped)
 
     def test_the_loop_is_five_lines(self):
         with open(os.path.join(HERE, "watcher-down.sh"), encoding="utf-8") as handle:

@@ -114,6 +114,29 @@ class LogLineTests(unittest.TestCase):
         self.assertFalse(rw.parse_log_line(json.dumps(record)).foreign)
 
 
+class StopTests(unittest.TestCase):
+    def test_a_samplers_stop_line(self):
+        line = json.dumps(synth.stop_record(synth.T0 + 5.0, 50))
+        self.assertAlmostEqual(rw.parse_stop_line(line), synth.T0 + 5.0, 3)
+        self.assertIsNone(rw.parse_fan_line(line))  # it is not a sample
+        self.assertIsNone(rw.parse_package_line(line))
+
+    def test_nothing_else_is_one(self):
+        self.assertIsNone(rw.parse_stop_line(json.dumps(synth.fan_record(synth.T0, 1))))
+        self.assertIsNone(rw.parse_stop_line(json.dumps(synth.start_record(synth.FAN_KEYS, 0.1))))
+        self.assertIsNone(rw.parse_stop_line('{"kind":"stop"}'))
+        self.assertIsNone(rw.parse_stop_line("Filtering the log data"))
+
+
+class WriteValueTests(unittest.TestCase):
+    def test_a_one_byte_writes_value(self):
+        self.assertEqual(rw._byte("0x1"), 1)
+        self.assertEqual(rw._byte("0x03"), 3)
+        self.assertEqual(rw._byte("0x0"), 0)
+        for text in ("0x0 0x0 0x80 0x3f", "1", "0x", "0x123", "", None):
+            self.assertIsNone(rw._byte(text), text)
+
+
 class CtxTests(unittest.TestCase):
     def test_each_form(self):
         parse = rw.parse_ctx_line
@@ -128,6 +151,22 @@ class CtxTests(unittest.TestCase):
         self.assertEqual(parse("1761870001.5 CTX armed pid=542").pid, 542)
         self.assertEqual(parse("1761870001.5 CTX test-alert").kind, "test-alert")
         self.assertEqual(parse("1761870001.5 CTX end").kind, "end")
+
+    def test_a_target_is_rpm_or_it_is_refused(self):
+        for text in ("5777", "5777.5", "100"):
+            self.assertEqual(rw.parse_ctx_line("1761870000.1 CTX step=1b target=%s GO" % text).bad_target, None)
+        for text in ("5,777", "5777rpm", "nan", "inf", "0", "0.0", "-5", "1e3", "5_777", "",
+                     "9" * 400):
+            c = rw.parse_ctx_line("1761870000.1 CTX step=1b target=%s GO" % text)
+            self.assertEqual((c.target, c.bad_target), (None, text), text)
+        c = rw.parse_ctx_line("1761870000.1 CTX step=1b' target=none GO")
+        self.assertEqual((c.target, c.bad_target), (None, None))
+        self.assertEqual(rw.parse_ctx_line("1761870000.1 CTX step=1a GO").bad_target, None)
+
+    def test_parse_rpm(self):
+        self.assertEqual(rw.parse_rpm("5777"), 5777.0)
+        for text in ("0", "-1", "nan", "inf", "1e3", " 5", "5 ", None, 5777):
+            self.assertIsNone(rw.parse_rpm(text), text)
 
     def test_iso_stamp_and_missing_stamp(self):
         self.assertEqual(rw.parse_ctx_line("2026-10-31T02:19:52Z CTX load-stop").t, 1793413192.0)

@@ -5,6 +5,6 @@
 D=${1:?usage: watcher-down.sh <capture dir> [max age] [period]}; AGE=${2:-10}; EVERY=${3:-3}
 while :; do
   hb=$(stat -f %m "$D/watch.hb" 2>/dev/null || echo 0)
-  [ $(( $(date +%s) - hb )) -gt "$AGE" ] && "${SAY:-/usr/bin/say}" "watcher down"
+  [ $(( $(date +%s) - hb )) -gt "$AGE" ] && /usr/bin/say "watcher down"
   sleep "$EVERY"
 done

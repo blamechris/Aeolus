@@ -117,6 +117,7 @@ class Run:
     def __init__(self, fans, packages, t0):
         self.fans, self.packages, self.t0 = fans, packages, t0
         self.log, self.ctx, self.polls = [], [], []
+        self.stops = {}  # "fans" / "package" -> seconds from t0 of a sampler's `stop` line
 
     # ------------------------------------------------------------------ construction
 
@@ -152,6 +153,7 @@ class Run:
     def copy(self):
         clone = Run(copy.deepcopy(self.fans), copy.deepcopy(self.packages), self.t0)
         clone.log, clone.ctx, clone.polls = list(self.log), list(self.ctx), list(self.polls)
+        clone.stops = dict(self.stops)
         return clone
 
     # ------------------------------------------------------------------ patches (seconds from t0)
@@ -260,11 +262,16 @@ class Run:
         self.polls.append(dict(fields, t=self.t0 + seconds, kind=kind))
         return self
 
-    def hold(self, go, restore, target, step="1a", sit=None):
+    def add_stop(self, which, seconds):
+        """End a sampler's file with its own `stop` line at `seconds` from t0."""
+        self.stops[which] = seconds
+        return self
+
+    def hold(self, go, restore, target, step="1a", sit=None, close=True):
         """A well-formed hold: the CTX line, the unlock, the engage, the floor target, the fan
         spinning up over 4 s and holding, then the restore. `restore` is when the restore turn's
         first write is stamped; the samples return to Apple's set 0.2 s later. With `restore`
-        None the hold is never restored."""
+        None the hold is never restored. `close` False leaves the step open (no `step=none`)."""
         self.add_ctx(go - 0.05, "step=%s target=%d GO" % (step, target))
         self.add_log(go, wrote("Ftst", "0x1"))
         self.add_log(go + 0.03, wrote("F0Md", "0x1"))
@@ -282,16 +289,21 @@ class Run:
         if restore is not None:
             self.add_log(restore, wrote("F0Md", "0x0"))
             self.add_log(restore + 0.03, wrote("Ftst", "0x0"))
-            self.add_ctx(restore + (sit if sit is not None else 12.0), "step=none")
+            if close:
+                self.add_ctx(restore + (sit if sit is not None else 12.0), "step=none")
         return self
 
     # ------------------------------------------------------------------ serialisation
 
     def fan_lines(self):
-        return [_line(start_record(FAN_KEYS, 0.1))] + [_line(r) for r in self.fans]
+        stop = [_line(stop_record(self.t0 + self.stops["fans"], len(self.fans)))] if (
+            "fans" in self.stops) else []
+        return [_line(start_record(FAN_KEYS, 0.1))] + [_line(r) for r in self.fans] + stop
 
     def package_lines(self):
-        return [_line(start_record(PACKAGE_KEYS, 1))] + [_line(r) for r in self.packages]
+        stop = [_line(stop_record(self.t0 + self.stops["package"], len(self.packages)))] if (
+            "package" in self.stops) else []
+        return [_line(start_record(PACKAGE_KEYS, 1))] + [_line(r) for r in self.packages] + stop
 
     def log_lines(self):
         ordered = sorted(self.log, key=lambda r: r["timestamp"])

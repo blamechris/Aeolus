@@ -156,9 +156,12 @@ class WatchLog(unittest.TestCase):
         self.assertRegex(mid, r"since_engage=\d+s")
         self.assertRegex(mid, r"since_tL=\d+s")
 
-    def test_ctx_end_stands_the_blind_and_restart_checks_down(self):
+    def test_ctx_end_says_what_it_changes(self):
         w = replay(idle(40).add_ctx(5, "end"))
-        self.assertTrue(any("stand down" in t for t in lines(w, "INFO")))
+        end = [t for t in lines(w, "INFO") if t.startswith("CTX end")]
+        self.assertEqual(len(end), 1)
+        self.assertIn("a helper restart is now a note", end[0])
+        self.assertIn("nothing else stands down", end[0])
 
 
 if __name__ == "__main__":
