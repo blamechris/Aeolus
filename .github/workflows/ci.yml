@@ -119,12 +119,27 @@ jobs:
       # `HelperHardwareSightingTests` is an `extension HelperHardwareTests`, so its tests carry the
       # name of the suite they extend and need no entry of their own. A suite that reads the SMC and
       # is added later has to be named here and in docs/TESTING.md.
+      #
+      # `AEOLUS_EXPECT_POOL_OF_ONE` turns on CooperativePoolWidthTests, which fails if this run is
+      # wider than one thread. That is the canary: without it a toolchain that stopped honouring
+      # LIBDISPATCH_COOPERATIVE_POOL_STRICT would leave this step green and checking nothing. But a
+      # test that is turned off is skipped, not failed, and `swift test` exits 0 for a skip, so a
+      # step that lost the variable from its `env:` would run wide, skip the canary and stay green.
+      # So the step also requires the canary's own `passed` line in the output, which is the one
+      # thing a skip, a rename or a dropped variable cannot leave behind.
+      #
+      # The output goes through `tee`, so the job log shows how far a wedge got. `swift test`'s
+      # status is read from PIPESTATUS, not `tee`'s, and a nonzero one ends the step with that code
+      # before the canary is looked for. `shell: bash` and `set -o pipefail` are both spelled out:
+      # the default shell sets `-e` and not `pipefail`, and a pipe without it reports `tee`.
       - name: Test on a cooperative pool of one
         timeout-minutes: 10
+        shell: bash
         env:
           LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
           AEOLUS_EXPECT_POOL_OF_ONE: "1"
         run: |
+          set -euo pipefail
           SKIPPED_SUITES=(
               HelperHardwareTests
               WatchdogHardwareTests
@@ -142,9 +157,30 @@ jobs:
           for SUITE in "${SKIPPED_SUITES[@]}"; do
               SKIP_ARGS+=(--skip "\\.${SUITE}(/|\$)")
           done
+
+          LOG="${RUNNER_TEMP:-/tmp}/pool-of-one-test.log"
+          TEST_STATUS=0
           swift test --skip-build --build-system native \
             "${SKIP_ARGS[@]}" \
-            --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)'
+            --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)' \
+            2>&1 | tee "${LOG}" || TEST_STATUS=${PIPESTATUS[0]}
+          if [ "${TEST_STATUS}" -ne 0 ]; then
+              echo "error: swift test exited ${TEST_STATUS}."
+              exit "${TEST_STATUS}"
+          fi
+
+          # The name is the display name in Tests/AeolusHelperTests/CooperativePoolWidthTests.swift,
+          # which is what swift-testing prints. The log is a file, not a pipe into `grep -q`, for
+          # the reason the probe step in `monitor-app` gives.
+          CANARY='Test "No two tasks hold a pool thread at once" passed'
+          if ! grep -qF -- "${CANARY}" "${LOG}"; then
+              echo "error: the pool-of-one canary did not run and pass, so nothing shows this run was on a pool of one."
+              echo "It is skipped unless AEOLUS_EXPECT_POOL_OF_ONE=1 reaches the test run, and swift test exits 0"
+              echo "for a skip. Check this step's env: block and the test's display name in"
+              echo "Tests/AeolusHelperTests/CooperativePoolWidthTests.swift."
+              exit 1
+          fi
+          echo "POOL-OF-ONE CANARY PASSED: ${CANARY}"
 
   test-release:
     name: Test (release)

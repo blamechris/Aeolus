@@ -153,6 +153,13 @@ and nothing wedges on a pool of three either, so without it a toolchain that sto
 `LIBDISPATCH_COOPERATIVE_POOL_STRICT` would leave the step green and checking nothing. Run it
 without the libdispatch variable to see it fail.
 
+The test is skipped, not failed, when `AEOLUS_EXPECT_POOL_OF_ONE` is missing, and `swift test`
+exits 0 for a skip. A CI step that lost the variable from its `env:` block would therefore run on
+the runner's three threads, skip the canary and stay green. So the step also requires the canary's
+own line in its output, `Test "No two tasks hold a pool thread at once" passed`, and fails without
+it; and it ends with `swift test`'s own exit status, which a `| tee` would otherwise replace. The
+line is the test's display name, so renaming the test means renaming it in `ci.yml` too.
+
 `--build-system native` is deprecated on this toolchain (Apple Swift 6.4 prints "has been
 deprecated and will be removed in a future release"), and it is what makes this one process:
 without it, `swift test` on that toolchain runs each target in its own process, which is not the

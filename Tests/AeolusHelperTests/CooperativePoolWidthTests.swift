@@ -15,6 +15,10 @@ import os
 /// separate one, not `LIBDISPATCH_COOPERATIVE_POOL_STRICT` itself, so that a run which unsets
 /// libdispatch's variable and keeps this one can be made to fail, which is the mutation below.
 ///
+/// The suite is skipped, not failed, when this variable is missing, and a skip exits 0. So the
+/// CI step also requires this test's `passed` line in its output, by the display name on the
+/// `@Test` below; renaming that name means renaming it in `ci.yml`'s check too.
+///
 /// The test starts several tasks that each hold their thread for a fixed time and counts how
 /// many are inside that time at once. A pool of one cannot make that more than 1. A pool of two
 /// or more makes it more than 1 as soon as two of the tasks are scheduled together, which six
