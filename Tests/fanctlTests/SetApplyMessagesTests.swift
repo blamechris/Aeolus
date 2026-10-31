@@ -177,11 +177,17 @@ struct SetApplyMessagesTests {
 
     /// `leaseExpired`'s own description says the fans "have returned to automatic control"; a
     /// restarted helper's says "any manual control it was holding ended with it; ask for the fans
-    /// again"; a request nobody answered says the helper "returns those fans to automatic control
-    /// when it handles that". Nobody observed any of that, and advice to ask again is no use to a
-    /// run that never re-acquires, so `set` does not repeat them: it says what it saw.
+    /// again"; a request nobody answered, and a connection given up, say the helper "returns those
+    /// fans to automatic control when it handles that". Nobody observed any of that, and advice
+    /// to ask again is no use to a run that never re-acquires, so `set` does not repeat them: it
+    /// says what it saw.
     ///
-    /// **Mutation:** return the error's own description in `SetCommand.describe`. Run: red.
+    /// The negative assertions are the client's own words, checked against
+    /// `HelperClientError.errorDescription` below, so a reworded description cannot leave them
+    /// matching nothing.
+    ///
+    /// **Mutations**, each red: return the error's own description in `SetCommand.describe`;
+    /// move `.helperNeverAnswered` to the `break` arm; move `.connectionAbandoned` to it.
     @Test(
         "A transport failure or an expired lease is described by what was seen, not by its claim"
     )
@@ -191,20 +197,35 @@ struct SetApplyMessagesTests {
             HelperClientError.helperNeverAnswered(after: .seconds(57)),
             HelperClientError.connectionAbandoned,
         ]
+        let claims = [
+            "returned to automatic", "returns those fans", "when it handles that",
+            "ended with it", "ask for the fans again", "Acquire a new lease",
+        ]
         for error in seen {
             let words = SetCommand.describe(error)
-            #expect(!words.contains("returned to automatic"), "\(error): \(words)")
-            #expect(!words.contains("return those fans"), "\(error): \(words)")
-            #expect(!words.contains("ended with it"), "\(error): \(words)")
-            #expect(!words.contains("ask for the fans again"), "\(error): \(words)")
-            #expect(!words.contains("Acquire a new lease"), "\(error): \(words)")
+            for claim in claims {
+                #expect(!words.contains(claim), "\(error): \(words)")
+            }
+        }
+        // Each claim is in the description it rules out, so none of the assertions above can
+        // pass by matching nothing.
+        let own = seen.map { ($0 as? LocalizedError)?.errorDescription ?? "" }.joined()
+        for claim in claims {
+            #expect(own.contains(claim), "no client description says \"\(claim)\" any more")
         }
         #expect(SetCommand.describe(AeolusXPCFault.leaseExpired).contains("expired"))
         #expect(
             SetCommand.describe(HelperClientError.helperRestarted).contains("interrupted"))
+        // fanctl's words, which the client's own ("This copy of Aeolus …") do not contain.
         #expect(
             SetCommand.describe(HelperClientError.helperNeverAnswered(after: .seconds(57)))
-                .contains("did not answer within"))
+                .contains("did not answer within 57"))
+        #expect(
+            SetCommand.describe(HelperClientError.helperNeverAnswered(after: .seconds(57)))
+                .contains("this copy of fanctl gave up on the connection"))
+        #expect(
+            SetCommand.describe(HelperClientError.connectionAbandoned)
+                .contains("This copy of fanctl gave up on its connection to the helper"))
         // Every other error is still its own words.
         let other = AeolusXPCFault.leaseUnknown
         #expect(SetCommand.describe(other) == other.errorDescription)
