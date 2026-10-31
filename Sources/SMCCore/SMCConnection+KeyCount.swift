@@ -169,7 +169,7 @@ extension SMCConnection {
     }
 
     /// A second file-private logger on `SMCConnection`, with the same subsystem and category as the
-    /// one in `SMCConnection.swift`, so a fault from the decode files where it always did. The
+    /// one in `SMCConnection.swift`, so a fault from the decode is logged where it always was. The
     /// other is `private`, and `private` is file-scoped, so this file cannot reach it.
     private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "SMCConnection")
 }
