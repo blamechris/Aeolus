@@ -768,7 +768,7 @@ extension ScriptedFirmware {
         record(.engageManualControl(fan: fan.index), at: admission)
         _ = try condition(ofFan: fan.index)
         do {
-            let step = try unlockStep(fanAt: fan.index)
+            let step = try unlockStep(of: fan)
             if step == .engaged { ledger.recordEngaged(fanAt: fan.index) }
             return step
         } catch {
@@ -791,8 +791,9 @@ extension ScriptedFirmware {
     /// first step, write the mode, then read back, set the key, or wait. A first step whose
     /// pre-state read fails says it failed before its first write, as B1's plane must (ADR 0014's
     /// #410 refused-hand-back amendment); the read-back's failure, after the write, is thrown as
-    /// it is.
-    private func unlockStep(fanAt index: Int) throws -> EngagementStep {
+    /// it is. A read-back of `1` holds the target at the floor before it answers (P1′ amendment).
+    private func unlockStep(of fan: CommandableFan) throws -> EngagementStep {
+        let index = fan.index
         let first = try ledger.admitStep(fanAt: index) == .first
         if first {
             let raw: UInt8
@@ -815,7 +816,9 @@ extension ScriptedFirmware {
             }
             var raw = try readRawMode(ofFan: index)
             if case .readsBack(let scripted) = unlock { raw = scripted }
-            return try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            let engaged = try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            try holdTargetAtFloor(of: fan)
+            return engaged
         case .setForceKey:
             duringModeWrite?()
             duringModeWrite = nil
@@ -942,6 +945,20 @@ extension ScriptedFirmware {
         throw FanControlPlaneError.targetNotConfirmed(
             index: index, commandedRPM: target.rpm,
             readBackRPM: try condition(ofFan: index).targetRPM)
+    }
+
+    /// The engaged turn's target rule, `EngagementRules.engagedTarget(reading:of:)`, after the
+    /// read-back of `1` (ADR 0014's P1′ amendment, decision 4): `F<n>Tg` read through the stage,
+    /// and a raise written and read back as a command's is (`writeTarget(_:)`), so a floor the
+    /// firmware refuses or does not hold throws and the driver undoes.
+    fileprivate func holdTargetAtFloor(of fan: CommandableFan) throws {
+        try requireReadable(context: "fan \(fan.index) target")
+        let target = Self.readback(
+            try condition(ofFan: fan.index).targetRPM, describing: "F\(fan.index)Tg")
+        guard case .raise(let floor) = try EngagementRules.engagedTarget(reading: target, of: fan)
+        else { return }
+        keyWrites.append(.target(fan: fan.index, rpm: floor.rpm))
+        try writeTarget(floor)
     }
 }
 

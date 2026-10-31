@@ -8,7 +8,8 @@
 // value the driver's refusal carried.
 //
 // **Apple's management is a set of raw values** (ADR 0014's P1′ amendment): the pre-state admits
-// what `FirmwareFanMode(rawByte:)` calls automatic, and the engaged value stays outside that set.
+// what `FirmwareFanMode(rawByte:)` calls automatic, the engaged value stays outside that set, and
+// the turn that reads it back holds `F<n>Tg` at or above the fan's floor (`engagedTarget`).
 
 /// D3's decisions, as functions of what the firmware answered.
 ///
@@ -86,6 +87,43 @@ enum EngagementRules {
             throw FanControlPlaneError.engagementNotConfirmed(index: index, rawMode: rawMode)
         }
         return .engaged
+    }
+
+    /// What the turn that read back `engagedRawMode` does with `F<n>Tg` before it answers
+    /// `.engaged` (ADR 0014's P1′ amendment, decision 4).
+    enum EngagedTarget: Sendable, Hashable {
+        /// At or above the floor: the turn answers `.engaged` and writes nothing more. Under load,
+        /// Apple's target is already there.
+        case holds
+        /// Below the floor — `0` at rest, where Apple's stopped state leaves it: the turn takes
+        /// `F<n>Tg`'s fresh key info, writes this, reads it back within
+        /// `ReclamationLimits.targetToleranceRPM`, and only then answers `.engaged`. Any other
+        /// outcome throws, and the driver undoes.
+        case raise(to: AuthorisedFanTarget)
+    }
+
+    /// The engaged turn's target rule, read the same turn as the read-back (P1′ amendment,
+    /// decision 4). Without it a fan engaged at rest sits in manual at a target of `0` until its
+    /// command's turn, and every stuck state from there is a stopped fan (`CLAUDE.md` rule 3).
+    ///
+    /// The floor is the permit's own, `fan.target(for: fan.envelope.lowestCommandableRPM)`: inside
+    /// the fan's commandable range, so never below `FanSafetyLimits.minimumManualRPM`, and never a
+    /// value the permit could not mint. A target at or above it is kept, never lowered.
+    ///
+    /// - Throws: `.readFailed` for a target that did not read, or that decoded to a value that is
+    ///   not finite. The turn has no floor to judge it against, so the driver undoes.
+    static func engagedTarget(
+        reading target: FanRPMReadback, of fan: CommandableFan
+    ) throws -> EngagedTarget {
+        let key = "F\(fan.index)Tg after the engaged read-back"
+        switch target {
+        case .unreadable(let reason):
+            throw FanControlPlaneError.readFailed(detail: "\(key): \(reason)")
+        case .rpm(let value):
+            let rpm = try FanControlPlaneValue.finite(value, describing: key).get()
+            let floor = fan.target(for: fan.envelope.lowestCommandableRPM)
+            return rpm >= floor.rpm ? .holds : .raise(to: floor)
+        }
     }
 
     /// Step 3's force-key write: accepted awaits the yield; anything else is thrown, an unanswered
