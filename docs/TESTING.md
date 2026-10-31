@@ -137,9 +137,11 @@ rather than relying on it as a default, so when SwiftPM removes it the step fail
 option and does not quietly become a different run.
 
 Without the flag, on Apple Swift 6.4, the same command runs nine processes, each on a pool of one
-(the variable is inherited), and passes in about the same time. A wedge is one test waiting on a
-release that only the pool can deliver, and both are in the same process, so a per-target run
-should catch it as the one-process run does; that is reasoned, not run on the real suite. What it
-cannot do is put two targets' tests in one pool. Nothing in the tables above depends on that.
+(the variable is inherited), and passes: 64 s, against 55 s for the one-process run, on the
+development machine. A scratch test that parks the pool's only thread on a release the pool has
+to deliver wedged under both build systems there, so the per-target run still catches the first
+table's shape. What it cannot do is put two targets' tests in one pool.
 
-`timeout` does not exist on macOS; `gtimeout` is from `brew install coreutils`.
+`timeout` does not exist on macOS; `gtimeout` is from `brew install coreutils`. It ends
+`swift test` but not always its child: after a wedge, `swiftpm-testing-helper` can survive at 0%
+CPU with launchd as its parent. Find it with `ps` and kill it by its PID.
