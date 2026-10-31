@@ -8,8 +8,8 @@ import SMCCore
 ///
 /// ## Why this exists ([#208](https://github.com/blamechris/Aeolus/issues/208))
 ///
-/// Those prints used to render `FirmwareFanMode`, which is `value == 0 ? .automatic : .manual`
-/// (`FirmwareFanMode(declaredByFirmware:)`), as `0` or `1`. The `1` in that table meant
+/// Those prints used to render `FirmwareFanMode`, which was then `value == 0 ? .automatic :
+/// .manual` (`FirmwareFanMode(declaredByFirmware:)`), as `0` or `1`. The `1` in that table meant
 /// "non-zero", not "the firmware declared `1`" — `2`, `0x80`, or a decode artefact would have
 /// produced the same row — and the research document's headline claim, that the key
 /// "genuinely takes the value `1`", rested on it. A reader coding the Apple Silicon unlock
@@ -85,8 +85,9 @@ struct RawFanModeReading: Sendable, Equatable {
         "`raw` is the declared type and the bytes of a second read through SMCConnection.read, "
         + "before any decode. `decoded` is the production plane's read, one supervisor turn per "
         + "fan exactly as startup reconciliation reads them, folded by FirmwareFanMode: exactly "
-        + "0 is automatic (Apple's thermal management) and any other value is manual. A decoded "
-        + "`manual` therefore means non-zero, and only the raw bytes say which value (#208)."
+        + "0 or 3 is automatic (Apple's thermal management, which reads 3 while it has the fan "
+        + "stopped; ADR 0014's P1′ amendment) and any other value is manual. A decoded `manual` "
+        + "therefore means neither 0 nor 3, and only the raw bytes say which value (#208)."
 
     /// The whole print of the `everyFanModeIsReadableAtStart` row: one entry per line, the
     /// legend, then the row's own note about fans found in manual (empty when there are none).
@@ -135,7 +136,7 @@ struct RawFanModeReading: Sendable, Equatable {
     func entry(decodedAutomatic: Bool) -> String {
         var line =
             "\(keyName) raw \(rawDescription); "
-            + "decoded \(decodedAutomatic ? "automatic" : "manual (non-zero)")"
+            + "decoded \(decodedAutomatic ? "automatic" : "manual (not 0 or 3)")"
         if let folded = foldedAutomatic, folded != decodedAutomatic {
             line +=
                 " [DISAGREE: the raw bytes fold to \(folded ? "automatic" : "manual"); the key "

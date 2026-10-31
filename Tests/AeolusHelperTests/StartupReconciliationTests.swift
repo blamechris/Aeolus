@@ -580,7 +580,7 @@ struct ForeignManualControlReportingTests {
 
     /// A fan Aeolus's own live lease covers is never reported as another program's.
     ///
-    /// `F<n>Md` reads non-zero (the decoded fold, #208) for a fan Aeolus is holding and for a
+    /// `F<n>Md` reads manual (the decoded fold, #208) for a fan Aeolus is holding and for a
     /// fan somebody else is holding, and names no owner either way — so the lease exclusion in
     /// `reportingForeignControl(of:observedMode:heldByAeolus:awaitingConfirmation:reconciliation:)`
     /// is the only thing between a user and being told to go and quit software that is not
@@ -680,9 +680,10 @@ struct ForeignManualControlReportingTests {
     /// exemption keyed on `isReclaimedBySystem`, on the argument that it would "blame a third
     /// party for the operating system's act". `refusalForGrant` has no such exemption — it reads
     /// the fan fresh and refuses `.foreignManualControl` — so the exemption made the snapshot
-    /// read `.available` beside a refusal. Under ADR 0014's U0 the system's hold reads raw `0`
-    /// and never reaches this answer; a reclaimed fan that reads manual is one another program
-    /// took, or a diagnosis that was wrong, and the grant's answer is the current one.
+    /// read `.available` beside a refusal. The system's hold reads raw `0` or `3`, Apple's set
+    /// (ADR 0014's P1′ amendment), and never reaches this answer; a reclaimed fan that reads
+    /// manual is one another program took, or a diagnosis that was wrong, and the grant's answer
+    /// is the current one.
     ///
     /// **Mutation:** re-add `, !fan.isReclaimedBySystem` to the `held` guard in
     /// `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:

@@ -208,7 +208,9 @@ actor ScriptedFirmware {
 
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
     struct FanCondition: Sendable, Hashable {
-        var mode: FirmwareFanMode
+        /// `F<n>Md` as the firmware holds it, never the fold: Apple leaves `0` or `3`, and an
+        /// engagement writes `1` (ADR 0014's P1′ amendment). `mode`, its fold, is an extension.
+        var rawMode: UInt8
         var targetRPM: Double
         var minimumRPM: Double
         var maximumRPM: Double
@@ -231,7 +233,7 @@ actor ScriptedFirmware {
             minimumRPM: Double = 1_350,
             maximumRPM: Double = 5_777
         ) {
-            self.mode = mode
+            rawMode = Self.byte(writtenFor: mode)
             self.targetRPM = targetRPM
             self.actualRPM = actualRPM
             self.minimumRPM = minimumRPM
@@ -358,9 +360,9 @@ actor ScriptedFirmware {
     /// ledger records the clear as issued, which is the lingering key the preparation step finds.
     private(set) var isForceKeySet = false
 
-    /// Raw `F<n>Md` values the unlock model's reads answer in place of the fold of a fan's mode:
-    /// one `FirmwareFanMode` cannot hold, or a read-back that disagrees with a write that landed
-    /// (#406). Set by `setRawMode(_:ofFan:)`.
+    /// Raw `F<n>Md` values the unlock model's reads answer in place of a fan's own byte
+    /// (`FanCondition.rawMode`): a read-back that disagrees with a write that landed (#406). Set by
+    /// `setRawMode(_:ofFan:)`.
     private var rawModes: [Int: UInt8] = [:]
 
     /// Fans whose next read-back, after a mode write, does not answer while every other read does.
@@ -610,6 +612,19 @@ extension ScriptedFirmware {
         try modeReadable(ofFan: index, context: "fan \(index) mode").mode
     }
 
+    /// `firmwareMode(ofFan:)`'s byte, unfolded: what the snapshot's provider hands its own decode.
+    func firmwareRawMode(ofFan index: Int) throws -> UInt8 {
+        try modeReadable(ofFan: index, context: "fan \(index) mode").rawMode
+    }
+
+    /// Moves fan `index` as Apple's controller does — `condition`'s mode byte and speeds, the
+    /// bounds untouched — recording no attempt, for `setMode`'s reason (`stoppedByApple`).
+    func setByApple(_ condition: FanCondition, ofFan index: Int) {
+        fans[index]?.rawMode = condition.rawMode
+        fans[index]?.targetRPM = condition.targetRPM
+        fans[index]?.actualRPM = condition.actualRPM
+    }
+
     /// The one rule every read of `F<n>Md` answers by — `readControlState(ofFan:)`, the unlock
     /// model's raw read, and `firmwareMode(ofFan:)`: the SMC answers this stage, the fan exists,
     /// and its mode key is not one the stage leaves unanswered.
@@ -753,7 +768,7 @@ extension ScriptedFirmware {
         record(.engageManualControl(fan: fan.index), at: admission)
         _ = try condition(ofFan: fan.index)
         do {
-            let step = try unlockStep(fanAt: fan.index)
+            let step = try unlockStep(of: fan)
             if step == .engaged { ledger.recordEngaged(fanAt: fan.index) }
             return step
         } catch {
@@ -776,8 +791,9 @@ extension ScriptedFirmware {
     /// first step, write the mode, then read back, set the key, or wait. A first step whose
     /// pre-state read fails says it failed before its first write, as B1's plane must (ADR 0014's
     /// #410 refused-hand-back amendment); the read-back's failure, after the write, is thrown as
-    /// it is.
-    private func unlockStep(fanAt index: Int) throws -> EngagementStep {
+    /// it is. A read-back of `1` holds the target at the floor before it answers (P1′ amendment).
+    private func unlockStep(of fan: CommandableFan) throws -> EngagementStep {
+        let index = fan.index
         let first = try ledger.admitStep(fanAt: index) == .first
         if first {
             let raw: UInt8
@@ -800,7 +816,9 @@ extension ScriptedFirmware {
             }
             var raw = try readRawMode(ofFan: index)
             if case .readsBack(let scripted) = unlock { raw = scripted }
-            return try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            let engaged = try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            try holdTargetAtFloor(of: fan)
+            return engaged
         case .setForceKey:
             duringModeWrite?()
             duringModeWrite = nil
@@ -814,8 +832,8 @@ extension ScriptedFirmware {
     }
 
     /// Makes the unlock model's raw reads of fan `index`'s `F<n>Md` — a first step's pre-state and
-    /// a step's read-back — answer `raw`, or the fold of its mode again for `nil`, recording no
-    /// attempt, for `setMode`'s reason. The snapshot's read, `firmwareMode(ofFan:)`, still folds.
+    /// a step's read-back — answer `raw`, or the fan's own byte again for `nil`, recording no
+    /// attempt, for `setMode`'s reason. Every other read of the key still answers the fan's byte.
     /// In this extension, so the actor's own body stays inside `type_body_length`'s warning.
     func setRawMode(_ raw: UInt8?, ofFan index: Int) {
         rawModes[index] = raw
@@ -829,18 +847,18 @@ extension ScriptedFirmware {
         failingReadBacks.insert(index)
     }
 
-    /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual, unless
+    /// Raw `F<n>Md`, through the stage's read behaviour: the fan's own byte, unless
     /// `setRawMode(_:ofFan:)` set another.
     private func readRawMode(ofFan index: Int) throws -> UInt8 {
         let fan = try modeReadable(ofFan: index, context: "fan \(index) mode")
-        return rawModes[index] ?? (fan.mode == .automatic ? 0 : 1)
+        return rawModes[index] ?? fan.rawMode
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses
     /// it outright; a discarding stage accepts it and leaves the fan as it was. One the stage
     /// leaves unanswered answers nothing, whatever else it says, and lands as the stage says.
     private func answerModeWrite(fanAt index: Int) throws -> FirmwareWriteAnswer {
-        keyWrites.append(.mode(fan: index, value: 1))
+        keyWrites.append(.mode(fan: index, value: EngagementRules.engagedRawMode))
         ledger.recordModeWriteIssued(fanAt: index)
         if let unanswered = stage.unansweredModeWrites[index] {
             if unanswered == .landed { fans[index]?.mode = .manual }
@@ -927,6 +945,20 @@ extension ScriptedFirmware {
         throw FanControlPlaneError.targetNotConfirmed(
             index: index, commandedRPM: target.rpm,
             readBackRPM: try condition(ofFan: index).targetRPM)
+    }
+
+    /// The engaged turn's target rule, `EngagementRules.engagedTarget(reading:of:)`, after the
+    /// read-back of `1` (ADR 0014's P1′ amendment, decision 4): `F<n>Tg` read through the stage,
+    /// and a raise written and read back as a command's is (`writeTarget(_:)`), so a floor the
+    /// firmware refuses or does not hold throws and the driver undoes.
+    fileprivate func holdTargetAtFloor(of fan: CommandableFan) throws {
+        try requireReadable(context: "fan \(fan.index) target")
+        let target = Self.readback(
+            try condition(ofFan: fan.index).targetRPM, describing: "F\(fan.index)Tg")
+        guard case .raise(let floor) = try EngagementRules.engagedTarget(reading: target, of: fan)
+        else { return }
+        keyWrites.append(.target(fan: fan.index, rpm: floor.rpm))
+        try writeTarget(floor)
     }
 }
 

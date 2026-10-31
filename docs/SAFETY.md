@@ -363,7 +363,11 @@ firmware at runtime.
   never widen it, and it is never trusted over what the hardware reports.
 - **0 RPM is not reachable.** Not through a curve, not through a fixed setting, not
   through a malformed config, not through the CLI. Stopping a fan entirely is not
-  something this software will do.
+  something this software will do. That includes the instant of taking a fan: Apple's stopped
+  state leaves `F<n>Tg` at 0, so the engagement step that reads back manual control also holds
+  the target at or above this floor before it answers, raising it when it is below
+  (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's P1′ amendment). On `main` the rule
+  and the scripted plane apply it; the production plane takes it with its write path (#465).
 
 ### Why the floor is not simply `F0Mn`
 
@@ -754,7 +758,10 @@ and one admitted before them is covered by the restore that follows it. A comman
 Silicon, and untested on Intel (`CLAUDE.md` rule 11). So when the handback's restores take effect,
 it leaves raw `F<n>Md = 0` and `Ftst = 0` behind it, as ADR 0014's restatement says, whatever was in
 flight: a step is refused if it is admitted after the handback's restore request, and otherwise
-covered by the restore that follows. The ticket guarantees that no engagement in flight undoes a
+covered by the restore that follows. Apple's controller may then stop the fan, which reads `3`:
+that is still Apple's management, which the fold reads as automatic, and a restore never writes
+`3` itself (ADR 0014's P1′ amendment). That was observed on `Mac16,5` under macOS 27.2 only, and is
+untested elsewhere (`CLAUDE.md` rule 11). The ticket guarantees that no engagement in flight undoes a
 restore that took effect; it does not make the firmware take one, and a refused restore still lets
 the machine sleep. `MachineWideRestoreInFlightApplyTests` drives the first half, a step admitted
 after the request, with an `apply` in flight on both unlock paths.

@@ -29,12 +29,17 @@ struct RawFanModeReadingTests {
         RawFanModeReading(fan: 0, outcome: .unreadable(reason: reason))
     }
 
-    @Test("A zero byte is printed as the byte, beside the automatic decode")
-    func aZeroByteIsPrintedAsTheByte() throws {
-        let zero = try Self.reading(bytes: [0x00])
+    /// Both of Apple's bytes print as themselves beside the automatic decode: `0` while it spins
+    /// the fan, `3` while it has it stopped (ADR 0014's P1′ amendment). A print that rendered the
+    /// fold would show both as `0`, and the stopped state would vanish from the record.
+    @Test(
+        "Apple's bytes are printed as themselves, beside the automatic decode",
+        arguments: [(UInt8(0x00), "0x00"), (UInt8(0x03), "0x03")])
+    func applesBytesArePrintedAsThemselves(byte: UInt8, hex: String) throws {
+        let reading = try Self.reading(bytes: [byte])
 
-        #expect(zero.rawDescription == "ui8 0x00")
-        #expect(zero.entry(decodedAutomatic: true) == "F0Md raw ui8 0x00; decoded automatic")
+        #expect(reading.rawDescription == "ui8 \(hex)")
+        #expect(reading.entry(decodedAutomatic: true) == "F0Md raw ui8 \(hex); decoded automatic")
     }
 
     /// The test the fold fails. `FirmwareFanMode` maps all of these to `.manual`, so a print
@@ -42,9 +47,9 @@ struct RawFanModeReadingTests {
     /// different ones. The whole line is compared, not a substring of it, so `0x01` cannot
     /// satisfy a `0x02` case by appearing somewhere in the line.
     @Test(
-        "A non-zero byte is printed as itself, never as 1",
+        "A byte outside Apple's set is printed as itself, never as 1",
         arguments: [
-            (UInt8(0x01), "0x01"), (UInt8(0x02), "0x02"), (UInt8(0x03), "0x03"),
+            (UInt8(0x01), "0x01"), (UInt8(0x02), "0x02"), (UInt8(0x04), "0x04"),
             (UInt8(0x80), "0x80"), (UInt8(0xff), "0xff"),
         ])
     func aNonZeroByteIsPrintedAsItself(byte: UInt8, hex: String) throws {
@@ -52,8 +57,8 @@ struct RawFanModeReadingTests {
         let line = held.entry(decodedAutomatic: false)
 
         #expect(held.rawDescription == "ui8 \(hex)")
-        // The decoded side says "non-zero", and says nothing about which value.
-        #expect(line == "F0Md raw ui8 \(hex); decoded manual (non-zero)")
+        // The decoded side says "not 0 or 3", and says nothing about which value.
+        #expect(line == "F0Md raw ui8 \(hex); decoded manual (not 0 or 3)")
     }
 
     @Test("A key that could not be read is never printed as a zero byte")
@@ -65,7 +70,7 @@ struct RawFanModeReadingTests {
         // production read that said so did read something.
         #expect(
             failed.entry(decodedAutomatic: false)
-                == "F0Md raw unreadable (firmware: 0x82); decoded manual (non-zero)")
+                == "F0Md raw unreadable (firmware: 0x82); decoded manual (not 0 or 3)")
     }
 
     /// #178: the snapshot folds an unreadable mode key into `.automatic`. The raw read is the
@@ -132,10 +137,10 @@ struct RawFanModeReadingTests {
                 """
                 startup fan modes on Mac16,5:
                   F0Md raw ui8 0x00; decoded automatic
-                  F1Md raw ui8 0x02; decoded manual (non-zero)
+                  F1Md raw ui8 0x02; decoded manual (not 0 or 3)
 
                 """))
-        #expect(report.contains("A decoded `manual` therefore means non-zero"))
+        #expect(report.contains("A decoded `manual` therefore means neither 0 nor 3"))
         #expect(report.hasSuffix(" NOTE: held."))
     }
 
@@ -162,7 +167,7 @@ struct RawFanModeReadingTests {
             #expect(
                 reading.entry(decodedAutomatic: false)
                     == "F0Md raw unreadable (\(String(describing: failure))); "
-                    + "decoded manual (non-zero)")
+                    + "decoded manual (not 0 or 3)")
         }
     }
 

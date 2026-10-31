@@ -59,13 +59,15 @@ public enum FanControlMode: String, Sendable, Hashable, Codable {
     /// `manualControlAvailability` to tell the two apart: a fan Aeolus holds has a lease
     /// naming it, and one it merely observes does not.
     ///
-    /// A clarification of what the firmware bit means, not a new meaning for the field — the
+    /// A clarification of what the firmware's raw mode byte means — any value outside Apple's own,
+    /// `0` and `3` on `Mac16,5` (ADR 0014's P1′ amendment) — not a new meaning for the field: the
     /// wire value and its decoding are unchanged, so `AeolusXPCVersion` does not move.
     case manualFixed
     /// Aeolus is driving the fan from a curve under an active lease.
     ///
     /// Unlike `manualFixed` this one really is about Aeolus: a curve is Aeolus's own intent
-    /// and no firmware bit expresses it, so nothing outside this project can put a fan here.
+    /// and no firmware mode value expresses it, so nothing outside this project can put a fan
+    /// here.
     case manualCurve
 }
 
