@@ -83,7 +83,8 @@ struct FirmwareFanModeFoldTests {
     /// not see the plane's decode spelt a second way.
     ///
     /// **Mutation:** in `SMCFanControlPlane.mode(from:)`, decode as before P1′,
-    /// `value == 0 ? .automatic : .manual`. Run: see the PR's mutation table.
+    /// `value == 0 ? .automatic : .manual`. Run: red here on byte 3, on both assertions, and
+    /// nowhere else in the suite: every other reader of the plane's decode is a double.
     @Test("The production plane's read folds every byte as the amendment says")
     func theProductionPlaneFoldsEveryByte() async throws {
         for byte in UInt8.min...UInt8.max {

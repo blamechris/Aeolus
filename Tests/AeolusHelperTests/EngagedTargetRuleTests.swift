@@ -212,7 +212,8 @@ struct EngagedTargetRuleTests {
     /// the read-back would write `F<n>Tg` to a fan the plane never took.
     ///
     /// **Mutation:** in `ScriptedFirmware.unlockStep`, call `holdTargetAtFloor(of:)` before
-    /// `EngagementRules.afterReadBack(rawMode:fanAt:)`. Run: see the PR's mutation table.
+    /// `EngagementRules.afterReadBack(rawMode:fanAt:)`. Run: red here on the write log, and nowhere
+    /// else in the suite.
     @Test("No target is written unless the read-back confirmed the engagement")
     func noTargetIsWrittenWithoutAConfirmedEngagement() async throws {
         let plane = ScriptedControlPlane(
