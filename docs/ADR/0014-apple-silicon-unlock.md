@@ -707,7 +707,8 @@ write.
   - `smc-sampler` at 10 Hz on `F0Md`, `F1Md`, `Ftst`, `F0Tg`, `F1Tg`, `F0Ac`, `F1Ac` and the
     curated package keys. Each is recorded as its decoded scalar, which for a `ui8` is the byte's
     own value, not the fold;
-  - `log stream` on the helper's subsystem, at debug.
+  - `log stream` on the helper's subsystem, at debug. *(Restated by the run-1 amendment, item 3:
+    two samplers, and the stream filtered to the daemon's process.)*
 
 **Start 0, and toward-automatic writes at start.** The branch helper's first start runs the
 preparation step and then reconciliation, and either can write toward automatic.
@@ -798,7 +799,8 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
   amendment).
 - **Exclusion:** that no third-party SMC client was present.
 
-**Abort.** The maintainer runs `fanctl reset --all` at once on any of these:
+**Abort.** The maintainer runs `fanctl reset --all` at once on any of these: *(Except abort 4, which
+is verified first; and abort 12 is added: the run-1 amendment, items 5 and 6.)*
 
 1. **A curated temperature** 10 °C above the hold's baseline, or above 85 °C. The target is at or
    above Apple's demand, so a rise means the fan is not doing what was written.
@@ -4080,6 +4082,218 @@ amendment.
 | U14 | Apple's own management leaves raw `Ftst = 0`, under load included | Observed in P1: `0` on all 41,931 samples, through both loads and both soaks | The preparation step would clear Apple's own state at each start, and D3 step 3 would write over it. Both go to the architect before run 1 |
 | U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported, and placed at "mode 3", which is this machine's rest state. So the refusal is predicted at 1a, and possibly not at 1b. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review. **Refused under load and accepted at rest:** recorded; nothing changes |
 | U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
+## Amendment (2026-10-31, run 1) — run 1 as executed: one recorder per rate, a watcher that alerts and never writes, and the terms the aborts read
+
+Cited elsewhere as the run-1 amendment.
+
+Drafting run 1's operator runbook from D8, as the P1′ amendment restated it, found places where D8
+cannot be run as written, contradicts itself, or uses a term it never defines. This amendment
+settles them before run 1. It changes no code and adds no mechanism to the helper. It sets two
+thresholds D8 left undefined. One of them, 1b's abort 1, is more lenient than a literal reading,
+and item 8 says why.
+
+**Scope.** `Mac16,5`, macOS 27.2, run 1. Runs 2 to 4 take these terms unless their own amendment
+says otherwise. Intel and M1/M2 stay `untested`.
+
+**Decided.**
+1. **The build.** Run 1 builds `Full Release` from #324's branch, synced onto `e4/bring-up` after
+   #465 merged, with #438's fixes folded in at that sync. Its tree is `e4/bring-up`'s head plus
+   #324 and #438's fixes, and nothing else, and the build record names its head (D1). D8's branch
+   review covers #465 on `e4/bring-up`. The sync and #438's fixes are reviewed as a delta before
+   run 1. #324 merges into `e4/bring-up` after run 1. *(D1 said the head of `e4/bring-up`, which
+   carried no `fanctl set` when run 1 was planned.)*
+2. **"No build or agent session" means quiescence.** From the reboot to the final captures there
+   is no build, no test run, and no agent session other than the run's coordinator. The coordinator
+   spawns no subagent. It runs only the recorders, the watcher (item 4), the load, and read-only
+   reads. Before start 0, the 1-minute load average is below 3.
+
+   *Why:* the clause's reason is #227, load that distorts SMC timing, and U8 is what run 1
+   measures. P1 ran with its coordinator at a load of about 2.
+3. **The recorder is two samplers and one log stream.**
+   - `smc-sampler` at a requested 10 Hz on `F0Md`, `F1Md`, `Ftst`, `F0Tg`, `F1Tg`, `F0Ac` and
+     `F1Ac`, each as its decoded scalar;
+   - a second `smc-sampler` at 1 Hz on its default set: the curated package keys, and `F<n>Ac`,
+     `F<n>Mn` and `F<n>Mx`;
+   - `log stream --style ndjson --level debug` on `subsystem == "dev.aeolus.AeolusHelper" AND
+     process == "AeolusHelper"`.
+
+   *Why two samplers:* P1 recorded the seven fan keys at 9.08 Hz, with no gap over 0.146 s.
+   Adding the 34 curated keys to the 10 Hz loop would take the recorder's own SMC reads from about
+   70 a second to about 410, during the run that measures write latency (U8). Under the same load,
+   P1's hottest curated key rose at most 1.39 °C between two 1 Hz samples, and 5.15 °C in 10 s. So
+   aborts 1 and 11 are late by at most one sample, 1.1 s in P1, which is inside the maintainer's
+   own reaction. "10 Hz" is the requested rate; the achieved rate is recorded for every hold.
+
+   *Why the process clause:* test processes log under the helper's subsystem. In the three days
+   before this amendment, 42,687 lines came from `swiftpm-testing-helper` and 25 from the daemon.
+4. **A watcher evaluates the aborts, and only alerts.** It is a read-only process. It runs from
+   before the census to the final captures, and evaluates aborts 1 to 12 from:
+   - the two samplers' files and the log stream;
+   - the coordinator's phase log;
+   - the helper's process ID;
+   - the system's thermal pressure level.
+
+   It alerts the maintainer aloud and in a window at the machine, and the maintainer acts on the
+   alert without waiting for the coordinator. It opens no SMC connection and sends no XPC message.
+   It runs no `fanctl`, `sudo`, `launchctl` or `kill`.
+
+   Before run 1, it is replayed against P1's captures, where it must raise no alert. It is also
+   replayed against injected violations: each must raise its own alert and no other, and none may
+   raise it once its own check is removed. On the day, it runs through the quiescence window with
+   no alert, and the maintainer hears its test alert.
+   - *Why it is needed:* the coordinator is an agent, and its loop is a model turn: seconds at
+     best, unbounded at worst. D8's "at once" cannot rest on it.
+   - *Why not sub-second:* no abort needs it. Each guards a harm that unfolds over seconds or
+     longer, under a target at or above Apple's demand. The 10 Hz record resolves afterwards what
+     an alert cannot.
+     - The helper acts on its own for abort 4 (the driver's undo), abort 5 past D (ADR 0012's
+       watchdog), abort 7 (restart and reconciliation) and abort 8 (the lease's end).
+     - It does not act for aborts 1, 2, 6, 9, 10 or 11: § 3's ceiling is far above their
+       thresholds.
+   - *Why it never writes:* see the alternatives.
+5. **Abort 12 (new): the record goes blind during a hold.** The fan sampler writes no sample for
+   2 s, or the package sampler none for 5 s, or the log stream or the watcher stops. Outside a
+   hold, no forward write is made until the record is whole again.
+
+   *Why:* every other abort is read from that record. A hold that no abort can see is a hold that
+   no abort can end.
+6. **Abort 4 is the one the maintainer verifies before resetting.** The driver's undo is the first
+   restore, and `engagementRefused`'s line says whether it landed. The maintainer runs
+   `fanctl reset --all` at once if any of these holds:
+   - the line says the hand-back was refused, or `engagementUndoRefused` is logged;
+   - the first recorded sample after the line shows `Ftst` other than `0`, or `F0Md` or `F1Md`
+     outside Apple's set;
+   - any other abort's condition holds;
+   - 10 s pass after the alert with no verdict.
+
+   Otherwise the abort is verified, the recovery ladder is not taken, and the post-hold check
+   runs. When in doubt, reset.
+
+   *Why:* a reset on top of a landed undo is a second machine-wide restore over fans already in
+   Apple's set. That is an unlabelled U5b test, which is why D8 refuses `fanctl auto` after a
+   hold. And the undo has already run before anyone can see its line, so verifying adds no
+   exposure in the cases where it ran.
+7. **After an abort, the session writes nothing forward.** Any abort called, even one the record
+   later shows did not hold, ends the session's forward writes. Recovery and the post-hold check
+   run, and the recorders run on for 5 minutes. Each of these ends them too, without an abort:
+   - a step that does not pass;
+   - a helper start other than start 0;
+   - a write round trip above 50 ms (U8). The hold that showed it runs to its end.
+
+   A `fanctl set` that the helper refused before any write is not an abort. It may be repeated
+   once, if the coordinator records an operator error as its cause.
+
+   The next session repeats every gate from the exclusion. With the build unchanged, it resumes at
+   the step that ended; a revised build starts again at 1a.
+
+   *Why:* D10 orders runs by thermal risk, and run 1's steps keep that order. Going on past an
+   unexplained event takes a riskier step on less understanding. And a false call was still a
+   machine-wide restore, made under time pressure.
+8. **The terms D8 uses without defining them.**
+   - **Hottest curated:** per package sample, the highest of the curated keys that read. On
+     `Mac16,5` they are the 34 `TPD*` and `TRD*` keys of `CriticalSensorSet`.
+   - **The pre-run baseline, T0:** the median of the hottest curated over the quiescence window.
+     It must be below 50 °C. **"Within 3 °C of T0"** means at most T0 + 3 °C: a cooler machine
+     passes.
+   - **At rest:** both fans read raw `3` with target 0 for 60 s, `Ftst` reads `0`, and the hottest
+     curated is at most T0 + 3 °C. It is the entry for 1a, for 1b's load, for 1c and for 1d, and
+     the cool-down after every post-hold check. If it does not hold within 30 minutes, the session
+     writes nothing forward. 1b′'s "back at rest", `F0Tg` at `F0Mn` or 0, stays the end of 1b′.
+   - **The hold's baseline (abort 1):** for a hold at rest, the mean of the hottest curated over
+     the 10 s before the `set`. Under the sixteen-way load, from the load's start, abort 1 reads
+     74 °C in 1b as it does in 1d. 85 °C applies throughout.
+
+     1b's "loaded steady state" is P1's plateau under that load, 64.0 °C. When 1b engages, the
+     temperature is still rising toward it (P1: 55.3 °C at 56 s). Starting 1b's load from rest, as
+     the entry requires, also reproduces P1's load B, which gave that figure.
+   - **"Its automatic speed" (abort 2):** for an automatic fan, its `F<n>Tg` while above 0, in
+     every step. For the held fan, its commanded target, counted from 10 s after `F<n>Tg` first
+     reads it, so a spin-up from rest is not an abort. P1's longest automatic lag was 4.35 s. The
+     10 s allowance is run 1's threshold, re-derived from row 9's step response.
+   - **The restore's log line:** the last `Wrote` line of the restore's turn. Its latency to
+     Apple's first target write is recorded from both the turn's first line and its last.
+   - **Engage (abort 8):** the engagement's first `Wrote F0Md = 0x1`, whatever it answered.
+   - **Row 9's running-fan arm:** 1b's step, from Apple's speed at engagement. "About 2,400 RPM"
+     was a figure from 26.5.2. Row 9's downward arm is run 2's (D10).
+9. **What D8 records, as instrumented.** None of these decides run 1.
+   - **Client round trips (#325).** No client instrument exists. Run 1 records:
+     - whether any `set` call failed against its deadline: 57 s for `apply` on one fan (the
+       #410/#325 amendment), and `gatedVerb`'s 5 s for the heartbeats;
+     - each `apply`'s span in the helper, from its first step's attempt line to the command's last
+       `Wrote`;
+     - the cadence of `renewed` lines.
+
+     #325's sleep-handback arm is run 3's (D10), so #325 does not close on run 1.
+   - **§ 7's reply round trip:** the wall time of `fanctl reset --all` under `/usr/bin/time`. That
+     is an upper bound, since it includes the process's start and the handshake; the restore
+     turn's own lines bound it from below. It is read against the client's `panicVerb` deadline,
+     10 s.
+   - **The examination gate:** no line measures hold lengths, actor hops or timer lateness. Run 1
+     records only whether the gate's fault lines appear, and
+     `FanExaminationGate.examinationMargin` stays unmeasured.
+10. **A session ends with the `main`-build helper installed.** While the recorders still run, and
+    before the third-party fan utility's background item is switched back on (D9), the maintainer
+    reinstalls a `main` `Full Release` build, which cannot write. Each later session installs its
+    branch build after the census and quiescence, as run 1 does, so every session has a start 0.
+    This replaces D8's "In later sessions, D9's reboot starts the installed branch helper before
+    any recorder can run."
+
+    *Why:* the branch helper writes a machine-wide restore at every sleep, at every exit, and in
+    every start's preparation step. With the third-party fan utility re-enabled, those writes meet
+    its holds. That would be run 4's first contact (D9), unrecorded and ahead of runs 2 and 3. And
+    the P1′ amendment's "the branch has no client but run 1's operator" then holds by what is
+    installed, not by what is remembered.
+
+**What remains.**
+- The install procedure is the maintainer's and unverified on 27.2: stopping the `main` helper,
+  replacing the bundle, starting the branch helper, and any approval in Login Items & Extensions.
+  A rehearsal with a `main` build, which cannot write, settles it before run 1.
+- **Remote Login is the maintainer's machine setting, and he has decided (2026-10-31) to turn it on
+  for run 1 only:** his account only, and off again right after the session. So 1c and 1d run.
+  1c ends its hold with `fanctl reset --all` from an SSH session, which is row 18's hardware half.
+  - The helper admits a client by code signature, not by session, so `ssh localhost` serves, with
+    the app not running. No one has run it, so that stays an assumption until 1c does.
+  - Without Remote Login, 1c would not run, and neither would 1d, which follows 1c by design.
+- The watcher is an operator's instrument, not a safety mechanism, and nothing in the helper
+  depends on it.
+  - If it misses an abort, the maintainer, the helper's own mechanisms, the hold's length and
+    § 3's ceiling remain.
+  - If it alerts falsely, that costs a session (item 7).
+- Abort 2's 10 s allowance for the held fan, and abort 12's 2 s and 5 s, are set without data from
+  a write. Row 9's step response and the samplers' achieved rates re-derive them before run 2.
+
+**Alternatives considered.**
+- *The coordinator polls, with no watcher.* Its loop is a model turn, so "at once" would mean
+  "when the coordinator next looks".
+- *A watcher that runs `fanctl reset --all` itself.* It would be a second client making
+  machine-wide restores on an unreviewed trigger, and the coordinator's side holds no write by
+  design. The helper already acts on its own where the design calls for automation. These aborts
+  are measurement boundaries: a false one costs a session, and a missed one is bounded by the
+  hold's length, the target choice and § 3.
+- *Every key at 10 Hz in one sampler (D8's text).* It is about six times the recorder's SMC reads
+  during the write-latency measurement. It gains at most a second on temperatures that move about
+  a degree a second.
+- *Reset at once on abort 4 too (D8's general rule).* An unlabelled U5b test on top of an undo that
+  has already run.
+- *Continue after an abort that the record shows was false.* The call was a machine-wide restore
+  made under time pressure, and the next step is riskier, by D10's order.
+- *Keep the branch helper installed between runs (D9's text).* See item 10.
+- *1b's abort 1 at the temperature at engagement plus 10 °C.* That is about 65 °C, about 1 °C above
+  the plateau P1 reached with less cooling. It would abort on a warmer room, not on a fan.
+- *"Within 3 °C" in both directions.* A machine cooler than it was in the quiescence window would
+  fail the entry for being cool.
+- *The held fan's abort 2 against Apple's demand, `F1Tg` / 1.08.* At rest Apple's demand is 0, so
+  a stalled held fan could never fire. Comparing against Apple is abort 9's job.
+
+**Revisit if:**
+- the watcher alerts falsely, or misses an abort that the record shows held;
+- a fan sampler's achieved rate falls below 8 Hz in a hold, or a package gap exceeds 2 s;
+- row 9's step response from rest takes more than 10 s to reach 80 % of the target;
+- the install rehearsal finds the approval lost, or the helper started unobserved;
+- "at rest" is not reached within 30 minutes.
+
+**No `AeolusXPCVersion` bump:** nothing crosses the boundary. **Status stays Proposed.**
+
 | U3 | The yield arrives within 3.5 s | Reported at about 3 s; budgets of about 30 s suggest a tail | Raise the budget and give `apply` its own client deadline. Beyond about 4 s, asynchronous engagement before merge |
 | U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half. In P1 Apple never produced `1`, so a `1` after the plane's accepted write is the plane's | **Mode:** D3 refuses, which is correct. The re-adoption of a kept fan reads the same predicate. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
 | U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place. A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
