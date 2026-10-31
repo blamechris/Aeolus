@@ -1,6 +1,6 @@
 # ADR 0015 — The app claims Automatic only from a snapshot read after it stopped acting
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-31)
 - **Date:** 2026-10-24
 - **Deciders:** Project maintainer
 - **Supersedes:** —
@@ -68,16 +68,17 @@ with an `apply` unanswered publishes `noRead`, and the floor is minted when the 
 answers, as a new report with the state unchanged. That puts the evidence's read after the write,
 and it covers no more than that. If firmware honoured a `Tg` written to a fan it still reports
 automatic and cleared, no read would show it, and the claim would still be wrong; only the
-hardware can settle that. The `apply` is counted from the turn that schedules it, not from when its task
-starts.
+hardware can settle that. The `apply` is counted from the turn that schedules it, not from when its
+task starts.
 
 `LeaseStateModel` follows `reportUpdates()`; `stateUpdates()` stays, for consumers that need the
 state alone. Each new floor asks the source to read soon (`HelperSnapshotSource.readSoon()`): an
 ordinary pause is cut by the path a settled interval change takes, a request in flight is left
 alone and the pause after it skipped once, and a backoff and the interval's debounce are left as
 they were. So the user's own Auto reads selected within about one round trip, when no `apply` is
-unanswered and the read connection is not backing off: while an `apply` is unanswered nothing is
-evidence until it answers, up to its deadline, and a backoff's pause runs out first.
+unanswered, no request is in flight and the read connection is not backing off: while an `apply`
+is unanswered nothing is evidence until it answers, up to its deadline, a request in flight is
+answered before the next one goes out, and a backoff's pause runs out first.
 
 **D3 — Until D2 lands**, `released`, `lost` and `refused` never read Automatic, and `idle`
 requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #498.)*
@@ -210,7 +211,7 @@ and it fails closed.
 - An `apply` the client stopped waiting for at its deadline counts as answered. The basis is the
   same as for a release: the step ticket refuses any engagement after the restore, and ADR 0014
   reports a later target write harmless. The seal refuses every forward write once the exit
-  begins, but an ordinary deadline cut-off involves no exit, so the seal adds nothing there.
+  seals, but an ordinary deadline cut-off involves no exit, so the seal adds nothing there.
   The cut-off discards the connection, and the helper's `connectionDidInvalidate` ends its leases
   and restores the fans the same way a release does. That ending is not itself proof that the
   `apply` stopped writing.
