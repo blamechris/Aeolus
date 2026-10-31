@@ -246,7 +246,8 @@ verified cannot happen — and that is too load-bearing to rest on a manual page
   > and § 5's ledger is reported as a fact, `isReclaimedBySystem`, never as an availability —
   > so `.reclaimedBySystem` is again never published, now on every seam. Under ADR 0014's U0
   > the system's hold reads raw `0` and never reaches the foreign answer. See ADR 0014's
-  > 2026-10-15 amendment.
+  > 2026-10-15 amendment. *(Since ADR 0014's P1′ amendment, the system's hold reads raw `0` or
+  > `3`, Apple's set, and the fold calls both automatic.)*
 - **The snapshot also states the three handback registers apart**, not merely their union
   ([#187](https://github.com/blamechris/Aeolus/issues/187)). The union answers *"is this fan
   somebody else's?"*, which is this ADR's question; it cannot answer *"why would a grant over it
@@ -419,6 +420,10 @@ at the write is the check separated from the act, and a lease-core-local registe
 worth its drift cost. The ruling is the architect's #303 consult, run on Opus.
 
 ## Assumptions and what would invalidate them
+
+*(The 2026-09-05 readings in the rows below are confounded: they are the decoded fold, and P1
+found that Apple's own stopped state reads raw `3`, which that fold called manual. See ADR 0014's
+P1′ amendment and `docs/SMC-RESEARCH.md`'s P1 section.)*
 
 | Assumption | Basis | If it fails |
 |---|---|---|
