@@ -21,13 +21,14 @@ extension SMCWriteTurns {
     ///
     /// **`F<n>Tg`'s key info is taken here and recorded nowhere.** It fills the connection's
     /// key-info cache, which nothing in the helper clears, so the target read in the turn that
-    /// reads `.engaged` (`readEngagedTarget`) is one round trip, and that turn stays inside
-    /// `WatchdogLimits.writeTurnRoundTrips`. A fan whose target key info did not answer here costs
-    /// that turn one more round trip, once, if the key answers later.
+    /// reads `.engaged` (`holdFloor`) is one round trip, and that turn stays inside
+    /// `WatchdogLimits.engagedStepRoundTrips`: five when the target holds the floor, eight when it
+    /// is raised. A fan whose target key info did not answer here costs that turn one more round
+    /// trip, once, if the key answers later — six, or nine, one over the bound.
     ///
     /// `Ftst` is `.absent` only when its key info answered `notFound`, the firmware's not-found
-    /// answer (`forceKeyNotFoundAnswer`, which waits on P1), and `.unknown` on every other
-    /// failure; a present key whose value will not read is `.unreadable`.
+    /// answer (`forceKeyNotFoundAnswer`, which P1 did not probe, so `nil`), and `.unknown` on every
+    /// other failure; a present key whose value will not read is `.unreadable`.
     static func survey(
         fans enumerated: Set<Int>?, notFound: SMCError?, on channel: isolated any SMCWriteChannel
     ) -> Survey {

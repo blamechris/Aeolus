@@ -9,10 +9,12 @@ extension WriteVerbAllowlistTests {
     /// The functions that hold the write channel itself: every function with an `isolated`
     /// parameter, and every requirement of a protocol that refines `Actor` (b2's C30).
     ///
-    /// **Why the population needed them.** A write turn's body is synchronous and names no permit
-    /// — it takes an `isolated any SMCWriteChannel` and the numbers the plane read out of its
-    /// permit — so neither `async` nor a permit put it in the population, and a new one that wrote
-    /// would have been invisible here however it was named. A function with an `isolated` channel
+    /// **Why the population needed them.** A write turn's body is synchronous and, but for the
+    /// engagement step and its floor hold, names no permit — it takes an `isolated any
+    /// SMCWriteChannel` and the numbers the plane read out of its permit — so neither `async` nor
+    /// a permit put it in the population, and a new one that wrote would have been invisible here
+    /// however it was named. The two that take the step's permit, for its floor (ADR 0014's P1′
+    /// amendment), are on `permitBearingVerbs` instead, since a function is on exactly one list. A function with an `isolated` channel
     /// runs on the channel's executor and can call its write requirement; a requirement of an
     /// `Actor` protocol is `async` at every call site from outside, which is where "a synchronous
     /// function cannot `await`" stops holding.
@@ -33,18 +35,16 @@ extension WriteVerbAllowlistTests {
         "SMCWriteChannel.swift: freshKeyInfo(for: SMCKey)",
         "SMCWriteChannel.swift: read(_: SMCKey)",
         "SMCWriteChannel.swift: write(_: [UInt8], to: SMCKey)",
-        "SMCWriteTurns.swift: step(fanAt: Int, ledger: PlaneWriteLedger, log: PlaneWriteLog, "
-            + "on: isolated any SMCWriteChannel)",
         "SMCWriteTurns.swift: unlockStep(fanAt: Int, trace: inout StepTrace, "
             + "ledger: PlaneWriteLedger, log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
         "SMCWriteTurns.swift: beforeTheModeWrite(fanAt: Int, firstStep: Bool, "
             + "trace: inout StepTrace, on: isolated any SMCWriteChannel)",
         "SMCWriteTurns.swift: setForceKey(fanAt: Int, ledger: PlaneWriteLedger, "
             + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
-        "SMCWriteTurns.swift: readEngagedTarget(fanAt: Int, log: PlaneWriteLog, "
-            + "on: isolated any SMCWriteChannel)",
         "SMCWriteTurns.swift: command(_: TargetCommand, ledger: PlaneWriteLedger, "
             + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
+        "SMCWriteTurns.swift: writeTarget(_: TargetCommand, log: PlaneWriteLog, "
+            + "on: isolated any SMCWriteChannel)",
         "SMCWriteTurns.swift: keystone(_: FanRestoreScope, ledger: PlaneWriteLedger, "
             + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
         "SMCWriteTurns+Reads.swift: survey(fans: Set<Int>?, notFound: SMCError?, "

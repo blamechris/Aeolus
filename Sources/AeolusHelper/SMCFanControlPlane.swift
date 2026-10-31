@@ -333,13 +333,15 @@ struct SMCFanControlPlane: FanControlPlane {
 
     /// One step of D3, in one turn at this plane's admission (`SMCWriteTurns.step`): admitted
     /// first, then the mode key's info, its raw pre-state, `F<n>Md = 1`, and the read-back, the
-    /// force key or nothing. Uncancellable once queued: the turn's wait is not cancellable and the
-    /// job is synchronous, so an admitted step never throws a `CancellationError`.
+    /// force key or nothing; a read-back of `1` then holds `F<n>Tg` at or above the permit's floor
+    /// before the step answers `.engaged` (ADR 0014's P1′ amendment, decision 4). The permit goes
+    /// into the turn for that floor, and its fan is the one written. Uncancellable once queued:
+    /// the turn's wait is not cancellable and the job is synchronous, so an admitted step never
+    /// throws a `CancellationError`.
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         guard let writeChannel else { throw FanControlPlaneError.controlPathNotBuilt }
-        let index = fan.index
         return try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
-            try SMCWriteTurns.step(fanAt: index, ledger: ledger, log: writeLog, on: channel)
+            try SMCWriteTurns.step(fan, ledger: ledger, log: writeLog, on: channel)
         }
     }
 
@@ -400,15 +402,15 @@ struct SMCFanControlPlane: FanControlPlane {
     /// 2. and 3. In one turn, its reads (`SMCWriteTurns.survey`): each fan's mode key info, for the
     ///    declared size a restore writes zeros of, and its target key info; then `Ftst`'s key info
     ///    and, when it answered, its raw value. `Ftst` is absent only on the firmware's not-found
-    ///    answer, which **waits on P1** (`SMCWriteTurns.forceKeyNotFoundAnswer`); until then every
+    ///    answer, which P1 did not probe (`SMCWriteTurns.forceKeyNotFoundAnswer`, `nil`), so every
     ///    failure is unknown.
     /// 4. Records what it found in the ledger, then issues `restoreToAutomatic(.everyFan)` once if
     ///    the key read non-zero, is unknown, or would not read
     ///    (`WritePathPreparation.needsMachineWideRestore`).
     ///
-    /// **Waits on P1** (U14): a non-zero `Ftst` at start is taken as a dead holder's, so the step
-    /// clears it. If Apple's own management sets the key, that premise and this restore go back to
-    /// the architect before run 1.
+    /// **U14 holds** (P1: `Ftst` read `0` on every sample, through two loads and their soaks): a
+    /// non-zero `Ftst` at start is taken as a dead holder's, so the step clears it. It does not read
+    /// `F<n>Md`, so a fan Apple has stopped, raw `3`, asks for no restore here.
     ///
     /// It never throws: what it found and did is returned for the composition to log.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {

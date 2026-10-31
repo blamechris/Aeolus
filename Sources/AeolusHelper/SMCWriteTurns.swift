@@ -7,63 +7,73 @@ import SMCCore
 // `SMCFanControlPlane` takes the turn — `SMCReadScheduler.withWriteTurn(at:on:_:)`, at its own
 // admission — and hands the job one of these; nothing else calls them.
 //
-// **Below the seam.** These are the bodies of the plane's write verbs, not verbs: they take fan
-// indices and numbers the plane read out of its permits, never a permit, and they decide nothing
-// `PlaneWriteLedger` and `EngagementRules` do not, so the scripted double and this plane decide
-// every answer by the same code. No `FanRestoreScope` case is named in this file: a restore is
-// planned by `ledger.plan(for:)` from the scope the plane passes in.
+// **Below the seam.** These are the bodies of the plane's write verbs, not verbs, and they decide
+// nothing `PlaneWriteLedger` and `EngagementRules` do not, so the scripted double and this plane
+// decide every answer by the same code. They take fan indices and numbers the plane read out of
+// its permits, with one exception: an engagement step takes its fan's permit, so that the turn
+// which reads back engaged holds the permit's own floor, decided by
+// `EngagementRules.engagedTarget(reading:of:)` exactly as the double decides it (ADR 0014's P1′
+// amendment, decision 4). The step writes only the permit's fan. No `FanRestoreScope` case is
+// named in this file: a restore is planned by `ledger.plan(for:)` from the scope the plane passes
+// in.
 //
 // **One job per turn, nothing suspended.** Every function here is synchronous on the channel's
 // executor, so between the ledger's admission — the first statement of every turn — and the last
 // write, nothing else runs on the connection and nothing can cancel the job (U15; C12).
 //
-// **Round trips.** `WatchdogLimits.writeTurnRoundTrips` (5) bounds every step, command and
-// restore turn: a first step on the force-key path is five (key info, pre-state, mode write, the
-// key's info, its write); one that reads back `.engaged` is five (key info, pre-state, mode write,
-// read-back, the target logged — one round trip because the preparation step took that key's
-// info, see `survey`); a command is three; a restore is one per key, three on `Mac16,5`; § 3's
-// bridge job is a command and a `.fan(n)` restore, at most five.
+// **Round trips.** `WatchdogLimits.engagedStepRoundTrips` (8) bounds the step that reads back
+// `.engaged` and raises its fan to the floor: key info, pre-state, mode write, read-back, the
+// target's read, its fresh key info, the floor's write and its read-back. The target's read is
+// one round trip because the preparation step took that key's info (`survey`); a fan whose info
+// did not answer there costs one more, once. The same step is five when the target already holds
+// the floor. `WatchdogLimits.writeTurnRoundTrips` (5) bounds every other turn: a first step on the
+// force-key path is five (key info, pre-state, mode write, the key's info, its write); a command
+// is three; a restore is one per key, three on `Mac16,5`; § 3's bridge job is a command and a
+// `.fan(n)` restore, at most five.
 
 /// The write plane's turn bodies (ADR 0014 D2–D5, D7, and the B1 amendment's rulings).
 enum SMCWriteTurns {
 
-    // MARK: - What waits on P1
+    // MARK: - Settled by P1′
 
     /// The answer the firmware gives `READ_KEYINFO` for a key it does not have — the one answer
     /// that classifies `Ftst` as absent (the B1 amendment: "`Ftst` will be absent only on the
     /// firmware's not-found answer").
     ///
-    /// **Waits on P1.** No such answer has been observed on any machine this project has: the
-    /// owner-present read-only pre-flight probes `READ_KEYINFO` of a key `Mac16,5` lacks to define
-    /// it. Until then it is `nil`, so **no failure classifies `Ftst` as absent**: every one is
-    /// `.unknown`, which D5 treats as present — a restore writes it one zero byte and the
-    /// preparation step issues its machine-wide restore. That fails safe; on a machine that truly
-    /// lacks the key (M1/M2, untested) it costs one logged machine-wide restore at every start.
+    /// **Unprobed, and `nil`.** No such answer has been observed on any machine this project has,
+    /// and P1 did not probe one (ADR 0014's P1′ amendment, "What remains"). So **no failure
+    /// classifies `Ftst` as absent**: every one is `.unknown`, which D5 treats as present — a
+    /// restore writes it one zero byte and the preparation step issues its machine-wide restore.
+    /// That fails safe; on a machine that truly lacks the key (M1/M2, untested) it costs one logged
+    /// machine-wide restore at every start.
     static let forceKeyNotFoundAnswer: SMCError? = nil
 
     // MARK: - An engagement step (D3)
 
-    /// One step of an engagement of fan `index`: admitted first, then — in this one turn — the
-    /// mode key's fresh key info, its raw pre-state, `F<n>Md = 1`, and the read-back, the force
-    /// key, or nothing, as `EngagementRules` decides from the answer.
+    /// One step of an engagement of `fan`: admitted first, then — in this one turn — the mode
+    /// key's fresh key info, its raw pre-state, `F<n>Md = 1`, and the read-back, the force key, or
+    /// nothing, as `EngagementRules` decides from the answer. A read-back of `1` is followed, in
+    /// the same turn, by the floor hold (`holdFloor`), and only once that holds is the fan
+    /// recorded engaged and the step answered `.engaged`.
     ///
-    /// - A **first** step decides on its pre-state (`requireAutomatic`), and a failure before its
-    ///   write call — the key info, a declared type that is not the observed `ui8` of one byte,
-    ///   the pre-state read — is `.failedBeforeFirstWrite`, with nothing written.
+    /// - A **first** step decides on its pre-state (`requireAutomatic`: a byte in Apple's set,
+    ///   `0` or `3`), and a failure before its write call — the key info, a declared type that is
+    ///   not the observed `ui8` of one byte, the pre-state read — is `.failedBeforeFirstWrite`,
+    ///   with nothing written.
     /// - A **later** step is a Y-write: it reads the pre-state too, for D8's record, but logs a
-    ///   failed read rather than throwing it, and a key-info failure is `.readFailed`.
-    ///   **Waits on P1**: Y-write is the poll the ADR builds until the pre-flight chooses the
-    ///   yield signal (D3); a non-zero raw mode under Apple's management would make it Y-read.
+    ///   failed read rather than throwing it, and a key-info failure is `.readFailed`. The poll
+    ///   stays Y-write (ADR 0014's P1′ amendment, decision 3).
     /// - Every throw after admission records the step refused, so no later step is admitted under
-    ///   it (`recordStepRefused(fanAt:)`).
+    ///   it (`recordStepRefused(fanAt:)`), and leaves the fan out of the engaged set: the fan is
+    ///   engaged only when the step answers `.engaged`, as on the scripted plane.
     ///
-    /// **Waits on P1** (U0, U14): `0` before the write and `1` after it are what D3 takes as
-    /// automatic and engaged. Any other raw value under Apple's own management re-decides D3 and
-    /// D5 before run 1, and these two decisions are where it lands.
+    /// The permit is taken for the floor alone. Its index is the fan written, so the step cannot
+    /// raise one fan to another's floor (ADR 0008).
     static func step(
-        fanAt index: Int, ledger: PlaneWriteLedger, log: PlaneWriteLog,
+        _ fan: CommandableFan, ledger: PlaneWriteLedger, log: PlaneWriteLog,
         on channel: isolated any SMCWriteChannel
     ) throws -> EngagementStep {
+        let index = fan.index
         let first = try ledger.admitStep(fanAt: index) == .first
         var trace = StepTrace(fan: index, firstStep: first)
         let began = ContinuousClock.now
@@ -71,6 +81,10 @@ enum SMCWriteTurns {
         do {
             let step = try unlockStep(
                 fanAt: index, trace: &trace, ledger: ledger, log: log, on: channel)
+            if step == .engaged {
+                try holdFloor(of: fan, log: log, on: channel)
+                ledger.recordEngaged(fanAt: index)
+            }
             trace.outcome = "\(step)"
             return step
         } catch {
@@ -81,7 +95,8 @@ enum SMCWriteTurns {
     }
 
     /// D3 for one admitted step — whether it is the engagement's first is `trace.firstStep` —
-    /// every throw recorded refused by `step`.
+    /// every throw recorded refused by `step`. A read-back of `1` answers `.engaged` here and is
+    /// recorded by `step`, after the floor hold.
     private static func unlockStep(
         fanAt index: Int, trace: inout StepTrace, ledger: PlaneWriteLedger, log: PlaneWriteLog,
         on channel: isolated any SMCWriteChannel
@@ -108,10 +123,7 @@ enum SMCWriteTurns {
                     detail: "the read-back of \(modeKey): \(error)")
             }
             trace.after = hex(readBack)
-            let step = try EngagementRules.afterReadBack(rawMode: readBack, fanAt: index)
-            ledger.recordEngaged(fanAt: index)
-            readEngagedTarget(fanAt: index, log: log, on: channel)
-            return step
+            return try EngagementRules.afterReadBack(rawMode: readBack, fanAt: index)
         case .setForceKey:
             return try setForceKey(fanAt: index, ledger: ledger, log: log, on: channel)
         case .awaitYield:
@@ -179,40 +191,92 @@ enum SMCWriteTurns {
         return try EngagementRules.afterForceKeyWrite(issue(bytes, to: key, log: log, on: channel))
     }
 
-    /// The raw `F<n>Tg` of a fan whose step just read back `.engaged`, logged and nothing more
-    /// (ADR 0014's A6 amendment, D3: run 1 logs it). A read that fails is logged as such and
-    /// changes nothing: the step has engaged, and this is a record, not a check.
-    private static func readEngagedTarget(
-        fanAt index: Int, log: PlaneWriteLog, on channel: isolated any SMCWriteChannel
-    ) {
-        guard let key = SMCKey.fanTargetRPM(index) else { return }
-        let raw: String
-        do {
-            raw = hex(try channel.read(key).bytes)
-        } catch {
-            raw = "unreadable (\(error))"
+    /// The engaged turn's floor hold (ADR 0014's P1′ amendment, decision 4): after the read-back
+    /// of `1`, in the same turn, `F<n>Tg` is read and judged by
+    /// `EngagementRules.engagedTarget(reading:of:)`, the rule the scripted plane decides by.
+    ///
+    /// - **At or above the floor** — under load, where Apple's target already is: nothing more
+    ///   is written.
+    /// - **Below it** — `0` at rest, where Apple's stopped state leaves it: the permit's target
+    ///   at its floor is written by the command turn's own body (`writeTarget`) — the key's fresh
+    ///   info and its observed `flt` of four bytes, the encoding, the write, and a read-back within
+    ///   `ReclamationLimits.targetToleranceRPM` — with no admission of its own: the step's
+    ///   admission is this turn's. A refusal, an unanswered write or a read-back that does not
+    ///   hold it throws.
+    /// - **Unreadable, undecodable or not finite:** it throws. There is no floor to judge it by.
+    ///
+    /// Every throw ends the step refused, and the driver undoes. No epoch re-check precedes the
+    /// raise: it lands inside this admitted turn, so a restore requested since is issued after it
+    /// and its mode write is the last word on the fan (D4: "That order is correct").
+    ///
+    /// The line it logs is run 1's record: the raw target, the floor written, if any, and how it
+    /// was answered.
+    private static func holdFloor(
+        of fan: CommandableFan, log: PlaneWriteLog, on channel: isolated any SMCWriteChannel
+    ) throws {
+        guard let key = SMCKey.fanTargetRPM(fan.index) else {
+            throw FanControlPlaneError.fanNotAddressable(index: fan.index)
         }
-        log.safety.planeReadEngagedTarget(fan: index, key: key, raw: raw)
+        var hold = FloorHoldTrace(fan: fan.index, key: key)
+        defer { log.safety.planeHeldFloor(hold) }
+        do {
+            let reading: FanRPMReadback
+            do {
+                let value = try channel.read(key)
+                hold.raw = hex(value.bytes)
+                guard let scalar = try value.scalar() else {
+                    throw FanControlPlaneError.readFailed(detail: "\(key) did not decode")
+                }
+                reading = .rpm(scalar)
+            } catch {
+                reading = .unreadable(reason: "\(error)")
+            }
+            switch try EngagementRules.engagedTarget(reading: reading, of: fan) {
+            case .holds:
+                hold.outcome = "held at or above its floor; nothing written"
+            case .raise(let floor):
+                hold.floorRaisedTo = FanControlPlaneValue.wholeRPM(floor.rpm)
+                let readBack = try writeTarget(
+                    TargetCommand(
+                        fan: floor.fanIndex, rpm: floor.rpm, floor: floor.lowestCommandableRPM),
+                    log: log, on: channel)
+                hold.outcome = "answered 0x00 and read back \(readBack) RPM"
+            }
+        } catch {
+            hold.outcome = "threw \(error)"
+            throw error
+        }
     }
 
     // MARK: - A target command (D7; #410 item 5)
 
     /// `F<n>Tg = target.rpm` for `target.fan`, read back in the same turn.
     ///
-    /// Admitted first (`admitCommand()`, the exit's seal). Then `CLAUDE.md` rule 3 at the last hop:
-    /// a target below `target.floor` — the permit's `lowestCommandableRPM`, and never below
-    /// `FanSafetyLimits.minimumManualRPM` whatever is passed — is refused before anything is read
-    /// or encoded. `rpm` came through `FanControlEnvelope`'s clamp, so this refuses nothing a
-    /// permit can carry; it is here because `encode` accepts zero, negatives and subnormals, and
-    /// rule 3 must not rest on one function's arithmetic three files away. Then the key's fresh
-    /// info and its declared type (`flt`, four bytes, as observed), the encoding, the write, and
-    /// the read-back: within `ReclamationLimits.targetToleranceRPM` it returns the commanded rpm,
-    /// never the read-back; otherwise `.targetNotConfirmed`.
+    /// Admitted first (`admitCommand()`, the exit's seal), then `writeTarget`. Within
+    /// `ReclamationLimits.targetToleranceRPM` it returns the commanded rpm, never the read-back.
     static func command(
         _ target: TargetCommand, ledger: PlaneWriteLedger, log: PlaneWriteLog,
         on channel: isolated any SMCWriteChannel
     ) throws -> CommandedTarget {
         try ledger.admitCommand()
+        _ = try writeTarget(target, log: log, on: channel)
+        return CommandedTarget(fanIndex: target.fan, rpm: target.rpm)
+    }
+
+    /// `F<n>Tg = target.rpm` for `target.fan`, and its read-back, with no admission: the command
+    /// turn's body after its admission, and the engaged turn's floor raise. Returns the read-back.
+    ///
+    /// `CLAUDE.md` rule 3 at the last hop: a target below `target.floor` — the permit's
+    /// `lowestCommandableRPM`, and never below `FanSafetyLimits.minimumManualRPM` whatever is
+    /// passed — is refused before anything is read or encoded. `rpm` came through
+    /// `FanControlEnvelope`'s clamp, so this refuses nothing a permit can carry; it is here because
+    /// `encode` accepts zero, negatives and subnormals, and rule 3 must not rest on one function's
+    /// arithmetic three files away. Then the key's fresh info and its declared type (`flt`, four
+    /// bytes, as observed), the encoding, the write, and the read-back: outside
+    /// `ReclamationLimits.targetToleranceRPM` it throws `.targetNotConfirmed`.
+    private static func writeTarget(
+        _ target: TargetCommand, log: PlaneWriteLog, on channel: isolated any SMCWriteChannel
+    ) throws -> Double {
         let (index, rpm, floor) = (target.fan, target.rpm, target.floor)
         guard let key = SMCKey.fanTargetRPM(index) else {
             throw FanControlPlaneError.fanNotAddressable(index: index)
@@ -254,7 +318,7 @@ enum SMCWriteTurns {
             throw FanControlPlaneError.targetNotConfirmed(
                 index: index, commandedRPM: rpm, readBackRPM: readBack)
         }
-        return CommandedTarget(fanIndex: index, rpm: rpm)
+        return readBack
     }
 
     // MARK: - A restore (D5, D7)
@@ -326,48 +390,5 @@ enum SMCWriteTurns {
     static func answer(to error: SMCError) -> FirmwareWriteAnswer {
         guard case .firmware(let code) = error else { return .unanswered(detail: "\(error)") }
         return error.isCommandRejection ? .heldBySystem : .refused(code: code)
-    }
-}
-
-/// What one engagement step saw, for its log line (D3's "raw values read before and after").
-struct StepTrace: Sendable {
-    let fan: Int
-    let firstStep: Bool
-    var before = "not read"
-    var modeWrite = "not issued"
-    var after = "not read"
-    var outcome = "unfinished"
-}
-
-/// A forward write the turn refused by its own rule, before its write call: a target below the
-/// fan's floor, or a value that did not encode. Nothing was written. Every caller treats it as it
-/// treats a refused command — the bridge restores, level 6 hands back, § 5 restores — and a
-/// first step never throws it: before its first write call, a step's refusal is
-/// `.failedBeforeFirstWrite`.
-struct WriteTurnRefusal: Error, Sendable, Hashable, CustomStringConvertible {
-    let key: SMCKey
-    let detail: String
-
-    var description: String { "\(key): \(detail)" }
-}
-
-/// A target command's numbers, as the plane reads them out of its permit: the fan, the clamped
-/// speed, and the floor the speed was clamped above (`AuthorisedFanTarget.lowestCommandableRPM`).
-/// Not a permit: the turn body below the seam takes what the permit says, and
-/// `WriteVerbAllowlistTests` holds every permit to the plane's verbs, which hand these on and keep
-/// nothing.
-struct TargetCommand: Sendable, Hashable {
-    let fan: Int
-    let rpm: Double
-    let floor: Double
-}
-
-/// Where the write turns log, held by reference so every view of the plane logs through the one
-/// instance (`PlaneViewTests` fails on a stored value a view would copy).
-final class PlaneWriteLog: Sendable {
-    let safety: SafetyLog
-
-    init(_ safety: SafetyLog) {
-        self.safety = safety
     }
 }

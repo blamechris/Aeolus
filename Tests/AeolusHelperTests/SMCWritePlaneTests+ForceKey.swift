@@ -140,7 +140,7 @@ extension SMCWritePlaneTests {
     }
 }
 
-// MARK: - C23–C25: what the turns log
+// MARK: - C23–C25: what the turns log, and C25's target that will not read
 
 extension SMCWritePlaneTests {
 
@@ -168,7 +168,8 @@ extension SMCWritePlaneTests {
     }
 
     /// A step's line carries the raw values before and after and how it ended; the engaged turn
-    /// logs the raw target it read.
+    /// logs the raw target it read and that it held the floor. The raise's line is
+    /// `anEngagementAtRestRaisesTheTarget`'s.
     ///
     /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, delete `trace.before = hex(rawMode)`.
     /// Run: red here.
@@ -183,37 +184,63 @@ extension SMCWritePlaneTests {
         #expect(step.first?.contains("raw F0Md 0x0 before") == true, "\(step)")
         #expect(step.first?.contains("0x1 after; engaged") == true, "\(step)")
         #expect(
-            fixture.lines.lines(containing: "Fan 0 engaged with raw F0Tg 0x0 0xc0 0xa8 0x44").count
-                == 1, "\(fixture.lines.lines)")
+            fixture.lines.lines(
+                containing:
+                    "Fan 0 read back engaged with raw F0Tg 0x0 0xc0 0xa8 0x44: held at or above its "
+                    + "floor; nothing written."
+            ).count == 1, "\(fixture.lines.lines)")
     }
 
-    /// The engaged turn's read of the target is a record: if it fails, the step is still engaged,
-    /// and the line says the target did not read.
+    /// C25, inverted by ADR 0014's P1′ amendment (decision 4): a target the engaged turn cannot
+    /// read, or that is not finite, has no floor to be judged by. The step throws `.readFailed`
+    /// after its mode write, writes no target, is recorded refused and leaves the fan out of the
+    /// engaged set, and the driver undoes. Before P1′ the read was a record and the step engaged.
     ///
-    /// **Mutation:** make `SMCWriteTurns.readEngagedTarget` throwing, rethrow the read's failure,
-    /// and `try` it at its call. Run: red here.
-    @Test("A target that will not read in the engaged turn changes nothing")
-    func anUnreadTargetChangesNothing() async throws {
+    /// **Mutation:** in `SMCWriteTurns.holdFloor`, `return` from the target read's `catch`, taking
+    /// a target that did not read as held. Run: red here, on the unread row.
+    @Test(
+        "A target that will not read, or is not finite, in the engaged turn fails the step",
+        arguments: ["unread", "not finite"])
+    func anUnreadTargetFailsTheStep(_ target: String) async throws {
         let fixture = WritePlaneFixture()
-        await fixture.prepared()
-        await fixture.firmware.setRead(of: Self.targetZero, .lost(Self.kernelError))
+        let mark = await fixture.prepared()
+        if target == "unread" {
+            await fixture.firmware.setRead(of: Self.targetZero, .lost(Self.kernelError))
+        } else {
+            await fixture.firmware.setRegister(Self.targetZero, FirmwareSMC.flt(rpm: .nan))
+        }
+        let ledger = try fixture.ledger
 
         fixture.plane.beginEngagement(fanAt: 0)
-        #expect(try await fixture.plane.engageManualControl(of: Self.fan(0)) == .engaged)
-        #expect(try fixture.ledger.engagedFans == [0])
-        #expect(fixture.lines.lines(containing: "engaged with raw F0Tg unreadable").count == 1)
+        let error = await #expect(throws: FanControlPlaneError.self) {
+            try await fixture.plane.engageManualControl(of: Self.fan(0))
+        }
+        guard case .readFailed(let detail)? = error else {
+            Issue.record("\(target): the step threw \(String(describing: error)), not the target's")
+            return
+        }
+        #expect(detail.hasPrefix("F0Tg after the engaged read-back"), "\(target): \(detail)")
+        #expect(fixture.writes(since: mark) == ["F0Md=1"], "\(target): a target was written")
+        #expect(ledger.engagedFans.isEmpty, "\(target)")
+        #expect(!ledger.isCurrent(fanAt: 0), "\(target): the step was not recorded refused")
+        #expect(
+            fixture.lines.lines(containing: "Fan 0 read back engaged with raw F0Tg").allSatisfy {
+                $0.contains(": threw readFailed")
+            }, "\(fixture.lines.lines)")
     }
 
     // MARK: - C26: round trips per turn
 
-    /// Every turn the plane takes stays within `WatchdogLimits.writeTurnRoundTrips`: an engaged
-    /// first step is five, a held first step that sets the key is five, a waiting later step is
-    /// three, a command is three, a `.fan(n)` restore is one or two, a machine-wide one three.
+    /// Every turn the plane takes stays within its bound: an engaged step that raises the floor
+    /// at rest is eight, `WatchdogLimits.engagedStepRoundTrips`; every other turn stays within
+    /// `writeTurnRoundTrips` — an engaged step whose target holds is five, a held first step that
+    /// sets the key five, a waiting later step three, a command three, a `.fan(n)` restore one or
+    /// two, a machine-wide one three.
     ///
-    /// **Mutation:** in `SMCWriteTurns.readEngagedTarget`, read the target twice. Run: red here, at
-    /// the engaged step's six. **Mutation (C27's premise):** in `SMCWriteTurns.survey`, take no
-    /// target key info. Run: red here — the engaged step's target read costs a key info too.
-    @Test("Every step, command and restore turn stays within writeTurnRoundTrips")
+    /// **Mutation:** in `SMCWriteTurns.holdFloor`, read the target twice. Run: red here, at the
+    /// engaged step's six. **Mutation (C27's premise):** in `SMCWriteTurns.survey`, take no target
+    /// key info. Run: red here — the engaged step's target read costs a key info too.
+    @Test("Every step, command and restore turn stays within its round trips")
     func everyTurnStaysWithinItsRoundTrips() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 1))
         let mark = await fixture.prepared()
@@ -231,5 +258,11 @@ extension SMCWritePlaneTests {
         let naiveMark = await naive.prepared()
         try await naive.engage(0)
         #expect(naive.roundTripsPerTurn(since: naiveMark) == [5])
+
+        let atRest = WritePlaneFixture(stoppedByApple: [0, 1])
+        let restMark = await atRest.prepared()
+        try await atRest.engage(0)
+        #expect(atRest.roundTripsPerTurn(since: restMark) == [8])
+        #expect(WatchdogLimits.engagedStepRoundTrips == 8)
     }
 }

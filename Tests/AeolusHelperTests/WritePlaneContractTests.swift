@@ -69,7 +69,7 @@ struct WritePlaneContractTests {
         }
     }
 
-    private static func normalised(_ write: ScriptedControlPlane.KeyWrite) -> String {
+    static func normalised(_ write: ScriptedControlPlane.KeyWrite) -> String {
         switch write {
         case .mode(let fan, let value): return "F\(fan)Md=\(value)"
         case .forceKey(let value): return "Ftst=\(value)"
@@ -79,7 +79,7 @@ struct WritePlaneContractTests {
 
     /// The fixture's `key=bytes`, with a target's bytes dropped: the two planes agree on which key
     /// was written, and the scripted one keeps no bytes for a target.
-    private static func normalised(_ write: String) -> String {
+    static func normalised(_ write: String) -> String {
         write.hasSuffix("Tg") || write.contains("Tg=") ? String(write.prefix(4)) : write
     }
 

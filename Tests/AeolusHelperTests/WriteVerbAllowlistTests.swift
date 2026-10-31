@@ -199,6 +199,12 @@ struct WriteVerbAllowlistTests {
     /// `FanRPMReadback`, against the permit's own floor. A readback is an RPM or the reason there
     /// is none, so it names no fan and no bounds, and the rule writes nothing: what it returns is
     /// the permit's own target at its floor, minted by `target(for:)`, or no write at all.
+    ///
+    /// The fourth and fifth are the production plane's step body and its floor hold, which take the
+    /// step's permit into its write turn so that rule judges the permit's own floor, as the
+    /// scripted plane's does. Beside it they take the plane's `PlaneWriteLedger`, its
+    /// `PlaneWriteLog` and the turn's `isolated` channel: one per plane, none naming a fan or
+    /// bounds, and the fan they act on is the permit's index (`SMCWriteTurns.step`).
     private static let keyedCompanions: [String: Set<String>] = [
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"],
         "ReclamationRegistrationRole.swift: manualControlEngaged(_: CommandableFan, under: UUID)": [
@@ -207,6 +213,14 @@ struct WriteVerbAllowlistTests {
         "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)": [
             "FanRPMReadback"
         ],
+        "SMCWriteTurns.swift: step(_: CommandableFan, ledger: PlaneWriteLedger, "
+            + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)": [
+                "PlaneWriteLedger", "PlaneWriteLog", "isolated any SMCWriteChannel",
+            ],
+        "SMCWriteTurns.swift: holdFloor(of: CommandableFan, log: PlaneWriteLog, "
+            + "on: isolated any SMCWriteChannel)": [
+                "PlaneWriteLog", "isolated any SMCWriteChannel",
+            ],
     ]
 
     /// The verbs that carry a permit: they command a fan, take one off automatic control,
@@ -254,6 +268,12 @@ struct WriteVerbAllowlistTests {
     ///   function the writing plane decides by (ADR 0014's P1′ amendment): it reads the permit's
     ///   envelope for the floor and returns the permit's own target at it, or nothing. It writes
     ///   nothing; the plane's turn does. Its companion is `keyedCompanions`' third entry.
+    /// - `SMCWriteTurns.step(_:ledger:log:on:)` and `holdFloor(of:log:on:)`: the production plane's
+    ///   engagement step and its engaged turn's floor hold, which write through the channel inside
+    ///   the step's one write turn (ADR 0014's P1′ amendment, decision 4). They take the step's
+    ///   permit so the floor is the permit's own, by `engagedTarget`, and the fan written is the
+    ///   permit's index. Reached only from `SMCFanControlPlane.engageManualControl(of:)`, a seam
+    ///   verb above. Their companions are `keyedCompanions`' fourth and fifth entries.
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -279,6 +299,10 @@ struct WriteVerbAllowlistTests {
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
         "EngagementDriver.swift: reAdopted(_: CommandableFan)",
         "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)",
+        "SMCWriteTurns.swift: step(_: CommandableFan, ledger: PlaneWriteLedger, "
+            + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
+        "SMCWriteTurns.swift: holdFloor(of: CommandableFan, log: PlaneWriteLog, "
+            + "on: isolated any SMCWriteChannel)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
