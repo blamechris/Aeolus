@@ -17,13 +17,16 @@ struct LinePumpTests {
         origin + .seconds(seconds)
     }
 
-    /// Waits, in real time and for at most two seconds, until `condition` holds. A pass reaches
-    /// it in a few milliseconds.
+    /// Waits until `condition` holds, for `StallTolerantWait.deliveryBudget` of scheduled time: a
+    /// runner stall is not spent from it. A pass reaches it in a few milliseconds. It was two
+    /// seconds of wall time, which three of these tests ran out of together on CI once
+    /// `e4/bring-up`'s suites ran in the same process (run 41231276347, attempt 2): a writer
+    /// thread that had not yet parked.
     private static func eventually(_ condition: @Sendable () -> Bool) async -> Bool {
-        for _ in 0..<2_000 {
-            if condition() { return true }
-            try? await Task.sleep(for: .milliseconds(1))
-        }
+        let outcome = try? await StallTolerantWait.poll(
+            timeout: StallTolerantWait.deliveryBudget, interval: .milliseconds(1),
+            clock: SystemWaitClock(), condition: { condition() })
+        if case .held? = outcome { return true }
         return condition()
     }
 

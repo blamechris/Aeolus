@@ -119,8 +119,9 @@ final class BlockedWriter: Sendable {
 /// A real thread under a virtual clock is a race: the hold can sleep ten virtual seconds in the
 /// microseconds before the pump's thread has written a line it was handed. `quiesce` is the
 /// answer, and it belongs in the clock's script, so it runs before any virtual time passes: it
-/// waits, in real time and for at most two seconds, until each pump has written everything it was
-/// handed or is parked in a write that will not finish.
+/// waits until each pump has written everything it was handed or is parked in a write that will
+/// not finish, for `StallTolerantWait.deliveryBudget` of scheduled time (a runner stall is not
+/// spent from it; it was two seconds of wall time, the budget `LinePumpTests` ran out of on CI).
 final class PumpRig: Sendable {
 
     let standardOutput: BlockedWriter
@@ -166,23 +167,30 @@ final class PumpRig: Sendable {
     }
 
     func quiesce() async {
-        for _ in 0..<2_000 {
-            guard let sinks else { return }
+        await settle { [self] sinks in
             let output = sinks.standardOutput.status.isIdle || standardOutput.isParked
             let errors = sinks.standardError.status.isIdle || standardError.isParked
-            if output && errors { return }
-            try? await Task.sleep(for: .milliseconds(1))
+            return output && errors
         }
     }
 
-    /// Releases whatever is parked and waits, in real time and for at most two seconds, until
-    /// both pumps have written everything they were handed: the reader catching up.
+    /// Releases whatever is parked and waits, as `quiesce` does, until both pumps have written
+    /// everything they were handed: the reader catching up.
     func drain() async {
         release()
-        for _ in 0..<2_000 {
-            guard let sinks else { return }
-            if sinks.standardOutput.status.isIdle && sinks.standardError.status.isIdle { return }
-            try? await Task.sleep(for: .milliseconds(1))
+        await settle { $0.standardOutput.status.isIdle && $0.standardError.status.isIdle }
+    }
+
+    /// Polls `done` until it holds, or there are no pumps yet, or the delivery budget is spent:
+    /// then returns, as the two-second loops it replaced did, and leaves the assertions after it
+    /// to say what was wrong.
+    private func settle(_ done: @Sendable (OutputSinks) -> Bool) async {
+        _ = try? await StallTolerantWait.poll(
+            timeout: StallTolerantWait.deliveryBudget, interval: .milliseconds(1),
+            clock: SystemWaitClock()
+        ) { [self] in
+            guard let sinks else { return true }
+            return done(sinks)
         }
     }
 
