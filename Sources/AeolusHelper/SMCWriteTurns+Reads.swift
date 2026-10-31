@@ -21,10 +21,11 @@ extension SMCWriteTurns {
     ///
     /// **`F<n>Tg`'s key info is taken here and recorded nowhere.** It fills the connection's
     /// key-info cache, which nothing in the helper clears, so the target read in the turn that
-    /// reads `.engaged` (`holdFloor`) is one round trip, and that turn stays inside
-    /// `WatchdogLimits.engagedStepRoundTrips`: five when the target holds the floor, eight when it
-    /// is raised. A fan whose target key info did not answer here costs that turn one more round
-    /// trip, once, if the key answers later — six, or nine, one over the bound.
+    /// reads `.engaged` (`holdFloor`) is one round trip: five when the target holds the floor,
+    /// eight when it is raised. A fan whose target key info did not answer here costs that turn one
+    /// more round trip, once, if the key answers later — six, or nine — and
+    /// `WatchdogLimits.engagedStepRoundTrips` counts the nine, so this priming saves a round trip
+    /// and bounds nothing.
     ///
     /// `Ftst` is `.absent` only when its key info answered `notFound`, the firmware's not-found
     /// answer (`forceKeyNotFoundAnswer`, which P1 did not probe, so `nil`), and `.unknown` on every

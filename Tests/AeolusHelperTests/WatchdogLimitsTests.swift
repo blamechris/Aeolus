@@ -28,10 +28,12 @@ struct WatchdogLimitsTests {
     /// restore (at most 2), is the same five.
     private static let writeTurn = 5
 
-    /// The engaged step at rest (ADR 0014's P1′ amendment), written out: key info, pre-state, the
-    /// mode write, its read-back, the target's read, the target's key info, the floor's write and
-    /// its read-back. The longest turn any reader takes, and at most one per fan is queued.
-    private static let engagedStep = 8
+    /// The engaged step at rest (ADR 0014's P1′ amendment; ADR 0012's 2026-10-31 amendment),
+    /// written out: key info, pre-state, the mode write, its read-back, the target's read and the
+    /// key info that read takes when `F<n>Tg`'s is not cached, the target's fresh key info, the
+    /// floor's write and its read-back. The longest turn any reader takes, and at most one per fan
+    /// is queued.
+    private static let engagedStep = 9
 
     /// `count` queued readers' turns, written out: at most one engaged step per fan, the rest at
     /// the longer of a mode read and `writeTurn`.
@@ -208,32 +210,34 @@ struct WatchdogLimitsTests {
 
     /// G is 2·D, and it has two sides. It must exceed the supervisor wait at the gate in the two
     /// modelled cases at the design point — a reader behind the grant path's read, the other
-    /// readers, two of them engaged steps at rest, and § 3's lane turns, 827 round trips at the
-    /// measured worst, 9.47 s on `Mac16,5` — or a full, moving queue would be logged as a fault;
+    /// readers, two of them engaged steps at rest, and § 3's lane turns, 829 round trips at the
+    /// measured worst, 9.49 s on `Mac16,5` — or a full, moving queue would be logged as a fault;
     /// and it must stay under D_cycle less the supervisor's interval and two ticks, 12 s, or the
     /// cycle trigger would end the helper before the fault explained it. It holds to N = 12 and not
-    /// to 13 (10.65 s), N counting § 3's read.
+    /// to 13 (10.67 s), N counting § 3's read.
     ///
     /// **Modelled cases, not a bound over every history.** What this pins is the two windows'
     /// arithmetic. The histories § 3 really produces — a firing, its release and the read-backs
     /// after it in one window; a latched cycle taking fans back — are counted outside this suite
-    /// by `scripts/gate-wait-model/engaged_step.py`: 793–837 round trips (9.08–9.59 s) with the
-    /// firing head counted once, and at most 617 (7.07 s) in an event model of the shipped policy,
-    /// both under G. Open, as in ADR 0012's 2026-10-18 amendment: a take-back with writes
-    /// recurring every cycle, 925 (10.59 s), and a refused revocation recurring every latched
-    /// cycle, 865–875 (9.91–10.02 s), each over G at its upper end, which would also stretch ADR
-    /// 0014's lawful hold past its derivation. Counting every reader as an engaged step instead,
-    /// four of the histories counted correctly pass G; that is why the long turn is once per fan.
+    /// by `scripts/gate-wait-model/engaged_step.py`: 795–839 round trips (9.11–9.61 s) with the
+    /// firing head counted once, and at most 619 (7.09 s) in an event model of the shipped policy,
+    /// both under G. Open, as in ADR 0012's 2026-10-18 and 2026-10-31 amendments: a take-back with
+    /// writes recurring every cycle, 927 (10.62 s), and a refused revocation recurring every
+    /// latched cycle, 867–877 (9.93–10.04 s), each over G at its upper end; the take-back's would
+    /// also stretch ADR 0014's lawful hold past `examinationWait`. Counting every reader as an
+    /// engaged step instead, four of the histories counted correctly pass G already at eight; that
+    /// is why the long turn is once per fan.
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red.
     /// **Mutation:** set `gateWaiterAlarm` to `cycleBound`. Run: red — the cycle trigger would
     /// land before the fault.
-    /// **Mutation:** omit the lane: return `queue` from `gateWaitRoundTrips`. Run: red — 533
-    /// where it is 827, and G holds past 12.
+    /// **Mutation:** omit the lane: return `queue` from `gateWaitRoundTrips`. Run: red — 535
+    /// where it is 829, and G holds past 12.
     /// **Mutation:** omit the firing cycle from window (a): `laneWindow(base: queue, perCycle:
-    /// criticalReadKeys, …)`. Run: red — 813 where it is 827.
+    /// criticalReadKeys, …)`. Run: red — 815 where it is 829.
     /// **Mutation:** in `WatchdogLimits.readerTurns`, count no engaged step (`let engaged = 0`).
-    /// Run: red — 821 where it is 827.
+    /// Run: red — 821 where it is 829.
+    /// **Mutation:** set `engagedStepRoundTrips` to 8. Run: red — 827 where it is 829.
     @Test("G clears the design point's wait with the lane in it, to N = 12 and not 13")
     func theGateBoundIsDerivedAndConstant() {
         let gate = WatchdogLimits.gateWaiterAlarm
@@ -245,17 +249,19 @@ struct WatchdogLimitsTests {
 
         #expect(gate == WatchdogLimits.roundTrip * 2)
         #expect(gate == .seconds(10), "ADR 0012 states G as 10 s")
-        #expect(Self.expectedGateWait(design, keys: keys, fans: fans) == 827)
-        #expect(
-            WatchdogLimits.gateWaitRoundTrips(
-                outstandingReads: design, criticalReadKeys: keys, fans: fans) == 827)
-        #expect(required > .milliseconds(9_471) && required < .milliseconds(9_472))
+        #expect(Self.expectedGateWait(design, keys: keys, fans: fans) == 829)
+        let wait = WatchdogLimits.gateWaitRoundTrips(
+            outstandingReads: design, criticalReadKeys: keys, fans: fans)
+        #expect(wait == 829, "the design point's wait is \(wait) round trips")
+        #expect(required > .milliseconds(9_494) && required < .milliseconds(9_495), "\(required)")
         #expect(gate > required, "a full, moving queue at the design point would fault")
 
         let atThirteen = WatchdogLimits.requiredGateBound(
             outstandingReads: design + 1, criticalReadKeys: keys, fans: fans)
         #expect(atThirteen >= gate, "G holds at N = 13: the \"to 12\" in the docs is stale")
-        #expect(atThirteen > .milliseconds(10_651) && atThirteen < .milliseconds(10_652))
+        #expect(
+            atThirteen > .milliseconds(10_674) && atThirteen < .milliseconds(10_675),
+            "\(atThirteen)")
 
         let interval = ThermalSupervisor<SMCFanControlPlane>.defaultInterval
         #expect(
@@ -275,7 +281,7 @@ struct WatchdogLimitsTests {
     @Test("The gate wait is the longer of the two waiters and the two lane windows")
     func theGateWaitIsTheLongerOfTheTwoWaiters() {
         #expect(Self.expectedQueue(Self.design, keys: 0, fans: 0) == 498)
-        #expect(Self.expectedQueue(Self.design, keys: 0, fans: 2) == 504)
+        #expect(Self.expectedQueue(Self.design, keys: 0, fans: 2) == 506)
         for reads in 3...25 {
             for keys in [0, 1, 2, 3, 10, Self.criticalReadKeys, SMCReadScheduler.maxKeysPerTurn] {
                 for fans in [0, 1, 2, 3] {
@@ -331,11 +337,12 @@ struct WatchdogLimitsTests {
     /// G stands for one scheduler turn's whole slot, which is what the examination gate's
     /// `lawfulHold` counts its turns in (ADR 0014's A6 PR-2 amendment): at the design point, the
     /// longest legal supervisor wait plus the longest turn a reader takes — the engaged step at
-    /// rest, eight round trips — at the measured worst round trip, stays under G for every curated
-    /// set. The wait alone is the test above; the turn is this.
+    /// rest, nine round trips — at the measured worst round trip, stays under G for every curated
+    /// set: on `Mac16,5`, 838 round trips, 9.60 s. The wait alone is the test above; the turn is
+    /// this.
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `.milliseconds(9_500)`. Run: red here: the wait
-    /// alone, 9.47 s, still clears it, and the slot, 9.56 s, does not.
+    /// alone, 9.49 s, still clears it, and the slot, 9.60 s, does not.
     @Test("G covers a turn's slot, its wait and its longest write, for every curated set")
     func theGateBoundCoversAWholeTurn() throws {
         #expect(WatchdogLimits.readerTurnRoundTrips == Self.engagedStep)

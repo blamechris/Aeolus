@@ -46,7 +46,9 @@ extension SMCWritePlaneTests {
                 .write(Self.targetZero, Self.floorBytes, .answered),
                 .read(Self.targetZero, .answered),
             ])
-        #expect(fixture.roundTripsPerTurn(since: mark) == [WatchdogLimits.engagedStepRoundTrips])
+        // Eight with the target's key info cached, as preparation leaves it; the cold nine, the
+        // bound itself, is `everyTurnStaysWithinItsRoundTrips`'.
+        #expect(fixture.roundTripsPerTurn(since: mark) == [8])
         #expect(await fixture.firmware.register(Self.targetZero) == Self.floorBytes)
         #expect(try fixture.ledger.engagedFans == [0])
         #expect(

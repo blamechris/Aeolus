@@ -55,26 +55,28 @@ enum WatchdogLimits {
     ///   other readers' turns, at most one per fan of them the engaged step at rest
     ///   (`readerTurns`), and behind § 3's lane turns as well — one firing cycle and the latched
     ///   cycles after it, or a quiet cycle with every fan's read-back each second (ADR 0012's
-    ///   2026-10-18 amendment). On `Mac16,5` the longer case is 827 round trips, 9.47 s at the
-    ///   measured worst round trip; it fits up to N = 12 and not at 13 (10.65 s). **Modelled
+    ///   2026-10-18 amendment). On `Mac16,5` the longer case is 829 round trips, 9.49 s at the
+    ///   measured worst round trip; it fits up to N = 12 and not at 13 (10.67 s). **Modelled
     ///   cases, not a bound over every history**: a firing cycle, its release and the read-backs
     ///   after it can fall in one window, and a latched cycle can take fans back. Counted for
     ///   those histories by the scripts in `scripts/gate-wait-model/` — `engaged_step.py` gives
     ///   this branch's figures, the rest ADR 0012's, which take every reader at five — they are
-    ///   793–837 round trips (9.08–9.59 s) counted correctly and at most 617 (7.07 s) in an event
-    ///   model of the shipped policy, all under G. Two families stay open. How many take-backs
-    ///   with writes can follow one firing: if one recurred every cycle the count would be 925
-    ///   (10.59 s), over G. And a refused revocation recurring every latched cycle: 865–875
-    ///   (9.91–10.02 s), whose upper end the engaged step takes over G. The gate fault itself ends
-    ///   nothing, but **G is also the slot ADR 0014's examination gate counts its lawful hold
-    ///   in**: in the first history a slot is 10.69 s, the three slots of
-    ///   `FanExaminationGate.lawfulHold` 32.06 s against the 30 s derived, and § 5's 32 s
-    ///   `examinationWait` could run out inside a lawful hold, at an expiry's cost (ADR 0014: a
-    ///   `.fault`, an examination without the gate, possibly a false divergence and a spent
-    ///   attempt). With every reader taken at the engaged step's eight, the modelled case is 848
-    ///   (9.71 s) but four of the histories counted correctly pass G (874–892, 10.01–10.22 s),
-    ///   which is why the queue counts the long turn once per fan. (G held to N = 20 before the
-    ///   lane, when § 3's turns were in the FIFO.) **The snapshot priority's waiter is not
+    ///   795–839 round trips (9.11–9.61 s) counted correctly and at most 619 (7.09 s) in an event
+    ///   model of the shipped policy, all under G. Two families stay open (ADR 0012's 2026-10-31
+    ///   amendment). How many take-backs with writes can follow one firing: if one recurred every
+    ///   cycle the count would be 927 (10.62 s), over G. And a refused revocation recurring every
+    ///   latched cycle: 867–877 (9.93–10.04 s), whose upper end passes G as a wait; that member's
+    ///   slot was over G before the engaged step existed (874, 10.01 s). The gate fault itself
+    ///   ends nothing, but **G is also the slot ADR 0014's examination gate counts its lawful hold
+    ///   in**: in the take-back history a slot is 10.72 s, and three slots and
+    ///   `FanExaminationGate.stepWait` 33.16 s, so § 5's 32 s `examinationWait` could run out
+    ///   inside a lawful hold, at an expiry's cost (ADR 0014: a `.fault`, an examination without
+    ///   the gate, possibly a false divergence and a spent attempt); in the refused-revocation
+    ///   history they are 10.15 s and 31.44 s, inside it. Taking every reader at the engaged
+    ///   step, four of the histories counted correctly passed G already at eight (874–892,
+    ///   10.01–10.22 s), which is why the queue counts the long turn once per fan. (G held to
+    ///   N = 20 before the lane, when § 3's turns were in the FIFO.) **The snapshot priority's
+    ///   waiter is not
     ///   derived:** it waits behind the other snapshot clients' turns as well (64 round trips
     ///   each), so enough concurrent snapshot clients can outlast G with a queue that is full and
     ///   moving. **A lane waiter waits for one turn in flight**, and one past G is a turn that was
@@ -118,32 +120,45 @@ enum WatchdogLimits {
     static let modeReadKeys = 3
 
     /// The longest write turn [ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D7
-    /// allows **other than the engaged step that raises its fan to the floor**
+    /// allows **other than the engaged step**, the step that reads back `1`
     /// (`engagedStepRoundTrips`), and § 3's bridge job, whose length D_cycle counts: a command and
     /// a `.fan` restore, three and at most two. An engagement's first step on the force-key path
     /// is five too — a fresh key info, the raw `F<n>Md` pre-state, the mode write, the force key's
-    /// key info and its write — and so is a step that reads back engaged with its target already
-    /// at the floor. A waiting step is three, and a `commandTarget` three (key info, write,
-    /// read-back); a restore issues no read and is one write per key, three on `Mac16,5` for the
-    /// machine-wide one and five for four fans.
+    /// key info and its write. A waiting step is three, and a `commandTarget` three (key info,
+    /// write, read-back); a restore issues no read and is one write per key, three on `Mac16,5` for
+    /// the machine-wide one and five for four fans.
     ///
     /// **One engagement in progress is one outstanding supervisor reader while it waits for a
     /// turn, and none while it sleeps between steps**, so D7's writes enter N as readers whose
     /// turn is this long rather than as new readers.
     static let writeTurnRoundTrips = 5
 
-    /// The engaged step at rest (ADR 0014's P1′ amendment, decision 4, and its "Cost"): key info,
-    /// the raw pre-state, the mode write, its read-back of `1`, the target's read — `0` at rest —
-    /// the target's fresh key info, the floor's write and its read-back. Built in `SMCWriteTurns`
-    /// on `e4/bring-up` ([#465](https://github.com/blamechris/Aeolus/issues/465)), the one turn on
-    /// this branch longer than `writeTurnRoundTrips`. The target's read is one round trip because
-    /// the preparation step took its key info; a fan whose info did not answer there makes it
-    /// nine, once (`SMCWriteTurns.survey`).
+    /// The engaged step: **the step that reads back `1`, whatever it writes and whatever the
+    /// key-info cache holds** (ADR 0014's P1′ amendment, decision 4, and its "Cost"; ADR 0012's
+    /// 2026-10-31 amendment, which records the architect's ruling on
+    /// [#465](https://github.com/blamechris/Aeolus/pull/465)'s review). Built in `SMCWriteTurns`
+    /// on `e4/bring-up`, the one turn on this branch longer than `writeTurnRoundTrips`.
+    ///
+    /// - **It raises** the fan to its floor at rest in eight round trips with `F<n>Tg`'s key info
+    ///   cached — key info, the raw pre-state, the mode write, its read-back of `1`, the target's
+    ///   read (`0` at rest), the target's fresh key info, the floor's write and its read-back —
+    ///   and in **nine** without, when the target's read takes the key info itself.
+    /// - **It holds** under load, where the target is already at or above the floor, in five, and
+    ///   six without.
+    ///
+    /// **Why the cold case counts.** Two places prime the key, and both carry a failure rather
+    /// than throw it: the preparation step (`SMCWriteTurns.survey`), and every grant's
+    /// control-state read (`SMCFanControlPlane.readControlState`, which carries a failed `F<n>Tg`
+    /// read). A grant can therefore succeed with the key still cold, and the first engaged turn
+    /// pays its key info. The floor's read-back is never cold: `freshKeyInfo` replaces the cache
+    /// entry, so the read after the floor's write finds it — the premise this rests on, since a
+    /// `freshKeyInfo` that did not replace it would make the turn ten. A cold key in any other read
+    /// stays where ADR 0012's #332 amendment put it, inside the margin, once per key per process.
     ///
     /// **At most one per fan is ever queued**: one engagement per fan at a time is enforced by the
     /// examination gate (ADR 0014's assumptions), an engagement's steps are sequential, and only
-    /// the step that reads back `1` raises. G's arithmetic counts it so (`readerTurns`).
-    static let engagedStepRoundTrips = 8
+    /// the step that reads back `1` is long. G's arithmetic counts it so (`readerTurns`).
+    static let engagedStepRoundTrips = 9
 
     /// A `.fan(n)` restore's round trips: its mode write, and the force key's when no engaged fan
     /// is left after it (ADR 0014 D5). No read.
@@ -209,8 +224,12 @@ enum WatchdogLimits {
     ///
     /// The turn in flight ahead of each of § 3's turns is taken as a 64-key read slice at the
     /// measured worst read: the longest any turn occupies the connection while the longest write
-    /// turn, the engaged step's eight round trips, stays under it, which it does up to about 91 ms
-    /// a round trip — above the 86.98 ms break-even of § 3's own writes, which binds first.
+    /// turn, the engaged step's nine round trips, stays under it, which it does up to about
+    /// 81.4 ms a round trip (64 × 11.453 / 9; 91.6 ms at eight). That is below the 86.98 ms
+    /// break-even of § 3's own writes, so between 81.4 and 86.98 ms the engaged step in flight,
+    /// not § 3's own writes, would be the binding term (ADR 0012's 2026-10-31 amendment). Both are
+    /// far above the about 20.5 ms at which G's modelled slot breaks, which makes the difference
+    /// moot below it (`scripts/gate-wait-model/engaged_step.py`).
     static func requiredCycleBound(
         criticalReadKeys: Int, fans: Int, worstWriteRoundTrip: Duration = measuredWorstRoundTrip
     ) -> Duration {
@@ -247,9 +266,10 @@ enum WatchdogLimits {
     /// counted by `gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`. So the supervisor
     /// queue holds N − 1 waiters, the grant path's read and N − 2 readers.
     ///
-    /// On `Mac16,5` at N = 12 that is 64 + 34 + (8·2 + 5·7) + 384 = 533; with every reader at the
-    /// engaged step's eight it would be 554, which ADR 0012's histories do not clear (the b2
-    /// amendment of ADR 0014, as settled by P1′).
+    /// On `Mac16,5` at N = 12 that is 64 + 34 + (9·2 + 5·7) + 384 = 535; with every reader at the
+    /// engaged step's nine it would be 563, and already at eight (554) four of ADR 0012's closed
+    /// histories pass G (ADR 0012's 2026-10-31 amendment; the b2 amendment of ADR 0014, as settled
+    /// by P1′).
     static func supervisorQueueRoundTrips(
         outstandingReads: Int, criticalReadKeys: Int, fans: Int
     ) -> Int {
@@ -292,11 +312,15 @@ enum WatchdogLimits {
     /// the same window; a latched cycle can take a fan back
     /// (`takeBackAnythingEngagedSinceFiring`). Those histories are counted by the scripts, not
     /// here (`scripts/gate-wait-model/engaged_step.py`, with the engaged step once per fan):
-    /// 793–837 round trips with the firing head counted once, at most 617 in an event model of the
-    /// shipped policy, both under G; 925 if a take-back with writes recurred every cycle, and
-    /// 865–875 if a refused revocation did, the two families still open. The open cases cost more
-    /// than a fault line: ADR 0014's examination gate takes each turn's slot at G, so in those
-    /// histories § 5's examination wait could run out inside a lawful hold (`gateWaiterAlarm`).
+    /// 795–839 round trips with the firing head counted once, at most 619 in an event model of the
+    /// shipped policy, both under G; 927 if a take-back with writes recurred every cycle, and
+    /// 867–877 if a refused revocation did, the two families still open. The refused-revocation
+    /// family is bounded in its fully refused form: a fan whose revocation is refused on every
+    /// attempt is abandoned and refused at insertion, so at most F such revocations follow a
+    /// firing, 819–863 round trips, under G (ADR 0012's 2026-10-31 amendment, read from
+    /// the code, not tested). The open cases cost more than a fault line: ADR 0014's examination
+    /// gate takes each turn's slot at G, so in the take-back history § 5's examination wait could
+    /// run out inside a lawful hold (`gateWaiterAlarm`).
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int, fans: Int) -> Int {
         let queue = supervisorQueueRoundTrips(
             outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys, fans: fans)

@@ -231,15 +231,19 @@ extension SMCWritePlaneTests {
 
     // MARK: - C26: round trips per turn
 
-    /// Every turn the plane takes stays within its bound: an engaged step that raises the floor
-    /// at rest is eight, `WatchdogLimits.engagedStepRoundTrips`; every other turn stays within
-    /// `writeTurnRoundTrips` — an engaged step whose target holds is five, a held first step that
-    /// sets the key five, a waiting later step three, a command three, a `.fan(n)` restore one or
-    /// two, a machine-wide one three.
+    /// Every turn the plane takes stays within its bound. The engaged step — the one that reads
+    /// back `1` — stays within `WatchdogLimits.engagedStepRoundTrips`, whatever the key-info cache
+    /// holds: raising the floor at rest it is eight with `F0Tg`'s key info cached and **nine**, the
+    /// bound itself, when the key's info failed at preparation and answers by the engaged turn, so
+    /// that the target's read takes it; holding under load it is five and six. The floor's write
+    /// and read-back still land (ADR 0012's 2026-10-31 amendment). Every other turn stays within
+    /// `writeTurnRoundTrips`: a held first step that sets the key five, a waiting later step three,
+    /// a command three, a `.fan(n)` restore one or two, a machine-wide one three.
     ///
-    /// **Mutation:** in `SMCWriteTurns.holdFloor`, read the target twice. Run: red here, at the
-    /// engaged step's six. **Mutation (C27's premise):** in `SMCWriteTurns.survey`, take no target
-    /// key info. Run: red here — the engaged step's target read costs a key info too.
+    /// **Mutations:** `engagedStepRoundTrips` at 8. Run: red here, at the cold raise. In
+    /// `SMCWriteTurns.holdFloor`, read the target twice (the cold raise becomes ten). Run: red
+    /// here. **C27's premise:** in `SMCWriteTurns.survey`, take no target key info. Run: red here,
+    /// the warm rows become nine and six.
     @Test("Every step, command and restore turn stays within its round trips")
     func everyTurnStaysWithinItsRoundTrips() async throws {
         let fixture = WritePlaneFixture(unlock: .heldUntilForced(stepsToYield: 1))
@@ -257,12 +261,39 @@ extension SMCWritePlaneTests {
         let naive = WritePlaneFixture()
         let naiveMark = await naive.prepared()
         try await naive.engage(0)
-        #expect(naive.roundTripsPerTurn(since: naiveMark) == [5])
+        let underLoad = naive.roundTripsPerTurn(since: naiveMark)
+        #expect(underLoad == [5])
 
         let atRest = WritePlaneFixture(stoppedByApple: [0, 1])
         let restMark = await atRest.prepared()
         try await atRest.engage(0)
-        #expect(atRest.roundTripsPerTurn(since: restMark) == [8])
-        #expect(WatchdogLimits.engagedStepRoundTrips == 8)
+        let raised = atRest.roundTripsPerTurn(since: restMark)
+        #expect(raised == [8])
+
+        // Cold: `F0Tg`'s key info failed at preparation and answers by the engaged turn.
+        let bound = WatchdogLimits.engagedStepRoundTrips
+        let coldRest = try await Self.engagedCold(stoppedByApple: [0, 1])
+        #expect(coldRest.turns == [9], "at rest: \(coldRest.turns)")
+        #expect(coldRest.turns == [bound], "the cold raise is not the bound, \(bound)")
+        #expect(coldRest.target == Self.floorBytes, "the cold raise did not land")
+        let coldLoad = try await Self.engagedCold(stoppedByApple: [])
+        #expect(coldLoad.turns == [6], "under load: \(coldLoad.turns)")
+        let engaged = underLoad + raised + coldRest.turns + coldLoad.turns
+        #expect(engaged.allSatisfy { $0 <= bound }, "\(engaged)")
+    }
+
+    /// Engages fan 0 on a fixture whose `F0Tg` key info fails at preparation and is declared again
+    /// before the engagement, and answers the engagement's round trips per turn and the target.
+    private static func engagedCold(
+        stoppedByApple: Set<Int>
+    ) async throws -> (turns: [Int], target: [UInt8]?) {
+        let fixture = WritePlaneFixture(stoppedByApple: stoppedByApple)
+        let info = SMCKeyInfo(key: Self.targetZero, type: .flt, dataSize: 4, attributes: 0xD4)
+        await fixture.firmware.declare(Self.targetZero, .keyInfoFails(.firmware(code: 0x85)))
+        let mark = await fixture.prepared()
+        await fixture.firmware.declare(Self.targetZero, .present(info))
+        try await fixture.engage(0)
+        let target = await fixture.firmware.register(Self.targetZero)
+        return (fixture.roundTripsPerTurn(since: mark), target)
     }
 }

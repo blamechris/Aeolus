@@ -21,12 +21,13 @@ import SMCCore
 // executor, so between the ledger's admission — the first statement of every turn — and the last
 // write, nothing else runs on the connection and nothing can cancel the job (U15; C12).
 //
-// **Round trips.** `WatchdogLimits.engagedStepRoundTrips` (8) bounds the step that reads back
-// `.engaged` and raises its fan to the floor: key info, pre-state, mode write, read-back, the
-// target's read, its fresh key info, the floor's write and its read-back. The target's read is
-// one round trip because the preparation step took that key's info (`survey`); a fan whose info
-// did not answer there costs one more, once. The same step is five when the target already holds
-// the floor. `WatchdogLimits.writeTurnRoundTrips` (5) bounds every other turn: a first step on the
+// **Round trips.** `WatchdogLimits.engagedStepRoundTrips` (9) bounds the step that reads back
+// `.engaged`, whatever it writes and whatever the key-info cache holds. Raising its fan to the
+// floor it is eight with `F<n>Tg`'s key info cached — key info, pre-state, mode write, read-back,
+// the target's read, its fresh key info, the floor's write and its read-back — and nine when the
+// target's read takes the key info itself, because the preparation step's priming (`survey`) and
+// every grant's control-state read carry a failure rather than throw it. Holding, it is five and
+// six. `WatchdogLimits.writeTurnRoundTrips` (5) bounds every other turn: a first step on the
 // force-key path is five (key info, pre-state, mode write, the key's info, its write); a command
 // is three; a restore is one per key, three on `Mac16,5`; § 3's bridge job is a command and a
 // `.fan(n)` restore, at most five.
@@ -133,7 +134,10 @@ enum SMCWriteTurns {
 
     /// Everything a step does before its mode write: the key, its fresh key info and declared
     /// type, its raw pre-state, and the bytes it will write, in that order (the B1 amendment's
-    /// ruling: key info first, so every step takes the same round trips whatever the cache holds).
+    /// ruling: key info first, so the mode key costs the same round trips whatever the cache
+    /// holds). **The exception** is the engaged step's target read in `holdFloor`: a cold `F<n>Tg`
+    /// makes a raise nine, which `WatchdogLimits.engagedStepRoundTrips` counts (ADR 0012's
+    /// 2026-10-31 amendment kept the cold path rather than reorder a body the command shares).
     private static func beforeTheModeWrite(
         fanAt index: Int, firstStep first: Bool, trace: inout StepTrace,
         on channel: isolated any SMCWriteChannel
