@@ -53,7 +53,8 @@ struct EngagedTargetRuleTests {
     }
 
     /// At or above the floor the rule writes nothing, however far above: it never lowers a
-    /// target, so the 3731 RPM P1 recorded under load is left as Apple set it.
+    /// target, so fan 0's 3455 RPM, and fan 1's 3731, that P1 recorded under load are left as
+    /// Apple set them.
     ///
     /// **Mutation:** in `EngagementRules.engagedTarget(reading:of:)`, raise unconditionally —
     /// `return .raise(to: floor)`. Run: red on every argument, and on

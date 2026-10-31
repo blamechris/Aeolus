@@ -58,7 +58,8 @@ enum FirmwareFanMode: Sendable, Hashable {
 /// D2): the plane's step verb performs one step and reports progress, and `EngagementDriver`
 /// owns the cadence between steps. A refusal is a throw, never a third case.
 enum EngagementStep: Sendable, Hashable {
-    /// The mode write was accepted and read back raw `1` in the same turn (D3 step 2).
+    /// The mode write was accepted and read back raw `1`, and `F<n>Tg` at or above the floor, in
+    /// the same turn (D3 step 2; ADR 0014's P1′ amendment, decision 4).
     case engaged
     /// The firmware is still holding the fan; the driver asks again after its poll interval.
     case awaitingYield

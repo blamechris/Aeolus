@@ -282,9 +282,10 @@ extension ReadOnlyFanReport {
     /// `observedMode` is **required, with no default**: `nil` would make every fan blind, and
     /// `.automatic` would put the fold back here. The `switch` is exhaustive, so a third
     /// `FirmwareFanMode` case is a compile error here rather than a fan silently judged one way.
-    /// U0 failed in P1 without one: Apple's management reads two raw values, and the fold calls
-    /// both automatic (ADR 0014's P1′ amendment). Not stated over `.writePathNotBuilt`, for the
-    /// durable refusal's reason below and through the same `canWrite`.
+    /// U0 failed in P1, and no third case was needed: Apple's management reads two raw values,
+    /// and the fold calls both automatic (ADR 0014's P1′ amendment). Not stated over
+    /// `.writePathNotBuilt`, for the durable refusal's reason below and through the same
+    /// `canWrite`.
     ///
     /// ## § 5's fans are judged like any other
     ///
@@ -305,12 +306,18 @@ extension ReadOnlyFanReport {
     /// `.restoreToAutomaticUnconfirmed`. Until ADR 0014's P1′ amendment the fold read only `0`
     /// as the system's, and every fan Apple had stopped read `.foreignManualControl` here
     /// ([#633](https://github.com/blamechris/Aeolus/issues/633)). If the system's management
-    /// produces a value outside the set, the grant is wrong the same way, and the set is
-    /// re-decided before anything relies on it (the amendment's U0). The residual is the other
-    /// direction: another program's hold that reads `0` or `3` reads automatic here and at the
-    /// grant (U17). `isReclaimedBySystem` stays set beside the answer, as history: it can go
-    /// stale once another program takes the fan, and the availability is the field that is
-    /// current.
+    /// produces a value outside the set, the grant is wrong the same way — such a fan reads
+    /// `.foreignManualControl` on both sides — until the architect re-decides the set, which a
+    /// value joins only on P1-grade evidence (the amendment's U0).
+    ///
+    /// The residual is the other direction (U17): another program's hold that reads `0` or `3`
+    /// reads automatic here and at the grant, and also to the mechanisms that confirm a handback.
+    /// § 3 forgets an owed handback, so the fan leaves § 3's coverage; the lease core lifts
+    /// `.restoreToAutomaticFailed`; § 5 records `isReclaimedBySystem`; and reconciliation never
+    /// restores the fan at startup. It is bounded by ADR 0014 D9's exclusion through run 3, and by
+    /// every machine-wide restore, which writes `0` without reading. `isReclaimedBySystem` stays
+    /// set beside the answer, as history: it can go stale once another program takes the fan,
+    /// and the availability is the field that is current.
     ///
     /// Everything else is overwritten, including `.available`. Writing the guard as "only
     /// when the read path said `.writePathNotBuilt`" would pass today and silently stop

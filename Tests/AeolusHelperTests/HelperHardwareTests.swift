@@ -30,10 +30,11 @@ struct HelperHardwareTests {
     private static let log = HelperLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Hardware")
 
-    /// A foreign tool holding a fan in manual is a legitimate state of this development
-    /// machine, not a regression in it. Macs Fan Control was observed holding both fans on
-    /// 2026-09-05 (`docs/SMC-RESEARCH.md` § "`F0Md`/`F1Md` have now been observed reading
-    /// `1`"), releasing them again within the hour while still running. `#expect(fan.mode ==
+    /// A fan another program holds in manual is a legitimate state of this development machine,
+    /// not a regression in it. The 2026-09-05 readings once taken as a third-party tool holding
+    /// both fans are confounded: they are the old fold of Apple's own stopped state, raw `3`
+    /// (`docs/SMC-RESEARCH.md` § "Apple's own management reads `F<n>Md = 3` when it stops the fans,
+    /// and `0` when it spins them — P1, macOS 27.2"). `#expect(fan.mode ==
     /// .automatic)` conflated two different claims: "controllable by nothing" is a fact about
     /// `manualControlAvailability`, which this build's absent write path makes true regardless of
     /// what else is running; "the firmware reports automatic" is a fact about the machine's
@@ -62,8 +63,9 @@ struct HelperHardwareTests {
         #expect(snapshot.activeLease == nil)
         #expect(snapshot.isThermalEmergencyActive == false)
         for fan in snapshot.fans {
-            // `F<n>Md` on this machine legitimately declares either `.automatic` (nothing
-            // is holding the fan) or `.manualFixed` (something is) — see
+            // `F<n>Md` on this machine legitimately declares either `.automatic` (Apple's
+            // management, spinning the fan or stopped) or `.manualFixed` (something else holds
+            // it) — see
             // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
             // fact about the machine, not about this build. Printed rather than pinned to
             // one value; `everyFanModeIsReadableAtStart` is the checklist row that prints
