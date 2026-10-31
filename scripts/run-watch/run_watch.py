@@ -48,6 +48,7 @@ EXPLAIN_BEFORE = 2.0  # rule 3: a Wrote line this long before the sample explain
 EXPLAIN_AFTER = 0.5  # rule 3: or this long after
 JUDGE_AFTER = 2.0  # rule 3: explanations are judged this long after the sample
 MODE_SECONDS = 2.0  # rule 3: F0Md outside {0, 3} for this long
+HOLD_END_GRACE = 0.5  # rule 3: a sample may read the held mode this long after the restore's stamp
 TARGET_MOVE_RPM = 1.0  # rule 3: F0Tg moving more than this during a hold
 
 VERIFY_ESCALATE_SECONDS = 10.0  # rule 4: no VERIFY verdict by then is RESET
@@ -415,6 +416,7 @@ class Watcher:
         # derived from the helper's log
         self.hold_active = False
         self.hold_since = None
+        self.hold_ended_t = None
         self.engage_t = None
         self.restore_t = None
         self.clean_since = None
@@ -599,7 +601,10 @@ class Watcher:
             self.f0_bad_since = s.t
         since = self.f0_bad_since
         lasted = s.t - since >= MODE_SECONDS
-        exempt = mode == 1 and self.hold_active
+        # A sample can still read 1 for a moment after the restore's log stamp: the stamp is
+        # taken when the write returns, the sample when its own read did.
+        recent = self.hold_ended_t is not None and s.t - self.hold_ended_t <= HOLD_END_GRACE
+        exempt = mode == 1 and (self.hold_active or recent)
         explained = self._wrote("F0Md", since - EXPLAIN_BEFORE, since + EXPLAIN_AFTER)
         self.level(
             "r3-f0md", "ABORT 3", lasted and not exempt and not explained,
@@ -822,6 +827,8 @@ class Watcher:
                 self.hold_active = True
                 self.hold_since = self.hold_since or t
         elif data == "0x0":
+            if self.hold_active:
+                self.hold_ended_t = t
             self.hold_active, self.hold_since = False, None
             if self.engage_t is not None:
                 self.restore_t, self.clean_since = t, None

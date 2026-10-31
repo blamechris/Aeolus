@@ -4,7 +4,9 @@ A rule's test has its own control on the other side of the threshold, because a 
 shows a rule firing cannot tell a rule from a wrong constant."""
 
 import unittest
+from unittest import mock
 
+import run_watch as rw
 import synth
 from synth import wrote
 from support import first, idle, lines, notes, replay, titles
@@ -179,6 +181,21 @@ class Rule3Unexplained(unittest.TestCase):
         self.assertIn("ABORT 3", titles(w))
         explained = hold(3002.0).add_log(19.9, wrote("F0Tg", "0x0"))
         self.assertNotIn("ABORT 3", titles(replay(explained)))
+
+    def test_a_long_holds_restore_is_not_an_abort_while_a_sample_still_reads_one(self):
+        # The write history is kept for 90 s, so by the restore of a two-minute hold the engage
+        # write that explained F0Md = 1 is gone. The restore's log stamp comes when the write
+        # returns; a sample read just before it can still say 1 for a moment, after the hold has
+        # ended. That must not be an abort.
+        run = idle(170).hold(go=10, restore=130, target=3000)
+        self.assertEqual(titles(replay(run)), [])
+        with mock.patch.object(rw, "HOLD_END_GRACE", 0.0):
+            self.assertIn("ABORT 3", titles(replay(run.copy())))
+
+    def test_the_grace_ends_half_a_second_after_the_restore(self):
+        run = idle(170).hold(go=10, restore=130, target=3000)
+        late = run.copy().patch_fan(130.0, 133.0, F0Md=1)  # still 1 three seconds after the restore
+        self.assertIn("ABORT 3", titles(replay(late)))
 
     def test_during_a_hold_the_mode_may_not_leave_one_unwritten(self):
         run = idle(40).add_ctx(4.9, "step=1a target=3000 GO").add_log(5, wrote("F0Md", "0x1"))

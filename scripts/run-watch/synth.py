@@ -17,6 +17,7 @@ import calendar
 import copy
 import json
 import os
+import re
 import time
 
 T0 = 1_761_870_000.0  # an arbitrary UTC instant; every synthetic run starts here
@@ -26,6 +27,7 @@ PACKAGE_KEYS = tuple(
     prefix + suffix for prefix in ("TPD", "TRD") for suffix in "0123456789abcdefX")
 FAN_DEFAULTS = {"F0Md": 3, "F1Md": 3, "Ftst": 0, "F0Tg": 0, "F1Tg": 0, "F0Ac": 0, "F1Ac": 0}
 HOST = "fixture-host.local"
+_STAMP = re.compile(r'"wallClockUTC":"([^"]+)"')
 
 
 def iso(t):
@@ -129,17 +131,20 @@ class Run:
 
     @classmethod
     def from_lines(cls, fan_lines, package_lines, start, end):
-        """The records of two captures whose stamps fall in [start, end), copied, for patching."""
+        """The `sample` records of two captures whose stamps fall in [start, end), copied, for
+        patching. The stamp is read from the line's text, so lines outside the window are never
+        parsed as JSON."""
+
         def window(lines):
             kept = []
             for raw in lines:
-                if not raw.startswith('{"'):
+                if isinstance(raw, (bytes, bytearray)):
+                    raw = raw.decode("utf-8")
+                if '"kind":"sample"' not in raw:
                     continue
-                record = json.loads(raw)
-                if record.get("kind") != "sample":
-                    continue
-                if start <= parse_stamp(record["wallClockUTC"]) < end:
-                    kept.append(record)
+                m = _STAMP.search(raw)
+                if m and start <= parse_stamp(m.group(1)) < end:
+                    kept.append(json.loads(raw))
             return kept
 
         return cls(window(fan_lines), window(package_lines), start)
@@ -168,6 +173,48 @@ class Run:
                     if reading["key"] in fields:
                         value = fields[reading["key"]]
                         reading["value"] = value(rel) if callable(value) else value
+        return self
+
+    def patch_next_fan(self, at, **fields):
+        """Patch the first fan sample at or after `at` seconds: one sample, whatever the cadence.
+        Returns that sample's time in seconds from t0."""
+        for record in self.fans:
+            rel = self._stamp(record) - self.t0
+            if rel >= at:
+                for reading in record["readings"]:
+                    if reading["key"] in fields:
+                        reading["value"] = fields[reading["key"]]
+                return rel
+        raise ValueError("no fan sample at or after %s" % at)
+
+    def next_fan_time(self, at):
+        return min(self._stamp(r) - self.t0 for r in self.fans if self._stamp(r) - self.t0 >= at)
+
+    def last_time_before(self, at, which="fans"):
+        records = self.fans if which == "fans" else self.packages
+        return max(self._stamp(r) - self.t0 for r in records if self._stamp(r) - self.t0 < at)
+
+    def patch_next_package(self, at, hottest):
+        """Make the hottest curated key read `hottest` on the first package sample at or after
+        `at`. Returns that sample's time in seconds from t0."""
+        for record in self.packages:
+            rel = self._stamp(record) - self.t0
+            if rel >= at:
+                self.patch_hottest(rel, rel + 1e-6, hottest)
+                return rel
+        raise ValueError("no package sample at or after %s" % at)
+
+    def hottest_mean(self, start, end):
+        values = []
+        for record in self.packages:
+            rel = self._stamp(record) - self.t0
+            if start <= rel < end:
+                values.append(max(r["value"] for r in record["readings"] if r["key"] in PACKAGE_KEYS))
+        return sum(values) / len(values)
+
+    def truncate(self, seconds):
+        self.fans = [r for r in self.fans if self._stamp(r) - self.t0 < seconds]
+        self.packages = [r for r in self.packages if self._stamp(r) - self.t0 < seconds]
         return self
 
     def scale_fan(self, start, end, key, factor):
@@ -216,12 +263,14 @@ class Run:
     def hold(self, go, restore, target, step="1a", sit=None):
         """A well-formed hold: the CTX line, the unlock, the engage, the floor target, the fan
         spinning up over 4 s and holding, then the restore. `restore` is when the restore turn's
-        first write is stamped; the samples return to Apple's set 0.2 s later."""
+        first write is stamped; the samples return to Apple's set 0.2 s later. With `restore`
+        None the hold is never restored."""
         self.add_ctx(go - 0.05, "step=%s target=%d GO" % (step, target))
         self.add_log(go, wrote("Ftst", "0x1"))
         self.add_log(go + 0.03, wrote("F0Md", "0x1"))
         self.add_log(go + 0.06, wrote("F0Tg", "0x0 0x0 0x80 0x3f"))
         spin = 4.0
+        end = 1e9 if restore is None else restore + 0.2
 
         def tg(rel):
             return float(target)
@@ -229,10 +278,11 @@ class Run:
         def ac(rel):
             return float(target) * min(1.0, max(0.0, (rel - go) / spin))
 
-        self.patch_fan(go + 0.1, restore + 0.2, Ftst=1, F0Md=1, F0Tg=tg, F0Ac=ac)
-        self.add_log(restore, wrote("F0Md", "0x0"))
-        self.add_log(restore + 0.03, wrote("Ftst", "0x0"))
-        self.add_ctx(restore + (sit if sit is not None else 12.0), "step=none")
+        self.patch_fan(go + 0.1, end, Ftst=1, F0Md=1, F0Tg=tg, F0Ac=ac)
+        if restore is not None:
+            self.add_log(restore, wrote("F0Md", "0x0"))
+            self.add_log(restore + 0.03, wrote("Ftst", "0x0"))
+            self.add_ctx(restore + (sit if sit is not None else 12.0), "step=none")
         return self
 
     # ------------------------------------------------------------------ serialisation
