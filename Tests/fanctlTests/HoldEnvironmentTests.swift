@@ -132,8 +132,8 @@ struct HoldEnvironmentTests {
 
     @Test("The parent is this process's parent")
     func parent() {
-        #expect(HoldEnvironment.production.parentProcessID() == getppid())
-        #expect(HoldEnvironment.production.parentProcessID() > 0)
+        #expect(HoldEnvironment.process.parentProcessID() == getppid())
+        #expect(HoldEnvironment.process.parentProcessID() > 0)
     }
 
     /// The first signal the stream delivers, or `nil` if none comes within `limit`. The limit
@@ -157,7 +157,7 @@ struct HoldEnvironmentTests {
     }
 
     /// **Mutation:** make the dispatch source's event handler do nothing
-    /// (`source.setEventHandler { }` in `HoldEnvironment.production`). Run: red — nothing is
+    /// (`source.setEventHandler { }` in `HoldEnvironment.process`). Run: red — nothing is
     /// delivered. Not stopping at `source.resume()`: a source that is never activated traps in
     /// libdispatch when it is released, after the assertion has already failed.
     @Test(
@@ -187,7 +187,7 @@ struct HoldEnvironmentTests {
     @Test("The real signals are ignored while installed, and restored after")
     func realSignalsAreClaimed() {
         let before = HoldSignal.all.map { Self.disposition(of: $0.number) }
-        let subscription = HoldEnvironment.production.installSignals { _ in }
+        let subscription = HoldEnvironment.process.installSignals { _ in }
         #expect(HoldSignal.all.map { Self.disposition(of: $0.number) } == [1, 1, 1])
         subscription.cancel()
         #expect(HoldSignal.all.map { Self.disposition(of: $0.number) } == before)
@@ -195,11 +195,11 @@ struct HoldEnvironmentTests {
 
     /// A write to a closed pipe must come back as an error, not kill a process holding a lease.
     ///
-    /// **Mutation:** delete the `SIGPIPE` line in `HoldEnvironment.production`. Run: red.
+    /// **Mutation:** delete the `SIGPIPE` line in `HoldEnvironment.process`. Run: red.
     @Test("SIGPIPE is ignored while installed, and restored after")
     func sigpipeIsIgnored() {
         let before = Self.disposition(of: SIGPIPE)
-        let subscription = HoldEnvironment.production.installSignals { _ in }
+        let subscription = HoldEnvironment.process.installSignals { _ in }
         #expect(Self.disposition(of: SIGPIPE) == 1)
         subscription.cancel()
         #expect(Self.disposition(of: SIGPIPE) == before)
@@ -208,7 +208,7 @@ struct HoldEnvironmentTests {
     @Test("Cancelling twice puts back what was found, once")
     func cancelTwice() {
         let before = Self.disposition(of: SIGTERM)
-        let subscription = HoldEnvironment.production.installSignals { _ in }
+        let subscription = HoldEnvironment.process.installSignals { _ in }
         #expect(Self.disposition(of: SIGTERM) == 1)
         subscription.cancel()
         subscription.cancel()

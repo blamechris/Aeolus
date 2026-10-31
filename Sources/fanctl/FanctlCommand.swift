@@ -272,7 +272,7 @@ extension Fanctl {
         var clock = SettleClock.production
 
         /// The parent process and the signals — see `HoldEnvironment`. Not an argument.
-        var environment = HoldEnvironment.production
+        var environment = HoldEnvironment.process
     }
 
     /// See `AutoCommand.swift` for `run()` and what it is and is not allowed to claim.

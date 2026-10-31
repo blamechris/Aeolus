@@ -148,10 +148,17 @@ struct HoldEnvironment: Decodable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
-        self = .production
+        self = .process
     }
 
-    static let production = HoldEnvironment(
+    /// This process's own parent and signals, as `Terminal.process` is its own output.
+    ///
+    /// **`process`, not `production`.** The suite's rule-zero scan
+    /// (`RuleZeroScan.productionMember`) reads any `.production` but `SettleClock`'s and
+    /// `HelperConnection`'s as the helper's composition, which opens the SMC, and a member of that
+    /// name here would put this type's tests under a check that has nothing in them to find.
+    /// Nothing here reaches the helper or the SMC.
+    static let process = HoldEnvironment(
         parentProcessID: { getppid() },
         installSignals: { deliver in
             install(HoldSignal.all.map { ($0, $0.number) }, deliver: deliver)
