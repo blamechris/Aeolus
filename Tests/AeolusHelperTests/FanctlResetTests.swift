@@ -39,11 +39,38 @@ struct FanctlResetTests {
         let exitCode: ExitCode
     }
 
-    /// Deadlines long enough that a loaded runner cannot fake a failure.
+    /// The deadlines every other `fanctl` suite against a real helper session runs under (the
+    /// default of `FanctlAutoTests.run`, named by `FanctlStatusTests` and the corrupted-state
+    /// suite): 10 s gated, 10 s panic, and the product's handshake. They are the values this
+    /// constant had before #439 made it stall-tolerant (`7b19422^`), restored and not newly
+    /// chosen, so that a request nothing answers fails inside the one-minute limits those suites
+    /// carry (#443). `noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds it no tighter.
     ///
-    /// **Mutation:** make the harness drop the panic request — `ClientListenerHarness`'s
-    /// `restoreAllToAutomatic(reply:)` neither forwards it nor replies. Run: red, at the
-    /// deadline, within the suite's time limit: the answering tests report "did not confirm".
+    /// **Counted on the harness's clock since #583.** These suites build their connection with
+    /// `counting: .harness`, so a runner stall cannot spend the 10 s. A request nothing answers
+    /// fails with the client's "did not confirm" when `ClockBackstop` moves the clock, 30 s of
+    /// scheduled waiting time in (50 s of wall time at the most). That the backstop is inside the
+    /// limit is `theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit`'s; the 10 s is only what the
+    /// client reports, and does not decide when the request fails (#589).
+    static let unhurried = HelperClientDeadlines(
+        gatedVerb: .seconds(10),
+        panicVerb: .seconds(10),
+        handshakeVerb: HelperClientDeadlines.handshakeVerb)
+
+    /// Deadlines long enough that a loaded runner cannot fake a failure — **for this suite's
+    /// answering tests, and no other**.
+    ///
+    /// `private` on purpose. A deadline this long is only safe under a time limit that sits above
+    /// it, and this is the one suite whose limit does. When this was `unhurried` and internal, six
+    /// other suites took it, five of them by default: two with one-minute limits ended on "Time
+    /// limit was exceeded" before the client's own "did not confirm" could surface, and three with
+    /// no limit at all ran for two to three minutes when a request was dropped. Those suites are
+    /// back on `unhurried`, and the compiler now keeps this one out of their reach.
+    ///
+    /// **Mutation:** make the harness drop the panic request — `ArrivalRecordingService`'s
+    /// `restoreAllToAutomatic(reply:)`, in `HelperClientHarness.swift`, neither forwards it nor
+    /// replies. Run: red, at the deadline, within the suite's time limit: the answering tests
+    /// report "did not confirm".
     ///
     /// **Three of these tests assert text and an exit code and nothing about timing**, so a
     /// short deadline buys them nothing and costs a red CI run — a working helper reported as
@@ -70,8 +97,6 @@ struct FanctlResetTests {
     /// not have turned it red; the misreport #250 is about needs a handshake to be sent. It is
     /// held to the product's value anyway, because an invented bound is what the first test that
     /// *does* send one would silently inherit.
-    /// `noHarnessDefaultImposesATighterDeadlineThanTheProduct` reads this constant, which is why
-    /// it is not `private`.
     ///
     /// ## Stall-tolerant: the product's term plus the stall ceiling
     ///
@@ -83,30 +108,44 @@ struct FanctlResetTests {
     /// the reset request", and a refused connection reported as an unanswered one. A deadline the
     /// client enforces cannot be compensated the way a poll is, because the poll is not the one
     /// waiting, so each term the answering tests run under is the product's own **plus
-    /// `StallTolerantWait.ceiling`**, the most compensation #341 grants any wait: 55 s gated, 60 s
-    /// on the panic path. A request that genuinely never arrives still fails, at that deadline,
-    /// and the suite's `.timeLimit` sits above it so it fails rather than hangs. The one test
-    /// that asserts a deadline passes its own (`observableDeadline`).
+    /// `StallTolerantWait.ceiling`**: 55 s gated, 60 s on the panic path. That ceiling is the most
+    /// wall time any one wait may take, stall compensation included — a total cap, not an amount
+    /// of compensation granted on top of the wait — so adding it to a product term is this
+    /// suite's choice of how long a stall to outlast.
+    ///
+    /// A request that genuinely never arrives still fails at that deadline, with the client's own
+    /// "did not confirm", and this suite's three-minute `.timeLimit` sits above it, so it fails
+    /// rather than hangs. **That is true of this suite only.** A one-minute limit is no more than
+    /// 60 s, so a suite with the usual limit that waited this long would be ended by its limit,
+    /// with "Time limit was exceeded", before the client could say anything. The one test that
+    /// asserts a deadline passes its own (`observableDeadline`).
     ///
     /// Written as literals because `HelperClientDeadlineLiteralTests` reads every deadline passed
     /// in the test target and must resolve each to a duration;
     /// `theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling` holds the derivation.
-    static let unhurried = HelperClientDeadlines(
+    private static let stallTolerant = HelperClientDeadlines(
         gatedVerb: .seconds(55),
         panicVerb: .seconds(60),
         handshakeVerb: HelperClientDeadlines.handshakeVerb)
 
-    /// `unhurried`'s two terms are the product's plus `StallTolerantWait.ceiling` (#341), so a
-    /// change to either moves them, rather than leaving a literal that has drifted from its
-    /// reason.
+    /// `stallTolerant`'s gated and panic terms are the product's plus `StallTolerantWait.ceiling`
+    /// (#341), so a change to either moves them, rather than leaving a literal that has drifted
+    /// from its reason. Its handshake term is the product's own: nothing here sends a `hello`, so
+    /// a stall allowance on it would be inert, and an invented one is what the first test that
+    /// did send one would inherit. `noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds
+    /// `unhurried`; it cannot read this `private` constant, so this is where all three are held.
     ///
-    /// **Mutation:** set `unhurried`'s panic term to `.seconds(10)`. Run: red.
+    /// **Mutation:** set `stallTolerant`'s panic term to `.seconds(10)`. Run: red.
+    /// **Mutation:** set `stallTolerant`'s handshake term to `.seconds(10)`. Run: red.
     @Test("The answering tests' deadlines are the product's plus the stall ceiling")
     func theAnsweringDeadlinesAreTheProductsPlusTheStallCeiling() {
         #expect(
-            Self.unhurried.gatedVerb == HelperClientDeadlines.gatedVerb + StallTolerantWait.ceiling)
+            Self.stallTolerant.gatedVerb
+                == HelperClientDeadlines.gatedVerb + StallTolerantWait.ceiling)
         #expect(
-            Self.unhurried.panicVerb == HelperClientDeadlines.panicVerb + StallTolerantWait.ceiling)
+            Self.stallTolerant.panicVerb
+                == HelperClientDeadlines.panicVerb + StallTolerantWait.ceiling)
+        #expect(Self.stallTolerant.handshakeVerb == HelperClientDeadlines.handshakeVerb)
     }
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
@@ -129,15 +168,17 @@ struct FanctlResetTests {
     ///
     /// Only the connection is substituted — where to look, who may answer, how long to wait.
     /// The verb, the teardown and the report all come from the function under test.
+    ///
+    /// `deadlines` and `clock` have no default, so no suite inherits either: the others name
+    /// `unhurried` on the harness's clock, and this suite's answering tests go through
+    /// `answered(over:)`, which names `stallTolerant` on the wall clock.
     static func emitted(
         over harness: ClientListenerHarness,
-        waiting deadlines: HelperClientDeadlines = unhurried
+        waiting deadlines: HelperClientDeadlines,
+        counting clock: FanctlDeadlineClock
     ) async throws -> Emitted {
         var command = try resetAll()
-        command.helper = HelperConnection(
-            transport: .endpoint(harness.endpoint),
-            pinning: UnenforcedClientPinning(),
-            deadlines: deadlines)
+        command.helper = harness.fanctlConnection(waiting: deadlines, counting: clock)
         do {
             try await command.run()
             Issue.record("fanctl reset returned without an exit code")
@@ -147,6 +188,16 @@ struct FanctlResetTests {
                 message: Fanctl.message(for: error),
                 exitCode: Fanctl.exitCode(for: error))
         }
+    }
+
+    /// `emitted(over:waiting:counting:)` under `stallTolerant`, on the wall clock: how this suite's
+    /// answering tests run the command. It leaves them no deadline argument to drop, and `emitted`
+    /// has no default to fall back on, so tidying a call to one without a deadline does not
+    /// compile, where it used to bring #439's CPU-starved-runner flake back with the suite still
+    /// green. They stay on the wall clock because the 55 s and 60 s of `stallTolerant` already
+    /// outlast any stall this suite has seen (#583 classifies them).
+    private static func answered(over harness: ClientListenerHarness) async throws -> Emitted {
+        try await emitted(over: harness, waiting: stallTolerant, counting: .wall)
     }
 
     // MARK: - The helper accepted
@@ -167,7 +218,7 @@ struct FanctlResetTests {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.answered(over: harness)
 
         #expect(emitted.exitCode == .success)
         #expect(emitted.message.contains("accepted the reset request"))
@@ -201,7 +252,7 @@ struct FanctlResetTests {
     func theCommandSendsNoHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.answered(over: harness)
         #expect(emitted.exitCode == .success)
 
         let session = try #require(harness.sessions.first)
@@ -225,13 +276,16 @@ struct FanctlResetTests {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.answered(over: harness)
         #expect(emitted.exitCode == .success)
 
         // Bounded: the helper's invalidation handler hands off to a detached task, so the
         // event is ordered after `run()` returns but not synchronous with it. A `run()` that
         // never disconnected leaves this empty for the whole timeout.
-        try await waitUntil("the helper was told the connection went away") {
+        try await waitUntil(
+            "the helper was told the connection went away",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains {
                 if case .connectionDidInvalidate = $0 { return true }
                 return false
@@ -268,13 +322,14 @@ struct FanctlResetTests {
         // The two short terms are the assertion — `observableDeadline` is what the message below
         // must name. The handshake term is not asserted by anything and no test here sends a
         // `hello` in any case, so it is the product's value rather than the tenth explicitly
-        // passed invention in the target: the same reason `unhurried` carries it.
+        // passed invention in the target: the same reason `stallTolerant` carries it.
         let emitted = try await Self.emitted(
             over: harness,
             waiting: HelperClientDeadlines(
                 gatedVerb: Self.observableDeadline,
                 panicVerb: Self.observableDeadline,
-                handshakeVerb: HelperClientDeadlines.handshakeVerb))
+                handshakeVerb: HelperClientDeadlines.handshakeVerb),
+            counting: .wall)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("did not confirm the reset request"))
@@ -297,18 +352,14 @@ struct FanctlResetTests {
             """)
 
         // The precondition, so this cannot pass against a client that sent nothing at all —
-        // which produces the same `helperNeverAnswered` and the same text.
-        //
-        // A **bounded wait**, not an instantaneous read: the client gives up on its own
-        // deadline, so at the moment it returns there is no guarantee the message has been
-        // delivered *and* dispatched. Read straight after the timeout this raced, and failed
-        // under a full-suite run. It waits on the authority's own flag rather than on the
-        // arrival record, because the arrival is appended strictly upstream of the dispatch
-        // that sets the flag — waiting on the earlier event leaves the later one raced, which
-        // is the same window made smaller. What it must not become is a wait that *supplies*
-        // the condition, and it does not: a client that never sent the message leaves this
-        // false for the whole timeout and the wait records the issue itself.
-        try await waitUntil("the panic path reached the helper") { await authority.hasBeenAsked }
+        // which produces the same `helperNeverAnswered` and the same text. A **bounded wait**,
+        // not an instantaneous read: the client gives up on its own deadline, so the message
+        // may not be delivered *and* dispatched when it returns, and read straight after this
+        // raced under a full-suite run. It waits on the authority's own flag, since the arrival
+        // is recorded upstream of the dispatch that sets it, and never *supplies* the condition.
+        try await waitUntil(
+            "the panic path reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
         // Released so the parked helper task finishes rather than outliving the test.
         await gate.signal()
@@ -332,7 +383,7 @@ struct FanctlResetTests {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         harness.isAdmitting = false
 
-        let emitted = try await Self.emitted(over: harness)
+        let emitted = try await Self.answered(over: harness)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("not installed"))

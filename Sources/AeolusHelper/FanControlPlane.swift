@@ -262,6 +262,10 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// whether the force key is needed — and its cadence is `EngagementDriver`'s. Each
     /// call performs one step inside one `.supervisor` turn (a fresh key info, the write, and
     /// its read-back) and returns `.engaged` or `.awaitingYield`; every refusal is a throw.
+    /// **The step that reads back `1` also holds the target at or above the fan's floor** before
+    /// it answers `.engaged`: it reads `F<n>Tg` in the same turn, and writes the floor and reads it
+    /// back when the target is below it (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's
+    /// P1′ amendment, decision 4). A target it cannot read, or a floor not held, is a throw.
     /// Nothing calls this but the driver, which asks the entitlement around every step and
     /// undoes on any throw. The parameter list is still ADR 0008's: one permit and nothing
     /// beside it, so the fan whose lease the driver checks is the fan written.

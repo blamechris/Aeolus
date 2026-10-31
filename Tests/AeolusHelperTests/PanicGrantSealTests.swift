@@ -46,11 +46,14 @@ struct PanicGrantSealTests {
                 ScriptedControlPlane.Stage(
                     temperatures: LeaseFixture.nominalDieTemperatures, unreadableModes: unreadable)
             ])
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         return HelperComposition(
             plane: ScopeParkingPlane(firmware),
             snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: Fixture.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Fixture.safetyLog,

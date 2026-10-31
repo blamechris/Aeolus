@@ -9,8 +9,8 @@ import SMCCore
 enum PollingEngine {
     /// One tick's result. `discovery` is carried back out (never mutated in place) so the
     /// caller can hold it and pass it into the next call — see `poll(provider:labelSource:
-    /// discovery:now:)`'s parameter documentation for why this stays a value handed back
-    /// and forth rather than an `inout` threaded across `await` points.
+    /// discovery:untracked:now:)`'s parameter documentation for why this stays a value
+    /// handed back and forth rather than an `inout` threaded across `await` points.
     struct Snapshot: Sendable, Equatable {
         let fans: [FanPollingReading]
         let sensors: [SensorPollingReading]
@@ -27,9 +27,11 @@ enum PollingEngine {
     ///     non-empty, so a caller threads it straight into the next call without needing to
     ///     re-derive it — see `SensorPoller`'s documentation for why sensor discovery must
     ///     happen exactly once and then be reused, never repeated on every tick. Fans need
-    ///     no equivalent caching: `FanPoller.poll(provider:)` rereads `FNum` itself every
-    ///     call, cheaply, because unlike arbitrary sensor keys a fan's three keys follow
-    ///     directly from its index by a fixed naming convention.
+    ///     no equivalent caching: `FanPoller.poll(provider:untracked:)` rereads `FNum`
+    ///     itself every call, cheaply, because unlike arbitrary sensor keys a fan's three
+    ///     keys follow directly from its index by a fixed naming convention.
+    ///   - why: Why no helper snapshot is speaking for the fans — every fan this returns is
+    ///     `.notTracked(why)`. See `FanPoller.poll(provider:untracked:)`.
     ///   - now: Injectable so tests can assert on `Snapshot.capturedAt` against a fixed
     ///     value, matching `ListCommand.fetch(provider:now:)`'s identical parameter.
     /// - Returns: This tick's fans, sensors, resolved discovery, and capture time.
@@ -42,11 +44,12 @@ enum PollingEngine {
         provider: some SensorProvider,
         labelSource: some SensorLabelSource,
         discovery: [DiscoveredSensor],
+        untracked why: ControlNotTracked,
         now: @autoclosure () -> Date = Date()
     ) async throws -> Snapshot {
-        // No separate `provider.isAvailable` guard here: `FanPoller.poll(provider:)`
-        // — via `SMCFanEnumeration.enumerate(provider:)` — already checks it and throws
-        // `PollingError.noSMC` before issuing a single read, and it runs first, ahead of
+        // No separate `provider.isAvailable` guard here: `FanPoller.poll(provider:
+        // untracked:)` — via `SMCFanEnumeration.enumerate(provider:)` — already checks it and
+        // throws `PollingError.noSMC` before issuing a single read, and it runs first, ahead of
         // `SensorPoller.discover(provider:)`'s `readAll()`. A second, independent check
         // at this level would call `isAvailable` twice per tick for no behavioural gain
         // on real hardware — and on a provider whose availability can change between
@@ -59,7 +62,7 @@ enum PollingEngine {
         // returns trail their own `capturedAt` by the cold readAll() cost rather than by
         // the cheap fan-read cost. Every later tick reuses `resolvedDiscovery` and this
         // gap collapses to the fan read alone.
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: why)
 
         let resolvedDiscovery: [DiscoveredSensor]
         if discovery.isEmpty {

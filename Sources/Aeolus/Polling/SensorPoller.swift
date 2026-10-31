@@ -33,7 +33,7 @@ enum SensorPoller {
             readings = try await provider.readAll()
         } catch {
             throw PollingError.readFailed(
-                context: "enumerate sensors", reason: String(describing: error))
+                context: "enumerate sensors", reason: SMCError.readableDescription(of: error))
         }
 
         var seen: Set<String> = []
@@ -52,7 +52,7 @@ enum SensorPoller {
     /// A key that fails this tick (transient read failure, or a key that genuinely
     /// disappeared) is represented as `.unavailable` on its `SensorPollingReading`, never
     /// dropped from the list and never fabricated as `0` — the same contract
-    /// `FanPoller.poll(provider:)` gives per-fan values.
+    /// `FanPoller.poll(provider:untracked:)` gives per-fan values.
     static func refresh(
         discovered: [DiscoveredSensor],
         provider: some SensorProvider,
@@ -66,7 +66,7 @@ enum SensorPoller {
             outcomes = try await provider.read(keys: keys)
         } catch {
             throw PollingError.readFailed(
-                context: "refresh sensors", reason: String(describing: error))
+                context: "refresh sensors", reason: SMCError.readableDescription(of: error))
         }
 
         var outcomesByKey: [String: SensorReadOutcome] = [:]

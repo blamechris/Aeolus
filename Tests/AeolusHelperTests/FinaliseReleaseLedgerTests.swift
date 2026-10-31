@@ -108,11 +108,14 @@ struct FinaliseReleaseLedgerTests {
     static func composed<Plane: FanControlPlane>(
         over plane: Plane, fanCount: Int = 1, log: RecordedLog
     ) -> HelperComposition<Plane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: plane,
             snapshotProvider: fanProvider(fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))

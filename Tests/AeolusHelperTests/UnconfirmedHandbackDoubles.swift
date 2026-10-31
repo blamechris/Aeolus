@@ -32,14 +32,18 @@ import Testing
 actor WedgedThenRefusingRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
+    private let ceiling: Duration
     private let held = AsyncSignal()
     private var hasParked = false
 
     /// Every scope the restore was asked for, recorded before it parks or throws.
     private(set) var restoreScopes: [FanRestoreScope] = []
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// `ceiling` is how long the wedge holds the first restore. Only a test of the ceiling itself
+    /// passes anything but `parkCeiling`.
+    init(_ wrapped: ScriptedControlPlane, ceiling: Duration = parkCeiling) {
         self.wrapped = wrapped
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -55,7 +59,11 @@ actor WedgedThenRefusingRestorePlane: AdmissionBlindPlane {
         restoreScopes.append(scope)
         if !hasParked {
             hasParked = true
-            try await held.wait()
+            // A wedge nobody releases gives up at the ceiling and goes on into the refusal (#451).
+            if case .abandoned(let expiry) = try await held.wait(atMost: ceiling) {
+                recordAbandonedPark(
+                    by: "WedgedThenRefusingRestorePlane", of: scope, after: expiry)
+            }
         }
         throw AeolusXPCFault.helperFailed(detail: "the firmware discarded the mode write")
     }
@@ -116,14 +124,18 @@ actor WedgedThenRefusingRestorePlane: AdmissionBlindPlane {
 actor CycleWedgingRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
+    private let ceiling: Duration
     private var isWedging = false
     private var held = AsyncSignal()
 
     /// Every scope the restore was asked for, in order, recorded before it parks.
     private(set) var restoreScopes: [FanRestoreScope] = []
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// `ceiling` is how long a wedged restore waits to be released. Only a test of the ceiling
+    /// itself passes anything but `parkCeiling`.
+    init(_ wrapped: ScriptedControlPlane, ceiling: Duration = parkCeiling) {
         self.wrapped = wrapped
+        self.ceiling = ceiling
     }
 
     nonisolated var writeCapability: FanWriteCapability { .built }
@@ -166,7 +178,12 @@ actor CycleWedgingRestorePlane: AdmissionBlindPlane {
         restoreScopes.append(scope)
         if isWedging {
             let thisCyclesWedge = held
-            try await thisCyclesWedge.wait()
+            if case .abandoned(let expiry) = try await thisCyclesWedge.wait(atMost: ceiling) {
+                recordAbandonedPark(by: "CycleWedgingRestorePlane", of: scope, after: expiry)
+                // The test is red already: stop wedging, as `release()` does, so a restore the
+                // cycle issues next does not wait out a ceiling of its own (#451).
+                await release()
+            }
         }
         try await wrapped.restoreToAutomatic(scope)
     }

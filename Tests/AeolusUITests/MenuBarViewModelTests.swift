@@ -3,7 +3,9 @@ import Testing
 
 @testable import AeolusUI
 
-@Suite("MenuBarViewModel — default selection, resolution, and phase mirroring", .serialized)
+@Suite(
+    "MenuBarViewModel — default selection, resolution, and phase mirroring", .serialized,
+    .timeLimit(.minutes(1)))
 @MainActor
 struct MenuBarViewModelTests {
 
@@ -24,7 +26,8 @@ struct MenuBarViewModelTests {
 
     @Test("Before any tick, the view model publishes no readouts and claims no data")
     func initialStateIsHonestlyEmpty() {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
         #expect(viewModel.readouts.isEmpty)
@@ -35,10 +38,11 @@ struct MenuBarViewModelTests {
 
     @Test("A successful tick with no prior selection computes and resolves a default")
     func successfulTickComputesDefaultSelection() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.currentSelection.isEmpty)
@@ -48,11 +52,12 @@ struct MenuBarViewModelTests {
 
     @Test("An explicit selection at init is never overwritten by the computed default")
     func explicitSelectionAtInitIsPreserved() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let explicit = [MenuBarReadout(key: "Tp09", source: .sensor)]
         let viewModel = MenuBarViewModel(polling: polling, selection: explicit)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.currentSelection == explicit)
         #expect(viewModel.readouts.map(\.key) == ["Tp09"])
@@ -60,9 +65,10 @@ struct MenuBarViewModelTests {
 
     @Test("setSelection(_:) replaces the selection and recomputes readouts immediately")
     func setSelectionReplacesAndRecomputesImmediately() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         viewModel.setSelection([MenuBarReadout(key: "Tp09", source: .sensor)])
 
@@ -73,35 +79,38 @@ struct MenuBarViewModelTests {
 
     @Test("An explicitly empty selection ([]) is never replaced by a computed default")
     func explicitlyEmptySelectionStaysEmpty() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling, selection: [])
 
-        await polling.tick()
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.currentSelection.isEmpty)
         #expect(viewModel.readouts.isEmpty)
     }
 
-    @Test("phase, lastUpdated, and isThermalEmergencyActive mirror the underlying PollingViewModel")
+    @Test("phase, lastUpdated, and thermalEmergency mirror the underlying PollingViewModel")
     func mirrorsUnderlyingPollingState() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.phase == polling.phase)
         #expect(viewModel.lastUpdated == polling.lastUpdated)
-        #expect(viewModel.isThermalEmergencyActive == polling.isThermalEmergencyActive)
+        #expect(viewModel.thermalEmergency == polling.thermalEmergency)
     }
 
     @Test("A readout naming a key this poll never reported resolves unavailable, not omitted")
     func unresolvedReadoutStaysVisibleAsUnavailable() async {
-        let polling = PollingViewModel(provider: Self.provider(), clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(
             polling: polling, selection: [MenuBarReadout(key: "F9Ac", source: .fan)])
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         #expect(viewModel.readouts.count == 1)
         #expect(viewModel.readouts.first?.key == "F9Ac")
@@ -128,10 +137,11 @@ struct MenuBarViewModelTests {
                 "#KEY": .success(.fake(key: "#KEY", value: 3385, kind: .unknown)),
                 "AC-B": .success(.fake(key: "AC-B", value: -1, kind: .unknown)),
             ])
-        let polling = PollingViewModel(provider: provider, clock: FakePollingClock())
+        let polling = PollingViewModel(
+            provider: provider, clock: FakePollingClock(), snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
-        await polling.tick()
+        await SnapshotTestSupport.tickEnds(polling)
 
         let keys = viewModel.readouts.map(\.key)
         #expect(keys.contains("F0Ac"))
@@ -142,15 +152,16 @@ struct MenuBarViewModelTests {
     @Test("start()/stop() forward to the underlying PollingViewModel's own loop")
     func startAndStopForwardToPolling() async {
         let clock = FakePollingClock(cancelAfterSleeps: 2)
-        let polling = PollingViewModel(provider: Self.provider(), clock: clock)
+        let polling = PollingViewModel(
+            provider: Self.provider(), clock: clock, snapshots: .noHelper())
         let viewModel = MenuBarViewModel(polling: polling)
 
         viewModel.start()
-        await polling.waitUntilLoopFinishes()
+        let ended = await SnapshotTestSupport.refreshLoopEnds(polling)
+        viewModel.stop()
+        #expect(ended, "the refresh loop did not end")
 
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.readouts.isEmpty)
-
-        viewModel.stop()
     }
 }

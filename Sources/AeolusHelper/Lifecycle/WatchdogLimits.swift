@@ -123,6 +123,11 @@ enum WatchdogLimits {
     /// **One engagement in progress is one outstanding supervisor reader while it waits for a
     /// turn, and none while it sleeps between steps**, so D7's writes enter N as readers whose
     /// turn is this long rather than as new readers.
+    ///
+    /// **Not yet the longest once the floor rule is built:** the engaged step at rest is 8 round
+    /// trips under ADR 0014's P1′ amendment (the target's read, key info, write and read-back
+    /// after the mode's read-back), and is built and bounded in
+    /// [#465](https://github.com/blamechris/Aeolus/issues/465). Nothing on `main` issues it.
     static let writeTurnRoundTrips = 5
 
     /// A `.fan(n)` restore's round trips: its mode write, and the force key's when no engaged fan

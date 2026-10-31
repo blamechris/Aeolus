@@ -40,8 +40,10 @@ final class PendingReply<Answer>: @unchecked Sendable {
     /// One fallback for both ways of giving up, for a caller that does not need to tell
     /// them apart.
     ///
-    /// The listener harness is the only such caller. Anything acting on the answer wants
-    /// the initialiser below.
+    /// There are two such callers. The listener harness is one. The other is a caller waiting
+    /// on `HelperClient`'s shared handshake, whose latch has no deadline (nothing calls
+    /// `expire()`; the deadline is the handshake's own), so cancellation is the only way it
+    /// gives up (#576). Anything acting on a deadline's answer wants the initialiser below.
     init(ifNothingArrives fallback: Answer) {
         self.fallback = Unchecked(value: fallback)
         self.cancellation = Unchecked(value: fallback)

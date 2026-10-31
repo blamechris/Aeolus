@@ -28,6 +28,24 @@ import Testing
 /// properties `private`, its internal surface exact. The parse is `MemberAccessScan` and
 /// `SeamScanner`'s, as for § 5's registry, `accessorBlock(of:in:)` included; nothing here is a
 /// second scanner.
+///
+/// ## As spelled, and what that does not reach
+///
+/// The stores and the views are compared **as spelled**
+/// ([#607](https://github.com/blamechris/Aeolus/issues/607)), as `HelperClientAccessTests` has
+/// since [#604](https://github.com/blamechris/Aeolus/issues/604): an entry is the modifier run,
+/// the introducer and the key. So `public` on a view, or `fileprivate` or an attribute on a
+/// store, is a different string and red, where a bare key matched all of them.
+///
+/// A member is read at four spaces once the type's own indent is dropped, so **a member in the
+/// formatter's two-line spelling** — a modifier alone on a line, the declaration under it at
+/// twelve in the source, eight once the indent is dropped — is in no population here, whether
+/// new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)). A store or a
+/// view written so goes missing from its list and is red; a new member is seen by nothing here.
+/// An `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)).
+/// `public extension LeaseAuthority {` alone does not compile against an internal actor, so a
+/// widening starts at the actor's own declaration, and that suite pins both.
 @Suite("The lease core's registers and sleep seal are values the actor reaches only by member")
 struct LeaseAuthorityRegistersAccessTests {
 
@@ -37,11 +55,17 @@ struct LeaseAuthorityRegistersAccessTests {
         let file: String
         /// The actor's `private` property holding the one instance that governs anything.
         let property: String
-        /// Its stored properties, every one `private`. A new one is lease-core state, and adding
-        /// it is a decision recorded here.
+        /// Its stored properties, every one `private`, **as spelled** (#607): `private var
+        /// releasing`. A new one is lease-core state, and adding it is a decision recorded here.
         let stores: Set<String>
-        /// Its internal properties: computed, get-only views of the stores.
+        /// Its internal properties: computed, get-only views of the stores, as spelled: `var
+        /// isSealed`.
         let queries: Set<String>
+
+        /// The names behind `queries`, for the check that reads each one's accessor block.
+        var queryNames: [String] {
+            queries.map(MemberAccessScan.name(ofPropertySpelling:)).sorted()
+        }
     }
 
     private static let valueTypes = [
@@ -49,18 +73,21 @@ struct LeaseAuthorityRegistersAccessTests {
             name: "HandbackRegisters", file: "LeaseAuthorityHandbackRegisters.swift",
             property: "registers",
             stores: [
-                "releasing", "restoreAbandoned", "handbackAcceptedUnconfirmed",
-                "handbackUnconfirmed",
+                "private var releasing", "private var restoreAbandoned",
+                "private var handbackAcceptedUnconfirmed", "private var handbackUnconfirmed",
             ],
             queries: [
-                "abandonedHandbacks", "unconfirmedHandbacks", "fansMidHandback",
-                "handbacksOwedAReadBack",
+                "var abandonedHandbacks", "var unconfirmedHandbacks", "var fansMidHandback",
+                "var handbacksOwedAReadBack",
             ]),
         ValueType(
             name: "SleepSealPairing", file: "LeaseAuthoritySleepSealPairing.swift",
             property: "sleep",
-            stores: ["sleepSeal", "latestWakeGeneration", "sealGeneration"],
-            queries: ["isSealed"]),
+            stores: [
+                "private var sleepSeal", "private var latestWakeGeneration",
+                "private var sealGeneration",
+            ],
+            queries: ["var isSealed"]),
     ]
 
     /// The file that declares the actor, and so the only one that can name either property.
@@ -93,21 +120,22 @@ struct LeaseAuthorityRegistersAccessTests {
         for type in Self.valueTypes {
             let properties = MemberAccessScan.members(
                 inSource: try Self.membersSource(of: type), keyword: .property)
-            let stores = Set(properties.filter(\.isPrivate).map(\.key))
-            let queries = Set(properties.filter { !$0.isPrivate }.map(\.key))
+            let stores = Set(properties.filter(\.isPrivate).map(\.spelling))
+            let queries = Set(properties.filter { !$0.isPrivate }.map(\.spelling))
 
             #expect(
                 stores == type.stores,
                 """
-                \(type.name)'s private properties changed: found \(stores.sorted()), \
-                acknowledged \(type.stores.sorted()). A new store is lease-core state; record it \
-                here with the issue that needs it.
+                \(type.name)'s private properties changed, as spelled: \
+                \(MemberAccessScan.difference(stores, type.stores)). A new store is lease-core \
+                state; record it here with the issue that needs it.
                 """)
             #expect(
                 queries == type.queries,
                 """
-                \(type.name)'s internal properties changed: found \(queries.sorted()), \
-                acknowledged \(type.queries.sorted()). An internal store is writable state.
+                \(type.name)'s internal properties changed, as spelled: \
+                \(MemberAccessScan.difference(queries, type.queries)). An internal store is \
+                writable state.
                 """)
         }
     }
@@ -235,7 +263,7 @@ struct LeaseAuthorityRegistersAccessTests {
         let writers = try NSRegularExpression(pattern: Self.writingAccessor)
         for type in Self.valueTypes {
             let code = try Self.membersSource(of: type)
-            for name in type.queries.sorted() {
+            for name in type.queryNames {
                 let block = try #require(
                     try MemberAccessScan.accessorBlock(of: name, in: code),
                     """
@@ -320,9 +348,6 @@ struct LeaseAuthorityRegistersAccessTests {
     /// LeaseAuthority`, and `MemberAccessScan` reads four. Dropping one level brings them to four
     /// and the extension's own declarations to none, which `LeaseAuthorityAccessTests` scans.
     private static func membersSource(of type: ValueType) throws -> String {
-        try MemberAccessScan.strippedSource(of: type.file)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.hasPrefix("    ") ? String($0.dropFirst(4)) : String($0) }
-            .joined(separator: "\n")
+        try MemberAccessScan.outdentedSource(of: type.file)
     }
 }

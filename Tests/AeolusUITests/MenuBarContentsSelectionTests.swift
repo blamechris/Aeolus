@@ -13,7 +13,8 @@ struct MenuBarContentsSelectionTests {
             displayName: "Fan \(index)",
             actual: .value(key: "F\(index)Ac", 1712),
             minimum: .value(key: "F\(index)Mn", 1200),
-            maximum: .value(key: "F\(index)Mx", 5312))
+            maximum: .value(key: "F\(index)Mx", 5312),
+            control: .notTracked(.noHelperInThisBuild))
     }
 
     private static func sensor(key: String) -> SensorPollingReading {

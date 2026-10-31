@@ -215,7 +215,9 @@ struct AnonymousListenerTests {
 
         harness.connection.invalidate()
 
-        try await waitUntil("connectionDidInvalidate crossed the seam") {
+        try await waitUntil(
+            "connectionDidInvalidate crossed the seam", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await !authority.invalidatedConnections.isEmpty
         }
         #expect(await authority.invalidatedConnections.count == 1)
@@ -237,7 +239,9 @@ struct AnonymousListenerTests {
         }
         harness.connection.invalidate()
 
-        try await waitUntil("connectionDidInvalidate crossed the seam") {
+        try await waitUntil(
+            "connectionDidInvalidate crossed the seam", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await !authority.invalidatedConnections.isEmpty
         }
     }

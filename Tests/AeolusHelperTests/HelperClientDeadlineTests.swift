@@ -7,9 +7,10 @@ import Testing
 
 /// The client's deadlines, and the one of them that is derived rather than guessed.
 ///
-/// `.timeLimit` because the two slow-peer tests wait on a real round trip: a client whose
-/// deadline was deleted outright hangs rather than fails, and a suite that hangs is worse than
-/// one that goes red.
+/// `.timeLimit` because a client whose deadline was deleted outright hangs rather than fails, and
+/// a suite that hangs is worse than one that goes red. The two slow-peer tests count their
+/// deadlines on the harness's clock, which they move themselves, so a runner stall cannot run
+/// one out ([#421](https://github.com/blamechris/Aeolus/issues/421)).
 @Suite("The XPC client's deadlines", .timeLimit(.minutes(1)))
 struct HelperClientDeadlineTests {
 
@@ -134,10 +135,12 @@ struct HelperClientDeadlineTests {
     ///
     /// **What this covers, exactly.** Every deadline a test can *inherit*:
     /// `ClientListenerHarness.defaultDeadlines`, which eighteen tests take, and
-    /// `FanctlResetTests.unhurried`, the default of `FanctlResetTests.emitted(over:waiting:)`.
-    /// Those two are the whole set — `grep 'HelperClientDeadlines('` over `Tests/` finds no
-    /// third default. So no test can acquire a tighter bound than the product's without
-    /// naming one.
+    /// `FanctlResetTests.unhurried`, the default of `FanctlAutoTests.run` and named by
+    /// `FanctlStatusTests` and the corrupted-state suite. Those two are the whole set —
+    /// `grep 'HelperClientDeadlines('` over `Tests/` finds no third default. The deliberately
+    /// looser `FanctlResetTests.stallTolerant` is `private` to the suite that passes it (#443),
+    /// and that suite holds its three terms itself. So no test can acquire a tighter bound than
+    /// the product's without naming one.
     ///
     /// **Most of what it compares is a value against itself, and that is what it is for.**
     /// `ClientListenerHarness.defaultDeadlines` *is* `HelperClientDeadlines.default`
@@ -152,23 +155,14 @@ struct HelperClientDeadlineTests {
     /// than only one that is tighter. `unhurried` keeps `>=`, because being generous is
     /// deliberate there.
     ///
-    /// **What it does not cover, and what now does.** Eleven constructions pass a deadline
-    /// explicitly, and this test reads none of them. A bound below the product's is legitimate at
-    /// a site where the expiry *is* the assertion — `aMessageNobodyAnswersHasItsOwnError`'s 250 ms
-    /// gated verb, `theHandshakeIsSentWithinItsOwnDeadline`'s 1 ns handshake,
-    /// `FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown`'s 2 s panic path — and that
-    /// is what those sites are for. What this comment used to enumerate beside them was five
-    /// terms that were *not*: handshake terms below the product's 15 s at all three of
-    /// `HelperClientTeardownTests`' short sites, and panic terms at half the product's 10 s, on
-    /// round trips those tests require to succeed or never send at all.
-    ///
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) closed that category and decided
-    /// the scan question it left open: `HelperClientDeadlineLiteralTests` holds every term of
-    /// every explicit construction under `Tests/` to the product's bound, or to a named licence
-    /// saying what asserts the tighter one. So the enumeration that lived here is not maintained
-    /// here any more — a list in a doc comment is what let the panic column survive the issue the
-    /// comment pointed at. This test is still cover for the *defaults* alone and must not be read
-    /// as more.
+    /// **What it does not cover, and what now does.** It reads no deadline a test passes
+    /// explicitly. A bound below the product's is legitimate where the expiry *is* the assertion
+    /// (`aMessageNobodyAnswersHasItsOwnError`'s 250 ms gated verb, `FanctlResetTests`' 2 s panic
+    /// path), and [#255](https://github.com/blamechris/Aeolus/issues/255) put the rest under a
+    /// scan: `HelperClientDeadlineLiteralTests` holds every term of every explicit construction
+    /// under `Tests/` to the product's bound, or to a named licence saying what asserts the
+    /// tighter one. A list in a doc comment is what let the panic column survive the issue the
+    /// comment pointed at, so none is kept here. This test is cover for the *defaults* alone.
     ///
     /// **It is also a relative check, deliberately, and that leaves a second route open.**
     /// Both sides move together if `HelperClientDeadlines` itself is tightened — a reachable
@@ -208,35 +202,35 @@ struct HelperClientDeadlineTests {
             """)
 
         // The other default a test can inherit without naming it, and `>=` rather than equality
-        // because being *looser* is deliberate here: `unhurried` is each product term plus the
-        // stall ceiling on both verbs that suite's tests exercise (#341). Those two terms are also
-        // the only distinct comparisons in this test — the handshake term is
+        // because being *looser* is deliberate here: `unhurried` sits at 10 s on both verbs the
+        // suites that take it exercise, as it did before #439. Those two terms are also the only
+        // distinct comparisons in this test — the handshake term is
         // `HelperClientDeadlines.handshakeVerb` itself.
         let fanctlDefaults = FanctlResetTests.unhurried
         for (verb, harnessBound, productBound, consequence) in [
             (
                 "a gated verb", fanctlDefaults.gatedVerb, shipping.gatedVerb,
                 """
-                Three of that suite's four tests inherit this and assert text and an exit code, \
+                The suites that inherit this assert text, exit codes and call counts, \
                 so a bound below the product's can only report a helper that answered as one \
-                that did not — the misreport that suite exists to forbid.
+                that did not — the misreport those suites exist to forbid.
                 """
             ),
             (
                 "the panic path", fanctlDefaults.panicVerb, shipping.panicVerb,
                 """
                 `fanctl reset --all` *is* the panic path, so this is the bound its round trip \
-                actually runs under, and a value below the product's reports a helper that \
-                answered as one that did not.
+                actually runs under in the suites that inherit this, and a value below the \
+                product's reports a helper that answered as one that did not.
                 """
             ),
             (
                 "a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb,
                 """
-                No test in that suite sends a `hello` at all — `theCommandSendsNoHandshake` \
-                asserts precisely that — so this term is inert there and misreports nothing \
-                today. It is held to the product's value because a fourth invented handshake \
-                bound is what the first test that *does* send one would inherit.
+                `FanctlResetTests` sends no `hello` (`theCommandSendsNoHandshake`), but the \
+                `fanctl auto` and `fanctl status` suites that take this do, so a bound below \
+                the product's can report a helper still starting as one that did not answer. \
+                It is held to the product's value for that reason.
                 """
             ),
         ] {
@@ -249,13 +243,13 @@ struct HelperClientDeadlineTests {
         }
     }
 
-    /// How long the peer is made to sit on a message in the two tests below.
+    /// How long the peer is made to sit on a message in the two tests below, as the harness's
+    /// clock counts it: the test moves the hands by this much while the message is held.
     ///
     /// Longer than the 750 ms this suite's harness used to allow, because a lag *shorter* than
-    /// that would leave both tests green under the exact constant #250 was about. Short enough
-    /// that it is a second of suite wall clock and not five. That floor is asserted by
-    /// `theConstructedPeerLagStillExceedsTheBoundBehind250`, once, rather than inside whichever
-    /// of the two tests happened to be written first.
+    /// that would leave both tests green under the exact constant #250 was about. That floor is
+    /// asserted by `theConstructedPeerLagStillExceedsTheBoundBehind250`, once, rather than inside
+    /// whichever of the two tests happened to be written first.
     private static let peerLag = Duration.seconds(1)
 
     /// The lag both slow-peer tests are built on is still longer than the bound #250 was about.
@@ -308,6 +302,12 @@ struct HelperClientDeadlineTests {
     /// negotiated, and only the answer waits. A contended runner is the same shape with the
     /// delay in libxpc instead, which is why one second of held reply stands in for it.
     ///
+    /// **The second is moved, not slept** (#421). It used to be a `Task.sleep` on the wall clock,
+    /// against a deadline that was also on the wall clock, so an 8 s stall of the test process ran
+    /// the 5 s deadline out for a client that had done nothing wrong. Now the deadline is counted
+    /// on `harness.clock`, and the test advances that by `peerLag` once the deadline has parked
+    /// on it: the deadline survives a second of clock or it does not, whatever the runner is doing.
+    ///
     /// **Mutations.**
     /// - Set `ClientListenerHarness.defaultDeadlines` to the 750 ms triple. Run: red, thrown
     ///   `helperNeverAnswered(after: 0.75 seconds)` — #250's own signature.
@@ -326,10 +326,11 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the handshake reached the helper and is being held") {
-            harness.arrivals == ["hello"]
-        }
-        try await Task.sleep(for: Self.peerLag)
+        try await waitUntil(
+            "the handshake is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
+        harness.clock.advance(by: Self.peerLag)
         await releaseHandshake.signal()
 
         _ = try await snapshot.value
@@ -379,10 +380,11 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the helper and is parked in its authority") {
-            await authority.hasBeenAskedForSnapshot
-        }
-        try await Task.sleep(for: Self.peerLag)
+        try await waitUntil(
+            "the snapshot is parked in its authority and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAskedForSnapshot && harness.clock.sleepers == 1 }
+        harness.clock.advance(by: Self.peerLag)
         await releaseSnapshot.signal()
 
         _ = try await snapshot.value

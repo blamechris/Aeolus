@@ -39,13 +39,21 @@ struct HelperRestorerTests {
     ///
     /// `writes` is the firmware's answer to the keystone mode write, which is the whole of
     /// the difference between a fan that came back and a fan that was abandoned.
-    /// `clock` and `snapshotProvider` are defaulted to the production shapes and are
-    /// overridden by exactly one caller between them —
+    /// `snapshotProvider` is defaulted to the production shape, and overridden by
     /// `SupervisedFanAuthorityTests.theLeaseIsReadAfterTheMachineNotBefore`, which needs the
-    /// TTL to lapse *inside* the snapshot's read. They are parameters here rather than a
-    /// second fixture so that every test in both suites composes the identical graph: a
+    /// TTL to lapse *inside* the snapshot's read. It and `clock` are parameters here rather
+    /// than a second fixture so that every test in both suites composes the identical graph: a
     /// paraphrased composition is the defect #163 exists to end, and it would be a strange
     /// place to reintroduce it.
+    ///
+    /// **`clock` defaults to a frozen `TestClock()`**
+    /// ([#411](https://github.com/blamechris/Aeolus/issues/411)). The composition hands it to
+    /// reconciliation's 5 s budget, the lease TTL and the sightings cache's age bound, so on the
+    /// system clock a runner stall longer than one of them changes what a test sees: a lease
+    /// taken before a stall past its TTL is refused at `engage(fan:in:under:)` (#357). A test
+    /// about time passes a clock it moves. `TestClock`'s sleep jumps to its deadline, so a test
+    /// that holds a wait the composition bounds by sleeping, such as a contended examination
+    /// gate, passes a `ManualClock`, as `ExaminationGateRouteTests` does.
     ///
     /// `safetyLog` and `afterwards` are the same kind of parameter, for
     /// `FinaliseReleaseLedgerTests` (#346): it reads what § 5 logged about the ledger, and its
@@ -63,7 +71,7 @@ struct HelperRestorerTests {
     /// `F<n>Tg` carries whatever Apple's thermal manager last asked for.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
-        clock: some MonotonicClock = SystemMonotonicClock(),
+        clock: some MonotonicClock = TestClock(),
         // `nil` is the firmware's own `F0Md`, through `PlaneBackedProvider` (#360): a snapshot
         // that could not read the mode the plane answers would be judging another machine.
         snapshotProvider: (any SensorProvider)? = nil,
@@ -414,11 +422,14 @@ struct HelperRestorerTests {
             ScriptedControlPlane(
                 fans: [0: .automatic(at: 2_400)],
                 stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]))
+        // Frozen for `composed`'s reason (#411): the lease is taken before § 5 is told, so a
+        // stall past its TTL on the system clock would refuse the engagement.
         let helper = HelperComposition(
             plane: plane,
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)

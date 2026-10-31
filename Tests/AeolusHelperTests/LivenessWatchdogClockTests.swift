@@ -162,7 +162,7 @@ private final class ScriptedProgressClock: Sendable {
             return base
         case 2:
             parked.withLock { $0 = true }
-            _ = proceed.wait(timeout: .now() + .seconds(30))
+            _ = signalled(proceed, within: 30)
             return base.advanced(by: .seconds(1))
         case 3:
             return base.advanced(by: .seconds(2))

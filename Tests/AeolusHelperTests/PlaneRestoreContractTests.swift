@@ -309,6 +309,8 @@ struct PlaneRestoreContractTests {
     @Test("Bring-up's preparation step clears a lingering force key and logs what it found")
     func theComposedStepClearsALingeringKey() async throws {
         let recorded = RecordedLog()
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let helper = HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .nominal, 1: .nominal],
@@ -317,6 +319,7 @@ struct PlaneRestoreContractTests {
             snapshotProvider: fanProvider(fanCount: 2),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog, leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { recorded.append($0, $1) }))
         await helper.plane.setForceKey(true)

@@ -23,7 +23,7 @@ import Foundation
 /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s decision A2, recorded as
 /// [ADR 0011](../../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md): the
 /// helper does **not** try to work out who left a fan in manual before restoring it. It
-/// cannot. `F<n>Md` reads non-zero (the decoded fold, #208) whether the fan was pinned by a
+/// cannot. `F<n>Md` reads manual (the decoded fold, #208) whether the fan was pinned by a
 /// dead Aeolus helper or by another vendor's tool that is running right now, and every way of
 /// telling them apart — a breadcrumb on disk, a scan of the process table — either makes a
 /// safety action defeasible by a file somebody can delete or is clean-room-adjacent.

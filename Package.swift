@@ -96,6 +96,39 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
+        // The app's lease driver: the actor that takes, renews, releases and reports the loss of
+        // the fans' manual-control lease, and the types it speaks in. It is client logic over
+        // `AeolusXPCClient`'s verbs, with no AppKit or SwiftUI in it, and it depends on exactly
+        // what its files import.
+        //
+        // It is a target of its own so that the compiler, rather than a text scan, keeps
+        // `LeaseDriver.runningHeartbeat` in the test suite (#489). That accessor is `internal`
+        // for `@testable import` alone, and inside one module no access level can say "the suite
+        // and nothing else": while the driver sat in `AeolusUI`, every file there could name it.
+        // Across a module boundary `internal` does not reach, so a file in `AeolusUI` that names
+        // it is refused. Nothing was widened to get that: all the driver API `AeolusUI` uses was
+        // already `public`.
+        //
+        // The same boundary means `AeolusUI` cannot construct a `HeldLease` or a `LeaseLoss`,
+        // whose initialisers are `internal`, so presentation code cannot forge a held or a lost
+        // state.
+        //
+        // `LeaseLifecycle`, the `@MainActor` adapter the app's quit, logout and window events
+        // reach, stays in `AeolusUI`. A plain `import` of this module is refused the accessor by
+        // the compiler; a `@testable import` is not (see the doc on
+        // `LeaseDriver.runningHeartbeat`), and nothing inside this target is held by the
+        // compiler, so the files here are reviewed together: no code in this target other than
+        // their declarations names `runningHeartbeat` or `HeartbeatHandle`.
+        //
+        // Not a library product: nothing outside this package names it. The Xcode app target
+        // links it through the `AeolusUI` product, which carries every target `AeolusUI` depends
+        // on, so `project.yml` does not list it.
+        .target(
+            name: "AeolusLeaseControl",
+            dependencies: ["AeolusXPC", "AeolusXPCClient", "FanKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+
         // The root launchd daemon. Sole owner of every SMC write.
         .executableTarget(
             name: "AeolusHelper",
@@ -125,7 +158,9 @@ let package = Package(
         // SwiftUI views and view models for Aeolus.app.
         .target(
             name: "AeolusUI",
-            dependencies: ["SMCCore", "FanKit", "AeolusXPC"],
+            dependencies: [
+                "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient", "AeolusLeaseControl",
+            ],
             path: "Sources/Aeolus",
             // The app's entry point belongs to the Xcode bundle target, not to this
             // library — a library may not contain top-level code.
@@ -157,7 +192,9 @@ let package = Package(
             // HelperClientError values `fanctl reset --all` renders. Those tests are about
             // the rendering and the exit code; the round trip that produces those errors is
             // driven against the real helper session in AeolusHelperTests, which is the only
-            // target that can reach one.
+            // target that can reach one. SnapshotControlLossTests uses it too, for
+            // `SystemSnapshot.controlLoss`: a pure judgement over a snapshot, which needs no
+            // helper, so it is tested here rather than beside the client's connection suites.
             dependencies: ["fanctl", "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
@@ -214,7 +251,10 @@ let package = Package(
         // AeolusXPCService.machServiceName rather than against a second copy of the string.
         .testTarget(
             name: "AeolusUITests",
-            dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC"],
+            dependencies: [
+                "AeolusUI", "AeolusLeaseControl", "SMCCore", "FanKit", "AeolusXPC",
+                "AeolusXPCClient",
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 

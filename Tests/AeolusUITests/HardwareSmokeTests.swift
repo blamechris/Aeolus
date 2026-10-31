@@ -13,24 +13,29 @@ import Testing
 /// `HardwareIdentity.current()` rather than a third test-only sysctl reader — `AeolusUI`
 /// already depends on `FanKit`, so nothing stops this from calling it directly, per this
 /// issue's own instruction to use `HardwareIdentity.current()` for hardware gating.
+///
+/// The time limit is what lets `SnapshotTestSupport.tickEnds(_:)` end a tick that never
+/// returns as a red; without one, a cancellable wait is still a wait that never ends. A cold
+/// discovery on this machine is measured in seconds (`SensorPoller`), so a minute is room.
 @Suite(
     "AeolusUI polling — real hardware",
     .enabled(
         if: SMCConnection.isHardwareAvailable()
-            && HardwareIdentity.current().modelIdentifier == "Mac16,5")
+            && HardwareIdentity.current().modelIdentifier == "Mac16,5"),
+    .timeLimit(.minutes(1))
 )
 struct HardwareSmokeTests {
 
     @Test(
-        "FanPoller reads real fans with no helper and no privileges, honesty flags hardcoded safe"
+        "FanPoller reads real fans with no helper and no privileges, and claims no control"
     )
     func fanPollerReadsRealFans() async throws {
-        let fans = try await FanPoller.poll(provider: SMCSensorProvider())
+        let fans = try await FanPoller.poll(
+            provider: SMCSensorProvider(), untracked: .noHelperInThisBuild)
 
         #expect(!fans.isEmpty)
         for fan in fans {
-            #expect(fan.mode == .automatic)
-            #expect(fan.isReclaimedBySystem == false)
+            #expect(fan.control == .notTracked(.noHelperInThisBuild))
             #expect(fan.actual.key == "F\(fan.index)Ac")
             #expect(fan.minimum.key == "F\(fan.index)Mn")
             #expect(fan.maximum.key == "F\(fan.index)Mx")
@@ -64,9 +69,10 @@ struct HardwareSmokeTests {
     @Test("PollingViewModel ticks against real hardware without hitting readAll() on a refresh")
     func viewModelTicksAgainstRealHardwareUsingSubsetReadsAfterDiscovery() async throws {
         let provider = SMCSensorProvider()
-        let viewModel = PollingViewModel(provider: provider)
+        let viewModel = PollingViewModel(
+            provider: provider, snapshots: .noHelper())
 
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .ready)
         #expect(!viewModel.fans.isEmpty)
         #expect(!viewModel.sensors.isEmpty)
@@ -76,7 +82,7 @@ struct HardwareSmokeTests {
         // warm, full enumeration is ~0.6 s warm and ~4.5 s cold. This does not assert a
         // timing bound (too flaky across machines/CI), only that the second tick still
         // succeeds using the cached discovery from the first.
-        await viewModel.tick()
+        await SnapshotTestSupport.tickEnds(viewModel)
         #expect(viewModel.phase == .ready)
     }
 }

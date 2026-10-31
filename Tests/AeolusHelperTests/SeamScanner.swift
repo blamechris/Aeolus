@@ -353,18 +353,27 @@ enum SeamScanner {
     /// signature quoted inside `/* … */` was scanned as a declaration and would have
     /// reddened the tripwire it was explaining.
     ///
-    /// A line is dropped when its first non-blank text is `//` and the walker reaches that `//` as
-    /// code. A line of a multi-line string literal that begins `//` is the literal's text, and an
-    /// interpolation on it is code: filtering lines by their text, before the literal walker
-    /// had looked, removed such a line and the call in it, so no rule-zero scan saw a `production`
-    /// in `"""` / `//\(X.production(log: L()))` / `"""` (#457). A **trailing** `//` comment is left
-    /// in place, for the reason `strippingAllComments` gives.
+    /// A line is dropped when only blanks precede its `//` on its line of the source — a block
+    /// comment before it, which the walker has turned into a space, is blank
+    /// (`SeamScannerCommentLineTests` pins `/* x */ // c`), and the text after `\(` in an
+    /// interpolation is not a line of its own — and the walker reaches that `//` as code. A line
+    /// of a multi-line string literal
+    /// that begins `//` is the literal's text, and an interpolation on it is code: filtering lines
+    /// by their text, before the literal walker had looked, removed such a line and the call in
+    /// it, so no rule-zero scan saw a `production` in `"""` / `//\(X.production(log: L()))` /
+    /// `"""` (#457). A **trailing** `//` comment is left in place, because the prose that explains
+    /// a rule is usually a whole line; `strippingAllComments` says what leaving it costs a
+    /// receiver scan, and removes it.
+    ///
+    /// **A source with a carriage return is refused** (`refuseCarriageReturns(in:file:)`), so the
+    /// walker never has to say where a `\r` ends a comment.
     ///
     /// `internal` rather than `private` so `SeamScannerParsingTests` can put a fixture
     /// through it. Nothing in `Sources` contains a block comment today, so the tree cannot
     /// exercise this and a test that only scans the tree cannot know it works.
     static func strippingComments(_ source: String) -> String {
-        strippingBlockAndLineComments(source)
+        refuseCarriageReturns(in: source)
+        return strippingBlockAndLineComments(source)
     }
 
     /// Every `/* … */` span replaced by one space, and every `//` comment that is the whole of its
@@ -372,16 +381,22 @@ enum SeamScanner {
     /// tokens, so `public/* */import` is `public import` (#442's review, S3).
     ///
     /// Swift nests block comments, so the depth is counted rather than the first `*/` taken.
-    /// String literals — `"""` spans included — and a `//` comment **trailing code** are copied
-    /// through untouched: a `/*` inside either opens nothing, and treating one as an opener would
-    /// swallow the rest of the file.
+    /// The text of a string literal — `"""` spans included — and a `//` comment **trailing code**
+    /// are copied through untouched: a `/*` inside either opens nothing, and treating one as an
+    /// opener would swallow the rest of the file.
     ///
     /// **A whole-line `//` comment is judged here, where the walker knows it is reading code.** A
-    /// `//` the walker meets is outside every literal and every regex, so a line of a multi-line
-    /// literal that begins `//` is never offered: `copyDelimited` has already carried the whole
-    /// literal across. `copyOrDropLineComment` drops the comment when it is the whole of its line
-    /// (#457; this was a filter on each line's text, run after the walker, which could not tell a
-    /// literal's line from a comment).
+    /// `//` the walker meets is outside every literal's text and every regex, so a line of a
+    /// multi-line literal that begins `//` is never offered: `copyDelimited` has already carried
+    /// the whole literal across. `copyOrDropLineComment` drops the comment when it is the whole of
+    /// its line (#457; this was a filter on each line's text, run after the walker, which could
+    /// not tell a literal's line from a comment).
+    ///
+    /// **An interpolation is code, so this walks it too.** `copyDelimited` hands the code of each
+    /// interpolation back to this function, and a comment in it — a line, a trailing one or a
+    /// block — is dropped or kept as it would be outside a literal, with one difference:
+    /// `startsLine` is false for it, because its first line follows `\(`. A `//` right after `\(`
+    /// trails code, as Swift reads it, and keeps its newline (#460's review, B1).
     ///
     /// Literals are walked by `copyDelimited`, which reads raw delimiters and interpolations (see
     /// it), so a `"` inside `"\(row["key"])"` or `#"a "b"#` does not end the literal early, and
@@ -389,7 +404,9 @@ enum SeamScanner {
     /// comment anywhere in `Sources`, `depth` never rises and the only change to the input is
     /// the whole-line comments dropped — `SeamScannerParsingTests`'
     /// `noBlockCommentIsWrittenInSources` fails the day one is written.
-    private static func strippingBlockAndLineComments(_ source: String) -> String {
+    private static func strippingBlockAndLineComments(
+        _ source: String, startsLine: Bool = true
+    ) -> String {
         var output = ""
         var index = source.startIndex
         var depth = 0
@@ -426,10 +443,13 @@ enum SeamScanner {
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {
-                index = copyOrDropLineComment(in: source, from: index, into: &output)
+                index = copyOrDropLineComment(
+                    in: source, from: index, into: &output, startsLine: startsLine)
             } else if source[index] == "\"" {
                 let delimiter = matches("\"\"\"", at: index) ? "\"\"\"" : "\""
-                index = copyDelimited(source, from: index, delimiter: delimiter, into: &output)
+                index = copyDelimited(source, from: index, delimiter: delimiter, into: &output) {
+                    strippingBlockAndLineComments(String(source[$0]), startsLine: false)
+                }
             } else {
                 output.append(source[index])
                 index = source.index(after: index)

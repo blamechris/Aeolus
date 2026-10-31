@@ -29,6 +29,8 @@ struct PanicVerbMachineWideRestoreTests {
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         lines: RecordedHelperLines = RecordedHelperLines()
     ) -> HelperComposition<ScriptedControlPlane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: ScriptedControlPlane(
                 fans: fans,
@@ -38,6 +40,7 @@ struct PanicVerbMachineWideRestoreTests {
             snapshotProvider: fanProvider(fanCount: fans.count),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: Self.log(into: lines),
             leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,
@@ -175,11 +178,14 @@ struct PanicVerbMachineWideRestoreTests {
         let firmware = ScriptedControlPlane(
             fans: [0: .init(mode: .manual)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let helper = HelperComposition(
             plane: ControlStateGatePlane(firmware, capability: .notBuilt),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: Self.log(into: lines),
             leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,
@@ -295,11 +301,14 @@ struct PanicVerbMachineWideRestoreTests {
                     writes: .refused(reason: "firmware answered 0x82")),
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
             ])
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         let helper = HelperComposition(
             plane: ControlStateGatePlane(firmware),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,
