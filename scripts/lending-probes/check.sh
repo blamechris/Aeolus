@@ -27,7 +27,7 @@
 # rewords a refusal, replace the expectation with the new diagnostic, and never broaden it: no
 # alternation, and no shorter fragment that an unrelated error would also carry.
 #
-# Two families of probe live here, and the harness holds them to the same rules:
+# Three families of probe live here, and the harness holds them to the same rules:
 #
 # - **The lending shapes** (ten `refused-*.swift` and their `allowed-lend-and-call.swift` control).
 #   ADR 0012's #440 amendment rests "§ 3's handback is lent, never kept" on the compiler refusing
@@ -45,6 +45,16 @@
 #   red. The probes import the module plainly, never `@testable`, which is the app's side of the
 #   boundary. Folding the target back into `AeolusUI` is caught by the target guard below, not by
 #   a probe.
+# - **The publisher a stream's owner keeps to itself** (`refused-health-signal-publish.swift`,
+#   `refused-lease-driver-publisher-publish.swift` and their `allowed-publish-on-the-owner.swift`
+#   control; #541). `HelperClient` and `LeaseDriver` publish only on their own actors, because the
+#   thing they publish through is `private` to the actor and **not `Sendable`**: a `let` of a
+#   `Sendable` type is readable from `nonisolated` code, and one of any other type is isolated to
+#   the actor. `HealthSignal` and `LeaseDriverPublisher` have only `Sendable` members, so the
+#   compiler would infer the conformance; an `@available(*, unavailable)` extension withholds it.
+#   Deleting that extension leaves every test green and every module building, so a probe is the
+#   only thing that holds it. These probes use `@testable import`, because both types are
+#   `internal`, which needs the debug build `swift build` makes.
 #
 # A probe whose compile succeeds has stopped being refused, and the failure says what to read
 # first: its `// see:` line, or, for the lending shapes that carry none, ADR 0012's amendment.
@@ -74,14 +84,15 @@ trap 'rm -rf "${out}"; [ "${finished}" -eq 1 ] || exit 1' EXIT
 # cache. A module renamed, split or folded back into another would leave its old build here, and
 # every probe that imports it would pass against a module nothing builds any more: the lease-
 # control probe against `AeolusLeaseControl` folded back into `AeolusUI`, the ten lending probes
-# against `AeolusHelper`. So ask SwiftPM for each target first. It fails when the package has none,
-# and rebuilds only what changed since the build before this one.
+# against `AeolusHelper`, the health-signal probe against `AeolusXPCClient`. So ask SwiftPM for
+# each target first. It fails when the package has none, and rebuilds only what changed since the
+# build before this one.
 #
 # This stops at the first failure, and before any probe, because a probe's result against a module
 # that is not current means nothing: a run that went on would print `ok:` lines that are not true.
 # A probe that imports a module not listed here fails below, so this list cannot quietly fall
 # behind the probes.
-guarded="AeolusHelper AeolusLeaseControl"
+guarded="AeolusHelper AeolusLeaseControl AeolusXPCClient"
 for target in ${guarded}; do
     if swift build --target "${target}" > "${out}/target" 2>&1; then
         echo "ok: ${target} is a target of this package, and builds"
@@ -281,8 +292,8 @@ for probe in "${probes}"/refused-*.swift; do
 done
 
 # Coverage, not decoration: a glob that matched nothing would pass over no probe at all.
-if [ "${allowed}" -ne 2 ] || [ "${refused}" -ne 12 ]; then
-    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 2 and 12"
+if [ "${allowed}" -ne 3 ] || [ "${refused}" -ne 14 ]; then
+    echo "error: found ${allowed} allowed and ${refused} refused probes; expected 3 and 14"
     failures=$((failures + 1))
 fi
 if [ "${controls}" -ne 17 ]; then

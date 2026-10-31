@@ -90,7 +90,7 @@ struct TerminalActionTeardownRaceTests {
             }
         }
 
-        let progress = await revocationProgress(of: cycles, outwaiting: fan, in: graph.leases)
+        let progress = try await revocationProgress(of: cycles, outwaiting: fan, in: graph.leases)
         #expect(
             progress == .waiting,
             """

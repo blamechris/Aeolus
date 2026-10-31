@@ -60,8 +60,8 @@ public enum SensorReadFailure: Error, Sendable, Hashable {
     /// fabricated zero-valued reading; see `SMCSensorProvider.read(keys:)`.
     case unknownKey(String)
     /// The key is recognised but reading it failed. `reason` is the provider's own
-    /// human-readable description (e.g. an `SMCError`'s), carried for diagnostics only —
-    /// never parsed or matched on by a caller.
+    /// human-readable description (for the SMC, an `SMCError`'s `readableDescription`),
+    /// carried for diagnostics only — never parsed or matched on by a caller.
     case readFailed(reason: String)
     /// The provider produced a value but it does not decode to a usable reading — for
     /// example a non-numeric SMC type, or a scalar decode that itself failed.
@@ -174,19 +174,38 @@ public struct SMCSensorProvider: SensorProvider {
     /// comparison, including why it also probes one index past `count`: a declared count
     /// that is too small walks and succeeds on every index inside its own bound, so that
     /// alone cannot detect undercounting — only the probe can.
+    ///
+    /// An index whose nonzero code `SMCKey` refuses goes into no reading and no discovered key
+    /// set. It counts as walked while the walk holds at most
+    /// `KeyTableWalk.maximumWalkedRefusedCodes` of them, and at the probe it counts as no key
+    /// (#623). See `KeyTableWalk.walkedCount`.
     public func readAll() async throws -> [SensorReading] {
         try await connection.open()
         let count = try await connection.keyCount()
+        return await readAll(declaredCount: count) { try await connection.key(at: $0) }
+    }
 
+    /// Everything `readAll()` does once it has `#KEY`: the walk, the reads, the cross-check
+    /// and discovery, with each index looked up through `keyAt`.
+    ///
+    /// Internal, with the lookup a parameter, for the reason
+    /// `SMCConnection.walkKeyTable(declaredCount:keyAt:)` gives: it is how a test hands the
+    /// walk a code `SMCKey` refuses. `readAll()` passes `connection.key(at:)`, one actor hop
+    /// per index as before. The cost is the same too: a test of this reaches neither
+    /// `open()`, `keyCount()` nor the real `key(at:)`, and the hand-off is pinned only on
+    /// hardware, by `SMCSensorProviderHardwareTests`.
+    func readAll(
+        declaredCount count: Int, keyAt: (Int) async throws -> SMCKey
+    ) async -> [SensorReading] {
         var readings: [SensorReading] = []
         readings.reserveCapacity(count)
-        var walkedKeys = 0
+        var walk = KeyTableWalk(declaredCount: count)
         var discoveredKeys: Set<SMCKey> = []
         discoveredKeys.reserveCapacity(count)
 
         for index in 0..<count {
-            guard let key = try? await connection.key(at: index) else { continue }
-            walkedKeys += 1
+            let entry = await KeyTableEntry(lookingUp: index, in: keyAt)
+            guard let key = walk.record(entry, at: index) else { continue }
             discoveredKeys.insert(key)
             guard let value = try? await connection.read(key) else { continue }
             guard let scalar = try? value.scalar() else { continue }
@@ -201,21 +220,18 @@ public struct SMCSensorProvider: SensorProvider {
             )
         }
 
-        let keyExistsPastDeclaredCount = (try? await connection.key(at: count)) != nil
-        let crossCheck = KeyCountCrossCheck(
-            declaredCount: count, walkedCount: walkedKeys,
-            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
-        SMCConnection.logCrossCheck(crossCheck)
+        let crossCheck = walk.finish(probe: await KeyTableEntry(lookingUp: count, in: keyAt))
 
         // Discovery — the point of this issue: every key this walk actually resolved
         // (regardless of whether its value went on to read successfully) is recorded as
         // the machine's known key set, so a later read(keys:) can answer "does this
         // machine expose this key" without spending a round trip on it. See
-        // SMCConnection.markDiscoveryComplete(_:).
+        // SMCConnection.markDiscoveryComplete(_:). A refused code is not in it: no SMCKey
+        // can name one, so none can be asked for and wrongly reported absent (#623).
         //
         // Only when the cross-check actually matches, though: if it does not,
         // discoveredKeys is not the complete key set — some index inside 0..<count
-        // failed to resolve, or a key exists past the declared bound the walk never
+        // went unanswered, or a key exists past the declared bound the walk never
         // looked at — and marking it complete anyway would let read(keys:) report a
         // false .keyNotFound for a key that is genuinely there but simply wasn't reached
         // this time. An incomplete walk leaves knownKeys exactly as it was: unset if this
@@ -230,7 +246,7 @@ public struct SMCSensorProvider: SensorProvider {
     /// Reads a subset of keys directly — see `SensorProvider.read(keys:)`. Never requires
     /// a prior `readAll()`: `open()` is idempotent, so calling it here costs nothing once
     /// a connection already exists and makes a bare `read(keys:)` call work standalone.
-    /// Malformed key strings (not exactly four ASCII characters) are reported as
+    /// Malformed key strings (not exactly four printable-ASCII bytes) are reported as
     /// `.unknownKey` rather than thrown, consistent with every other outcome here being
     /// per-key rather than aborting the whole request.
     public func read(keys: [String]) async throws -> [SensorReadOutcome] {
@@ -281,28 +297,57 @@ public struct SMCSensorProvider: SensorProvider {
     /// Converts one `SMCKeyReadOutcome` into the provider-agnostic `SensorReadOutcome`
     /// vocabulary — see `SensorReadFailure` for why this does not simply pass `SMCError`
     /// through.
-    private func sensorResult(
+    ///
+    /// Every reason is `SMCError.readableDescription` text or names the declared type, never
+    /// `String(describing:)` of an `SMCError`. The reason is what `fanctl list`, `fanctl watch`
+    /// and the app print beside the key.
+    ///
+    /// Internal rather than `private` so it is directly unit-testable via `@testable import`:
+    /// `SMCConnection` has no scripted transport, so `read(keys:)` cannot hand this a failure
+    /// or an unresolved byte order without hardware that produces one.
+    func sensorResult(
         for key: SMCKey, _ outcome: SMCKeyReadOutcome
     ) -> Result<SensorReading, SensorReadFailure> {
         switch outcome.result {
         case .failure(.keyNotFound(let missingKey)):
             return .failure(.unknownKey(missingKey.rawValue))
         case .failure(let error):
-            return .failure(.readFailed(reason: String(describing: error)))
+            return .failure(.readFailed(reason: error.readableDescription))
         case .success(let value):
             do {
                 guard let scalar = try value.scalar() else {
-                    return .failure(
-                        .notDecodable(reason: "\(value.type.fourCharString) is not numeric"))
+                    return .failure(.notDecodable(reason: Self.undecodedReason(for: value)))
                 }
                 return .success(
                     SensorReading(
                         key: key.rawValue, value: scalar, kind: Self.kind(for: key),
                         providerIdentifier: identifier))
             } catch {
-                return .failure(.notDecodable(reason: String(describing: error)))
+                return .failure(.notDecodable(reason: SMCError.readableDescription(of: error)))
             }
         }
+    }
+
+    /// Why `value.scalar()` returned `nil`. That has two causes, and they need different words.
+    ///
+    /// - The declared type is not a number (`ch8*`, `hex_`, `{fds`, `{jst`, or a code this
+    ///   project does not know). No byte order would change that.
+    /// - The declared type is a number, but its byte order is firmware-declared per key and
+    ///   was never resolved, because the SMC interface generation could not be detected. That
+    ///   applies to the six plain integers, `flt` and `ioft`; see `SMCValue.scalar()`. Calling
+    ///   such a value "not numeric" would send whoever reads it after the wrong fault.
+    ///
+    /// Keyed on the declared type (`CLAUDE.md` rule 9), not on `value.byteOrder`: on a Mac
+    /// whose generation is unknown, every key's `byteOrder` is `nil`, the non-numeric ones
+    /// included, and those are still not numeric.
+    ///
+    /// The type is named by `SMCKeyType.readableName`, without the space that pads `flt ` to
+    /// four characters (#544).
+    static func undecodedReason(for value: SMCValue) -> String {
+        guard value.type.isNumeric else {
+            return "\(value.type.readableName) is not numeric"
+        }
+        return SMCError.byteOrderUndetectableDescription(of: value.type.readableName)
     }
 
     /// Classifies a key's physical kind using only the fan-key naming convention

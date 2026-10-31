@@ -304,12 +304,24 @@ struct SystemPowerTests {
     /// [#68](https://github.com/blamechris/Aeolus/issues/68), and the doc comments now say so
     /// rather than implying this covers it.
     ///
+    /// **It needs a pool of two or more, and cannot run on a pool of one.** The restore holds a
+    /// pool thread, and the budget's task and this test's own release both need another
+    /// ([#554](https://github.com/blamechris/Aeolus/issues/554)). `docs/TESTING.md` has the run
+    /// of the whole suite on a pool of one, which skips this test by name, and the bound that
+    /// keeps it from exhausting a pool of three. Where the pool is too narrow the plane's 90 s
+    /// ceiling, which is above this suite's 60 s time limit, ends the process instead of
+    /// wedging it.
+    ///
     /// **Mutation:** delete the `let budget = Task { … }` block and the `budget.cancel()` that
-    /// follows, from `SystemPowerResponder.allowSleepAfterHandback(_:)`. Run: red, on the
-    /// suite's time limit.
+    /// follows, from `SystemPowerResponder.allowSleepAfterHandback(_:)`. Run: red on the suite's
+    /// time limit, at 60 s, before the plane's ceiling is reached: the acknowledgement never
+    /// comes, the wait is cancelled, and the `defer` releases the plane.
     @Test("The budget lands even when the restore blocks its thread instead of suspending")
     func theBudgetSurvivesARestoreThatBlocksItsThread() async throws {
         let plane = ThreadBlockingRestorePlane(Self.machine())
+        // A test that fails or is cancelled before its own release leaves a pool thread parked
+        // for the rest of the process, which a pool of three cannot spare (#554).
+        defer { plane.release() }
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
         // Moved past the budget only once the restore is wedged: `expireBudget`'s reason.

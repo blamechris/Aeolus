@@ -23,6 +23,16 @@ struct DumpFormattingHelperTests {
         #expect(hexString([]).isEmpty)
     }
 
+    /// `SMCError.readableDescription` renders raw bytes itself, because `SMCCore` cannot call
+    /// this function. The two must agree, so bytes quoted in an error can be found in a dump.
+    @Test("An SMCError's raw bytes are written the way dump's bytes column writes them")
+    func errorBytesMatchDumpBytes() {
+        let bytes: [UInt8] = [0x80, 0x20, 0xE7, 0x3F]
+        let description = SMCError.nonNumericKeyCount(type: .hex, bytes: bytes)
+            .readableDescription
+        #expect(description.contains("(raw bytes \(hexString(bytes)))"))
+    }
+
     @Test("resolvedByteOrderDescription is nil when the generation is undetermined")
     func nilGenerationYieldsNilDescription() {
         let info = SMCKeyInfo(key: SMCKey("VP3b")!, type: .flt, dataSize: 4, attributes: 133)
@@ -244,7 +254,7 @@ struct DumpEntryConstructionTests {
         let info = SMCKeyInfo(key: key, type: .flag, dataSize: 1, attributes: 80)
         let entry = DumpEntry.forFailedRead(
             index: 3, key: key, info: info,
-            description: describeSMCError(SMCError.notReadable(key)), generation: .modern)
+            description: SMCError.notReadable(key).readableDescription, generation: .modern)
 
         #expect(entry.type == "flag")
         #expect(entry.dataSize == 1)
@@ -265,7 +275,7 @@ struct DumpEntryConstructionTests {
         let info = SMCKeyInfo(key: key, type: .ui32, dataSize: 4, attributes: 148)
         let entry = DumpEntry.forFailedRead(
             index: 1714, key: key, info: info,
-            description: describeSMCError(SMCError.firmware(code: 0xC7)), generation: .modern)
+            description: SMCError.firmware(code: 0xC7).readableDescription, generation: .modern)
 
         #expect(entry.attributes == 148)
         #expect(entry.byteOrder == "little-endian")

@@ -38,7 +38,13 @@ import Foundation
 /// **Interruption (4097)** means the helper process died and libxpc will reconnect this
 /// same connection object to its replacement. The connection is kept and the `HelloReply`
 /// is **discarded**: the peer is a new process, it has negotiated nothing with this client,
-/// and anything the old one was holding is gone. The next message re-runs `hello`.
+/// and anything the old one was holding is gone. The next message re-runs `hello`. The answer to
+/// a `hello` sent before the interruption, and not yet recorded when it is handled, is never
+/// recorded at all (#585, `performHandshake`). A handshake whose `hello` has not gone is kept
+/// (#588). A 4097 on a message sent before the last notice counted is not counted either: the
+/// counter counts notices, not interruptions, and that 4097 is a second notice of a death already
+/// counted, or a notice of a later one whose interruption handler is still to come
+/// (`translate(_:on:sentAfter:)`).
 ///
 /// **Invalidation (4099)** means the connection will never work again. It is dropped, and
 /// the next message builds a new one — once.
@@ -82,87 +88,102 @@ import Foundation
 /// discovery, never authorisation. So the only correct client-side rule is the one that is
 /// safe against every helper: send `hello`, wait for it, then send everything else.
 ///
-/// ## Why this is one long file, and where the split stops
+/// That holds across a restart too. An interruption keeps the generation, so the `hello` a caller
+/// waited for may have been answered by the process that died while the replacement's is still
+/// unanswered, and that caller sends nothing (#582, `handshakenConnection()`).
+///
+/// ## Why this file is still long, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **258 of its lines are code**; the rest is the reasoning around them, and the
-/// rule counts comment lines. The seventeen since this section was written are the clock the
-/// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). Nine more are the message each send names, the answer a discard gives what
-/// was still in flight, the refusal to send on a connection already given up, and the suite's
-/// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
-/// owns its state outright and so widens nothing here. Three more make a health stream's
-/// removal wait for its registration (#532), and they put the actor's body three lines over
-/// SwiftLint's 250-line `type_body_length` warning. That one is not suppressed either, for the
-/// reason this paragraph ends on. The count of code lines in the file, 229 when this section was
-/// written, did not move when the section was added — the file grew by fifty-odd lines and by
-/// none of the thing the threshold is worth measuring, which is the whole argument in one
-/// measurement. Neither warning is suppressed, deliberately — no `swiftlint:disable`, no
-/// `file_length` or `type_body_length` override in `.swiftlint.yml` — because a file, or a body,
-/// that grew by two hundred lines of *logic* should draw exactly the attention this one drew.
+/// purpose: most of it is the reasoning around the code, and the rule counts comment lines.
+/// Neither warning is suppressed — no `swiftlint:disable`, no `file_length` or
+/// `type_body_length` override in `.swiftlint.yml` — because a file, or a body, that grew by
+/// two hundred lines of *logic* should draw exactly the attention this one drew.
 ///
-/// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
-/// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
-/// actor reachable from a sibling file — and D36 is that stored state stays `private` and is
-/// mutated only from its declaring file, while only what a sibling *must* call widens to
-/// `internal`. Trading that for a line count is the wrong side of the trade anywhere, and
-/// this is the privilege boundary, which is why #237 declined it too. What was weighed:
+/// It drew it at 990 lines ([#600](https://github.com/blamechris/Aeolus/issues/600)): ten
+/// under the 1000-line `file_length` error, which fails CI, with the actor's body at 246 of the
+/// 250-line `type_body_length` warning, after #584, #587 and #599 had each moved code out only
+/// to fit. [#242](https://github.com/blamechris/Aeolus/issues/242) had refused a split at the
+/// 400-line warning, and [#237](https://github.com/blamechris/Aeolus/issues/237) before it:
+/// Swift `private` is file-scoped, so every seam needs a member of this actor reachable from a
+/// sibling file, and D36 is that stored state stays `private` and is mutated only from its
+/// declaring file. Trading that for a warning's line count was the wrong side of the trade. An
+/// error that fails CI is a different one, and #600 took the smallest split that clears it.
 ///
-/// - **The verbs are already gone**, and that was the seam worth having.
-///   `HelperClientVerbs.swift` holds all six, written over `withHandshakenProxy` and
-///   `withProxy`, and no verb touches this client's state. Its own comment records that it
-///   was split along a seam rather than along a line count.
-/// - **`translate(_:on:)` and the transport mapping** would move eighty-odd lines and need
-///   `hasEverHandshaken` widened — a stored input one arm of it decides on — and
-///   `discardConnection` with it, which is the single function that invalidates the
-///   connection and moves the generation. Reshaping it to return a verdict the actor then
-///   applies splits the classification from its consequence, which its own comment treats as
-///   one thing, and writes more lines into a new file than it takes out of this one.
-/// - **The connection's own lifecycle cannot leave this file at all**, and that is the
-///   compiler's ruling rather than a rule anybody chose. `exchange`, `liveConnection` and
-///   `handshakenConnection` each take or return `ConnectionGeneration`, which is `private`
-///   and nested; widening one without widening that type is *"method must be declared
-///   private because its parameter uses a private type"*. Anything built on those three
-///   stays here, so a split would have to start by publishing the type whose whole purpose
-///   is that a generation travels with its connection instead of being read back off the
-///   actor. `HelperClientAccessTests` records the attempt.
-/// - **The health signal** — `currentHealth`, `observers`, `publish`, `observe`,
-///   `stopObserving` — is the one slice that could own its state outright in a type of its
-///   own rather than borrowing this actor's, so it is the one that would widen nothing. It is
-///   worth about twenty-five lines against an overage past two hundred and fifty, in exchange
-///   for an indirection on the path that reports whether this client can see the helper at
-///   all. Not worth doing for a line count; worth reconsidering on its own merits if the
-///   signal grows.
-///
-///   It grew by three lines in #532, from twenty-seven to thirty, counting `healthUpdates()`,
-///   the stream, which that figure included though the list above does not name it. The five
-///   members listed are the same seventeen lines. #534 asked whether that growth warranted
-///   reconsidering the split, and it did not: the three lines order a removal after a
-///   registration, so they are about the stream's end and not about the state or who reads it,
-///   and the case against the indirection stands as it was. What would reopen it is a new field
-///   or reader among the five, or the stream growing again.
-///
-/// The threshold is not this file's problem in particular either. Over thirty files in the tree
-/// are past it, ten-odd of them under `Sources`, and **four of those are longer than this
-/// one** — `ReclamationWatchdog` at 980, `LeaseAuthority` at 884, `SMCConnection` at 813 and
-/// `SMCReadScheduler` at 679. Those four are the argument; the tally is left approximate on
-/// purpose, because it moves on merges that have nothing to do with this file — it went up by
-/// one, in `AeolusXPC`, between this section being written and the branch being brought up to
-/// date. Splitting whichever file a review round happened to open, at the cost of the access
-/// rule, buys a tidier number and a wider gate.
+/// - **The verbs** left first, and that was the seam worth having. `HelperClientVerbs.swift`
+///   holds all six, written over `withHandshakenProxy` and `withProxy`, and no verb touches this
+///   client's state.
+/// - **`translate(_:on:sentAfter:)`** moved to `HelperClient+Translation.swift`, as a move and
+///   nothing else. It reads `hasEverHandshaken` and `interruptions` and writes neither, and
+///   changes the connection only through `connectionWasInterrupted(_:)` and `discardConnection`.
+///   So it cost three widenings: the two properties are `private(set)`, readable from a sibling
+///   file and still written only here, and `discardConnection` — the single function that
+///   invalidates the connection and moves the generation — is `internal`, with that file its one
+///   caller outside this one.
+/// - **The health signal** was the one slice that could own its state outright in a type of its
+///   own, so it widened nothing. `HealthSignal` owns the value and the observers under a lock
+///   (#541); `healthSignal` and `healthStreams` are `private`, the signal's publishing half is
+///   not `Sendable`, so only this actor publishes, and `publish(_:)` stays here as the one way
+///   the health changes, which `health` reads.
+/// - **The connection's own lifecycle cannot leave this file**, and the compiler's ruling is part
+///   of why. `exchange`, `liveConnection` and `handshakenConnection` each take or return
+///   `ConnectionGeneration`, which is `private` and nested; widening one without widening that
+///   type is *"method must be declared private because its parameter uses a private type"*. The
+///   other part is D36's. The handshake (`handshakenConnection`, `performHandshake`) writes
+///   `negotiatedReply`, `handshake` and `hasEverHandshaken`, and a sibling file that could write
+///   them could mark a connection handshaken that negotiated nothing. Moving it would make three
+///   of the nine properties `HelperClientAccessTests` holds writable from every file in
+///   `AeolusXPCClient`, and that is a decision for a safety review, not a line count. It would
+///   take about 190 lines with it.
 ///
 /// **`HelperClientAccessTests` is what makes the decision keepable.** The lesson D36 exists
-/// because of is #128's — a paragraph is not enforcement — and until #242 nothing asserted
-/// access anywhere in this target, so a later split could have widened every property named
-/// above with the whole suite green. Each is now held `private` by a test, and the two
-/// exhaustive halves beside it report a member that stops being private whether or not
-/// anybody thought to list it.
+/// because of is #128's — a paragraph is not enforcement — and the paragraph above is held by
+/// that suite: seven of the properties are `private`, two are `private(set)`, and the two
+/// exhaustive halves beside them report a member that stops being private whether or not
+/// anybody thought to list it, in every file the actor is written in.
 public actor HelperClient {
 
     private let transport: HelperClientTransport
     private let pinning: any HelperConnectionPinning
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
+
+    /// What each caller's handshake relay runs before it waits for the handshake: `nil`, so
+    /// nothing, everywhere but the suite ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    ///
+    /// When a caller resumes from the handshake is the runtime's choice, and #582's two defects
+    /// live in the schedules where it resumes late: after the helper that answered has died and
+    /// another caller has started the next handshake. A test cannot ask the runtime for that
+    /// schedule, so it holds one caller's relay here instead. The relay hands the handshake's
+    /// outcome over only once this has returned, so holding it holds that one caller and nothing
+    /// else: not the handshake, its deadline, or any other caller. It runs once the caller has
+    /// joined the handshake in the slot or started one, so its running also tells a test that the
+    /// caller has made that choice.
+    private let handshakeRelayHold: (@Sendable () async -> Void)?
+
+    /// What `exchange` runs once a `hello` has been answered, and before anything acts on the
+    /// answer: `nil`, so nothing, everywhere but the suite
+    /// ([#585](https://github.com/blamechris/Aeolus/issues/585)).
+    ///
+    /// A reply and the interruption that follows its helper's death are both queued on this actor,
+    /// and which of them runs first is the executor's choice. #585's defect is the order in which
+    /// the interruption runs first, and a test cannot ask the executor for it, so it holds the
+    /// reply here while the helper dies. Holding it holds that one handshake and nothing else: the
+    /// `hello` has been answered, so its deadline has ended, and the actor is free for the
+    /// interruption.
+    ///
+    /// It holds a failure too, before `translate(_:on:sentAfter:)` reads it (#588): a 4097 there is
+    /// a death notice as well as an answer, and #588's late notice is one of those.
+    private let receivedHelloReplyHold: (@Sendable () async -> Void)?
+
+    /// What a handshake runs before anything else, its guard included: `nil`, so nothing,
+    /// everywhere but the suite ([#588](https://github.com/blamechris/Aeolus/issues/588)).
+    ///
+    /// A handshake's task runs once its caller has suspended, so a notice already queued on this
+    /// actor can be handled before its `hello` goes. A test cannot ask the executor for that order,
+    /// so it holds the task here. That holds one handshake whose `hello` has not gone, so no
+    /// deadline runs for it, and leaves the actor free.
+    private let handshakeStartHold: (@Sendable () async -> Void)?
 
     /// Every message in flight, and when each one's deadline starts: at its send, or for a
     /// message the helper sequences, when the sequenced messages sent before it have settled
@@ -171,7 +192,15 @@ public actor HelperClient {
 
     private var connection: NSXPCConnection?
     private var negotiatedReply: HelloReply?
-    private var handshake: Task<HelloReply, Error>?
+
+    /// The connection's handshake, which every caller that needs one shares, and whether its
+    /// `hello` has gone.
+    ///
+    /// An interruption empties the slot only of a handshake whose `hello` has gone (#588). One that
+    /// has not sent it sends it after the interruption, to a process that outlived the death, so
+    /// the next caller joins it. Emptied, it let the next caller start a second handshake, which
+    /// negotiated the session; the first `hello`, refused there, then took the connection with it.
+    private var handshake: (task: Task<HelloReply, Error>, hasSent: Bool)?
 
     /// Whether a `hello` has ever succeeded on the **current connection object**, as
     /// distinct from whether one is in force now.
@@ -180,9 +209,31 @@ public actor HelperClient {
     /// has to be separate from `negotiatedReply` because that is cleared by the very event
     /// being classified — libxpc fires the interruption handler on its own thread, so by the
     /// time a failed message is being explained, the reply may already be gone.
-    private var hasEverHandshaken = false
-    private var currentHealth: HelperConnectionHealth = .idle
-    private var observers: [UUID: AsyncStream<HelperConnectionHealth>.Continuation] = [:]
+    ///
+    /// `private(set)` since [#600](https://github.com/blamechris/Aeolus/issues/600):
+    /// `translate(_:on:sentAfter:)`, in `HelperClient+Translation.swift`, decides on it, so its
+    /// getter is readable there. Only this file writes it.
+    private(set) var hasEverHandshaken = false
+
+    /// How many death notices this actor has counted. It moves in `connectionWasInterrupted`, and
+    /// nowhere else.
+    ///
+    /// Notices, not deaths: one death is the interruption handler's notice and a 4097 for each
+    /// message in flight to it, and a 4097 on a message sent before the last notice counted is not
+    /// counted (`translate(_:on:sentAfter:)`, #588). `exchange` reads this at every send for that.
+    ///
+    /// An interruption keeps the generation, so the generation cannot say whether the process that
+    /// answered a `hello` is still the one on the other end. `performHandshake` reads this before
+    /// it sends `hello`, and records the reply only if it has not moved since (#585).
+    ///
+    /// `private(set)` for `hasEverHandshaken`'s reason: `translate(_:on:sentAfter:)` reads it.
+    private(set) var interruptions: UInt64 = 0
+
+    /// The connection's health, and its observers, under a lock of their own (#541). Published to
+    /// only by `publish(_:)`, on this actor. See `HealthSignal`.
+    private let healthSignal: HealthSignal
+    /// The half of `healthSignal` that only subscribes, which `healthUpdates()` reaches.
+    private let healthStreams: HealthSignal.Streams
 
     /// Which connection object a handler is talking about.
     ///
@@ -200,8 +251,8 @@ public actor HelperClient {
     ///
     /// The generation travels with the connection rather than being read back off the actor
     /// at the point of use, because what it identifies is exactly the thing that may have
-    /// been replaced by the time it is read. `translate(_:on:)` is the case that made this a
-    /// type: it runs when a message has *already* failed, which is precisely when a later
+    /// been replaced by the time it is read. `translate(_:on:sentAfter:)` is the case that made
+    /// this a type: it runs when a message has *already* failed, which is precisely when a later
     /// connection may already be live and handshaken, and a bare `self.generation` there
     /// reduces `guard generation == self.generation` to `guard x == x` — a guard that reads
     /// as protection and holds nothing.
@@ -241,18 +292,32 @@ public actor HelperClient {
     /// minutes for two fans, and a deadline measured on the wall clock is one a stalled runner
     /// can run out for a client that did nothing wrong. Production has one clock and no way to
     /// name another.
+    ///
+    /// `holdingHandshakeRelays`, `holdingReceivedHelloReplies` and `holdingHandshakeStarts` are
+    /// the suite's for the same reason, and production has no way to name any of them: the public
+    /// initialiser leaves all three `nil` (`handshakeRelayHold`, `receivedHelloReplyHold`,
+    /// `handshakeStartHold`).
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
         clientDescription: String,
         deadlines: HelperClientDeadlines,
-        clock: any Clock<Duration>
+        clock: any Clock<Duration>,
+        holdingHandshakeRelays relayHold: (@Sendable () async -> Void)? = nil,
+        holdingReceivedHelloReplies replyHold: (@Sendable () async -> Void)? = nil,
+        holdingHandshakeStarts startHold: (@Sendable () async -> Void)? = nil
     ) {
         self.transport = transport
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
+        self.handshakeRelayHold = relayHold
+        self.receivedHelloReplyHold = replyHold
+        self.handshakeStartHold = startHold
         self.inFlight = InFlightMessages(clock: clock)
+        let healthSignal = HealthSignal(startingWith: .idle)
+        self.healthSignal = healthSignal
+        self.healthStreams = healthSignal.streams
     }
 
     // MARK: - What a caller may ask about the connection
@@ -267,11 +332,11 @@ public actor HelperClient {
 
     /// The connection's health right now. See `HelperConnectionHealth` — this is ADR 0006's
     /// switch for the app.
-    public var health: HelperConnectionHealth { currentHealth }
+    public var health: HelperConnectionHealth { healthSignal.current }
 
     /// Which connection this client is on, for a suite that has to name one.
     ///
-    /// `internal`, like `translate(_:on:)` and the two handlers, and for the same reason:
+    /// `internal`, like `translate(_:on:sentAfter:)` and the two handlers, and for the same reason:
     /// the generation is the parameter every one of those guards turns on, so a test that
     /// could not name it could only assert them by accident. Nothing outside this module
     /// can see it and nothing inside it reads it except the guards themselves.
@@ -292,45 +357,24 @@ public actor HelperClient {
     /// combine a first read with a stream to know where it stands. Buffers unboundedly by
     /// default and the values are seven cases, so a slow consumer costs nothing that matters.
     ///
-    /// **A stream that ends leaves, whether it ends before its observer is registered or
-    /// after (#532).** The registration and the removal are each a task, because this function
-    /// is `nonisolated` and the observers are the actor's. A stream can end before its
-    /// registration has run, as one dropped as soon as it is made does, and two tasks reach the
-    /// actor in no set order. So a removal that went first found nothing to remove, and the
-    /// registration then added an observer that nothing would take away. `LeaseDriver`
-    /// subscribes once per lease and ends the subscription with the lease, so that could leave
-    /// one observer behind for each short lease. The removal therefore awaits the registration's
-    /// task before it removes, and the observer is added once and taken away once, whichever
-    /// comes first. It is an order and not a check of whether the stream has ended, because
-    /// `AsyncStream`'s `cancel()` runs the handler before it marks the stream terminated.
-    /// `LeaseDriverPublisher.stream(of:add:remove:)` does the same, for the same reason (#526).
+    /// **A stream that ends leaves**, whether it ends at once or after a long read. The
+    /// observer is registered in the step that makes the stream and removed in the step that ends
+    /// it, both under `HealthSignal`'s lock, with no task between (#541). `LeaseDriver`
+    /// subscribes once per lease and ends the subscription with the lease, so an observer left
+    /// behind would be one per short lease.
     ///
-    /// The handler is set after the registration's task is made, so that it can name the task.
-    /// Nothing can end the stream before then: this closure runs inside `AsyncStream`'s
-    /// initialiser, before anyone holds the stream, and nothing in this client calls `finish()`.
+    /// Before #541 the registration and the removal were each a task, because this function is
+    /// `nonisolated` and the observers were the actor's. Two tasks reach the actor in no set
+    /// order, so a stream that ended before its registration ran left an observer that nothing
+    /// would take away (#532), and #533 made the removal wait for the registration. Now there is
+    /// no task, and no order to keep.
+    ///
+    /// Nothing a stream holds reaches this client: its termination handler holds the observers
+    /// weakly, and nothing else. A strong reference to this client there would be a retain cycle
+    /// that kept a connection-owning actor alive for as long as anyone forgot to end the stream.
+    /// `HelperClientHealthStreamTests` frees a client whose health stream is still open.
     nonisolated public func healthUpdates() -> AsyncStream<HelperConnectionHealth> {
-        AsyncStream { continuation in
-            let token = UUID()
-            let registration = Task { await self.observe(continuation, as: token) }
-            // `[weak self]`, because this client holds the continuation and the
-            // continuation holds this closure: capturing strongly is a retain cycle that
-            // keeps a connection-owning actor alive for as long as anyone forgets to end
-            // the stream. The closure also holds the registration's task, which holds this
-            // client until it ends, and a task that has ended holds nothing it captured, so the
-            // cycle does not form through it either. `HelperClientHealthStreamTests` frees a
-            // client whose health stream is still open.
-            continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                // This task holds `self` strongly until the removal has run. That is what once made
-                // it valid for `HelperClientHealthStreamTests` to read its count a single time, as
-                // soon as the test held the client alone: no removal could still be queued then.
-                // The test now polls for the count, so it no longer depends on this capture (#534).
-                Task {
-                    await registration.value
-                    await self.stopObserving(token)
-                }
-            }
-        }
+        healthStreams.updates()
     }
 
     // MARK: - The two gates
@@ -346,6 +390,8 @@ public actor HelperClient {
     /// on a cold connection produce **one** `hello` and both wait for it. The second `hello`
     /// on a connection is refused by the helper — a connection has one negotiated identity —
     /// so "whoever gets there second loses" would be a race a correct caller could not avoid.
+    /// Each waits through a latch of its own, so a caller that is cancelled leaves at once and
+    /// the handshake carries on for the rest (#576; `handshakenConnection()`).
     ///
     /// `deadline` picks the message's bound out of this client's deadlines, which stay private
     /// to this file: a verb says which bound it needs and never holds the deadlines itself.
@@ -430,16 +476,83 @@ public actor HelperClient {
     }
 
     /// The current connection, with `hello` completed on it.
+    ///
+    /// ## A caller waits for the handshake; it does not own it
+    ///
+    /// The handshake is the connection's, and a caller only waits for it. Each caller waits
+    /// through a `PendingReply` of its own, which the handshake's outcome is relayed into, so a
+    /// cancelled caller is answered at once with `CancellationError` and nothing else moves: the
+    /// handshake runs on, `handshake` still names it, and a caller that arrives next joins it.
+    /// Awaiting the shared task's `value` directly, as this did until
+    /// [#576](https://github.com/blamechris/Aeolus/issues/576), is a wait cancellation cannot
+    /// reach, because the task is nobody's child: a cancelled caller stayed parked until the
+    /// `hello` was answered or ran out its `handshakeVerb` deadline.
+    ///
+    /// **A cancelled caller leaves `handshake` in place**, because the `hello` it names may still
+    /// be in flight. Clearing it would let the next caller send a second `hello` on this
+    /// connection, which the helper refuses, and a refused handshake takes its connection with it
+    /// (`performHandshake`): a teardown caused by a caller going away, which
+    /// `translate(_:on:sentAfter:)` refuses to allow for every other message. Only a caller handed
+    /// the handshake's own outcome clears it, and only while the slot still names that handshake
+    /// (below).
+    ///
+    /// **When the last waiter goes, the handshake still runs**, to its answer or to its own
+    /// deadline, as if someone were waiting. Cancelling it instead would end it without a
+    /// `HelloReply` on a connection whose peer may have recorded the `hello`, which costs the
+    /// connection: the same teardown by another door. So a handshake nobody waits for any more
+    /// leaves the connection handshaken for the next caller, or fails and takes it, exactly as it
+    /// would have with a caller there. Each relay ends when the handshake does, and the handshake
+    /// is bounded by its `hello`'s own deadline (`handshakeVerb`, counted from the `hello`'s turn,
+    /// `InFlightMessages`), so no relay outlives that deadline.
+    ///
+    /// ## A caller that resumes after its helper died
+    ///
+    /// An interruption keeps the connection and its generation and empties the slot of a
+    /// handshake whose `hello` has gone, so the next caller starts a second handshake on the same
+    /// connection, for the process that replaced the one that died. A handshake whose `hello` has
+    /// not gone stays in the slot, and the next caller joins it (`handshake`,
+    /// [#588](https://github.com/blamechris/Aeolus/issues/588)). A caller of the first handshake
+    /// can resume after the second has started, because when a caller resumes is the runtime's
+    /// choice. Two rules hold for it ([#582](https://github.com/blamechris/Aeolus/issues/582)).
+    ///
+    /// **It clears the slot only of its own handshake**, compared by identity (`Task` is
+    /// `Equatable` on the task, not on its result). Comparing generations, as this did before,
+    /// cleared the second handshake, which shares the first one's generation, and the next caller
+    /// then sent a third `hello` on the connection: refused, so the connection went with it, and
+    /// every caller of the second handshake was told `connectionAbandoned`.
+    ///
+    /// **It sends nothing, and is told `helperRestarted`.** Its handshake succeeded, on the
+    /// process that died, and nothing is negotiated with the new one until the second handshake
+    /// is answered. Sending now would put its verb behind a `hello` that is not answered yet,
+    /// which is the pipelining this client never does. Nor does it wait for the second handshake:
+    /// that would be a second attempt at the handshake this call has already had, and nothing on
+    /// the send path makes one (`HelperClientSendPathSeamTests`); whether to ask again is the
+    /// caller's. So it is answered as a message in flight across the same restart is answered, and
+    /// for the same reason: the helper it reached is gone. A caller that resumes once the second
+    /// handshake has been answered finds it in force and sends on it, like any caller after a
+    /// restart. The check is at this handshake's generation only; a connection given up in the
+    /// meantime is `exchange`'s to report, as `connectionAbandoned`.
     private func handshakenConnection() async throws -> ConnectionGeneration {
         let live = try liveConnection()
         if negotiatedReply != nil { return live }
 
         let generation = live.generation
         let task =
-            handshake ?? Task { try await self.performHandshake(generation: generation) }
-        handshake = task
-        defer { if self.generation == generation { handshake = nil } }
-        _ = try await task.value
+            handshake?.task ?? Task { try await self.performHandshake(generation: generation) }
+        if handshake == nil { handshake = (task, hasSent: false) }
+        // `nil` is this caller's cancellation: the latch has no deadline, the handshake has.
+        let waiter = PendingReply<Result<HelloReply, Error>?>(ifNothingArrives: nil)
+        Task.detached(priority: Task.currentPriority) { [hold = handshakeRelayHold] in
+            await hold?()
+            waiter.deliver(await task.result)
+        }
+        guard let outcome = await waiter.waitForAnswer() else { throw CancellationError() }
+        if handshake?.task == task { handshake = nil }
+        _ = try outcome.get()
+        // The helper that answered died before this caller resumed: see above.
+        if self.generation == generation, negotiatedReply == nil {
+            throw HelperClientError.helperRestarted
+        }
 
         // The connection this handshake ran on, not whatever is current now. If this client
         // gave it up in between — a `disconnect()`, or another message's cut-off, both of which
@@ -473,17 +586,57 @@ public actor HelperClient {
     /// is the one message whose failure this client cannot classify from the outside —
     /// whether the peer recorded it is the peer's state, not the transport's — so the
     /// handshake path spends one extra connection setup rather than reasoning about it.
+    ///
+    /// ## Unless a newer handshake has been recorded on it since
+    ///
+    /// An interruption empties the slot of a handshake whose `hello` has gone, so a second one can
+    /// be recorded, with the replacement, while the first waits for its answer (#588). The first
+    /// then fails against the process that died, when the late 4097 for its `hello` arrives, and
+    /// taking the connection then took a live, handshaken one, with any lease the helper held on
+    /// it. So a reply recorded at its generation keeps the connection. It is necessarily a newer
+    /// handshake's: one starts only with none recorded, and one cleared from the slot by an
+    /// interruption cannot record its own, because the interruption moved `interruptions`.
+    ///
+    /// ## A reply from a process that died before it was recorded is not recorded
+    ///
+    /// If the helper answers `hello` and then dies, its reply and the interruption are both queued
+    /// on this actor, and the executor picks which runs first. When the interruption runs first it
+    /// clears a reply that has not been recorded yet. Recording it afterwards claimed a handshake
+    /// with a process that is gone: `.handshaken` published, `negotiated` naming the dead process,
+    /// and every gated verb after it sent to the replacement with no `hello` and refused
+    /// `handshakeRequired`. A refusal tears nothing down, so nothing ended that
+    /// ([#585](https://github.com/blamechris/Aeolus/issues/585)).
+    ///
+    /// So the reply is recorded only if no interruption has been handled since the `hello` was
+    /// sent (`interruptions`). It is read in the same synchronous stretch as the send, so an
+    /// interruption handled before the send does not count. Otherwise the callers are told
+    /// `helperRestarted` (`handshakenConnection()`), and the next caller handshakes with the
+    /// replacement on the same connection. `hasEverHandshaken` is set either way, because a helper
+    /// did answer: a 4097 on this connection is then a restart, as it is when the reply was
+    /// recorded before the death.
+    ///
+    /// **That costs a failure of its own, which #585 introduced.** The count cannot tell a notice
+    /// of a death after the send from a late first notice of one before it, which reached this
+    /// actor after the `hello` had gone to the replacement. That reply is dropped too, where
+    /// before #585 it was recorded. The first caller is told `helperRestarted`. The next caller's
+    /// `hello` is refused by the replacement, which negotiated the first, and the refusal takes
+    /// the connection (above). The call after that is served on a new one. That is two failed
+    /// calls and one reconnect, and no lease lost, because nothing was negotiated for one to be
+    /// acquired over. The trade is right: this window cannot be told from #585's, and recording
+    /// in #585's is the wedge above, which nothing ends. `HelperClientStaleHandshakeTests` runs the
+    /// recovery. Since #588, a second notice of a death already counted no longer reaches this
+    /// window (`translate(_:on:sentAfter:)`). A late first notice still does.
     private func performHandshake(generation: UInt64) async throws -> HelloReply {
+        await handshakeStartHold?()
         guard generation == self.generation, let connection else {
             throw HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
         }
         let live = ConnectionGeneration(connection: connection, generation: generation)
-        let request = try HelperClientPayload.encode(
-            HelloRequest(
-                clientProtocolVersion: AeolusXPCVersion.current,
-                clientDescription: clientDescription
-            )
-        )
+        let request = try HelperClientPayload.hello(describing: clientDescription)
+        // The slot names this handshake: it was stored as it was made, and only a discard, which
+        // the guard rules out, empties it of one whose `hello` has not gone. The send is next.
+        handshake?.hasSent = true
+        let interruptions = self.interruptions
         do {
             let data: Data = try await exchange(
                 .hello, on: live, within: deadlines.handshakeVerb
@@ -497,52 +650,24 @@ public actor HelperClient {
             // Discarded rather than stored if the connection was replaced while this was in
             // flight: a `HelloReply` describes one process, and attaching it to a connection
             // that did not negotiate it would be a claim about a peer nobody spoke to.
-            if generation == self.generation {
-                negotiatedReply = reply
-                hasEverHandshaken = true
-                publish(.handshaken)
-            }
+            guard generation == self.generation else { return reply }
+            hasEverHandshaken = true
+            // Nor if the process that answered may have died since: see above.
+            guard interruptions == self.interruptions else { return reply }
+            negotiatedReply = reply
+            publish(.handshaken)
             return reply
         } catch {
             // Still held at this generation means nothing above tore it down — the peer
             // answered `hello`, or refused it, on a session that may now have recorded the
             // handshake. See this function's own documentation for why that is fatal to the
-            // connection rather than to the message.
-            if generation == self.generation, self.connection != nil {
-                let health = Self.healthAfterFailedHandshake(for: error)
+            // connection rather than to the message, and why a newer reply recorded is not.
+            if generation == self.generation, self.connection != nil, negotiatedReply == nil {
+                let health = HelperConnectionHealth.afterFailedHandshake(for: error)
                 discardConnection(generation, as: health, answering: .connectionAbandoned)
             }
             throw error
         }
-    }
-
-    /// What a failed handshake says about the connection it failed on.
-    ///
-    /// Reached for every failure whose connection is still held at this generation, which is
-    /// **not** the same set as "failures the transport did not classify" — an earlier
-    /// version of this comment claimed it was, and was wrong about two arms:
-    ///
-    /// - The three arms of `translate(_:on:)` that call `discardConnection` move the
-    ///   generation, so the `catch` guard declines and this is genuinely not consulted.
-    /// - **4097 does reach here.** `connectionWasInterrupted` keeps its connection and does
-    ///   not move the generation, so the `catch` runs and the verdict becomes `.invalidated`,
-    ///   overwriting the `.interrupted` published a moment earlier. That is correct — the
-    ///   connection has now been discarded — but it is this function that says so.
-    /// - **4101 reaches here too**, because `replyNotDelivered` publishes nothing at all.
-    ///
-    /// The behaviour was right in both; the comment was the defect, and it was the kind that
-    /// makes a later reader believe a live function unreachable.
-    private static func healthAfterFailedHandshake(
-        for error: Error
-    ) -> HelperConnectionHealth {
-        guard let fault = error as? AeolusXPCFault else {
-            // A `HelloReply` this build could not read, or a proxy that does not speak the
-            // protocol. The connection has just been declared dead, and that is the honest
-            // thing to say about it.
-            return .invalidated
-        }
-        if case .versionMismatch = fault { return .versionMismatched }
-        return .refused
     }
 
     /// Sends one message, and answers with whichever of the reply block, the connection's
@@ -564,6 +689,9 @@ public actor HelperClient {
     /// both blocks below.
     /// A caller cancelled here leaves the message in flight with its deadline still running,
     /// because the messages behind it are waiting for it to settle; see `InFlightMessages`.
+    ///
+    /// **The notices counted before the send travel with the message** (#588), read in the same
+    /// synchronous stretch as the send, as the generation is: see `translate(_:on:sentAfter:)`.
     private func exchange<Answer: Sendable>(
         _ message: HelperMessage,
         on live: ConnectionGeneration,
@@ -575,6 +703,7 @@ public actor HelperClient {
         // The latch it is answered through, with its two fallbacks, is the message's too.
         let sent = inFlight.admit(
             message, on: live.generation, within: deadline, answering: Answer.self)
+        let notices = interruptions
         let proxy = live.connection.remoteObjectProxyWithErrorHandler { sent.settle(.failure($0)) }
         guard let typed = proxy as? any AeolusXPCProtocol else {
             throw sent.failing(
@@ -583,121 +712,24 @@ public actor HelperClient {
         }
         send(typed, sent.settle)
 
-        switch await sent.answer() {
+        let outcome = await sent.answer()
+        if message == .hello { await receivedHelloReplyHold?() }
+        switch outcome {
         case .success(let answer):
             return answer
         case .failure(let error):
-            throw translate(error, on: live.generation)
-        }
-    }
-
-    // MARK: - What the transport's failures mean
-
-    /// Turns whatever came back into something a caller can act on.
-    ///
-    /// A refusal the helper authored is thrown **as itself**: `AeolusXPCFault` carries its
-    /// own vocabulary, `versionMismatch` carries both sides' ranges, and wrapping either
-    /// would flatten "the helper said no" into "something went wrong". Everything else is a
-    /// statement about the connection, and this is the one place that decides which.
-    ///
-    /// `generation` is the connection the failed message was sent on, threaded in from
-    /// `exchange` rather than read off the actor. By the time a failure is being explained,
-    /// a later connection may already be live and handshaken — that is precisely the
-    /// interleaving the field exists for — and reading `self.generation` here would make
-    /// every guard below compare a value with itself.
-    ///
-    /// Reachable from the suite for the same reason the two handlers below are: one arm of
-    /// this switch — `NSXPCConnectionReplyInvalid` — cannot be provoked over a real
-    /// connection at all, and an arm that decides whether a live connection survives is not
-    /// one this project is willing to ship untested.
-    func translate(_ error: Error, on generation: UInt64) -> Error {
-        // **Cancellation is not a teardown, and this is the line that keeps it from
-        // becoming one.** It is a statement about the caller — a view that navigated away,
-        // a `fanctl` that was interrupted — and none about the helper, which may be healthy
-        // and about to answer. Acting on it would invalidate the connection, and the helper
-        // releases a connection's leases when it dies: the fans would hand back to automatic
-        // because somebody changed tabs. It is thrown as itself, the way every other
-        // cancelled `async` call in Swift reports.
-        //
-        // The message stays at the head of the helper's queue and that is deliberate. Its
-        // deadline outlives its caller (`InFlightMessages`), so the next sequenced verb waits
-        // for it to settle: answered, or cut off by that deadline, which with nobody waiting
-        // discards nothing. The next verb then hits its **own** deadline and discards — one
-        // extra deadline on a genuinely wedged helper for each cancelled message ahead of it,
-        // which is the price of never tearing down a healthy one. Several orphans add up; #419
-        // is the design note the app's control UI settles before it pipelines.
-        if error is CancellationError { return error }
-        if let clientError = error as? HelperClientError {
-            if case .helperNeverAnswered = clientError {
-                // The helper accepted this message and never answered it, which on the
-                // wedged `io_connect_t` of `docs/SAFETY.md` § 4 is the expected case rather
-                // than an exotic one. The message is still at the head of this connection's
-                // queue with nothing able to discard it, and since D25 the helper answers a
-                // connection's messages in the order they were sent — so every later gated
-                // verb would queue behind it and time out too, permanently. The connection
-                // goes; the next call builds another, once, when the caller asks again.
-                //
-                // Everything else in flight on it goes too, and is told so: the client's own
-                // `invalidate()` would reach each of them as 4099, which reads as a helper
-                // that was never there (#413).
-                discardConnection(generation, as: .unresponsive, answering: .connectionAbandoned)
-            }
-            // `connectionAbandoned` passes through here untouched, which is why a message a
-            // discard answered never counts as a second timeout: it moves no generation and
-            // publishes no health.
-            return clientError
-        }
-        if let fault = AeolusXPCFault(nsError: error as NSError) { return fault }
-
-        let nsError = error as NSError
-        guard nsError.domain == NSCocoaErrorDomain else {
-            return HelperClientError.helperUnreachable(code: nsError.code)
-        }
-        switch nsError.code {
-        case XPCTransportCode.interrupted:
-            // 4097 does not by itself mean a helper died: measured on `Mac16,5` /
-            // macOS 26.6.2, a listener whose delegate **refuses** the connection is reported
-            // to the client as an interruption too, not as an invalidation. So the code
-            // alone cannot tell "the helper restarted under me" from "nothing ever answered",
-            // and claiming the former about a peer this connection never handshook with
-            // would be inventing a helper. What settles it is whether this connection object
-            // ever completed a handshake.
-            let hadSpokenToAHelper = hasEverHandshaken
-            connectionWasInterrupted(generation)
-            return hadSpokenToAHelper
-                ? HelperClientError.helperRestarted
-                : HelperClientError.helperUnreachable(code: nsError.code)
-        case XPCTransportCode.replyInvalid:
-            // 4101 is the one code here that is **about the message, not the connection**:
-            // the reply could not be delivered, and the connection is still alive and still
-            // handshaken. Letting it fall into the arm below would drop a live connection's
-            // only reference — orphaning the helper-side session, and any lease bound to
-            // it, until the 120 s TTL expired. That would collapse the two teardown paths
-            // `AeolusXPCProtocol` requires to be independent into one, on a failure that
-            // cost nothing but a single answer.
-            return HelperClientError.replyNotDelivered
-        case XPCTransportCode.codeSigningRequirementFailure:
-            discardConnection(generation, as: .refused, answering: .helperSignatureRejected)
-            return HelperClientError.helperSignatureRejected
-        default:
-            // Every other transport code, 4099 included: the connection failed and no
-            // message was delivered. The code is carried rather than mapped, because a
-            // reason this build has not heard of must still reach a log line.
-            //
-            // The 4099 the client's **own** `invalidate()` produces does not arrive here. The
-            // discard answered every message on that connection first (`InFlightMessages`),
-            // so each latch already held its answer when the 4099 reached it (#413). What
-            // arrives is the transport's own report, and the messages still in flight beside
-            // the one that carried it are given the same answer.
-            let unreachable = HelperClientError.helperUnreachable(code: nsError.code)
-            discardConnection(generation, as: .invalidated, answering: unreachable)
-            return unreachable
+            throw translate(error, on: live.generation, sentAfter: notices)
         }
     }
 
     // MARK: - Giving up on a connection
 
     /// The helper process was replaced. Keep the connection, drop what the old one said.
+    ///
+    /// It is counted too, so that the reply to a `hello` sent before it, which the old process may
+    /// have sent, is not recorded after it (`interruptions`, #585).
+    ///
+    /// It empties the slot only of a handshake whose `hello` has gone (`handshake`, #588).
     ///
     /// Reachable from the suite rather than `private`, because this and
     /// `connectionWasInvalidated` are **libxpc's entry points into this actor** and the
@@ -706,8 +738,9 @@ public actor HelperClient {
     /// on demand over a real connection. `HelperClientConnectionTests` plays libxpc instead.
     func connectionWasInterrupted(_ generation: UInt64) {
         guard generation == self.generation else { return }
+        interruptions &+= 1
         negotiatedReply = nil
-        handshake = nil
+        if handshake?.hasSent == true { handshake = nil }
         publish(.interrupted)
     }
 
@@ -769,13 +802,17 @@ public actor HelperClient {
     /// tearing down whatever has been built since.
     ///
     /// **Every message still in flight on it is answered `verdict` first** (#413). The
-    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:)` reads a 4099
-    /// as a helper that is not installed or not yet approved — so a message this client killed
+    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:sentAfter:)` reads a
+    /// 4099 as a helper that is not installed or not yet approved — so a message this client killed
     /// itself, answered by its own invalidation, would be misdiagnosed. Each caller says what
     /// is true instead: `connectionAbandoned` when the client chose to give up, and the
     /// transport's own verdict when the transport ended the connection. Answering them settles
     /// them too, so no message stays waiting for a turn on a connection that is gone.
-    private func discardConnection(
+    ///
+    /// `internal` since [#600](https://github.com/blamechris/Aeolus/issues/600), for
+    /// `translate(_:on:sentAfter:)` in `HelperClient+Translation.swift`, which is its one caller
+    /// outside this file.
+    func discardConnection(
         _ generation: UInt64, as health: HelperConnectionHealth,
         answering verdict: HelperClientError
     ) {
@@ -793,22 +830,9 @@ public actor HelperClient {
 
     // MARK: - The health signal
 
+    /// The one way this client's health changes, and only ever on this actor.
     private func publish(_ health: HelperConnectionHealth) {
-        guard health != currentHealth else { return }
-        currentHealth = health
-        for continuation in observers.values { continuation.yield(health) }
-    }
-
-    private func observe(
-        _ continuation: AsyncStream<HelperConnectionHealth>.Continuation,
-        as token: UUID
-    ) {
-        observers[token] = continuation
-        continuation.yield(currentHealth)
-    }
-
-    private func stopObserving(_ token: UUID) {
-        observers[token] = nil
+        healthSignal.publish(health)
     }
 
 }

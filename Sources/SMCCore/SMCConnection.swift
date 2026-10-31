@@ -551,9 +551,7 @@ public actor SMCConnection {
         }
         readIndexAttempts += 1
         let reply = try call(key: 0, selector: Self.selectorReadIndex, data32: index32)
-        guard let key = SMCKey(fourCharCode: reply.key) else {
-            throw SMCError.malformedKeyCode(reply.key)
-        }
+        let key = try Self.indexedKey(fromCode: reply.key)
         keyTableCache[index] = key
         return key
     }
@@ -667,25 +665,19 @@ public actor SMCConnection {
     ///   This method additionally probes index `declaredCount` itself and expects it to
     ///   fail; `KeyCountCrossCheck.keyExistsPastDeclaredCount` carries the result, and
     ///   `matches` folds it in, making the tripwire two-sided.
+    ///
+    /// - Note: A nonzero code `SMCKey` refuses counts as walked inside the bound, while a walk
+    ///   holds at most `KeyTableWalk.maximumWalkedRefusedCodes` of them, and as no key at the
+    ///   probe (#623). `KeyTableWalk.walkedCount` and `KeyTableEntry.isKeyPastDeclaredCount`
+    ///   say why; `walkKeyTable(declaredCount:keyAt:)` is the walk.
     public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
-        let declaredCount = try keyCount()
-
-        var walkedCount = 0
-        for index in 0..<declaredCount where (try? key(at: index)) != nil {
-            walkedCount += 1
-        }
-        let keyExistsPastDeclaredCount = (try? key(at: declaredCount)) != nil
-
-        let result = KeyCountCrossCheck(
-            declaredCount: declaredCount, walkedCount: walkedCount,
-            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
-        Self.logCrossCheck(result)
-        return result
+        try walkKeyTable().crossCheck
     }
 
     /// Logs loudly when a `KeyCountCrossCheck` disagrees; silent when it matches. Shared
     /// by `verifyKeyCountCrossCheck()` and `SMCSensorProvider.readAll()`, which computes
-    /// the same comparison from a walk it is already doing rather than repeating it.
+    /// the same comparison from a walk it is already doing rather than repeating it. A code
+    /// `SMCKey` refuses is logged on a line of its own; see `KeyTableWalk.finish(probe:)`.
     static func logCrossCheck(_ result: KeyCountCrossCheck) {
         guard !result.matches else { return }
         logger.fault(

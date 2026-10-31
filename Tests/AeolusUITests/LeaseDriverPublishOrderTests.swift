@@ -27,9 +27,13 @@ struct LeaseDriverPublishOrderTests {
     /// published it, read in the same turn. None of the mutations below touches that report;
     /// each changes only what reaches a subscriber.
     ///
-    /// **Mutation (P1, coalesce):** in `LeaseDriverPublisher.stream(of:add:remove:)`, buffer with
-    /// `.bufferingNewest(1)`. Run: red at "nothing coalesced", three reports where five were
-    /// published. No other lease-driver, lease-state-model or lifecycle test goes red.
+    /// **Mutation (P1, coalesce):** in `Followers.stream()`, buffer with `.bufferingNewest(1)`.
+    /// Run, debug, with this suite, `LeaseDriverStreamTerminationTests` and
+    /// `LeaseDriverPublisherTests`: red at "nothing coalesced" in 3 of 3, and red in
+    /// `LeaseDriverPublisherTests`' race test too. Before #541 the streams were made in
+    /// `LeaseDriverPublisher.stream(of:add:remove:)` and the same edit there was red at "nothing
+    /// coalesced", three reports where five were published, with no other lease-driver,
+    /// lease-state-model or lifecycle test red.
     /// **Mutation (P2, reorder):** in `LeaseDriver.transition(to:)`, publish a state that stops
     /// acting from a `Task` on the driver's actor, with its report taken at the transition
     /// (`let stopped = report; Task { self.publisher.publishStateChange(stopped) }`), and every
@@ -131,8 +135,9 @@ struct LeaseDriverPublishOrderTests {
     /// 2. `take` acquires (`acquiring`);
     /// 3. Auto asks for whatever that acquisition is granted back (`releasing`).
     ///
-    /// Nothing else runs on the actor until it returns: no subscriber's registration, and no task
-    /// the driver started.
+    /// Nothing else runs on the actor until it returns, and no task the driver started does
+    /// either. Since #541 no stream's registration runs on the actor at all: a stream registers in
+    /// the step that makes it, on whatever thread that is.
     static func changeThreeTimes(
         _ driver: isolated LeaseDriver, readWith ticket: LeaseDriver.SnapshotTicket,
         thenTaking target: LeaseTarget

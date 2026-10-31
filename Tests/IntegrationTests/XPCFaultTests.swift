@@ -127,10 +127,16 @@ struct XPCFaultTests {
 
     /// Free text from the far side lands in a log line and a UI label. A newline in it
     /// forges a second log entry; U+202E reverses the reading order of everything after
-    /// it. Neither may reach the rendered string.
+    /// it; U+2028 and U+2029 are line breaks to Core Text and to most terminals, and are
+    /// category Zl and Zp, not Cc or Cf (#553). None may reach the rendered string, and
+    /// `errorDescription` is the string `fanctl` prints.
+    ///
+    /// **Mutation (#553):** in `FaultText.isRemovedFromDisplay`, delete `.lineSeparator,
+    /// .paragraphSeparator` from the `case`. Run: red on the last two arguments, for every
+    /// fault that carries free text, and on `FaultTextDisplayTests`.
     @Test(
-        "Rendered messages strip control and formatting characters",
-        arguments: ["\u{0}", "\n", "\r", "\u{7F}", "\u{202E}", "\u{200F}"]
+        "Rendered messages strip control, formatting and line-separator characters",
+        arguments: ["\u{0}", "\n", "\r", "\u{7F}", "\u{202E}", "\u{200F}", "\u{2028}", "\u{2029}"]
     )
     func renderingStripsControlCharacters(_ hostile: String) throws {
         let faults: [AeolusXPCFault] = [

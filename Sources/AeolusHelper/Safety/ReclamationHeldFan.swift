@@ -47,9 +47,16 @@ extension ReclamationWatchdog {
         /// The lease this fan was registered under — the one `apply` authorised. Every
         /// judgement § 5 makes about the fan asks about this lease, and no other (#357).
         let lease: UUID
-        /// The step last put on the wire, or `nil` when nothing has been commanded yet. Written
-        /// only by `record(_:)`, so both of its writers pass the one check of what it may hold.
-        private(set) var commanded: CommandedTarget?
+        /// The step last put on the wire, or `nil` when nothing has been commanded yet: a
+        /// get-only view of `storedCommanded`, so nothing can assign it, and no key path to it is
+        /// writable at run time, as a key path to a `private(set) var` is (SR-5218, #612).
+        var commanded: CommandedTarget? { storedCommanded }
+        /// What `commanded` reads. Assigned only by `record(_:)`, so both of its writers pass the
+        /// one check of what it may hold; `nil` until then by the optional's default, because
+        /// `init(lease:)` assigns it nothing. `private` still reaches a type nested in `HeldFan`
+        /// and an extension in this file, so a second assignment here would compile: the
+        /// write-site count in `ReclamationHeldFanAccessTests` reads this file for one.
+        private var storedCommanded: CommandedTarget?
         /// Cycles in a row that could not read this fan. Reset by any successful read.
         var consecutiveReadFailures = 0
         /// Cycles in a row the actual speed has been short of the commanded target. Reset
@@ -118,9 +125,9 @@ extension ReclamationWatchdog {
             examinedInBound = inBound
         }
 
-        /// Records `target` as the step last put on the wire: the one write of `commanded`, which
-        /// a report (`command(_:)`) and a re-assert (`Registry.recordReassertedTarget`) both pass
-        /// through (#395).
+        /// Records `target` as the step last put on the wire: the one assignment to
+        /// `storedCommanded`, which `commanded` reads, and which a report (`command(_:)`) and a
+        /// re-assert (`Registry.recordReassertedTarget`) both pass through (#395).
         ///
         /// A target that is not finite, or is below `FanSafetyLimits.minimumManualRPM`, is one no
         /// permit can produce, because every permit clamps to a floor at least that high. It is
@@ -132,7 +139,7 @@ extension ReclamationWatchdog {
         mutating func record(_ target: CommandedTarget) -> Bool {
             let writable = target.rpm.isFinite && target.rpm >= FanSafetyLimits.minimumManualRPM
             guard writable else { return false }
-            commanded = target
+            storedCommanded = target
             return true
         }
 

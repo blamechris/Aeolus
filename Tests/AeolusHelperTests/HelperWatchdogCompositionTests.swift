@@ -335,12 +335,14 @@ struct HelperWatchdogCompositionTests {
     ///
     /// ## No dependence on the width of the cooperative pool
     ///
-    /// Holding an actor parks a pool thread, and this repository already has two tests that do
-    /// (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s). On a three-core runner
-    /// a third left none to resume any of them, and this pull request's first CI run stopped
-    /// for twenty minutes. So the held window asks nothing of the pool: the thread that drives
-    /// it and the failsafe that ends it are `Thread`s, and it lasts as long as two synchronous
-    /// ticks.
+    /// Holding an actor parks a pool thread, and this repository already has other tests that
+    /// do (`docs/TESTING.md` lists them). On a three-core runner a third left none to resume any
+    /// of them, and this pull request's first CI run stopped for twenty minutes. So the held
+    /// window asks nothing of the pool: the thread that drives it and the failsafe that ends it
+    /// are `Thread`s, and it lasts as long as two synchronous ticks. `SMCRoundTripMonitorTests`'
+    /// held connection is driven the same way. Only `ThreadBlockingRestorePlane`'s hold is
+    /// released by a pool task, and there is one of it
+    /// ([#554](https://github.com/blamechris/Aeolus/issues/554)).
     ///
     /// It used to give up the assertion that the process *ends* while the connection is held,
     /// because the ending was a `Task` and a `Task` needs a pool thread this window may be
@@ -367,7 +369,7 @@ struct HelperWatchdogCompositionTests {
                 release.signal()
                 window.withLock { $0.finished = true }
             }
-            guard entered.wait(timeout: .now() + .seconds(20)) == .success else { return }
+            guard signalled(entered, within: 20) else { return }
             window.withLock { $0.occupied = true }
 
             // Queued behind the held connection; it cannot run until the release.

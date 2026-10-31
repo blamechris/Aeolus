@@ -116,8 +116,8 @@ public final class LeaseLifecycle {
     /// The Mac woke. A lease held across the sleep is renewed at once, so one that did not survive
     /// it is reported as lost now. **Never asks for the fans again** (#153's default).
     ///
-    /// Can wait up to `HelperClientDeadlines.handshakeVerb` (`LeaseDriver.systemDidWake()`), so
-    /// the wiring calls it from a task of its own.
+    /// Waits for the heartbeat it replaced to finish (`LeaseDriver.systemDidWake()`), which since
+    /// #576 is at once; the wiring still calls it from a task of its own.
     public func systemDidWake() async {
         await driver.systemDidWake()
     }

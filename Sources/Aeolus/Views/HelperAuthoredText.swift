@@ -14,26 +14,33 @@ import Foundation
 ///   selection is persisted by it — and a cleaned key would be a different one. It is
 ///   **refused** instead unless `isDisplayableVerbatim(_:)` holds (`SnapshotReadings`).
 ///
+/// One text that is not the helper's goes through it too: a direct read's failure, in the
+/// "Refresh failed:" and "Last refresh failed:" lines (`PollingStatusDisplay.failureReason`).
+/// It can carry a type code the firmware declared, verbatim, and the same rules apply to it
+/// for the same reason (#544).
+///
 /// ## Why the app cleans what the helper already refused
 ///
-/// `AeolusXPCValidation` refuses Unicode Cc and Cf in a holder description at grant time, so a
-/// well-behaved helper never stores one. That is the first layer, and this is the second: the
-/// client does not get to assume the process answering is well-behaved, and SwiftUI's `Text`
-/// renders what it is given — a U+202E right-to-left override reorders the rest of the line
-/// without adding a visible character, and a newline turns one line into a forged second one.
+/// `AeolusXPCValidation` refuses Unicode Cc, Cf, Zl and Zp in a holder description at grant
+/// time, so a well-behaved helper never stores one. That is the first layer, and this is the
+/// second: the client does not get to assume the process answering is well-behaved, and
+/// SwiftUI's `Text` renders what it is given — a U+202E right-to-left override reorders the
+/// rest of the line without adding a visible character, and a newline turns one line into a
+/// forged second one.
 ///
-/// ## The rules are `fanctl`'s, plus the two line breaks it misses
+/// ## The rules are `FaultText`'s
 ///
-/// `DisplayText.sanitised(_:)` in `Sources/fanctl/FanctlExitCode.swift` cleans the same text on
-/// its way to a terminal. It is internal to an executable target the app cannot import, so the
-/// rules are mirrored here: drop every scalar in Unicode Cc and Cf (`CharacterSet
-/// .controlCharacters`, the set `AeolusXPCValidation` refuses), trim surrounding whitespace,
-/// say `(unprintable)` rather than show nothing, and cap the length.
+/// The predicate is `FaultText.isRemovedFromDisplay(_:)` in `AeolusXPC`: every scalar in
+/// Unicode Cc, Cf, Zl or Zp. **One rule for all three layers** (#553, #483): the helper's
+/// `AeolusXPCValidation` refuses that set in a description, `fanctl`'s `DisplayText` and
+/// `AeolusXPC`'s own renderer (`FaultText.displayable`, which `fanctl` prints through
+/// `errorDescription`) remove it, and the helper's log lines escape it. This type adds the
+/// rest of what a view needs: trim surrounding whitespace, say `(unprintable)` rather than show
+/// nothing, and cap the length.
 ///
-/// Two departures, both deliberate:
-/// - **Zl and Zp go too** — U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR. Neither is
-///   Cc or Cf, and Core Text breaks a line on both, which is exactly the forged second line
-///   this type exists to prevent. `fanctl` and the helper's validation are #483's.
+/// - **Zl and Zp go as well as Cc and Cf** — U+2028 LINE SEPARATOR and U+2029 PARAGRAPH
+///   SEPARATOR. Neither is Cc or Cf, and Core Text breaks a line on both, which is exactly the
+///   forged second line this type exists to prevent.
 /// - **The cap bounds bytes as well as characters**, as `FaultText.displayable` does in
 ///   `AeolusXPC`: one grapheme can carry any number of combining marks, so 200 characters
 ///   alone can be hundreds of kilobytes. The cut is `FaultDetailBounds.bounded(_:)` itself,
@@ -48,14 +55,11 @@ enum HelperAuthoredText {
     /// Shown in place of text with nothing printable left in it.
     static let unprintable = "(unprintable)"
 
-    /// Whether `scalar` is one this type removes: Unicode Cc, Cf, Zl or Zp.
+    /// Whether `scalar` is one this type removes: Unicode Cc, Cf, Zl or Zp. Not a second
+    /// definition of that set but `FaultText`'s, so a change to what one renderer removes is a
+    /// change to what the other does.
     static func isRemoved(_ scalar: Unicode.Scalar) -> Bool {
-        switch scalar.properties.generalCategory {
-        case .control, .format, .lineSeparator, .paragraphSeparator:
-            return true
-        default:
-            return false
-        }
+        FaultText.isRemovedFromDisplay(scalar)
     }
 
     static func sanitised(_ text: String) -> String {

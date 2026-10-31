@@ -10,31 +10,57 @@ import Testing
 struct HelperAuthoredTextTests {
 
     /// Every scalar in Unicode Cc, Cf, Zl and Zp, found by walking the whole code space — the
-    /// class, not a hand-picked few of its members.
-    static let removedScalars: [Unicode.Scalar] = (0...0x10FFFF).compactMap { value in
-        guard let scalar = Unicode.Scalar(value) else { return nil }
-        switch scalar.properties.generalCategory {
-        case .control, .format, .lineSeparator, .paragraphSeparator: return scalar
-        default: return nil
+    /// class, not a hand-picked few of its members. A run at a time (`CodeSpace`, #570), so the
+    /// walk gives the pool back between runs.
+    static func removedScalars() async -> [Unicode.Scalar] {
+        var removed: [Unicode.Scalar] = []
+        await CodeSpace.forEachRun { run in
+            removed += run.filter { scalar in
+                switch scalar.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator: return true
+                default: return false
+                }
+            }
         }
+        return removed
     }
 
     /// **Mutation (O24):** spare U+2066–2069, U+0085, U+001B and U+FEFF from the filter.
     /// **Mutation (M12):** replace the filter's closure with `{ _ in true }`. Run, each: red,
     /// naming every scalar that survived.
     @Test("No scalar in Cc, Cf, Zl or Zp survives")
-    func noRemovedScalarSurvives() {
-        #expect(Self.removedScalars.count > 200)
-        #expect(Self.removedScalars.contains("\u{2028}"))
-        #expect(Self.removedScalars.contains("\u{2029}"))
+    func noRemovedScalarSurvives() async {
+        let removedScalars = await Self.removedScalars()
+        #expect(removedScalars.count > 200)
+        #expect(removedScalars.contains("\u{2028}"))
+        #expect(removedScalars.contains("\u{2029}"))
         var survivors: [String] = []
-        for scalar in Self.removedScalars {
+        for scalar in removedScalars {
             let text = "a" + String(Character(scalar)) + "b"
             if HelperAuthoredText.sanitised(text) != "ab" {
                 survivors.append(String(format: "U+%04X", scalar.value))
             }
         }
         #expect(survivors.isEmpty, "survived: \(survivors)")
+    }
+
+    /// The app and `AeolusXPC` remove the same scalars, because the app asks `AeolusXPC`
+    /// (#553). Held as agreement over the whole code space rather than as a source check, so a
+    /// local copy of the predicate that someone later "fixes" for one renderer only is red.
+    ///
+    /// **Mutation (#553):** in `HelperAuthoredText.isRemoved`, return
+    /// `FaultText.isRemovedFromDisplay(scalar) && scalar != "\u{2029}"`. Run: red, naming
+    /// U+2029 (and `noRemovedScalarSurvives` is red beside it).
+    @Test("The app's predicate is AeolusXPC's, for every scalar")
+    func theAppAndAeolusXPCAgreeOnEveryScalar() async {
+        var disagreements: [String] = []
+        await CodeSpace.forEachRun { run in
+            for scalar in run
+            where HelperAuthoredText.isRemoved(scalar) != FaultText.isRemovedFromDisplay(scalar) {
+                disagreements.append(String(format: "U+%04X", scalar.value))
+            }
+        }
+        #expect(disagreements.isEmpty, "disagree on: \(disagreements)")
     }
 
     @Test("A right-to-left override is removed")

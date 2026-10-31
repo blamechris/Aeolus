@@ -47,9 +47,10 @@ public enum SMCError: Error, Sendable, Equatable {
     /// would fabricate a value. Metadata (type, size, attributes) remains available via
     /// `SMCConnection.keyInfo(for:)`.
     case valueTooLargeForSingleRead(key: SMCKey, dataSize: Int)
-    /// `#KEY` index enumeration returned a four-character code that is not valid ASCII.
-    /// Never observed on `Mac16,5`, but the index table is firmware data, not something
-    /// this project controls, so it must not be assumed well-formed.
+    /// `#KEY` index enumeration returned a four-character code with a byte outside printable
+    /// ASCII (see `SMCKey.permittedBytes`). Never observed on `Mac16,5`, whose 3,514 keys are
+    /// all inside it, but the index table is firmware data, not something this project
+    /// controls, so it must not be assumed well-formed.
     case malformedKeyCode(FourCharCode)
     /// A negative or otherwise unrepresentable key-table index was requested.
     case invalidIndex(Int)
@@ -99,11 +100,11 @@ public enum SMCError: Error, Sendable, Equatable {
     /// `hex_`, `{fds`, `{jst`, or a code this project does not know), so it has no count to
     /// decode.
     ///
-    /// Before #531 this reported as `integerByteOrderUndetectable`, which `fanctl` describes
-    /// as "SMC interface generation unknown". That was wrong whenever the generation was
-    /// known, and beside the point when it was not. Never observed: `#KEY` is a `ui32` on
-    /// `Mac16,5`. The declared type and raw bytes are carried so a hardware report shows
-    /// what the firmware sent.
+    /// Before #531 this reported as `integerByteOrderUndetectable`, which
+    /// `readableDescription` describes as "SMC interface generation unknown". That was wrong
+    /// whenever the generation was known, and beside the point when it was not. Never
+    /// observed: `#KEY` is a `ui32` on `Mac16,5`. The declared type and raw bytes are carried
+    /// so a hardware report shows what the firmware sent.
     case nonNumericKeyCount(type: SMCKeyType, bytes: [UInt8])
 
     /// `true` when the firmware answered with `0x82` — named `SmcBadCommand` in Intel-era

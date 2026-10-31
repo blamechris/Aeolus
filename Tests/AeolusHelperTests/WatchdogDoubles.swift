@@ -255,7 +255,7 @@ final class WedgedRoundTrip: Sendable {
         Thread { [entered, release] in
             monitor.bracket(operation) {
                 entered.withLock { $0 = true }
-                _ = release.wait(timeout: .now() + .seconds(120))
+                _ = signalled(release, within: 120)
             }
         }.start()
     }

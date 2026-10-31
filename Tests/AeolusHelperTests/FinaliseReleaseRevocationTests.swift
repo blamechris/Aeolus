@@ -17,8 +17,9 @@ extension FinaliseReleaseLedgerTests {
     /// been granted, told the system had taken a fan it never held. Composed, because the
     /// release notice and its ordering are the shipping restorer's.
     ///
-    /// `LeaseLog` has no recording sink, so the revocation that must not happen is observed
-    /// where it would land: the table, and a third restore of fan 0 through the restorer.
+    /// The revocation that must not happen is observed where it would land: the table, and a
+    /// third restore of fan 0 through the restorer. (`LeaseLog` has had a recording sink since
+    /// #560; this test predates it and does not read the log.)
     ///
     /// **Mutation:** replace the `revokeLease(id:forFan:because:)` guard in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` with

@@ -155,12 +155,15 @@ final class EmptyReplyListenerHarness {
 
     let listener: NSXPCListener
     private let delegate: EmptyReplyListenerDelegate
+    private let clock = ManualClock()
+    private let backstop: ClockBackstop
 
     init(garblingSnapshotReply: Bool = false) {
         delegate = EmptyReplyListenerDelegate(garblingSnapshotReply: garblingSnapshotReply)
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
         listener.resume()
+        backstop = ClockBackstop(running: clock)
     }
 
     deinit { listener.invalidate() }
@@ -194,12 +197,18 @@ final class EmptyReplyListenerHarness {
     /// one grew a literal to match, and the two then drifted with nothing checking either. So
     /// there is no parameter. A test that genuinely needs a different bound has to add one,
     /// which is a visible change to this type rather than a number nobody reviews.
+    ///
+    /// The deadlines are counted on a `ManualClock` that nothing here moves but its backstop, as
+    /// the sibling harness's are by default (#421): both tests that use this one assert a protocol
+    /// violation the peer answers at once, and neither is about a deadline a stalled runner could
+    /// run out.
     func client() -> HelperClient {
         HelperClient(
             transport: .endpoint(listener.endpoint),
             pinning: UnenforcedClientPinning(),
             clientDescription: "test client",
-            deadlines: ClientListenerHarness.defaultDeadlines
+            deadlines: ClientListenerHarness.defaultDeadlines,
+            clock: clock
         )
     }
 }

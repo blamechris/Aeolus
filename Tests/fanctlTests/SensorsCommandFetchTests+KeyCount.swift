@@ -13,8 +13,8 @@ extension SensorsCommandFetchTests {
     /// `FanctlError.connectionFailed`. Before #531 the wrapped reason was
     /// `String(describing:)`, so the user read the enum case:
     /// `unrepresentableKeyCount(type: SMCCore.SMCKeyType.flt, bytes: [127, 192, 0, 0])`.
-    /// The reason is now the shared describer's sentence, which is what `dump` prints for the
-    /// same failure.
+    /// The reason is now `SMCError.readableDescription`'s sentence, which is what `dump` prints
+    /// for the same failure.
     @Test(
         "A refused #KEY is described in words, never printed as an SMCError case",
         arguments: [
@@ -26,12 +26,12 @@ extension SensorsCommandFetchTests {
         let provider = FakeSensorProvider(allError: refusal)
 
         let expected = FanctlError.connectionFailed(
-            context: "enumerate sensors", reason: describeSMCError(refusal))
+            context: "enumerate sensors", reason: refusal.readableDescription)
         await #expect(throws: expected) {
             try await SensorsCommand.fetch(
                 provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
         }
-        #expect(describeSMCError(refusal) != String(describing: refusal))
+        #expect(refusal.readableDescription != String(describing: refusal))
     }
 
     /// `keysDeclared` is diagnostic context only, but it is still a count, and it follows the

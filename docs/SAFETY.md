@@ -1411,7 +1411,12 @@ floor every permit is clamped to, is not recorded, whether a report or a re-asse
 it, and the refusal is logged at `.fault`; the record then keeps the
 step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
 RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
-([#395](https://github.com/blamechris/Aeolus/pull/395)).
+([#395](https://github.com/blamechris/Aeolus/pull/395)). The record's `commanded` has no setter: it
+is a get-only view of storage private to `HeldFan`, and `record(_:)`, which holds the check, is the
+one assignment to it. The compiler refuses an assignment to `commanded`, and to the storage from
+another file; no key path to `commanded` is writable at run time; and the one assignment in
+`HeldFan`'s own file is held by a lexical count, which catches accidents
+([#612](https://github.com/blamechris/Aeolus/issues/612), `ReclamationHeldFanAccessTests`).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1437,7 +1442,9 @@ worse than a UI that reports an error, because the user acts on it.
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationRecordIntegrityTests.swift` (a report or a re-assert's return below the floor or not a
 number, refused and logged at `.fault`; a report matching a system target below the floor; a target
-that is not a number; and every RPM a log line states, #395),
+that is not a number; every RPM a log line states, #395; and a cycle that cannot read, in a run
+short of `ReclamationLimits.blindCyclesBeforeDivergence`, leaving the record's target, so the next
+readable cycle still marks and re-asserts a divergence the blind one hid, #612, #615, #617),
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
 and #366's episode and given-up lease as values, in its extension in

@@ -198,7 +198,9 @@ public actor LeaseDriver {
     private var evidence: LeaseDriverReport.AutomaticEvidence = .anyRead
     /// Who follows `stateUpdates()` and `reportUpdates()`. Published to only by `transition(to:)`
     /// and `applyAnswered()`, each after any floor its state sets is minted, only on this actor.
-    private var publisher = LeaseDriverPublisher()
+    private let publisher: LeaseDriverPublisher
+    /// The half of `publisher` that only subscribes, which the `nonisolated` streams reach.
+    private let streams: LeaseDriverPublisher.Streams
     /// How many `apply` calls have been sent and not answered, under any lease. An `apply` is left
     /// to answer when its lease ends (#419), so this can be non-zero in any state.
     private var appliesUnanswered = 0
@@ -236,6 +238,13 @@ public actor LeaseDriver {
         self.holder = holderDescription
         self.clock = clock
         self.releaseBound = releaseBound
+        // Starts with this driver's own report, so a stream opened before any change starts with
+        // `report`, as every later one does (`LeaseDriverPublisher`, "That value is the driver's
+        // report").
+        let publisher = LeaseDriverPublisher(
+            startingWith: LeaseDriverReport(state: current, automaticEvidence: evidence))
+        self.publisher = publisher
+        self.streams = publisher.streams
     }
 
     // MARK: - What a caller may ask
@@ -308,11 +317,7 @@ public actor LeaseDriver {
 
     /// The same, as a stream that starts with the value now.
     nonisolated public func stateUpdates() -> AsyncStream<LeaseDriverState> {
-        LeaseDriverPublisher.stream(of: self) { driver, observer, token in
-            driver.publisher.addStateObserver(observer, as: token, startingWith: driver.current)
-        } remove: { driver, token in
-            driver.publisher.removeStateObserver(token)
-        }
+        streams.stateUpdates()
     }
 
     /// The state now, with which reads may show a fan automatic beside it (ADR 0015 D2).
@@ -325,11 +330,7 @@ public actor LeaseDriver {
     /// unanswered `apply` answers in any state (D5), `acquiring` and `held` included. What a
     /// renderer that claims Automatic follows; `stateUpdates()` is for the state alone.
     nonisolated public func reportUpdates() -> AsyncStream<LeaseDriverReport> {
-        LeaseDriverPublisher.stream(of: self) { driver, observer, token in
-            driver.publisher.addReportObserver(observer, as: token, startingWith: driver.report)
-        } remove: { driver, token in
-            driver.publisher.removeReportObserver(token)
-        }
+        streams.reportUpdates()
     }
 
     // MARK: - What a user does
@@ -416,8 +417,8 @@ public actor LeaseDriver {
     /// beat's cancelled renewal from being read as a loss, and an answer it already had from being
     /// counted.
     ///
-    /// **How long that takes:** at once, unless the replaced renewal is waiting on the connection's
-    /// handshake, which does not end on cancellation: up to `HelperClientDeadlines.handshakeVerb`.
+    /// **How long that takes:** at once: a renewal cancelled while it waits on the connection's
+    /// handshake leaves it immediately (#576).
     /// Call it from a task of its own, never from the main actor's own path.
     public func systemDidWake() async {
         guard case .held(let held) = current, let grant else { return }
