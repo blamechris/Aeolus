@@ -1,0 +1,241 @@
+import AeolusXPC
+import FanKit
+import Foundation
+
+extension SetCommand {
+
+    /// How a run ended, in everything the output needs: the exit, the closing event and the
+    /// closing line. Built once, at the end, from what the helper reported.
+    struct Report: Sendable {
+        /// The exit. `nil` is exit 0.
+        let failure: HelperCommandFailure?
+        let leaseID: UUID?
+        let endedBecause: String?
+        let signal: HoldSignal?
+        let release: Release?
+        /// The last snapshot the helper returned, if it returned one.
+        let snapshot: SystemSnapshot?
+        /// Whether `snapshot` was read after the release was asked for.
+        let snapshotFollowsRelease: Bool
+        let plans: [SetFanPlan]
+        /// The one line a clean ending prints. `nil` for every ending that is not one.
+        let closingLine: String?
+
+        /// The closing event's shared fields.
+        var facts: SetClosingFacts {
+            SetClosingFacts(
+                leaseID: leaseID, endedBecause: endedBecause, signal: signal?.name,
+                releaseAccepted: release?.isAccepted, capturedAt: snapshot?.capturedAt,
+                snapshotFollowsRelease: snapshot == nil ? nil : snapshotFollowsRelease,
+                listedLeaseID: snapshot?.activeLease?.id,
+                fans: plans.isEmpty
+                    ? nil
+                    : plans.map { plan in
+                        SetFanJSON(
+                            plan: plan,
+                            observed: snapshot?.fans.first { $0.index == plan.index })
+                    })
+        }
+
+        // MARK: Before any lease
+
+        /// Nothing was acquired: the helper could not be asked, the request does not fit this
+        /// machine, or the helper refused the lease. `refused` is the three refusals a person
+        /// can act on (2, 4, 5); the rest are not a "no" to this request.
+        static func notStarted(_ failure: HelperCommandFailure) -> Report {
+            let refusals: Set<FanctlExitCode> = [
+                .requestDoesNotFit, .manualControlRefused, .heldByAnotherClient,
+            ]
+            return Report(
+                failure: failure, leaseID: nil,
+                endedBecause: refusals.contains(failure.code) ? "refused" : nil, signal: nil,
+                release: nil, snapshot: nil, snapshotFollowsRelease: false, plans: [],
+                closingLine: nil)
+        }
+
+        /// A signal arrived while connecting. Nothing was held, so nothing is released and no
+        /// speed is written for a person who already asked to stop. The hold ended *because of
+        /// the signal*, so that is what `endedBecause` says, with the signal named.
+        static func interruptedBeforeControl(_ signal: HoldSignal) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    .failure, SetMessages.interruptedBeforeControl(signal)),
+                leaseID: nil, endedBecause: Ending.signal(signal).endedBecause, signal: signal,
+                release: nil, snapshot: nil, snapshotFollowsRelease: false, plans: [],
+                closingLine: nil)
+        }
+
+        // MARK: A lease, and then no hold
+
+        /// A signal landed while the lease was in flight. The lease was taken and then given
+        /// back, and no speed was sent. Exit 1, as for a signal before the lease.
+        static func interruptedBeforeApply(
+            _ signal: HoldSignal, hold: Hold, release: Release
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    .failure,
+                    SetMessages.interruptedBeforeApply(signal, hold: hold, release: release)),
+                leaseID: hold.leaseID, endedBecause: Ending.signal(signal).endedBecause,
+                signal: signal, release: release, snapshot: nil, snapshotFollowsRelease: false,
+                plans: hold.plans, closingLine: nil)
+        }
+
+        /// `apply` was **answered with a fault**, and the lease was released and the safe state
+        /// looked at, as it is after every `apply` that did not become a hold.
+        ///
+        /// The exit is the fault's own code unless the check found something worse
+        /// (`code(_:after:)`). `endedBecause` is `refused` **only if the check found every fan
+        /// automatic and no lease**: until then it is not known that the helper's "no" left
+        /// nothing behind, and a script reading `refused` would take it to.
+        static func applyFaulted(
+            _ failure: HelperCommandFailure, hold: Hold, release: Release,
+            settlement: SafeState.Settlement, signal: HoldSignal? = nil
+        ) -> Report {
+            let clean = settlement.verdict == .automatic
+            return Report(
+                failure: HelperCommandFailure(
+                    code(failure.code, after: settlement),
+                    SetMessages.faultedApply(
+                        failure, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
+                leaseID: hold.leaseID, endedBecause: clean ? "refused" : "controlLost",
+                signal: signal, release: release, snapshot: settlement.snapshot,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
+                closingLine: nil)
+        }
+
+        /// **Control was lost before the hold began**: the lease could no longer be shown to be
+        /// held while the speed was being applied, never a refusal. Released, and the safe state
+        /// looked at. Exit 6, or the check's verdict where that is worse.
+        static func lapsed(
+            _ lapse: Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement,
+            signal: HoldSignal? = nil
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    code(.controlLost, after: settlement),
+                    SetMessages.lapsed(
+                        lapse, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: signal,
+                release: release,
+                snapshot: settlement.snapshot, snapshotFollowsRelease: settlement.snapshot != nil,
+                plans: hold.plans, closingLine: nil)
+        }
+
+        /// The exit for a run whose `apply` failed and whose safe state was then looked at: the
+        /// check's verdict where it is **worse** than the failure's own code — 9, a reason that
+        /// releasing will not change, then 8, not confirmed — and the failure's code when the
+        /// check found every fan automatic and no lease.
+        static func code(
+            _ code: FanctlExitCode, after settlement: SafeState.Settlement
+        ) -> FanctlExitCode {
+            switch settlement.verdict {
+            case .cannotReturn: return .cannotReturnToAutomatic
+            case .notConfirmed: return .safeStateNotConfirmed
+            case .automatic: return code
+            }
+        }
+
+        /// `apply` got **no answer**: the speed may have been applied, which is not a refusal.
+        /// The lease was released and the safe-state check looked. An unanswered `apply` may have
+        /// engaged a fan exactly as a refused one may, so the exit follows the same rule
+        /// (`code(_:after:)`): the check's verdict where it is worse than the failure's own code,
+        /// and the failure's code otherwise. The verdict is in the message and the facts.
+        static func applyUnanswered(
+            _ failure: HelperCommandFailure, hold: Hold, release: Release,
+            settlement: SafeState.Settlement, signal: HoldSignal? = nil
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    code(failure.code, after: settlement),
+                    SetMessages.unansweredApply(
+                        failure, hold: hold, release: release, settlement: settlement)
+                        + SetMessages.signalNote(signal)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: signal,
+                release: release,
+                snapshot: settlement.snapshot,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
+                closingLine: nil)
+        }
+
+        // MARK: Control held, then lost
+
+        /// Exit 6, or the check's verdict where that is worse (`code(_:after:)`): the helper
+        /// reported that the lease is no longer proof of control, the lease was released, and the
+        /// safe state was looked at. The snapshot is the check's when it read one, and the hold's
+        /// last (described as such: `snapshotFollowsRelease` is false) when it did not.
+        static func lost(
+            _ loss: Loss, hold: Hold, release: Release, settlement: SafeState.Settlement,
+            before: SystemSnapshot?
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    code(.controlLost, after: settlement),
+                    SetMessages.lost(
+                        loss, hold: hold, release: release, settlement: settlement)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
+                release: release, snapshot: settlement.snapshot ?? before,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
+                closingLine: nil)
+        }
+
+        /// The loop's own timer failed: released and checked, and exit 1 (or the check's verdict
+        /// where that is worse), because it is neither a loss the helper reported nor an ending
+        /// anyone asked for.
+        static func timerFailed(
+            hold: Hold, release: Release, settlement: SafeState.Settlement,
+            before: SystemSnapshot?
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    code(.failure, after: settlement),
+                    SetMessages.timerFailed(hold: hold, release: release, settlement: settlement)),
+                leaseID: hold.leaseID, endedBecause: nil, signal: nil, release: release,
+                snapshot: settlement.snapshot ?? before,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
+                closingLine: nil)
+        }
+
+        // MARK: An ordinary ending, and the safe-state check after it
+
+        /// 0, 8 or 9, from the same check `fanctl auto` ends on.
+        ///
+        /// A lease still listed when the wait ends is `notConfirmed` here, and so 8: whether
+        /// it is this run's (the release did not take) or another client's is named in the
+        /// message. `auto` maps that case to 5 because naming the holder is the useful thing
+        /// to say there; `set`'s own contract has no such code, and the lease may be its own.
+        static func ended(
+            _ ending: Ending, hold: Hold, release: Release, settlement: SafeState.Settlement,
+            before: SystemSnapshot?
+        ) -> Report {
+            let snapshot = settlement.snapshot ?? before
+            let observed = settlement.snapshot != nil
+            let failure: HelperCommandFailure?
+            var closing: String?
+            switch settlement.verdict {
+            case .automatic:
+                failure = nil
+                closing = SetMessages.closingLine(
+                    ending, hold: hold, release: release, snapshot: settlement.snapshot)
+            case .cannotReturn(let pinned):
+                failure = HelperCommandFailure(
+                    .cannotReturnToAutomatic,
+                    SetMessages.cannotReturn(
+                        lead: SetMessages.lead(ending, hold: hold), hold: hold, release: release,
+                        snapshot: settlement.snapshot, pinned: pinned))
+            case .notConfirmed:
+                failure = HelperCommandFailure(
+                    .safeStateNotConfirmed,
+                    SetMessages.notConfirmed(
+                        lead: SetMessages.lead(ending, hold: hold), hold: hold, release: release,
+                        settlement: settlement))
+            }
+            return Report(
+                failure: failure, leaseID: hold.leaseID, endedBecause: ending.endedBecause,
+                signal: ending.signal, release: release, snapshot: snapshot,
+                snapshotFollowsRelease: observed, plans: hold.plans, closingLine: closing)
+        }
+    }
+}
