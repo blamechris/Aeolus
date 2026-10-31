@@ -3,9 +3,9 @@ import os
 
 // `#KEY`'s decode, apart from the read that feeds it: `SMCConnection`'s own statics, pure and
 // synchronous, touching none of a connection's state. `keyCount()` reads `#KEY` in
-// `SMCConnection.swift` and hands the value here. They moved here unchanged in the sync of `main`
-// into `e4/bring-up`, which took `SMCConnection.swift` past SwiftLint's 1000-line `file_length`
-// error; neither side's file exceeded it alone. Nothing here reads, writes or opens the SMC.
+// `SMCConnection.swift` and hands the value here. They moved here unchanged from that file, to
+// keep it under SwiftLint's 1000-line `file_length` error: merging `main` into `e4/bring-up` took
+// it to 1031 lines (#644). Nothing here reads, writes or opens the SMC.
 
 extension SMCConnection {
     /// The largest `#KEY` decode this project will trust as a genuine firmware value,
