@@ -62,10 +62,11 @@ struct WriteSeamAccessTests {
     )
 
     /// The files under `Sources/` whose raw text mentions `@_spi` — the two members' declarations,
-    /// the two helper files that import the group, and the prose that explains them.
+    /// the three helper files that import the group, and the prose that explains them.
     static let sourcesSPIMentioners: Set<String> = [
         "Sources/AeolusHelper/AeolusHelperMain.swift",
         "Sources/AeolusHelper/SMCWriteChannel.swift",
+        "Sources/AeolusHelper/SMCWriteEncoding.swift",
         "Sources/AeolusHelper/WriteSeamReachability.swift",
         "Sources/SMCCore/FanEnumeration.swift",
         "Sources/SMCCore/SMCConnection.swift",
@@ -203,7 +204,7 @@ struct WriteSeamAccessTests {
         }
     }
 
-    @Test("The only SPI group imported under Sources is FanWrite, by exactly two helper files")
+    @Test("The only SPI group imported under Sources is FanWrite, by exactly three helper files")
     func spiImportAppearsOnlyInTheHelper() throws {
         let pattern = try #require(Self.spiImport)
         var importers: [String] = []
@@ -241,18 +242,22 @@ struct WriteSeamAccessTests {
             """
         )
 
-        // Exactly two helper files, and the list doubles as coverage: the reachability probe,
-        // which proves the Xcode helper target can name the seam, and `main`'s file, whose
-        // `private` forwarder is the daemon's write channel (ADR 0014's B1 seam amendment).
+        // Exactly three helper files, and the list doubles as coverage: the reachability probe,
+        // which proves the Xcode helper target can name the seam; `main`'s file, whose `private`
+        // forwarder is the daemon's write channel (ADR 0014's B1 seam amendment); and the write
+        // turns' encoder, a free enum naming `encode` and no write, so the turn file that writes
+        // through the channel holds no opt-in and cannot name `SMCConnection.write` (b2).
         // An enumerator that found nothing, or a pattern that stopped matching the form
         // written, is red here rather than green over an unguarded tree.
         #expect(
             importers.sorted() == [
-                "AeolusHelper/AeolusHelperMain.swift", "AeolusHelper/WriteSeamReachability.swift",
+                "AeolusHelper/AeolusHelperMain.swift", "AeolusHelper/SMCWriteEncoding.swift",
+                "AeolusHelper/WriteSeamReachability.swift",
             ],
             """
             The FanWrite SPI is imported by \(importers.sorted()), not exactly \
-            AeolusHelper/AeolusHelperMain.swift and AeolusHelper/WriteSeamReachability.swift. \
+            AeolusHelper/AeolusHelperMain.swift, AeolusHelper/SMCWriteEncoding.swift and \
+            AeolusHelper/WriteSeamReachability.swift. \
             Any other helper file holding the opt-in can name the write; if the probe is gone, \
             nothing proves the Xcode helper target still reaches the seam.
             """

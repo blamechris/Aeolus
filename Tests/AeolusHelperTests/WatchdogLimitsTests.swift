@@ -11,10 +11,10 @@ struct WatchdogLimitsTests {
 
     /// This machine's critical read: the size of the curated set (34 on `Mac16,5`), one of the
     /// two terms of the allowance that differ per machine.
-    private static var criticalReadKeys: Int { CriticalSensorSet.mac16x5.keys.count }
+    static var criticalReadKeys: Int { CriticalSensorSet.mac16x5.keys.count }
 
     /// This machine's recorded fan count (2 on `Mac16,5`), the other.
-    private static var fans: Int { CriticalSensorSet.mac16x5.fanCount ?? 0 }
+    static var fans: Int { CriticalSensorSet.mac16x5.fanCount ?? 0 }
 
     /// The design point ADR 0012 sizes G at: supervisor-priority reads outstanding at once.
     /// Written here from the ADR and not read from the source, so that moving the point is a
@@ -22,11 +22,25 @@ struct WatchdogLimitsTests {
     /// point since the 2026-10-18 amendment: it does not depend on N.
     private static let design = 12
 
-    /// The longest turn an outstanding supervisor reader takes since ADR 0014 D7, written out:
-    /// an engagement's first step on the force-key path — pre-state read, key info, mode write,
-    /// the force key's key info and its write. Longer than a 3-key mode read. § 3's bridge job,
-    /// a command (3) and a `.fan` restore (at most 2), is the same five.
+    /// The longest write turn but the engaged step at rest, written out: an engagement's first
+    /// step on the force-key path — pre-state read, key info, mode write, the force key's key info
+    /// and its write. Longer than a 3-key mode read. § 3's bridge job, a command (3) and a `.fan`
+    /// restore (at most 2), is the same five.
     private static let writeTurn = 5
+
+    /// The engaged step at rest (ADR 0014's P1′ amendment; ADR 0012's 2026-10-31 amendment),
+    /// written out: key info, pre-state, the mode write, its read-back, the target's read and the
+    /// key info that read takes when `F<n>Tg`'s is not cached, the target's fresh key info, the
+    /// floor's write and its read-back. The longest turn any reader takes, and at most one per fan
+    /// is queued.
+    private static let engagedStep = 9
+
+    /// `count` queued readers' turns, written out: at most one engaged step per fan, the rest at
+    /// the longer of a mode read and `writeTurn`.
+    private static func readerTurns(_ count: Int, fans: Int) -> Int {
+        let engaged = min(count, fans)
+        return engaged * engagedStep + (count - engaged) * max(3, writeTurn)
+    }
 
     /// A `.fan(n)` restore, written out: its mode write and at most the force key's.
     private static let fanRestore = 2
@@ -59,7 +73,9 @@ struct WatchdogLimitsTests {
         #expect(WatchdogLimits.measuredWorstRoundTrip == .microseconds(11_453))
         #expect(WatchdogLimits.writeTurnRoundTrips == Self.writeTurn)
         #expect(WatchdogLimits.fanRestoreRoundTrips == Self.fanRestore)
-        #expect(WatchdogLimits.readerTurnRoundTrips == Self.writeTurn)
+        #expect(WatchdogLimits.engagedStepRoundTrips == Self.engagedStep)
+        #expect(WatchdogLimits.readerTurnRoundTrips == Self.engagedStep)
+        #expect(WatchdogLimits.otherReaderTurnRoundTrips == Self.writeTurn)
 
         for fans in 0...4 {
             for keys in [0, 1, 6, Self.criticalReadKeys, SMCReadScheduler.maxKeysPerTurn] {
@@ -128,11 +144,13 @@ struct WatchdogLimitsTests {
 
         #expect(WatchdogLimits.bringUpBound == ReconciliationLimits.budget + roundTrip * 2)
         // D_bringUp re-checked against the write path's preparation step (ADR 0014 D7), which
-        // runs before reconciliation: `FNum`, every mode key's key info, the force key's key info
+        // runs before reconciliation: `FNum`, every fan's mode and target key info (b2 takes the
+        // target's so the engaged step's logged read is one round trip), the force key's key info
         // and value, and its machine-wide restore — one write per mode key and one for the key —
-        // for the most fans a key can address. It fits with a whole round trip to spare.
+        // for the most fans a key can address: 34. It fits with a whole round trip to spare.
         let fans = 10
-        let preparation = 1 + fans + 2 + (fans + 1)
+        let preparation = 1 + 2 * fans + 2 + (fans + 1)
+        #expect(preparation == 34)
         #expect(
             WatchdogLimits.bringUpBound
                 >= ReconciliationLimits.budget + roundTrip
@@ -153,15 +171,16 @@ struct WatchdogLimitsTests {
     // MARK: - G, the gate bound
 
     /// The supervisor queue ahead of the worst supervisor waiter with `reads` readers
-    /// outstanding, § 3's lane aside, written out from the named scheduler constants: the longer
-    /// of a reader that arrived last — behind the turn in flight, the grant path's read, the other
-    /// `reads - 3` readers' turns and the forced snapshot turns — and the grant path's read itself,
-    /// behind the turn in flight, `reads - 2` readers' turns and the forced snapshot turns.
-    private static func expectedQueue(_ reads: Int, keys: Int) -> Int {
+    /// outstanding on `fans` fans, § 3's lane aside, written out from the named scheduler
+    /// constants: the longer of a reader that arrived last — behind the turn in flight, the grant
+    /// path's read, the other `reads - 3` readers' turns and the forced snapshot turns — and the
+    /// grant path's read itself, behind the turn in flight, `reads - 2` readers' turns and the
+    /// forced snapshot turns. At most one reader per fan is the engaged step at rest.
+    private static func expectedQueue(_ reads: Int, keys: Int, fans: Int) -> Int {
         let turn = SMCReadScheduler.maxKeysPerTurn
         let forced = turn * ((reads - 1) / SMCReadScheduler.maxConsecutiveOvertakes + 1)
-        let reader = turn + keys + writeTurn * (reads - 3) + forced
-        let grantPath = turn + writeTurn * (reads - 2) + forced
+        let reader = turn + keys + readerTurns(reads - 3, fans: fans) + forced
+        let grantPath = turn + readerTurns(reads - 2, fans: fans) + forced
         return max(reader, grantPath)
     }
 
@@ -183,7 +202,7 @@ struct WatchdogLimitsTests {
                 wait = next
             }
         }
-        let queue = expectedQueue(reads, keys: keys)
+        let queue = expectedQueue(reads, keys: keys, fans: fans)
         let attempts = RestoreLimits.attemptBudget
         let firing = keys + fans * writeTurn + fans * attempts * fanRestore
         return max(settle(queue + firing, keys), settle(queue, keys + fans * 3))
@@ -191,27 +210,34 @@ struct WatchdogLimitsTests {
 
     /// G is 2·D, and it has two sides. It must exceed the supervisor wait at the gate in the two
     /// modelled cases at the design point — a reader behind the grant path's read, the other
-    /// readers and § 3's lane turns, 821 round trips at the measured worst, 9.40 s on `Mac16,5` —
-    /// or a full, moving queue would be logged as a fault; and it must stay under D_cycle less the
-    /// supervisor's interval and two ticks, 12 s, or the cycle trigger would end the helper before
-    /// the fault explained it. It holds to N = 12 and not to 13 (10.58 s), N counting § 3's read.
+    /// readers, two of them engaged steps at rest, and § 3's lane turns, 829 round trips at the
+    /// measured worst, 9.49 s on `Mac16,5` — or a full, moving queue would be logged as a fault;
+    /// and it must stay under D_cycle less the supervisor's interval and two ticks, 12 s, or the
+    /// cycle trigger would end the helper before the fault explained it. It holds to N = 12 and not
+    /// to 13 (10.67 s), N counting § 3's read.
     ///
     /// **Modelled cases, not a bound over every history.** What this pins is the two windows'
     /// arithmetic. The histories § 3 really produces — a firing, its release and the read-backs
-    /// after it in one window; a latched cycle taking fans back — were counted in review, outside
-    /// this suite, by the scripts in `scripts/gate-wait-model/`: 817–831 round trips (9.36–9.52 s)
-    /// with the firing head counted once, and at most 611 (7.00 s) in an event model of the
-    /// shipped policy. Both are under G, and both are recorded in ADR 0012's 2026-10-18 amendment,
-    /// with the one case still open: a take-back with writes recurring every cycle would be 919
-    /// (10.53 s), which would also stretch ADR 0014's lawful hold past its derivation.
+    /// after it in one window; a latched cycle taking fans back — are counted outside this suite
+    /// by `scripts/gate-wait-model/engaged_step.py`: 795–839 round trips (9.11–9.61 s) with the
+    /// firing head counted once, and at most 619 (7.09 s) in an event model of the shipped policy,
+    /// both under G. Open, as in ADR 0012's 2026-10-18 and 2026-10-31 amendments: a take-back with
+    /// writes recurring every cycle, 927 (10.62 s), and a refused revocation recurring every
+    /// latched cycle, 867–877 (9.93–10.04 s), each over G at its upper end; the take-back's would
+    /// also stretch ADR 0014's lawful hold past `examinationWait`. Counting every reader as an
+    /// engaged step instead, four of the histories counted correctly pass G already at eight; that
+    /// is why the long turn is once per fan.
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red.
     /// **Mutation:** set `gateWaiterAlarm` to `cycleBound`. Run: red — the cycle trigger would
     /// land before the fault.
-    /// **Mutation:** omit the lane: return `queue` from `gateWaitRoundTrips`. Run: red — 527
-    /// where it is 821, and G holds past 12.
+    /// **Mutation:** omit the lane: return `queue` from `gateWaitRoundTrips`. Run: red — 535
+    /// where it is 829, and G holds past 12.
     /// **Mutation:** omit the firing cycle from window (a): `laneWindow(base: queue, perCycle:
-    /// criticalReadKeys, …)`. Run: red — 807 where it is 821.
+    /// criticalReadKeys, …)`. Run: red — 815 where it is 829.
+    /// **Mutation:** in `WatchdogLimits.readerTurns`, count no engaged step (`let engaged = 0`).
+    /// Run: red — 821 where it is 829.
+    /// **Mutation:** set `engagedStepRoundTrips` to 8. Run: red — 827 where it is 829.
     @Test("G clears the design point's wait with the lane in it, to N = 12 and not 13")
     func theGateBoundIsDerivedAndConstant() {
         let gate = WatchdogLimits.gateWaiterAlarm
@@ -223,17 +249,19 @@ struct WatchdogLimitsTests {
 
         #expect(gate == WatchdogLimits.roundTrip * 2)
         #expect(gate == .seconds(10), "ADR 0012 states G as 10 s")
-        #expect(Self.expectedGateWait(design, keys: keys, fans: fans) == 821)
-        #expect(
-            WatchdogLimits.gateWaitRoundTrips(
-                outstandingReads: design, criticalReadKeys: keys, fans: fans) == 821)
-        #expect(required > .milliseconds(9_402) && required < .milliseconds(9_403))
+        #expect(Self.expectedGateWait(design, keys: keys, fans: fans) == 829)
+        let wait = WatchdogLimits.gateWaitRoundTrips(
+            outstandingReads: design, criticalReadKeys: keys, fans: fans)
+        #expect(wait == 829, "the design point's wait is \(wait) round trips")
+        #expect(required > .milliseconds(9_494) && required < .milliseconds(9_495), "\(required)")
         #expect(gate > required, "a full, moving queue at the design point would fault")
 
         let atThirteen = WatchdogLimits.requiredGateBound(
             outstandingReads: design + 1, criticalReadKeys: keys, fans: fans)
         #expect(atThirteen >= gate, "G holds at N = 13: the \"to 12\" in the docs is stale")
-        #expect(atThirteen > .milliseconds(10_582) && atThirteen < .milliseconds(10_583))
+        #expect(
+            atThirteen > .milliseconds(10_674) && atThirteen < .milliseconds(10_675),
+            "\(atThirteen)")
 
         let interval = ThermalSupervisor<SMCFanControlPlane>.defaultInterval
         #expect(
@@ -242,21 +270,27 @@ struct WatchdogLimitsTests {
     }
 
     /// The wait agrees with the independent derivation across outstanding reads, set sizes and
-    /// fan counts, so neither queue waiter and neither lane window is quietly the only one counted.
+    /// fan counts, so neither queue waiter, neither lane window and neither kind of reader turn is
+    /// quietly the only one counted.
     ///
-    /// **Mutation:** take only the reader's turn off the queue (`- readerTurnRoundTrips`, no
-    /// `min`). Run: red at a set shorter than a reader's turn.
+    /// **Mutation:** return `lastReader` alone from `supervisorQueueRoundTrips`. Run: red at a set
+    /// shorter than a reader's turn.
     /// **Mutation:** write `min` for `max` in `gateWaitRoundTrips`. Run: red.
+    /// **Mutation:** in `WatchdogLimits.readerTurns`, take every reader at `engagedStepRoundTrips`.
+    /// Run: red.
     @Test("The gate wait is the longer of the two waiters and the two lane windows")
     func theGateWaitIsTheLongerOfTheTwoWaiters() {
-        #expect(Self.expectedQueue(Self.design, keys: 0) == 498)
+        #expect(Self.expectedQueue(Self.design, keys: 0, fans: 0) == 498)
+        #expect(Self.expectedQueue(Self.design, keys: 0, fans: 2) == 506)
         for reads in 3...25 {
             for keys in [0, 1, 2, 3, 10, Self.criticalReadKeys, SMCReadScheduler.maxKeysPerTurn] {
-                #expect(
-                    WatchdogLimits.supervisorQueueRoundTrips(
-                        outstandingReads: reads, criticalReadKeys: keys)
-                        == Self.expectedQueue(reads, keys: keys),
-                    "N = \(reads), \(keys) critical keys")
+                for fans in [0, 1, 2, 3] {
+                    #expect(
+                        WatchdogLimits.supervisorQueueRoundTrips(
+                            outstandingReads: reads, criticalReadKeys: keys, fans: fans)
+                            == Self.expectedQueue(reads, keys: keys, fans: fans),
+                        "N = \(reads), \(keys) critical keys, \(fans) fans")
+                }
                 for fans in [0, 1, 2, 3] {
                     #expect(
                         WatchdogLimits.gateWaitRoundTrips(
@@ -302,15 +336,18 @@ struct WatchdogLimitsTests {
 
     /// G stands for one scheduler turn's whole slot, which is what the examination gate's
     /// `lawfulHold` counts its turns in (ADR 0014's A6 PR-2 amendment): at the design point, the
-    /// longest legal supervisor wait plus the longest write turn, at the measured worst round trip,
-    /// stays under G for every curated set. The wait alone is the test above; the turn is this.
+    /// longest legal supervisor wait plus the longest turn a reader takes — the engaged step at
+    /// rest, nine round trips — at the measured worst round trip, stays under G for every curated
+    /// set: on `Mac16,5`, 838 round trips, 9.60 s. The wait alone is the test above; the turn is
+    /// this.
     ///
-    /// **Mutation:** set `gateWaiterAlarm` to `.milliseconds(9_430)`. Run: red here: the wait
-    /// alone, 9.40 s, still clears it, and the slot, 9.46 s, does not.
+    /// **Mutation:** set `gateWaiterAlarm` to `.milliseconds(9_500)`. Run: red here: the wait
+    /// alone, 9.49 s, still clears it, and the slot, 9.60 s, does not.
     @Test("G covers a turn's slot, its wait and its longest write, for every curated set")
     func theGateBoundCoversAWholeTurn() throws {
+        #expect(WatchdogLimits.readerTurnRoundTrips == Self.engagedStep)
         let longestWriteTurn =
-            WatchdogLimits.measuredWorstRoundTrip * WatchdogLimits.writeTurnRoundTrips
+            WatchdogLimits.measuredWorstRoundTrip * WatchdogLimits.readerTurnRoundTrips
         for set in CriticalSensorSet.allCurated {
             let fans = try #require(set.fanCount, "\(set.provenance) records no fan count")
             let slot =
@@ -321,64 +358,5 @@ struct WatchdogLimitsTests {
                 slot < WatchdogLimits.gateWaiterAlarm,
                 "\(set.provenance): a turn's slot at the design point is \(slot)")
         }
-    }
-
-    // MARK: - Every curated set
-
-    /// Every curated set fits in one scheduler turn. The allowance counts § 3's own read as **one
-    /// lane turn** and G the grant path's as one supervisor turn — a set longer than
-    /// `maxKeysPerTurn` would be several. § 3's would then yield back into its own lane and run
-    /// its slices back to back while others wait (`SMCReadSchedulerLaneTests`), so the lane's
-    /// one-turn-in-flight bound would hold per request and not per turn, and D_cycle would be
-    /// tight by an amount no test above would show.
-    ///
-    /// **Mutation:** widen `CriticalSensorSet.mac16x5`'s die-cluster prefixes to `TPD`, `TRD`,
-    /// `TPE` and `TRE`, 68 keys. Run: red.
-    /// **Mutation:** write `CriticalSensorSet.allCurated` as an empty array. Run: red.
-    @Test("Every curated critical set is at most one scheduler turn")
-    func everyCuratedSetFitsOneTurn() {
-        #expect(!CriticalSensorSet.allCurated.isEmpty)
-        for set in CriticalSensorSet.allCurated {
-            #expect(
-                set.keys.count <= SMCReadScheduler.maxKeysPerTurn,
-                "\(set.provenance): \(set.keys.count) keys is more than one turn")
-        }
-    }
-
-    /// D_cycle is checked against **every** curated set, not only the one this file's other
-    /// tests were written around: the allowance has a term per critical key and terms per fan, so
-    /// a family whose set is larger, or whose machine has more fans, moves the bound under the
-    /// watchdog without touching it. A curated set with no recorded fan count fails here.
-    ///
-    /// **Mutation:** lengthen a curated set past what 3·D covers. Run: red.
-    /// **Mutation:** set `cycleBound` to `2·D`. Run: red.
-    /// **Mutation:** record `mac16x5`'s fan count as `nil`. Run: red.
-    @Test("D_cycle holds for every curated critical set, from its own fan count")
-    func theCycleBoundHoldsForEveryCuratedSet() throws {
-        for set in CriticalSensorSet.allCurated {
-            let required = try #require(
-                WatchdogLimits.requiredCycleBound(for: set),
-                "\(set.provenance) records no fan count, so no bound is checked for it")
-            #expect(
-                required <= WatchdogLimits.cycleBound,
-                """
-                \(set.provenance): § 3's longest cycle needs \(required), \
-                D_cycle is \(WatchdogLimits.cycleBound)
-                """)
-        }
-    }
-
-    /// A machine with no curated critical set reads none of them: its allowance is the smaller
-    /// one, not a crash and not the Mac16,5 figure.
-    ///
-    /// **Mutation:** use `34` where `criticalReadKeys` is. Run: red.
-    @Test("The critical read is the machine's own, not a constant")
-    func theCriticalReadIsPerMachine() {
-        let none = WatchdogLimits.allowanceRoundTrips(criticalReadKeys: 0, fans: Self.fans)
-        let mac = WatchdogLimits.allowanceRoundTrips(
-            criticalReadKeys: Self.criticalReadKeys, fans: Self.fans)
-        #expect(mac - none == Self.criticalReadKeys, "§ 3's own read, and nothing else")
-        #expect(CriticalSensorSet.unidentifiedHardware.keys.isEmpty)
-        #expect(CriticalSensorSet.unidentifiedHardware.fanCount == nil)
     }
 }

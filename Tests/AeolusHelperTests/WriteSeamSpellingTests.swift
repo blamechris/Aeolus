@@ -131,8 +131,8 @@ struct WriteSeamSpellingTests {
 
     /// A job cannot `await`, but it can spawn a `Task`, which typechecks inside one and runs after
     /// the turn has ended — a write outside any turn. No write-turn job spawns one, and every job
-    /// is a closure written at its call (both b2 obligations). B1 has no job, so the tree half
-    /// holds over none today; the fixtures show the scan bites.
+    /// is a closure written at its call (both b2 obligations). The tree half holds over the plane's
+    /// five write turns, and the fixtures show the scan bites.
     ///
     /// **Mutation:** make `writeTurnJobs` return nothing. Run: red here, at the fixture. The
     /// spellings of the spawn itself are `taskSpawnsAreFoundInEverySpelling`'s.

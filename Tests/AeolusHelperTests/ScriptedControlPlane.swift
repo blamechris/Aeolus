@@ -339,9 +339,9 @@ actor ScriptedFirmware {
     /// How many times the preparation step ran.
     private(set) var preparations = 0
 
-    /// Run once, synchronously, inside the next step that wrote its mode and is about to write
-    /// the force key — the instant a production restore's epoch bump can arrive from another
-    /// thread mid-turn (ADR 0014 D3 step 3's re-check). See `duringNextModeWrite(_:)`.
+    /// Run once, synchronously, inside the next step that wrote its mode, before whatever follows —
+    /// the force key's re-check and write, or the read-back and floor hold — as the fake's
+    /// `onAfter(.write(F<n>Md))` runs: when a restore's epoch bump can land mid-turn (ADR 0014 D3).
     private var duringModeWrite: (@Sendable () -> Void)?
 
     /// Run once, while the next bridge job waits for its turn: after its restore was requested and
@@ -417,13 +417,13 @@ actor ScriptedFirmware {
         fans[index]?.mode = mode
     }
 
-    /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
-    /// state under test is one the firmware was left in, not one this process wrote.
-    /// Runs `effect` inside the next step, between its mode write and its force-key write.
+    /// Runs `effect` inside the next step, after its mode write and before whatever follows it.
     func duringNextModeWrite(_ effect: @escaping @Sendable () -> Void) {
         duringModeWrite = effect
     }
 
+    /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
+    /// state under test is one the firmware was left in, not one this process wrote.
     func setForceKey(_ isSet: Bool) {
         isForceKeySet = isSet
         if !isSet { heldUnderForceKey.removeAll() }
@@ -808,6 +808,8 @@ extension ScriptedFirmware {
         let next = try EngagementRules.afterModeWrite(
             try answerModeWrite(fanAt: index), firstStep: first,
             forceKey: ledger.forceKey, forceKeySet: ledger.isForceKeySet)
+        duringModeWrite?()
+        duringModeWrite = nil
         switch next {
         case .readBack:
             if failingReadBacks.remove(index) != nil {
@@ -820,8 +822,6 @@ extension ScriptedFirmware {
             try holdTargetAtFloor(of: fan)
             return engaged
         case .setForceKey:
-            duringModeWrite?()
-            duringModeWrite = nil
             guard ledger.isCurrent(fanAt: index) else {
                 throw FanControlPlaneError.supersededAfterWrite
             }

@@ -173,42 +173,6 @@ struct WriteVerbAllowlistTests {
     /// it is the signature ADR 0008 exists to make unrepresentable.
     private static let clampedCompanions = ["Double", "Duration"]
 
-    /// Companions allowed beside a permit for **one named key**, and for no other verb.
-    ///
-    /// `ReclamationWatchdog.manualControlEngaged(_:under:)` carries the `UUID` of the lease the
-    /// fan was engaged under (#357). A registration writes nothing, and its lease is judged
-    /// against the permit's own fan at registration and at every examination, so a mismatched
-    /// pair ends as a refused registration or `.leaseLapsed`, never as a write. Keyed rather
-    /// than added to `clampedCompanions`, so no write verb can take a `UUID` beside its permit:
-    /// this suite stays red for one that does, and so does `everyEngageVerbTakesAPermit` unless
-    /// the parameter has a default containing parentheses, such as `= UUID()`, whose
-    /// declaration its scan misses ([#362](https://github.com/blamechris/Aeolus/issues/362)).
-    ///
-    /// A key is a file and a signature, not a declaring type, so a second declaration with the
-    /// same signature in the same file — an extension on a writer, say — would share the
-    /// exemption. `aPermitTravelsBesideNothingThatNamesAFan` therefore requires exactly one
-    /// declaration per keyed key (#361's panel).
-    ///
-    /// The second entry is the same registration as a requirement of
-    /// `ReclamationRegistrationRole`, the role level 6 tells § 5 through (ADR 0014's A6 PR-2
-    /// amendment). The watchdog's method is its one witness, so it carries nothing the first
-    /// entry does not.
-    ///
-    /// The third is D3's engaged-turn target rule (ADR 0014's P1′ amendment, decision 4):
-    /// `EngagementRules.engagedTarget(reading:of:)` judges the `F<n>Tg` the turn read, a
-    /// `FanRPMReadback`, against the permit's own floor. A readback is an RPM or the reason there
-    /// is none, so it names no fan and no bounds, and the rule writes nothing: what it returns is
-    /// the permit's own target at its floor, minted by `target(for:)`, or no write at all.
-    private static let keyedCompanions: [String: Set<String>] = [
-        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"],
-        "ReclamationRegistrationRole.swift: manualControlEngaged(_: CommandableFan, under: UUID)": [
-            "UUID"
-        ],
-        "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)": [
-            "FanRPMReadback"
-        ],
-    ]
-
     /// The verbs that carry a permit: they command a fan, take one off automatic control,
     /// mint the permit, or hold one for a safety actor that will.
     ///
@@ -254,6 +218,12 @@ struct WriteVerbAllowlistTests {
     ///   function the writing plane decides by (ADR 0014's P1′ amendment): it reads the permit's
     ///   envelope for the floor and returns the permit's own target at it, or nothing. It writes
     ///   nothing; the plane's turn does. Its companion is `keyedCompanions`' third entry.
+    /// - `SMCWriteTurns.step(_:ledger:log:on:)` and `holdFloor(of:log:on:)`: the production plane's
+    ///   engagement step and its engaged turn's floor hold, which write through the channel inside
+    ///   the step's one write turn (ADR 0014's P1′ amendment, decision 4). They take the step's
+    ///   permit so the floor is the permit's own, by `engagedTarget`, and the fan written is the
+    ///   permit's index. Reached only from `SMCFanControlPlane.engageManualControl(of:)`, a seam
+    ///   verb above. Their companions are `keyedCompanions`' fourth and fifth entries.
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -279,6 +249,10 @@ struct WriteVerbAllowlistTests {
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
         "EngagementDriver.swift: reAdopted(_: CommandableFan)",
         "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)",
+        "SMCWriteTurns.swift: step(_: CommandableFan, ledger: PlaneWriteLedger, "
+            + "log: PlaneWriteLog, on: isolated any SMCWriteChannel)",
+        "SMCWriteTurns.swift: holdFloor(of: CommandableFan, log: PlaneWriteLog, "
+            + "on: isolated any SMCWriteChannel)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
@@ -501,12 +475,12 @@ struct WriteVerbAllowlistTests {
         "SMCFanControlPlane.swift: close()",
         "SMCFanControlPlane.swift: open()",
         "SMCReadScheduler.swift: withExclusiveAccess(_: @Sendable () async throws -> T)",
-        // B1's write turn, on `withExclusiveAccess`'s rule: one `.supervisor` turn around a
-        // synchronous job the caller supplies, on the channel it is handed, so what the job may
-        // do is the caller's classification. It has no caller yet; the plane's write turns, when
-        // they exist, are classified where they are declared. Its own body is the turn and the
-        // call.
-        "SMCReadScheduler.swift: withWriteTurn(on: any SMCWriteChannel, "
+        // B1's write turn, on `withExclusiveAccess`'s rule: one turn at the caller's admission
+        // around a synchronous job the caller supplies, on the channel it is handed, so what the
+        // job may do is the caller's classification. Its callers are the plane's write verbs,
+        // on the lists above, and the jobs they hand it call `channelBoundFunctions`. Its own
+        // body is the turn and the call.
+        "SMCReadScheduler.swift: withWriteTurn(at: PlaneAdmission, on: any SMCWriteChannel, "
             + "_: @Sendable (isolated any SMCWriteChannel) throws -> T)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
@@ -516,7 +490,10 @@ struct WriteVerbAllowlistTests {
         "FanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",
         "FanAuthority.swift: snapshot()",
         "FanControlPlane.swift: readControlState(ofFan: Int)",
-        "FanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
+        // b2 moved this requirement into `CriticalTemperatureReading`, the telemetry's read-only
+        // role, declared beside the telemetry and refined by `FanControlPlane`: same declaration,
+        // new file, re-pinned rather than relaxed.
+        "CriticalTemperatureSensing.swift: readCriticalTemperatures(_: [SMCKey])",
         // #270 moved this requirement into a role of its own, refined by `FanStateSensing`
         // unchanged, so the lease core can hold the one read verb. Re-pinned, not relaxed: it
         // returns the declared bounds and writes nothing.
@@ -701,13 +678,23 @@ struct WriteVerbAllowlistTests {
         "FanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "SMCFanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "HelperComposition.swift: prepareWritePath()",
+        // Requirements of § 5's two `Actor` roles, in the population since C30 counts every such
+        // requirement (`channelBoundFunctions`' note). Level 6 records the target it commanded,
+        // and the snapshot reads the targets recorded under a lease: bookkeeping in § 5's ledger,
+        // with no writer and no plane behind either.
+        "ReclamationRegistrationRole.swift: commandedTarget(_: CommandedTarget, under: UUID)",
+        "ReclamationReporting.swift: recordedTargets(under: UUID)",
     ]
 
-    /// Every function in the helper that could reach a firmware write: the `async` ones,
-    /// plus the actor-isolated ones that carry a permit without the keyword.
+    /// Every function in the helper that could reach a firmware write: the `async` ones, the
+    /// actor-isolated ones that carry a permit without the keyword, and the ones that hold the
+    /// channel — an `isolated` parameter, or a requirement of an `Actor` protocol (C30).
     private func population() throws -> [SeamScanner.Function] {
-        try SeamScanner.functions(in: "AeolusHelper")
-            .filter { $0.isAsync || $0.mentions(anyOf: Self.permits) }
+        let actorRequirements = try Self.actorProtocolRequirements(in: "AeolusHelper")
+        return try SeamScanner.functions(in: "AeolusHelper").filter {
+            $0.isAsync || $0.mentions(anyOf: Self.permits) || Self.hasIsolatedParameter($0)
+                || actorRequirements.contains($0.key)
+        }
     }
 
     // MARK: - The allowlist
@@ -722,9 +709,11 @@ struct WriteVerbAllowlistTests {
         let acknowledged = Self.permitBearingVerbs
             .union(Self.restoreVerbs)
             .union(Self.permitFreeFunctions)
+            .union(Self.channelBoundFunctions)
         #expect(
             Self.permitBearingVerbs.count + Self.restoreVerbs.count
-                + Self.permitFreeFunctions.count == acknowledged.count,
+                + Self.permitFreeFunctions.count + Self.channelBoundFunctions.count
+                == acknowledged.count,
             "a verb is on two lists at once — its classification is the thing being asserted")
 
         let scanned = Set(try population().map(\.key))
@@ -735,8 +724,9 @@ struct WriteVerbAllowlistTests {
             """
             \(unlisted.count) function(s) in Sources/AeolusHelper are not acknowledged: \
             \(unlisted). Classify each one: `permitBearingVerbs` if it names a permit, \
-            `restoreVerbs` if it is ADR 0007's keystone, `permitFreeFunctions` otherwise — \
-            and if it writes to a fan without a permit, that is the defect, not the list.
+            `restoreVerbs` if it is ADR 0007's keystone, `channelBoundFunctions` if it holds the \
+            write channel, `permitFreeFunctions` otherwise — and if it writes to a fan without a \
+            permit outside the plane's write turns, that is the defect, not the list.
             """
         )
 

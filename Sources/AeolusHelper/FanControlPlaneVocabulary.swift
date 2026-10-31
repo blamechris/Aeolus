@@ -219,12 +219,12 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// clients already render.
     case targetNotConfirmed(index: Int, commandedRPM: Double, readBackRPM: Double)
 
-    /// This build has no SMC write path at all.
+    /// This plane has no SMC write path at all.
     ///
-    /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated, and
-    /// nothing in the helper reaches it — its one caller, the daemon's write channel, has
-    /// none — and E5 is the epic that gates E3 and E4 rather than the one that pre-empts them.
-    /// Every write verb on `SMCFanControlPlane` answers with this until those epics land.
+    /// `SMCFanControlPlane` answers every write verb with it, having read and written nothing,
+    /// when it holds no write channel — every test composition over the real SMC, and the
+    /// daemon below macOS 14 — because write capability is what the plane holds (ADR 0014's B1
+    /// amendment). A plane holding a channel never throws it.
     case controlPathNotBuilt
 
     /// A restore was requested after this engagement's first step, so it writes nothing more (ADR

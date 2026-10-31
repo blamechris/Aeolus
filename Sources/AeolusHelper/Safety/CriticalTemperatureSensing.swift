@@ -45,6 +45,53 @@ protocol CriticalTemperatureSensing: Sendable {
     func readCriticalTemperatures() async throws -> CriticalTemperatureReport
 }
 
+// MARK: - The telemetry's role
+
+/// The two things § 3's telemetry and the cache's source need of a plane, and nothing that writes:
+/// the curated critical read, and the plane's view at an admission.
+///
+/// ## Why the telemetry holds this and not a plane
+///
+/// `CuratedCriticalTemperatures` is stored at one of § 3's lane sites, and on a plane that can
+/// write, the value it stores holds the write channel (`PlaneViewTests`). Held as a whole
+/// `FanControlPlane`, only a lexical allowlist would stop it calling `commandTarget(_:)`; held as
+/// this, the compiler does — the same narrowing `PlaneHandbackReadBack` takes over
+/// `FanStateSensing` (#9's b2 checklist, from the sync's review). `FanControlPlane` refines it, so
+/// every plane answers it unchanged.
+protocol CriticalTemperatureReading: Sendable {
+
+    /// Reads the curated critical temperature keys, as one subset read.
+    ///
+    /// The set is the caller's — #102 curates it in code, per family, never from
+    /// configuration — so it crosses as a parameter rather than being fixed here.
+    ///
+    /// - Throws: `FanControlPlaneError.criticalTelemetryUnavailable` when **no** requested
+    ///   key produced a usable reading, including when the requested set is empty. A
+    ///   supervisor that cannot see any temperature is blind, and blindness must not arrive
+    ///   as a successful report of nothing — see `CriticalTemperatureReport`.
+    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport
+
+    /// This plane at `admission`: the same plane, every turn it takes admitted as `admission`
+    /// says ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment). A plane is built at `.supervisor`.
+    ///
+    /// **The view is the plane.** It holds the scheduler and the connection this plane holds and,
+    /// on a plane that can write, its channel and its `PlaneWriteLedger`: a restore through the
+    /// view supersedes a step through the plane and the reverse, and every in-turn rule is decided
+    /// from the one state (`PlaneAdmission`). A view with state of its own would be a second plane,
+    /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
+    /// composition's § 3 wiring and `ThermalCycleHandback`, the restorer § 3 holds, ask for the
+    /// lane (`ThermalCycleLaneTripwireTests`, `ThermalCycleHandbackTripwireTests`).
+    ///
+    /// **One verb is not admitted at the view's class: `reconnect()`.** A recycle is
+    /// `SMCReadScheduler.withExclusiveAccess(_:)`, which waits out every discovery walk before it
+    /// takes its turn and then takes it at `.supervisor` (ruling D22), so a recycle through the
+    /// lane view would be a lane request with an unbounded wait in front of it, and the lane would
+    /// buy it nothing. § 3 must not reconnect, and does not: `ConnectionHealth` owns the recycle,
+    /// over the plane. The scripted double records a recycle at `.supervisor` through any view.
+    func admitted(at admission: PlaneAdmission) -> Self
+}
+
 /// The production conformer: a curated set, read through the seam, then gated.
 ///
 /// Three separable things composed in one place — *which keys*
@@ -54,7 +101,13 @@ protocol CriticalTemperatureSensing: Sendable {
 /// `FanControlPlane.readCriticalTemperatures(_:)` directly would get ungated readings, and
 /// the one that forgot would be comparing a powered-down sensor's clean 0.00 °C against a
 /// ceiling.
-struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureSensing {
+///
+/// **It holds a reader, never a writer.** `Plane` is constrained to `CriticalTemperatureReading`,
+/// the plane's read-only role: the value stored is the composition's plane — on a plane that can
+/// write, one holding the write channel — but this type can name no write verb on it, so § 3's
+/// telemetry site writes nothing by the compiler's rule rather than by a lexical one (#9's b2
+/// checklist).
+struct CuratedCriticalTemperatures<Plane: CriticalTemperatureReading>: CriticalTemperatureSensing {
 
     /// The plane, or its view at § 3's admission: the one stored property a view changes.
     private var plane: Plane

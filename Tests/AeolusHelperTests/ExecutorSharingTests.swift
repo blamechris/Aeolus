@@ -40,7 +40,7 @@ struct ExecutorSharingTests {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<Self.turns {
                 group.addTask {
-                    try await scheduler.withWriteTurn(on: channel) { channel in
+                    try await scheduler.withWriteTurn(at: .supervisor, on: channel) { channel in
                         _ = try channel.freshKeyInfo(for: key)
                         try channel.write([0x01], to: key)
                         try channel.write([0x00], to: key)
