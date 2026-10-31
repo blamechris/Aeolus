@@ -160,9 +160,10 @@ struct FanctlSetHoldLossCheckTests {
         _ = harness.sessions
     }
 
-    /// During an emergency the helper's thermal protection is in control of the fans, and the
-    /// text says so beside what the check saw: the lease still listed, and the emergency.
-    @Test("A thermal emergency says the helper's thermal protection is in control")
+    /// During an emergency the helper reports its thermal protection in control of the fans, and
+    /// the text says so in the helper's voice beside what the check saw: the lease still listed,
+    /// and the emergency.
+    @Test("A thermal emergency says the helper reports its thermal protection in control")
     func theEmergencyText() async throws {
         let authority = SimulatedFanAuthority()
         await authority.emergency(afterRenewals: 2)
@@ -172,7 +173,8 @@ struct FanctlSetHoldLossCheckTests {
 
         #expect(run.code == FanctlExitCode.safeStateNotConfirmed.rawValue)
         let message = run.output.standardError
-        #expect(message.contains("thermal protection, not this run, is in control of the fans"))
+        #expect(
+            message.contains("The helper reports its thermal protection, not this run, in control"))
         #expect(message.contains("The helper reports a thermal emergency, and its override"))
         _ = harness.sessions
     }

@@ -763,22 +763,22 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
   its starting value at every heartbeat. Then the lease is released and the safe-state check
   runs: 0, 8 or 9, exactly as for `auto`. A standard output that is not draining ends the hold
   too (see **A write may park; the hold never waits on it**, below).
-- **Exit 6 on any loss the helper reports**, after a release **and the safe-state check** (exit 8
-  or 9 instead if the check found them, and "nothing is held" is never said on the release's
-  word: only the check's own sentence confirms the fans, and during a thermal emergency the text
-  says the helper's thermal protection, not `set`, is in control of them): a renewal that errored
-  (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on
-  a fan the lease covers, `thermalEmergencyActive`, or **a covered fan the snapshot states no held
+- **Exit 6 on any loss the helper reports**, after a release **and the safe-state check** (exit 8 or
+  9 instead if the check found them, and "nothing is held" is never said on the release's word: only
+  the check's own sentence confirms the fans, and during a thermal emergency the text says the
+  helper reports its thermal protection, not `set`, in control of them): a renewal that errored
+  (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on a
+  fan the lease covers, `thermalEmergencyActive`, or **a covered fan the snapshot states no held
   target for**. It never retries and **never re-acquires**: a helper that restarts mid-hold sends
-  exactly one `acquireLease` and ends in 6. A covered fan the snapshot no longer reports at all is
-  a loss too (not in the contract's list; the safe direction). The held target is the evidence
-  that a fan is held, at the confirming snapshot and at every heartbeat: a fan the firmware took
-  back before the reclamation watchdog marked it reads `automatic` with no target beside a lease
-  the helper still lists, and that ends the hold. **The mode alone is not a loss either way**:
-  the helper reports an unread mode as automatic
-  ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads `automatic`
-  beside a lease the helper lists and a held target is still held, and one that reads manual with
-  no target is not.
+  exactly one `acquireLease` and ends in 6. A covered fan the snapshot no longer reports at all is a
+  loss too (not in the contract's list; the safe direction). The held target is the evidence that a
+  fan is held, at the confirming snapshot and at every heartbeat: a fan the firmware took back
+  before the reclamation watchdog marked it reads `automatic` with no target beside a lease the
+  helper still lists, and that ends the hold. **The mode alone is not a loss either way**: the
+  helper reports an unread mode as automatic
+  ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads `automatic` beside
+  a lease the helper lists and a held target is still held, and one that reads manual with no target
+  is not.
 - **SIGKILL and SIGSTOP** are beyond any of this: the 30-second lease expires on its own, a
   stopped process finds its lease gone on resume and ends in 6, and sleep drops the lease (SAFETY.md
   § 4). Whether the system reclaims a fan routinely and briefly on M3 and newer is **unobserved**;

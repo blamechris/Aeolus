@@ -131,9 +131,11 @@ enum SetMessages {
             return "the helper reports fan \(fan) reclaimed by the system. Aeolus is not driving "
                 + "that fan right now, whatever the target says."
         case .thermalEmergency:
+            // The helper's report, in its voice: the only evidence is the emergency flag, and an
+            // emergency that clears inside the check's window leaves every fan automatic.
             return "the helper reports a thermal emergency, and its override outranks manual "
-                + "control. The helper's thermal protection, not this run, is in control of the "
-                + "fans."
+                + "control. The helper reports its thermal protection, not this run, in control "
+                + "of the fans."
         case .fanNotReported(let fan):
             return "the helper's snapshot no longer reports fan \(fan), so this run cannot say it "
                 + "is holding it."

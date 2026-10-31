@@ -60,9 +60,10 @@ struct SetHoldLossMessagesTests {
         #expect(pinnedMessage.contains("docs/RECOVERY.md"))
     }
 
-    /// During an emergency the helper's thermal protection is in control of the fans, and the
-    /// text says so, beside what the check saw.
-    @Test("A thermal emergency says the helper's thermal protection is in control")
+    /// During an emergency the helper reports its thermal protection in control of the fans, and
+    /// the text says so in the helper's voice, beside what the check saw: its evidence is the
+    /// emergency flag alone.
+    @Test("A thermal emergency says the helper reports its thermal protection in control")
     func thermalProtectionIsInControl() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let emergency = SystemSnapshot(
@@ -73,7 +74,10 @@ struct SetHoldLossMessagesTests {
             .thermalEmergency, hold: hold, release: .accepted,
             settlement: Shared.settlement(emergency, verdict: .notConfirmed))
 
-        #expect(message.contains("thermal protection, not this run, is in control of the fans"))
+        #expect(
+            message.contains(
+                "The helper reports its thermal protection, not this run, in control of the fans."))
+        #expect(!message.contains("is in control of the fans"), "the run's voice, not the helper's")
         #expect(message.contains("Fan 0 (reads manual) is not cleared"))
         #expect(message.contains("The helper reports a thermal emergency"))
     }
