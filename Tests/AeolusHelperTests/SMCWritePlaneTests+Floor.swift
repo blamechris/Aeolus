@@ -52,8 +52,8 @@ extension SMCWritePlaneTests {
         #expect(
             fixture.lines.lines(
                 containing:
-                    "Fan 0 read back engaged with raw F0Tg 0x0 0x0 0x0 0x0: the raise to its floor, "
-                    + "1350 RPM, answered 0x00 and read back 1350.0 RPM."
+                    "Fan 0 read back engaged with raw F0Tg 0x0 0x0 0x0 0x0: the raise to its "
+                    + "floor, 1350 RPM, answered 0x00 and read back 1350.0 RPM."
             ).count == 1, "\(fixture.lines.lines)")
     }
 
@@ -206,7 +206,9 @@ extension SMCWritePlaneTests {
             #expect(error.map(Self.isRefusedControl) == true, "\(String(describing: error))")
         }
         #expect(
-            fixture.writes(since: mark) == ["F0Md=1", Self.written(Self.targetZero, Self.floorBytes)])
+            fixture.writes(since: mark) == [
+                "F0Md=1", Self.written(Self.targetZero, Self.floorBytes),
+            ])
         #expect(ledger.engagedFans.isEmpty, "\(answer)")
         #expect(!ledger.isCurrent(fanAt: 0), "\(answer): the step was not recorded refused")
         #expect(

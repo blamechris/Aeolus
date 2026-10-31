@@ -14,10 +14,10 @@ extension WriteVerbAllowlistTests {
     /// SMCWriteChannel` and the numbers the plane read out of its permit — so neither `async` nor
     /// a permit put it in the population, and a new one that wrote would have been invisible here
     /// however it was named. The two that take the step's permit, for its floor (ADR 0014's P1′
-    /// amendment), are on `permitBearingVerbs` instead, since a function is on exactly one list. A function with an `isolated` channel
-    /// runs on the channel's executor and can call its write requirement; a requirement of an
-    /// `Actor` protocol is `async` at every call site from outside, which is where "a synchronous
-    /// function cannot `await`" stops holding.
+    /// amendment), are on `permitBearingVerbs` instead, since a function is on exactly one list.
+    /// A function with an `isolated` channel runs on the channel's executor and can call its write
+    /// requirement; a requirement of an `Actor` protocol is `async` at every call site from
+    /// outside, which is where "a synchronous function cannot `await`" stops holding.
     ///
     /// These reach the firmware **directly, through the channel**, not through a permit-bearing
     /// verb, so `permitFreeFunctions`' claim does not describe them. What confines them is where

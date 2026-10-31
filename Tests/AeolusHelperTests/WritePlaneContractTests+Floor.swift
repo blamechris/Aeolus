@@ -34,7 +34,8 @@ extension WritePlaneContractTests {
             let stage: ScriptedControlPlane.Stage
             switch scenario {
             case .floorRefused: stage = .nominal(targetWrites: .refused(reason: "0x85"))
-            case .floorNotHeld: stage = ScriptedControlPlane.Stage.nominal().holdingNoTarget(ofFan: 0)
+            case .floorNotHeld:
+                stage = ScriptedControlPlane.Stage.nominal().holdingNoTarget(ofFan: 0)
             case .atRest, .underLoad: stage = .nominal()
             }
             let plane = ScriptedControlPlane(
@@ -48,8 +49,10 @@ extension WritePlaneContractTests {
             let target = smcKey("F0Tg")
             switch scenario {
             case .underLoad: await fixture.firmware.spinByApple(fan: 0, at: 3_455)
-            case .floorRefused: await fixture.firmware.queueWrites(to: target, [.refuses(code: 0x85)])
-            case .floorNotHeld: await fixture.firmware.queueWrites(to: target, [.acceptsWithoutApplying])
+            case .floorRefused:
+                await fixture.firmware.queueWrites(to: target, [.refuses(code: 0x85)])
+            case .floorNotHeld:
+                await fixture.firmware.queueWrites(to: target, [.acceptsWithoutApplying])
             case .atRest: break
             }
             let mark = await fixture.prepared()
@@ -88,7 +91,8 @@ extension WritePlaneContractTests {
         switch scenario {
         case .atRest, .underLoad:
             #expect(
-                try await harness.plane.engageManualControl(of: Self.fan(0)) == .engaged, "\(label)")
+                try await harness.plane.engageManualControl(of: Self.fan(0)) == .engaged, "\(label)"
+            )
             let expected = scenario == .atRest ? 1_350.0 : 3_455
             #expect(
                 try await harness.plane.readControlState(ofFan: 0).target == .rpm(expected),

@@ -291,12 +291,12 @@ enum WatchdogLimits {
     /// **Not a bound over every history.** The latch releases, and read-backs follow a firing in
     /// the same window; a latched cycle can take a fan back
     /// (`takeBackAnythingEngagedSinceFiring`). Those histories are counted by the scripts, not
-    /// here (`scripts/gate-wait-model/engaged_step.py`, with the engaged step once per fan): 793–837
-    /// round trips with the firing head counted once, at most 617 in an event model of the shipped
-    /// policy, both under G; 925 if a take-back with writes recurred every cycle, and 865–875 if a
-    /// refused revocation did, the two families still open. The open cases cost more than a fault
-    /// line: ADR 0014's examination gate takes each turn's slot at G, so in those histories § 5's
-    /// examination wait could run out inside a lawful hold (`gateWaiterAlarm`).
+    /// here (`scripts/gate-wait-model/engaged_step.py`, with the engaged step once per fan):
+    /// 793–837 round trips with the firing head counted once, at most 617 in an event model of the
+    /// shipped policy, both under G; 925 if a take-back with writes recurred every cycle, and
+    /// 865–875 if a refused revocation did, the two families still open. The open cases cost more
+    /// than a fault line: ADR 0014's examination gate takes each turn's slot at G, so in those
+    /// histories § 5's examination wait could run out inside a lawful hold (`gateWaiterAlarm`).
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int, fans: Int) -> Int {
         let queue = supervisorQueueRoundTrips(
             outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys, fans: fans)

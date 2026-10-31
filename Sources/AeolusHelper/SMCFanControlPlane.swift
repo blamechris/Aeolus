@@ -409,8 +409,8 @@ struct SMCFanControlPlane: FanControlPlane {
     ///    (`WritePathPreparation.needsMachineWideRestore`).
     ///
     /// **U14 holds** (P1: `Ftst` read `0` on every sample, through two loads and their soaks): a
-    /// non-zero `Ftst` at start is taken as a dead holder's, so the step clears it. It does not read
-    /// `F<n>Md`, so a fan Apple has stopped, raw `3`, asks for no restore here.
+    /// non-zero `Ftst` at start is taken as a dead holder's, so the step clears it. It does not
+    /// read `F<n>Md`, so a fan Apple has stopped, raw `3`, asks for no restore here.
     ///
     /// It never throws: what it found and did is returned for the composition to log.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {

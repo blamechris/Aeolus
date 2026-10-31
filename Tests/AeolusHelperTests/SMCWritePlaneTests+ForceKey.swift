@@ -186,8 +186,8 @@ extension SMCWritePlaneTests {
         #expect(
             fixture.lines.lines(
                 containing:
-                    "Fan 0 read back engaged with raw F0Tg 0x0 0xc0 0xa8 0x44: held at or above its "
-                    + "floor; nothing written."
+                    "Fan 0 read back engaged with raw F0Tg 0x0 0xc0 0xa8 0x44: held at or above "
+                    + "its floor; nothing written."
             ).count == 1, "\(fixture.lines.lines)")
     }
 
