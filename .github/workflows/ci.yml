@@ -29,8 +29,18 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Build and test
+  # `Build and test` is a check branch protection requires on main, by name. It used to be one
+  # job that built and ran the suite in Debug and then in Release under a single 20-minute
+  # timeout. On a slow runner the two together reached that timeout and the required check was
+  # cancelled with no test failing (#594: run 41160817920, attempt 1).
+  #
+  # It is now three jobs. `test-debug` and `test-release` run side by side, each under its own
+  # timeout, and everything the one job ran still runs in one of them. `build-and-test`, at the
+  # end of this block, keeps the required name and passes only if both halves succeeded, so the
+  # branch protection rule needs no edit. A job added here that must gate a merge has to be added
+  # to that job's `needs` and to its check; nothing else makes it required.
+  test-debug:
+    name: Test (debug)
     runs-on: macos-latest
     timeout-minutes: 20
 
@@ -73,7 +83,68 @@ jobs:
       - name: Test
         run: swift test --skip-build
 
-      # Not redundant with the step above. Some behaviour is selected by `#if DEBUG` and is
+      # The whole suite on a cooperative pool of one (#593, docs/TESTING.md). The step above runs
+      # it on the runner's three-thread pool, where a test that parks a pool thread on a release
+      # only the pool can deliver still finds a second thread and passes. On one thread it cannot,
+      # and the run wedges at 0% CPU instead of finishing; the step's time limit is what turns
+      # that wedge into a failure rather than a hang, and it ends well inside the job's.
+      #
+      # It is one process, which is the point: `--build-system native` runs every test target in
+      # one, so the pool is one thread for the whole suite. That flag is deprecated and "will be
+      # removed in a future release". It is spelled out here rather than relied on as the default,
+      # so that the day it is removed this step fails loudly on an unknown option and does not
+      # quietly become something else. On Swift 6.3.3, this runner's, native is the default and
+      # this build is the one `Build` above made, so it costs a few seconds; on 6.4 it is a second
+      # full build. docs/TESTING.md says what stands in for the flag.
+      #
+      # Only the test run below has the variable. A build has no reason to run on a pool of one.
+      - name: Build tests (native build system)
+        run: swift build --build-tests --build-system native
+
+      # The skipped suites need an SMC and a quiet machine, which a hosted runner has neither of,
+      # and `theBudgetSurvivesARestoreThatBlocksItsThread` is the one test that cannot run on a
+      # pool of one (docs/TESTING.md, "The bound"). Nothing else is skipped: the step above still
+      # runs every suite, these included, so this step narrows only its own run.
+      #
+      # `AEOLUS_EXPECT_POOL_OF_ONE` turns on CooperativePoolWidthTests, which fails if this run
+      # is wider than one thread. Without it a toolchain that stopped honouring the variable
+      # would leave this step green and checking nothing.
+      - name: Test on a cooperative pool of one
+        timeout-minutes: 10
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
+          AEOLUS_EXPECT_POOL_OF_ONE: "1"
+        run: |
+          swift test --skip-build --build-system native \
+            --skip HelperHardwareTests \
+            --skip HelperHardwareSightingTests \
+            --skip WatchdogHardwareTests \
+            --skip SMCSensorProviderTests \
+            --skip SMCConnectionTests \
+            --skip HardwareSmokeTests \
+            --skip theBudgetSurvivesARestoreThatBlocksItsThread
+
+  test-release:
+    name: Test (release)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Not redundant with `Test` in the Debug job. Some behaviour is selected by `#if DEBUG` and is
       # therefore invisible to a Debug-only test run — notably
       # ClientRequirementVariant.forRunningProcess, where the failure being guarded is a
       # Release helper shipping the relaxed development client requirement. The test that
@@ -106,6 +177,40 @@ jobs:
       # and CI does not build them.
       - name: Build (release, without testability)
         run: swift build -c release
+
+  # The required check. It runs whatever happened to the halves (`always()`): a job that `needs`
+  # a failed job is otherwise skipped, and a skipped required check is reported as passing, which
+  # would let a red half merge. It passes only if each half finished exactly `success`; a
+  # failure, a cancellation (a timeout shows as one), a skip, or a result this step does not
+  # recognise, including an empty one from a `needs` entry that no longer names a job, all fail it.
+  #
+  # It runs on Linux because it only compares strings, and a macOS runner is the scarce one.
+  build-and-test:
+    name: Build and test
+    needs: [test-debug, test-release]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require both halves
+        env:
+          DEBUG_RESULT: ${{ needs.test-debug.result }}
+          RELEASE_RESULT: ${{ needs.test-release.result }}
+        run: |
+          set -euo pipefail
+          STATUS=0
+          require_success() {
+              if [ "$2" = "success" ]; then
+                  echo "$1: success"
+              else
+                  echo "error: $1 finished '$2', not 'success'."
+                  STATUS=1
+              fi
+          }
+          require_success "Test (debug)" "${DEBUG_RESULT}"
+          require_success "Test (release)" "${RELEASE_RESULT}"
+          exit "${STATUS}"
 
   monitor-app:
     name: Monitor app build
