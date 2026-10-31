@@ -38,7 +38,7 @@ struct ThermalEmergencyReportingTests {
 
         #expect(await machine.latch.isActive)
         let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
+        #expect(writes.contains(.bridgeThenRestore(fan: 0, rpm: 5_777)))
     }
 
     /// The latch's own contract, which is where the atomicity that guard relies on lives.

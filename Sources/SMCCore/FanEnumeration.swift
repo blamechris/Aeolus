@@ -209,7 +209,7 @@ extension SMCFanEnumeration {
             outcomes = try await provider.read(keys: keys)
         } catch {
             throw SMCFanEnumerationError.readFailed(
-                context: "read fan speeds", reason: String(describing: error))
+                context: "read fan speeds", reason: SMCError.readableDescription(of: error))
         }
 
         var outcomesByKey: [String: SensorReadOutcome] = [:]
@@ -244,7 +244,7 @@ extension SMCFanEnumeration {
             outcomes = try await provider.read(keys: [fanCountKey])
         } catch {
             throw SMCFanEnumerationError.readFailed(
-                context: "read \(fanCountKey)", reason: String(describing: error))
+                context: "read \(fanCountKey)", reason: SMCError.readableDescription(of: error))
         }
 
         guard let outcome = outcomes.first else {
@@ -271,6 +271,15 @@ extension SMCFanEnumeration {
         // being validated. This bound is what stands between a misdecoded FNum and an
         // enumeration sized by it.
         //
+        // A fraction is refused, not rounded: `Int(exactly:)` is given the decoded value
+        // itself. No fan count is fractional, and rounding one would make up a count the
+        // firmware never declared. It is the rule `SMCConnection.decodeKeyCount(value:)`
+        // applies to `#KEY`, so both counts SMCCore decodes follow one policy. Until #531
+        // this rounded. Nothing observed changes: FNum is a `ui8` on Mac16,5 (attributes
+        // 0x80, raw 02 on macOS 27.0.1), and a `ui8` decodes to its single byte, which is
+        // never fractional. Only a `flt` or fixed-point declaration can decode to a fraction,
+        // and nothing this project has recorded shows FNum declared as either.
+        //
         // `isFinite` is redundant *for the outcome*, and this is recorded rather than
         // implied: deleting it changes no result, because every comparison with NaN is
         // false (so NaN fails `>= 0`) and both infinities fall outside the range. It was
@@ -279,7 +288,7 @@ extension SMCFanEnumeration {
         // is ever loosened — and because the two implementations this type replaced spell
         // the check the same way; it is not load-bearing on its own today.
         guard decoded.isFinite, decoded >= 0, decoded <= Double(maxPlausibleFanCount),
-            let fanCount = Int(exactly: decoded.rounded())
+            let fanCount = Int(exactly: decoded)
         else {
             throw SMCFanEnumerationError.implausibleFanCount(declared: decoded)
         }
@@ -342,8 +351,9 @@ public enum SMCFanEnumerationError: Error, Sendable, CustomStringConvertible {
     /// A whole-request failure from the provider, or a `FNum` read that failed for a reason
     /// other than the key being absent. Not a per-key failure — those never throw.
     case readFailed(context: String, reason: String)
-    /// `FNum` decoded to something outside the range this project trusts as a real fan
-    /// count — non-finite, negative, or above `SMCFanEnumeration.maxPlausibleFanCount`.
+    /// `FNum` decoded to something this project does not trust as a real fan count:
+    /// non-finite, negative, above `SMCFanEnumeration.maxPlausibleFanCount`, or not a whole
+    /// number. A fraction is refused rather than rounded; see `readFanCount(provider:)`.
     /// Carries the offending decoded value.
     case implausibleFanCount(declared: Double)
 

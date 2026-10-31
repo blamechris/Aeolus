@@ -199,8 +199,8 @@ struct LeaseApplyingTripwireTests {
     /// inside `\( … )`, or `\#( … )` in a raw literal, is still a call.
     ///
     /// An ordinary literal's end is found by `SeamScanner.copyDelimited`, the walker every scan
-    /// here shares, with its limit: a `"` inside an interpolation ends the literal early, and what
-    /// follows is read as code. A raw literal, `#"…"#`, `##"…"##` and their `"""` forms, ends only
+    /// here shares, which reads an interpolation as code, so a `"` inside `\( … )` does not end
+    /// the literal. A raw literal, `#"…"#`, `##"…"##` and their `"""` forms, ends only
     /// at its quotes followed by as many `#` as opened it, so a `"` inside it hides nothing, and a
     /// raw escape, a `\` with those `#` and one character after (`\#"` in a `#` literal), is text
     /// and never its end.

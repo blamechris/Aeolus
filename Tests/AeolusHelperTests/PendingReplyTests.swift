@@ -88,7 +88,7 @@ struct PendingReplyTests {
         #expect(await latch.answer(within: .nanoseconds(1)) == "the reply block")
     }
 
-    /// A caller that was **already cancelled** before it started waiting does not park for
+    /// A caller that was **already cancelled** before it started waiting does not wait for
     /// the deadline.
     ///
     /// `withTaskCancellationHandler` runs `onCancel` *before* the operation when the task is
@@ -114,11 +114,17 @@ struct PendingReplyTests {
     /// wait instead of spent from it — and the defect, which no stall can cause, still runs
     /// the budget out.
     ///
+    /// **What that does and does not tell apart.** It tells a caller released by something
+    /// other than its deadline from one that is never released. It does not tell "at once" from
+    /// "late": a give-up delayed by two seconds on a real sleep would pass, as it did under the
+    /// old `waited < 5 s` bound. The test is named for what it asks, which is that the caller
+    /// does not wait for its deadline.
+    ///
     /// **Why it is no longer timed.** It asserted the elapsed time: under one second until CI
     /// showed that a loaded runner could take longer than that to run a task that does
     /// nothing, then under five after #319 widened it — on the argument that a bound a busy
     /// machine can reach is the wall-clock upper bound that issue rules out. Five seconds was
-    /// still one. A correct latch measured 5.2, 5.6 and 7.6 seconds on stalled runners (#421),
+    /// still one. A correct latch measured 5.2 to 7.3 seconds on stalled runners (#421),
     /// because elapsed time is the one quantity a stall changes without the latch having
     /// done anything. The latch has no delay of its own to measure — it either hands the
     /// caller the fallback or leaves it parked until something resumes it — so the test
@@ -132,8 +138,10 @@ struct PendingReplyTests {
     /// **Mutation:** in `PendingReply.giveUp()`, restore the early `return` that recorded
     /// nothing when `continuation` was `nil`. Run: red on the `waitUntil` after five
     /// scheduled seconds, naming the wait — not on the time limit.
-    @Test("A caller cancelled before it waits gives up at once", .timeLimit(.minutes(1)))
-    func aCallerCancelledBeforeItWaitsGivesUpAtOnce() async throws {
+    @Test(
+        "A caller cancelled before it waits does not wait for its deadline",
+        .timeLimit(.minutes(1)))
+    func aCallerCancelledBeforeItWaitsDoesNotWaitForItsDeadline() async throws {
         let latch = PendingReply<String>(ifNothingArrives: "nothing arrived")
         let release = AsyncSignal()
         let returned = CompletionFlag()
@@ -151,10 +159,10 @@ struct PendingReplyTests {
 
         try await waitUntil(
             """
-            the caller cancelled before it waited to come back. Cancellation arrived before \
-            anything was attached, so the give-up had nobody to hand the fallback to — and a \
-            latch that drops it there leaves the caller parked on a continuation nothing will \
-            revisit, with a deadline on a clock this test never moves
+            the caller cancelled before it waited to come back. Either the cancellation handler \
+            no longer gives up, or it gave up with nobody attached and dropped the fallback \
+            instead of buffering it for the `attach` that follows, so the caller is parked on a \
+            continuation nothing will revisit, with a deadline on a clock this test never moves
             """
         ) {
             await returned.isSet
@@ -180,11 +188,15 @@ struct PendingReplyTests {
     /// precisely why the guard is a type rather than a convention. What it asserts is that
     /// one of the delivered answers comes back, exactly once, and that the concurrent path
     /// never falls through to the fallback.
+    ///
+    /// The deadline is on a `ManualClock` nothing advances (#421): the claim is not about a
+    /// deadline, and a stall of ten seconds between the wait and the first delivery would
+    /// otherwise hand the caller the fallback and read as thirty-two lost deliveries.
     @Test("Answers racing each other resolve the wait exactly once", .timeLimit(.minutes(1)))
     func concurrentAnswersResolveTheWaitExactlyOnce() async {
         let latch = PendingReply<Int>(ifNothingArrives: -1)
 
-        async let answered = latch.answer(within: .seconds(10))
+        async let answered = latch.answer(within: .seconds(10), on: ManualClock())
         await withTaskGroup(of: Void.self) { group in
             for value in 1...32 {
                 group.addTask { latch.deliver(value) }

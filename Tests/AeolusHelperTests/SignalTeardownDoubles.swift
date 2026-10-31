@@ -93,7 +93,7 @@ final class TeardownJournal: Sendable {
 /// It wraps rather than replaces, exactly as `RegistryObservingPlane` does, so the firmware
 /// under the observer is the shipped mock — stages, `WriteBehaviour`, the unscripted-input
 /// refusal, all of it.
-actor JournallingPlane: FanControlPlane {
+actor JournallingPlane: AdmissionBlindPlane {
 
     /// What this plane's *restore* verb does, which is the one axis `ScriptedControlPlane`
     /// cannot express.

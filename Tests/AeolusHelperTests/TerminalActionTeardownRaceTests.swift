@@ -90,7 +90,7 @@ struct TerminalActionTeardownRaceTests {
             }
         }
 
-        let progress = await revocationProgress(of: cycles, outwaiting: fan, in: graph.leases)
+        let progress = try await revocationProgress(of: cycles, outwaiting: fan, in: graph.leases)
         #expect(
             progress == .waiting,
             """
@@ -160,6 +160,10 @@ struct TeardownRaceGraph: Sendable {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry, clock: clock),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: ThermalCycleHandback(
+                notifying: restorer,
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+                log: LeaseFixture.log),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane),

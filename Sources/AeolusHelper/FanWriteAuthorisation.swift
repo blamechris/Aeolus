@@ -67,7 +67,8 @@ struct CommandableFan: Sendable, Hashable {
     /// inside `[max(F<n>Mn, minimumManualRPM), F<n>Mx]`. It cannot fail, because a fan whose
     /// bounds could not be trusted never became a `CommandableFan` in the first place.
     func target(for requestedRPM: Double) -> AuthorisedFanTarget {
-        AuthorisedFanTarget(fanIndex: index, target: envelope.target(for: requestedRPM))
+        AuthorisedFanTarget(
+            fanIndex: index, target: envelope.target(for: requestedRPM), envelope: envelope)
     }
 }
 
@@ -104,6 +105,7 @@ struct AuthorisedFanTarget: Sendable, Hashable {
 
     private let storedFanIndex: Int
     private let storedTarget: FanTargetRPM
+    private let storedEnvelope: FanControlEnvelope
 
     /// The fan this speed was authorised for.
     var fanIndex: Int { storedFanIndex }
@@ -114,9 +116,17 @@ struct AuthorisedFanTarget: Sendable, Hashable {
     /// The speed to put on the wire.
     var rpm: Double { storedTarget.rpm }
 
-    fileprivate init(fanIndex: Int, target: FanTargetRPM) {
+    /// The floor `rpm` was clamped above: the envelope's `lowestCommandableRPM`, from the same
+    /// read as the fan and the speed. The write plane's command turn refuses a target below it
+    /// before it encodes one (`CLAUDE.md` rule 3 at the last hop; #9's b2 checklist), so rule 3
+    /// does not rest on the clamp alone. Carried rather than re-read, so the turn issues no read
+    /// for it and the check compares against the envelope the clamp used.
+    var lowestCommandableRPM: Double { storedEnvelope.lowestCommandableRPM }
+
+    fileprivate init(fanIndex: Int, target: FanTargetRPM, envelope: FanControlEnvelope) {
         self.storedFanIndex = fanIndex
         self.storedTarget = target
+        self.storedEnvelope = envelope
     }
 }
 

@@ -254,7 +254,10 @@ struct FanctlAutoOutputTests {
         let run = try await Self.run(over: harness)
         #expect(run.code == nil)
 
-        try await waitUntil("the helper was told the connection went away") {
+        try await waitUntil(
+            "the helper was told the connection went away",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("connectionDidInvalidate")
         }
     }

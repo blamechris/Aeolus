@@ -239,14 +239,29 @@ extension SMCKeyType {
     /// single byte has no byte order to apply — and so do `fpe2`/`fp78`/`sp78`, which are
     /// big-endian by definition of the type.
     ///
-    /// Two types are encoded, the two the Apple Silicon write plane writes (ADR 0014 B1):
+    /// Two types are encoded, the two the Apple Silicon write plane writes (ADR 0014's B1
+    /// amendment):
     /// - **`ui8`**, for `F<n>Md` and `Ftst`: one byte, exactly an integer in `0...255`. A
     ///   fraction, a value out of range, `NaN` or an infinity is refused rather than rounded
     ///   or wrapped, because a rounded mode byte is a different mode. The order is ignored.
     /// - **`flt`**, for `F<n>Tg`: IEEE-754 single precision, in the order given, which must be
-    ///   given. A value that is not finite as a `Float` — `NaN`, an infinity, or a `Double`
-    ///   past `Float`'s range, which converts to one — is refused (ADR 0004; ADR 0008's clamp
-    ///   only ever produces finite targets, and this does not trust that it did).
+    ///   given. The `Double` is judged before it converts, so what rounding makes of it can
+    ///   neither admit nor refuse it:
+    ///   - a magnitude above `Float.greatestFiniteMagnitude` is refused. That is `NaN`, an
+    ///     infinity, and a value just past the bound, which would round down to it and be
+    ///     written as less than was asked for;
+    ///   - **a non-zero value that underflows to zero**, such as `1e-50`, is refused, for the same
+    ///     reason: its bytes would say something other than what was asked for, and nothing
+    ///     after this function could tell. Zero itself is exact and encodes, and a value that
+    ///     underflows to a subnormal stays non-zero and rounds, as any value between two floats
+    ///     does.
+    ///
+    ///   **Neither refusal is `CLAUDE.md` rule 3's control.** This function cannot see the key it
+    ///   encodes for, and it accepts zero, `-0.0`, `1e-30`, `0.5`, subnormals and negatives,
+    ///   each of them a stop or worse on `F<n>Tg`. Rule 3 rests on ADR 0008's clamp:
+    ///   `FanControlEnvelope` never produces a target below `lowestCommandableRPM`, which is
+    ///   `max(F0Mn, FanSafetyLimits.minimumManualRPM)`. The command turn that encodes a target is
+    ///   to refuse one below that floor before it encodes (#447's review; b2's).
     ///
     /// A refusal throws `SMCError.notPermitted`. `encodingFailed(key:type:)` is the case for
     /// "the value does not fit the type", but it carries a key, and this function — whose
@@ -257,7 +272,7 @@ extension SMCKeyType {
     ///
     /// Encoding is type-level only. Whether a value is a *safe* RPM is `FanKit`'s
     /// `FanControlEnvelope`'s question, answered before anything reaches here, and a
-    /// restore's zero bytes never come through this function at all (ADR 0014 B1).
+    /// restore's zero bytes never come through this function at all (ADR 0014's B1 amendment).
     ///
     /// - Note: `flt`'s little-endian output is pinned to the bytes `F0Tg` and `F1Tg` were
     ///   observed holding on `Mac16,5`, so a byte swap made symmetrically here and in
@@ -276,9 +291,15 @@ extension SMCKeyType {
                 Self.logRefusal(scalar, of: self, reason: "no resolved byte order")
                 throw SMCError.notPermitted
             }
+            // On the `Double`, before it converts: just past the bound, `Float(scalar)` rounds
+            // down to `greatestFiniteMagnitude` and is finite. `NaN` fails the comparison too.
+            guard scalar.magnitude <= Double(Float.greatestFiniteMagnitude) else {
+                Self.logRefusal(scalar, of: self, reason: "outside Float's finite range")
+                throw SMCError.notPermitted
+            }
             let single = Float(scalar)
-            guard single.isFinite else {
-                Self.logRefusal(scalar, of: self, reason: "not finite as a Float")
+            guard single != 0 || scalar == 0 else {
+                Self.logRefusal(scalar, of: self, reason: "non-zero, and underflows to zero")
                 throw SMCError.notPermitted
             }
             let bits = single.bitPattern

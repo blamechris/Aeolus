@@ -1,3 +1,4 @@
+import AeolusXPC
 import Foundation
 
 /// What a `HelperClient` can truthfully say about its connection right now.
@@ -90,4 +91,39 @@ public enum HelperConnectionHealth: Sendable, Hashable {
     /// daemon. The ranges both sides offered are carried by the thrown
     /// `AeolusXPCFault.versionMismatch`, which is where they belong.
     case versionMismatched
+}
+
+extension HelperConnectionHealth {
+
+    /// What a failed handshake says about the connection it failed on, which
+    /// `HelperClient.performHandshake(generation:)` has just given up.
+    ///
+    /// Reached for every failure whose connection is still held at the handshake's generation,
+    /// which is **not** the same set as "failures the transport did not classify" — an earlier
+    /// version of this comment claimed it was, and was wrong about two arms:
+    ///
+    /// - The three arms of `HelperClient.translate(_:on:sentAfter:)` that call `discardConnection`
+    ///   move the generation, so the `catch` guard declines and this is genuinely not consulted.
+    /// - **4097 does reach here.** `connectionWasInterrupted` keeps its connection and does
+    ///   not move the generation, so the `catch` runs and the verdict becomes `.invalidated`,
+    ///   overwriting the `.interrupted` published a moment earlier. That is correct — the
+    ///   connection has now been discarded — but it is this function that says so.
+    /// - **4101 reaches here too**, because `replyNotDelivered` publishes nothing at all.
+    ///
+    /// The behaviour was right in both; the comment was the defect, and it was the kind that
+    /// makes a later reader believe a live function unreachable.
+    ///
+    /// It reads nothing of the client's, so it is written beside the cases it chooses between
+    /// rather than in the client actor's body, which #585 would otherwise have taken past
+    /// SwiftLint's 250-line `type_body_length` warning (`HelperClient`'s own documentation).
+    static func afterFailedHandshake(for error: Error) -> HelperConnectionHealth {
+        guard let fault = error as? AeolusXPCFault else {
+            // A `HelloReply` this build could not read, or a proxy that does not speak the
+            // protocol. The connection has just been declared dead, and that is the honest
+            // thing to say about it.
+            return .invalidated
+        }
+        if case .versionMismatch = fault { return .versionMismatched }
+        return .refused
+    }
 }

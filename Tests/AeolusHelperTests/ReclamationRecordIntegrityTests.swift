@@ -5,8 +5,11 @@ import Testing
 @testable import AeolusHelper
 
 /// What § 5's record may hold, and what its log lines may state: no target a plane cannot write,
-/// no comparison that a value that is not a number passes, and no RPM conversion that traps.
-@Suite("§ 5's record and log lines take no value a plane cannot produce", .timeLimit(.minutes(1)))
+/// no comparison that a value that is not a number passes, and no RPM conversion that traps. And
+/// what the record may not lose: a cycle that cannot read takes nothing from it (#614's review).
+@Suite(
+    "§ 5's record and log lines take no value a plane cannot produce, and a blind cycle takes none",
+    .timeLimit(.minutes(1)))
 struct ReclamationRecordIntegrityTests {
 
     /// What `SafetyLog.reclamationTargetRefused(_:from:)` says, and no other line.
@@ -85,6 +88,99 @@ struct ReclamationRecordIntegrityTests {
         #expect(refusals.count == 1, "the refusal was not logged exactly once")
         #expect(machine.safetyLog.faults.filter { $0.contains(Self.refusalNotice) } == refusals)
         #expect(refusals.first?.contains("its re-assert returned") == true)
+    }
+
+    /// The runs of cycles that cannot read which the watchdog still tolerates, and judges the fan
+    /// after: one, up to one short of `ReclamationLimits.blindCyclesBeforeDivergence`. The
+    /// constant's own run is the one it answers by handing the fan back. Both tests below take
+    /// this and no literal count, so a raised constant raises what they cover. At a constant of 1
+    /// no run is tolerated and there is nothing to cover: the scenario is skipped for want of
+    /// cases (measured at full scope, #617), and the unit test loops over nothing.
+    static let toleratedBlindRuns = Array(1..<ReclamationLimits.blindCyclesBeforeDivergence)
+
+    /// A cycle that cannot read counts itself and nothing else: the record's target stays the step
+    /// last put on the wire, so the next readable cycle judges the fan against it. A target lost
+    /// there leaves that cycle nothing to judge with. `primaryDivergence(of:against:)` has no
+    /// target to compare a manual reading's with, the shortfall has none to fall short of, and
+    /// `judge(_:)` grants the registration grace again.
+    ///
+    /// Every failure in a row the watchdog tolerates, because a loss gated on a later one is one
+    /// the earlier ones do not show (#615, #617).
+    ///
+    /// **What this and the scenario below see:** the target lost in `recordReadFailure()` on any
+    /// failure in a row short of `ReclamationLimits.blindCyclesBeforeDivergence`, whether by a
+    /// write that names the storage or by one that replaces the whole record, which the lexical
+    /// count in `ReclamationHeldFanAccessTests` cannot see. **What they do not:** a loss on the
+    /// failure that reaches the constant, which is red nowhere (measured at full scope with the
+    /// constant at 3, #615): the actor answers that one by handing the fan back and dropping the
+    /// record, so no later cycle judges against it (inferred). Nor a loss in any other method
+    /// (inferred, not run).
+    ///
+    /// **Mutations**, each in `HeldFan.recordReadFailure()`: (a) `self[keyPath:
+    /// \.storedCommanded] = nil`; (b) the whole record replaced, `var fresh = HeldFan(lease:
+    /// lease)`, every counter copied into it, then `self = fresh`. Each ungated, and each gated on
+    /// `consecutiveReadFailures >= k`. Run with the constant at 3 (#615): red on each ungated, on
+    /// the target after the first call and after the second; and on each gated on a `k` of 2, on
+    /// the target after the second alone. Run with the constant at 4 and a `k` of 3 (#617): red on
+    /// each, on the target after the third call alone.
+    @Test("A read failure leaves the record's target as it was")
+    func aReadFailureLeavesTheRecordsTarget() throws {
+        var record = ReclamationWatchdog<ScriptedControlPlane>.HeldFan(lease: UUID())
+        let target = CommandedTarget(fanIndex: 0, rpm: 2_400)
+        let recorded = record.record(target)
+        try #require(recorded, "the target was refused before the read failure")
+
+        for inARow in Self.toleratedBlindRuns {
+            let failures = record.recordReadFailure()
+            #expect(failures == inARow)
+            #expect(
+                record.commanded == target,
+                "failure \(inARow) in a row, a cycle that could not read, cleared it")
+        }
+    }
+
+    /// The same rule through the actor, and the harm it prevents. The system holds the fan at
+    /// 1,800 RPM in manual mode against the 2,400 commanded, and the first `blindCycles` cycles
+    /// cannot read it, one case for each run the watchdog tolerates, up to one short of
+    /// `ReclamationLimits.blindCyclesBeforeDivergence`. The next cycle can, diverges from the
+    /// record, marks the fan reclaimed and re-asserts 2,400. With the record's target lost to a
+    /// blind cycle, the same reading has nothing to diverge from, and the fan is neither marked
+    /// nor re-asserted.
+    ///
+    /// The recovery line is the scenario's precondition: it says the cycles before the last took
+    /// the blind path, as many as the case gave, and the last read the fan. It states the count
+    /// whatever it is, as "N unreadable cycle(s)", and `blindCycles` is matched whole, so a
+    /// case of 1 does not take a line of 10.
+    ///
+    /// **Mutations:** (a) and (b) above, ungated or gated on `consecutiveReadFailures >= k`. Run
+    /// with the constant at 3 (#615): ungated, red in both cases; gated on a `k` of 2, red in the
+    /// second alone. Run with the constant at 4 and a `k` of 3 (#617): red in the third alone, and
+    /// for (b) the literal `[1, 2]` this replaced was green. Red on the mark, the re-assert and
+    /// the record.
+    @Test(
+        "A divergence a blind cycle hid is caught by the next readable cycle",
+        arguments: ReclamationRecordIntegrityTests.toleratedBlindRuns)
+    func aDivergenceABlindCycleHidIsCaughtAfterIt(blindCycles: Int) async throws {
+        let stages: [ScriptedControlPlane.Stage] =
+            Array(repeating: .blind(), count: blindCycles) + [.nominal()]
+        let machine = ReclamationMachine(stages: stages, fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<blindCycles {
+            await machine.watchdog.cycle()
+            await machine.plane.advance()
+        }
+        await machine.watchdog.cycle()
+
+        let recovered = machine.safetyLog.lines(
+            containing: "can read fan 0 again after \(blindCycles) unreadable cycle")
+        try #require(
+            recovered.count == 1,
+            "the cycles before the last were not \(blindCycles) blind, or the last not readable")
+        #expect(
+            await machine.ledger.isReclaimed(fanAt: 0), "a divergence a blind cycle hid was missed")
+        #expect(await machine.commandedRPMs == [2_400], "the record's target was not re-asserted")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
     }
 
     /// **Mutation:** restore `guard abs(...) > tolerance else { return nil }` in

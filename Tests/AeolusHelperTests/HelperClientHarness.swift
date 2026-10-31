@@ -33,16 +33,16 @@ final class ClientListenerHarness {
     /// reach a peer that has negotiated and a client that does not know it, which is the
     /// state a permanently wedged connection starts from.
     ///
-    /// `holdingHandshakeReplies` withholds each `hello` reply until that signal fires. The
-    /// message still reaches the real session, so the arrival is recorded and the handshake
-    /// is negotiated; only the answer waits. It is what makes "a second verb arrived while
-    /// the handshake was still unanswered" a *constructed* state rather than a raced one.
+    /// `holdingHandshakeReplies` withholds each `hello` reply until its hold lets it go: an
+    /// `AsyncSignal` holds every one until it fires (`HandshakeReplyHold`). The message still
+    /// reaches the real session, so the arrival is recorded and the handshake is negotiated; only
+    /// the answer waits, which makes "a verb arrived while `hello` was unanswered" constructed.
     init(
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange,
         capabilities: [String] = HelperListenerDelegate.advertisedCapabilities,
         garblingHandshakeReplies: Bool = false,
-        holdingHandshakeReplies: AsyncSignal? = nil
+        holdingHandshakeReplies: (any HandshakeReplyHold)? = nil
     ) {
         delegate = ClientListenerDelegate(
             authority: authority,
@@ -54,6 +54,9 @@ final class ClientListenerHarness {
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
         listener.resume()
+        let clock = ManualClock()
+        self.clock = clock
+        backstop = ClockBackstop(running: clock)
     }
 
     /// **Measured, because #250 turned on it.** `NSXPCListenerEndpoint` does not retain the
@@ -133,70 +136,67 @@ final class ClientListenerHarness {
         delegate.invalidateConnections()
     }
 
+    /// The clock every client of this harness measures its deadlines on, unless the test hands
+    /// `client(clock:)` another: **a clock only the test moves**
+    /// ([#421](https://github.com/blamechris/Aeolus/issues/421)).
+    ///
+    /// A deadline on the wall clock is one a stalled runner runs out for a client that did
+    /// nothing wrong: CI's first tests finish 11 s (release) and 22 s (debug) after the run began
+    /// (#570), and a `kill -STOP` of 8 s fails the slow-peer tests with `helperNeverAnswered(after:
+    /// 5.0 seconds)`. So here a deadline runs out when the test moves the hands past it, and at no
+    /// other time but the backstop's.
+    ///
+    /// **What it costs.** A client that fails to answer a call leaves it parked instead of failing
+    /// it at 5 s, until a cancellation reaches it (the shared handshake's wait too, since #576) or
+    /// `ClockBackstop` runs every deadline out once the harness has lived 30 s of scheduled time.
+    /// `returnedOutcome(of:_:)` asks sooner, by name, and cancels the call. A test whose claim is
+    /// the deadline moves the clock itself and asserts the figure it was given.
+    let clock: ManualClock
+    private let backstop: ClockBackstop
+
     /// The deadlines a client gets when the test does not name its own: **the shipping
     /// trio**, not a tighter one.
     ///
     /// This was `.milliseconds(750)` on all three verbs, and
-    /// [#250](https://github.com/blamechris/Aeolus/issues/250) is what that cost. The
-    /// justification written here was that "two of these tests assert on the deadline
-    /// expiring, and five seconds of a suite's wall clock to observe a constant is a cost
-    /// with no assertion in it" — which is true, and is an argument for those two tests
-    /// passing their own deadline, which both of them already do. It is not an argument for
-    /// the *default*, and as a default it protected nothing while making a 750 ms bound
-    /// load-bearing for eighteen tests that never intended to measure a deadline.
-    ///
-    /// On a contended GitHub runner a cold anonymous-listener round trip exceeds 750 ms, and
-    /// because all eighteen shared this one constant they failed **together, at the identical
-    /// bound** — which read as a teardown race and was not one. A test that asserts a fault
-    /// round-trips has no business failing because a round trip was slow.
-    ///
-    /// So the default is `HelperClientDeadlines.default`: the numbers the product ships, the
-    /// handshake's derived from the helper's own reconciliation budget by
-    /// `HelperClientDeadlines.reconciliationBudget`. That is the only bound whose expiry is a
-    /// real defect rather than an artefact of the machine the suite is running on — a client
-    /// that cannot get an answer inside it is broken for a user too.
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250) is what that cost: on a contended
+    /// GitHub runner a cold anonymous-listener round trip exceeds 750 ms, and eighteen tests that
+    /// never intended to measure a deadline failed **together, at the identical bound**, which
+    /// read as a teardown race and was not one. The default is `HelperClientDeadlines.default`:
+    /// the numbers the product ships, the handshake's derived from the helper's own
+    /// reconciliation budget. That is the only bound whose expiry is a real defect rather than an
+    /// artefact of the machine, and since #421 it is counted on `clock`, so it expires only when a
+    /// test says so.
     ///
     /// **What holds this value there, and exactly how far that reaches.**
     /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
     /// requires this constant to **equal** the shipping trio, and `FanctlResetTests.unhurried`
-    /// to be no tighter than it. Those two are every *default* in the test target, so no test
-    /// inherits a bound tighter than the product's without that test going red.
+    /// to be no tighter than it. Those two are every *default* in the test target. A deadline a
+    /// test passes **explicitly** is held by `HelperClientDeadlineLiteralTests`
+    /// ([#255](https://github.com/blamechris/Aeolus/issues/255)), which requires every term of
+    /// every such construction under `Tests/` to be no tighter than the product's, or licensed
+    /// by name with what asserts it.
     ///
-    /// It still says nothing about a deadline a test passes **explicitly** at its call site —
-    /// eleven constructions do — but that half is no longer uncovered either.
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) settled it with a source scan:
-    /// `HelperClientDeadlineLiteralTests` requires every term of every such construction under
-    /// `Tests/` to resolve to a bound no tighter than the product's, or to be licensed by name
-    /// with what asserts it. The **eight** terms that were below the product's bound on a verb
-    /// their test does not assert are gone rather than documented: all six of
-    /// `HelperClientTeardownTests`' handshake and panic terms, plus two panic terms in
-    /// `HelperClientTests`. Not the "five" this paragraph counted before the scan existed, which
-    /// is itself the argument for the scan.
-    ///
-    /// Because this constant is *defined* as the product's trio, the comparison is a value
-    /// against itself: it is a source tripwire that fires when a literal is written back in, not
-    /// a runtime check, and it is blind to tightening `HelperClientDeadlines` itself. The
-    /// absolute floor comes from two other tests —
-    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` and
-    /// `aPeerASecondSlowToAnswerAGatedVerbStillRoundTrips` hold a message for a second and
-    /// require the round trip to survive it — which redden whichever side moved.
-    ///
-    /// It costs nothing on a healthy run: everything here answers in milliseconds and never
-    /// reaches the deadline at all. It costs the shipping deadline on a *failing* run, which
-    /// is a slower red and still a red — the suite's `.timeLimit` bounds it either way.
+    /// That comparison is a value against itself, blind to tightening `HelperClientDeadlines`
+    /// itself; the absolute floor is `HelperClientDeadlineTests`' two slow-peer tests, which hold
+    /// a message while this harness's clock runs a second and require the round trip to survive.
     static let defaultDeadlines = HelperClientDeadlines.default
 
     /// A client wired to this harness, with no requirement.
+    ///
+    /// `clock` is what its deadlines are counted on, `self.clock` when not named. Naming
+    /// `ContinuousClock()` is how a test gets a deadline that runs out by itself, and none does.
     func client(
         description: String = "test client",
         pinning: any HelperConnectionPinning = UnenforcedClientPinning(),
-        deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
+        deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines,
+        clock: (any Clock<Duration>)? = nil
     ) -> HelperClient {
         HelperClient(
             transport: .endpoint(endpoint),
             pinning: pinning,
             clientDescription: description,
-            deadlines: deadlines
+            deadlines: deadlines,
+            clock: clock ?? self.clock
         )
     }
 }
@@ -208,7 +208,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
     private let helperRange: ProtocolVersionRange
     private let capabilities: [String]
     private let garblingHandshakeReplies: Bool
-    private let holdingHandshakeReplies: AsyncSignal?
+    private let holdingHandshakeReplies: (any HandshakeReplyHold)?
     private let record = OrderRecord<String>()
 
     private let lock = NSLock()
@@ -221,7 +221,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
         helperRange: ProtocolVersionRange,
         capabilities: [String],
         garblingHandshakeReplies: Bool,
-        holdingHandshakeReplies: AsyncSignal?
+        holdingHandshakeReplies: (any HandshakeReplyHold)?
     ) {
         self.authority = authority
         self.helperRange = helperRange
@@ -310,13 +310,13 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
     private let service: HelperXPCService
     private let record: OrderRecord<String>
     private let garblingHandshakeReplies: Bool
-    private let holdingHandshakeReplies: AsyncSignal?
+    private let holdingHandshakeReplies: (any HandshakeReplyHold)?
 
     init(
         wrapping service: HelperXPCService,
         record: OrderRecord<String>,
         garblingHandshakeReplies: Bool = false,
-        holdingHandshakeReplies: AsyncSignal? = nil
+        holdingHandshakeReplies: (any HandshakeReplyHold)? = nil
     ) {
         self.service = service
         self.record = record
@@ -343,7 +343,7 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
                 return
             }
             Task { [self] in
-                try? await gate.wait()
+                await gate.replyMayLeave()
                 replied("hello")
                 reply(payload, error)
             }

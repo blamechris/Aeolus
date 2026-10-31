@@ -173,7 +173,10 @@ struct WriteAuthorisationTests {
         "An authorisation type's stored properties are private and its initialisers fileprivate",
         arguments: [
             ("FanWriteAuthorisation.swift", "CommandableFan", 2),
-            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget", 2),
+            // The third is the envelope's floor the target was clamped above, carried from the
+            // same read so the command turn can refuse below it (b2; #9's checklist). It changes
+            // what a permit records, not who can mint one: the initialiser is still fileprivate.
+            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget", 3),
             ("FanControlEnvelope.swift", "FanTargetRPM", 1),
         ])
     func anAuthorisationTypeCannotBeMintedElsewhere(
@@ -343,6 +346,10 @@ struct WriteAuthorisationTests {
     /// `FanRestoring.restoreToAutomatic(fans:because:)` is deliberately non-throwing — it is
     /// the declaration `LeaseAuthority` actually calls — and an `async throws` pattern put the
     /// keystone seam outside the scan entirely.
+    ///
+    /// **One stated exception, outside this scan: § 3's bridge**, whose command half takes a
+    /// permit and whose restore half runs in the same job. `docs/SAFETY.md` states it, and
+    /// `ThermalEmergencyBridgeTests.theBridgeIsTheOneRestoreInsideAPermit` pins it.
     @Test("No restore verb in Sources takes an authorisation of any kind")
     func theRestoreVerbTakesNoAuthorisation() throws {
         let declarations = try SeamScanner.writeVerbs(named: #"restore\w*"#)

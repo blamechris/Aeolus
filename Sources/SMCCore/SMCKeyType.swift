@@ -141,6 +141,22 @@ public enum SMCKeyType: Sendable, Hashable {
         }
     }
 
+    /// The code as a sentence names it: `fourCharString` without the trailing spaces that pad
+    /// a shorter code to four characters, so `flt ` reads `flt` (#544). Before, every readable
+    /// description that named a padded type had two spaces after it: "F0Ac declares flt  but
+    /// returned 2 bytes".
+    ///
+    /// For wording only. The SMC's own spelling stays `fourCharString`, which is what
+    /// `fanctl dump`'s type column and every log line print, and what a code is matched on.
+    ///
+    /// A code that is nothing but spaces has no name to trim down to, so it is returned as
+    /// declared: a description then still shows what the firmware sent, not nothing.
+    var readableName: String {
+        var name = fourCharString
+        while name.last == " " { name.removeLast() }
+        return name.isEmpty ? fourCharString : name
+    }
+
     static func string(from code: FourCharCode) -> String {
         let bytes = [
             UInt8((code >> 24) & 0xFF),

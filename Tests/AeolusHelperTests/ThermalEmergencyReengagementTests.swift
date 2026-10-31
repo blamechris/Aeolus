@@ -43,6 +43,7 @@ struct ThermalEmergencyReengagementTests {
                 telemetry: curated,
                 sightings: sightings,
                 writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+                handback: LeaseFixture.handback(over: writes),
                 leases: LeaseFixture.authority(
                     telemetry: sightings, thermalEmergency: latch, clock: clock),
                 latch: latch,
@@ -203,7 +204,7 @@ struct ThermalEmergencyReengagementTests {
 ///
 /// Every verb delegates to the wrapped `ScriptedControlPlane`, so its record of attempts is
 /// the record of what the writer did.
-actor RestoreInterferingPlane: FanControlPlane {
+actor RestoreInterferingPlane: AdmissionBlindPlane {
 
     let wrapped: ScriptedControlPlane
     private var pending: (fan: Int, effect: @Sendable () async -> Void)?

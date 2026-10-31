@@ -181,7 +181,11 @@ end up disagreeing about when "now" was.
   connection would still be saturated, so the snapshot would starve and this ADR's rule 6
   argument would fail from the other side — and the grant-time read is coalesced and
   age-bounded against § 3's own most recent reading instead. Also arbitration *under* this
-  decision rather than a change to it.
+  decision rather than a change to it. *(Since [#332](https://github.com/blamechris/Aeolus/issues/332),
+  § 3's own cycle has a third admission class, ahead of every waiting turn and outside the
+  overtake quota — [ADR 0012](0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+  2026-10-18 amendment, which reopens ADR 0010 D2 for that cycle alone. The grant-time read is
+  still coalesced, and every other reader is still first-come first-served.)*
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).
@@ -193,6 +197,14 @@ build*, that is still a claim about the hardware which a stray helper — or ano
 — can falsify. The honest fallback rendering is "mode: not tracked", or later an observation derived
 from `F<n>Md` marked community-confidence. Filed with the app-side client work rather than fixed
 here.
+
+*Note, 2026-10-24 (#478, for #156):* the app-side client resolves this. `FanPollingReading` no
+longer has a `mode`; its `control` is `.notTracked(why)` on every direct read, rendered "Mode not
+tracked", or `.reported(FanState, …)` from a snapshot within its bound on a handshaken connection,
+and only while the handshaken episode its request was sent in is still current. #178's gap remains
+on the snapshot path: a helper that cannot write reports an unread `F<n>Md` as automatic beside a
+silent availability, so that fan still reads "Automatic". This note records the fix; the ADR's
+status is unchanged.
 
 ## Amendment — a discovery walk's outcome, and a walk that does not end (#205)
 

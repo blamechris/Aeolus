@@ -84,6 +84,7 @@ struct CycleOverlapTests {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: plane),
             leases: LeaseFixture.authority(thermalEmergency: latch),
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane))
@@ -130,8 +131,9 @@ struct CycleOverlapTests {
 /// cancelling it is what stops it" rather than "nothing happened".
 ///
 /// The pair's fan reads **automatic** — `.modeReclaimed` — because only a reclaimed mode is
-/// re-engaged since ADR 0014: the driver's first step refuses a fan whose raw mode is not `0`,
-/// so a target divergence on a fan still in manual is re-commanded with no mode write.
+/// re-engaged since ADR 0014: the driver's first step refuses a fan whose raw mode the fold does
+/// not call automatic (`0` or `3` since the P1′ amendment), so a target divergence on a fan still
+/// in manual is re-commanded with no mode write.
 @Suite("A cancelled sweep does not acquire a fan")
 struct CancelledSweepTests {
 

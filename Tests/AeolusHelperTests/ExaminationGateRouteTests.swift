@@ -117,13 +117,16 @@ struct ExaminationGateRouteTests {
 
     /// The composition's one gate is the one § 5 waits on: a step pass held on
     /// `HelperComposition.examinationGate` makes the composed § 5 wait, and leaving it lets the
-    /// sweep finish.
+    /// sweep finish. The clock is a `ManualClock` nobody advances, for the reason the level 6 test
+    /// below gives: on the wall clock a runner stall longer than § 5's examination wait would end
+    /// the wait before the gate is left (#411), and `composed`'s default `TestClock` would end it
+    /// at once, because its sleep jumps to the deadline.
     ///
     /// **Mutation:** hand § 5 a second gate in `HelperComposition.init`, as above. Run: red on the
     /// wait.
     @Test("The composed § 5 waits on the composition's gate")
     func theComposedWatchdogWaitsOnTheComposedGate() async throws {
-        let helper = HelperRestorerTests.composed()
+        let helper = HelperRestorerTests.composed(clock: ManualClock())
         await helper.bindSafetyRegistries()
         let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
@@ -188,11 +191,15 @@ struct ExaminationGateRouteTests {
         let firmware = ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        // Frozen though nothing here is timed: no lease is granted on `.notBuilt` and no pass
+        // runs, and a composition that names its clock is one a copied test cannot leave on the
+        // wall clock by accident (#411).
         let helper = HelperComposition(
             plane: ControlStateGatePlane(firmware, capability: .notBuilt),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,

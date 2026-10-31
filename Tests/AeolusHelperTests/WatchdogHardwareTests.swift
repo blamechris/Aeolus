@@ -89,6 +89,12 @@ struct WatchdogHardwareTests {
                 terminate: journal.terminate),
             watchdogTicks: ticks)
 
+        // Rule zero: no test writes to this Mac's SMC, and bring-up writes on a plane that can.
+        // The composition withholds the channel; this catches that default having been changed,
+        // once, on the binding's first use (`NotBuiltRequireTripwireTests`).
+        try #require(
+            !helper.plane.holdsWriteChannel,
+            "this composition over the real SMC holds a write channel; it would write to this Mac")
         await helper.bringUp()
 
         // Snapshots as well as the supervisors' own cycles, so the one connection is shared

@@ -23,7 +23,7 @@ import Foundation
 /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s decision A2, recorded as
 /// [ADR 0011](../../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md): the
 /// helper does **not** try to work out who left a fan in manual before restoring it. It
-/// cannot. `F<n>Md` reads non-zero (the decoded fold, #208) whether the fan was pinned by a
+/// cannot. `F<n>Md` reads manual (the decoded fold, #208) whether the fan was pinned by a
 /// dead Aeolus helper or by another vendor's tool that is running right now, and every way of
 /// telling them apart — a breadcrumb on disk, a scan of the process table — either makes a
 /// safety action defeasible by a file somebody can delete or is clean-room-adjacent.
@@ -450,9 +450,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
     /// Whether a refused write is this build's expected state or a real firmware refusal.
     ///
-    /// `SMCFanControlPlane` answers `.notBuilt` and every write verb on it throws
-    /// `.controlPathNotBuilt`, so on today's helper *every* restore below is refused. That
-    /// is not news and must not be logged as though it were.
+    /// A plane that cannot write — `SMCFanControlPlane` holding no channel — answers `.notBuilt`
+    /// and every write verb on it throws `.controlPathNotBuilt`, so on such a helper *every*
+    /// restore below is refused. That is not news and must not be logged as though it were.
     private var capabilityNote: FanWriteCapability { plane.writeCapability }
 
     // MARK: - The post-reconciliation baseline
@@ -551,22 +551,21 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     }
 
     /// See `HandbackReadingBack`. One `.supervisor` turn per fan, sequentially, for
-    /// `reconcile()`'s reason, and **logs nothing** — § 3 logs transitions, and only it can
-    /// see them. No budget, and none is needed: § 3 asks from inside its own cycle, which
-    /// nothing awaits before issuing a keystone.
+    /// `reconcile()`'s reason, and **logs nothing**: `PlaneHandbackReadBack`'s loop over this
+    /// pass's own plane. No budget, and none is needed: its callers are § 7's read-back, after
+    /// § 7's own keystone, and tests.
     func handbackReadings(of fans: Set<Int>) async -> [Int: HandbackReading] {
-        var readings: [Int: HandbackReading] = [:]
-        for fan in fans.sorted() {
-            do {
-                switch try await plane.readControlState(ofFan: fan).mode {
-                case .automatic: readings[fan] = .automatic
-                case .manual: readings[fan] = .manual
-                }
-            } catch {
-                readings[fan] = .unreadable(detail: String(describing: error))
-            }
-        }
-        return readings
+        await PlaneHandbackReadBack(sensing: plane).handbackReadings(of: fans)
+    }
+
+    /// The same loop over this pass's plane at `admission`: what § 3 is given, at its lane, to
+    /// read back the fans it owes a read (#295, #300; ADR 0012's 2026-10-18 amendment). § 3 logs
+    /// the transitions, which only it can see, and asks from inside its own cycle, which nothing
+    /// awaits before issuing a keystone.
+    nonisolated func handbackReadBack(
+        admittedAt admission: PlaneAdmission
+    ) -> PlaneHandbackReadBack<Plane> {
+        PlaneHandbackReadBack(sensing: plane.admitted(at: admission))
     }
 
     /// Questions 1–3 above, as the value the snapshot reads too.
@@ -592,5 +591,6 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 /// The snapshot's seam — `baseline()` above is the whole of it.
 extension StartupReconciliation: ReconciliationBaselineReporting {}
 
-/// § 3's seam — `handbackReadings(of:)` above is the whole of it (#295).
+/// The read-back seam at `.supervisor` — `handbackReadings(of:)` above is the whole of it
+/// (#295). § 3 itself is given the lane's reader, `handbackReadBack(admittedAt:)`, since #332.
 extension StartupReconciliation: HandbackReadingBack {}

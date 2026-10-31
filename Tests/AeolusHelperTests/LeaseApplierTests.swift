@@ -273,10 +273,13 @@ struct LeaseApplierTests {
         let firmware = ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let helper = HelperComposition(
             plane: ControlStateGatePlane(firmware, capability: .notBuilt),
             snapshotProvider: fanProvider(fanCount: 1), criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog, leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,
             teardown: TeardownSeams(sources: RecordingSignalSources()))

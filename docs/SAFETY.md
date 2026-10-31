@@ -94,15 +94,19 @@ lease that has to be actively held.
 
 - A client requests control with a time-to-live — 30 seconds by default.
 - It renews on a heartbeat, every 10 seconds by default.
-- If the lease expires for **any** reason — the client crashed, was `kill -9`'d, the GUI
-  hung, the user logged out, a deadlock stalled the renewal — the helper restores every
+- If the lease expires for **any** reason — the client crashed, was `kill -9`'d or
+  force-quit, the user logged out, a deadlock stalled the renewal — the helper restores every
   affected fan to automatic.
+- **A lease proves the holder's process is renewing, not that its UI responds.** The app renews
+  off the main actor (`LeaseDriver`), so a frozen window keeps the user's speed until the app is
+  force-quit. That is deliberate: tying renewal to the main thread would let a busy, healthy UI
+  lose control, the failure #229 closed. The bullet above listed "the GUI hung" until #479.
 
-**That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
-ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
-write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
-hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it — another
-engaged fan, or an engagement still waiting for its yield under the current epoch:
+**The expiry bullet above ended "and clears the Apple Silicon force key" until #104, and it was
+wrong.** An ordinary per-lease teardown restores only the fans that lease covered and, on a plane
+that cannot write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the
+key when it hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on
+it — another engaged fan, or an engagement still waiting for its yield under the current epoch:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
@@ -149,8 +153,8 @@ tolerated. A single scheduling hiccup must not surrender control; a dead client 
 
 **That tolerance is a property of the client's *sending*, and the helper used to be able to
 defeat it** ([#229](https://github.com/blamechris/Aeolus/issues/229)). After #90 six of the
-seven XPC verbs shared one per-connection queue, `renewLease` among them, and § 3 has the app
-rendering the snapshot at 1 Hz on the connection it also holds its lease on — so on a machine
+seven XPC verbs shared one per-connection queue, `renewLease` among them, and the app was to render
+the snapshot at 1 Hz (§ 3) on the same connection it would hold its lease on — so on a machine
 whose reads cost more than a second the backlog grew monotonically, and once it was longer than
 the TTL a beat sent exactly on schedule reached the lease table after the lease had gone. The
 direction was fail-safe, and it was still a live, healthy client losing manual control for a
@@ -161,6 +165,16 @@ precondition neither may acquire. The queue itself is still unbounded, deliberat
 it would answer some other message with a refusal a compliant client could not avoid either,
 which is the defect moved rather than closed. `AeolusXPCProtocol`'s ordering section states
 exactly which verbs are sequenced and what the remaining cost is.
+
+**The app no longer reads and holds on one connection.** It holds its lease on a control
+connection of its own, a second `HelperClient` separate from the read connection it renders
+snapshots from (`AppComposition`, #153), so no `snapshot` is queued behind the app's own `apply`.
+The app takes a lease when the user clicks a percentage in the main window's control for all fans
+(#153's PR 6b), or puts a fan in Custom in its row (#154), and the helper refuses it until the
+write plane exists. One lease covers every fan in Custom, so changing which fans are in Custom
+releases the lease, which returns its fans to automatic control, and, while any fan is still in
+Custom, asks again for those fans (`LeaseDriver`, "One fan at a time"). The helper-side fix above
+is unchanged by this, and still covers a client that reads and holds on one connection.
 
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
@@ -349,7 +363,24 @@ firmware at runtime.
   never widen it, and it is never trusted over what the hardware reports.
 - **0 RPM is not reachable.** Not through a curve, not through a fixed setting, not
   through a malformed config, not through the CLI. Stopping a fan entirely is not
-  something this software will do.
+  something this software will do. That includes the instant of taking a fan: Apple's stopped
+  state leaves `F<n>Tg` at 0, so the engagement step that reads back manual control also holds
+  the target at or above this floor before it answers, raising it when it is below
+  (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's P1′ amendment). On `main` the rule
+  and the scripted plane apply it; on `e4/bring-up` the production plane's step applies it too,
+  in the same turn (#465).
+
+  **The residual, on `e4/bring-up`.** One state is still a stopped fan this software holds: raw
+  `F<n>Md = 1` at a target of 0, at rest. It arises when the step that wrote the mode throws
+  before its floor holds — the floor refused, unanswered or not held, the target unreadable, the
+  mode's read-back lost, or the mode write unanswered and landed — and the undo that follows is
+  refused too; or when ADR 0012's D ends the helper between the mode write and the raise, which
+  no undo follows. It is bounded, not excluded: by level 6's re-apply, which re-adopts and
+  commands the fan in one step; by § 5; by the lease's teardown and its three attempts; by § 3's
+  bridge, since the driver registers the fan with § 3 before its undo; by § 4, § 6 and § 7; and by
+  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. ADR 0014's b2
+  amendment, "Settled by P1′", lists the routes. (A fan kept the same way under load is not
+  stopped: it holds Apple's last target.)
 
 ### Why the floor is not simply `F0Mn`
 
@@ -506,13 +537,58 @@ enforced, until #104.
 override is latched a retry is refused from the latch alone, before any sensor is read;
 while it is not, every grant-time sightedness check within one cycle period is served from a
 reading no more than that old, and concurrent checks share a single read — so at most one
-grant-time read is ever outstanding, and this cycle reaches the SMC connection within four
-turns of asking. *"§ 3's own reading"* is the usual case and not the guarantee: a cold cache
-reads for itself, and a grant-path read that fails is remembered ahead of a later cycle
-sighting, which is ADR 0010's amendment of 2026-09-20. The bound that matters to this
-paragraph — one outstanding read, four turns — holds in every case. The mechanism is
-[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the arithmetic that made it necessary,
-and the third priority level that was rejected instead, are recorded there.
+grant-time read is ever outstanding. And this cycle has its own admission class, so it reaches
+the SMC connection within one turn of asking — the turn already in flight — however many reads
+are outstanding; so does each of its read-backs, bridges and restores. *"§ 3's own reading"* is
+the usual case and not the guarantee: a cold cache reads for itself, and a grant-path read that
+fails is remembered ahead of a later cycle sighting, which is ADR 0010's amendment of
+2026-09-20. The bounds that matter to this paragraph — one outstanding grant-time read, and one
+turn — hold in every case. The coalescing is
+[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the admission class, which reopens that
+ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
+[ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment. The one-turn bound rests on this cycle being the admission class's only user, one call
+at a time, and the class is reached only by holding a view of it — never by a value a request
+carries (the same ADR's #440 amendment). The class's value sets are pinned by the compiler, so no
+other admission or priority can reach it under another name; its uses are counted file by file at
+the source, which also holds that views are minted only in the composition and in this cycle's
+handback, and that the lease core names no admission; every stored plane's admission is checked in
+the composed graph, at rest and after a firing. The restores this cycle's revocation causes take the
+class because this cycle holds the one restorer admitted there, its handback, and lends it to the
+lease core for that call alone: in safe Swift the compiler stops the lease core keeping it, CI
+compiles every refused shape but a key path on its own toolchain, and a restore's cause selects
+nothing. What any other mechanism writes is checked at `.supervisor` by behaviour, on the paths
+the suites drive: the lease core's teardowns after a firing, every call each makes, and level 6,
+§ 5's re-assert, give-up and lapse hand-back, § 7's panic verb and § 6's machine-wide restore, each
+at rest and after a firing; and the two closures that `bringUp()` installs, the signal teardown at
+rest only and the power observer's sleep and wake both at rest and after a firing, where every
+write and every envelope read is checked and this cycle's own reads in its lane are not told from
+another's. A path none of them drives is held by the source scans alone,
+which catch accidents and not deliberate evasions. And the premise is observed at run time, where
+the scheduler reports a second request in the class while one is outstanding.
+
+*Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
+flight, and leaves the overtake quota alone); `ThermalCycleLaneValueSetTests` (the admission and
+priority value sets, pinned by exhaustive switches); `ThermalCycleLaneRoutingTests` (in the
+composed graph only this cycle's reads, bridges and revocation's restores take the class; the
+restorer puts every cause outside it, and after a firing every other teardown restores outside
+it); `ThermalCycleLaneWriterTests` (every plane the composed graph stores is admitted at
+`.supervisor` but this cycle's, at rest and after a firing); `ThermalCycleLaneTripwireTests`,
+`ThermalCycleHandbackTripwireTests` and `ThermalCycleHandbackShapeTripwireTests` (who may name the
+class, counted per file; where a view may be minted, and the names of this cycle's handback's type,
+per file; that only this cycle lends to the lease core; that the lending signatures keep
+`borrowing` and `~Copyable`; and that the borrower reaches nothing but the one requirement, through
+no unsafe spelling — scans that catch accidents, not deliberate evasions);
+`SupervisorWriterAdmissionTests` (§ 5's re-assert, give-up and lapse hand-back, level 6, § 7 and
+§ 6's machine-wide restore, each with every call at `.supervisor`; and the signal teardown and the
+power observer bring-up installs, each with every write and every envelope read at `.supervisor`);
+`HelperRestorerTests` and `HandbackLendingBracketTests` (the lent route keeps § 5's and this
+cycle's notices and the handback ledger's bracket);
+`ThermalCycleLaneOverlapTests` and `ThermalCycleLaneCounterTests` (this cycle's firing episode and
+its take-back — with a lease that raced the latch to revoke — never have two requests in the class,
+two outstanding together are reported, and the count returns to zero however a request ends);
+and
+`WatchdogLimitsTests` (the bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
@@ -633,7 +709,7 @@ abandoned handback, both say `.restoreToAutomaticFailed`; one that reads automat
 the set is never folded into the accountable one).
 
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
-app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
+app renders at the user's refresh interval, and a `.fault` line in the log. That is the whole of it: a root daemon
 cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
 signal at all — the machine getting loud is the physical one, and the next `fanctl`
 invocation reports.
@@ -695,7 +771,10 @@ and one admitted before them is covered by the restore that follows it. A comman
 Silicon, and untested on Intel (`CLAUDE.md` rule 11). So when the handback's restores take effect,
 it leaves raw `F<n>Md = 0` and `Ftst = 0` behind it, as ADR 0014's restatement says, whatever was in
 flight: a step is refused if it is admitted after the handback's restore request, and otherwise
-covered by the restore that follows. The ticket guarantees that no engagement in flight undoes a
+covered by the restore that follows. Apple's controller may then stop the fan, which reads `3`:
+that is still Apple's management, which the fold reads as automatic, and a restore never writes
+`3` itself (ADR 0014's P1′ amendment). That was observed on `Mac16,5` under macOS 27.2 only, and is
+untested elsewhere (`CLAUDE.md` rule 11). The ticket guarantees that no engagement in flight undoes a
 restore that took effect; it does not make the firmware take one, and a refused restore still lets
 the machine sleep. `MachineWideRestoreInFlightApplyTests` drives the first half, a step admitted
 after the request, with an `apply` in flight on both unlock paths.
@@ -883,6 +962,34 @@ are sometimes eight seconds long, all night, in a bag. What the app does about t
 maintainer's call and this document does not make it. That is what keeps "never claim control you do not have" a structural property rather
 than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
+
+**The app ships three defaults that are the maintainer's to change, and none of them is the
+maintainer's decision.** Each is #153's default, recorded here so it is not read as one. The app
+takes a lease only on a click, and today's helper refuses every lease, so none of them acts on
+today's build.
+
+**Wake never re-acquires.** On `NSWorkspace.didWakeNotification` the app's lease driver sends its
+next renewal at once, so a lease that did not survive the sleep is reported as lost then, and it
+asks for nothing (`LeaseDriver.systemDidWake()`, wired by `AppComposition`). Changing this is a
+change to the driver and a safety review, not a flag: `LeaseLoss` carries no target to ask for
+again.
+
+**Fast user switching releases.** When this user's session resigns active
+(`NSWorkspace.sessionDidResignActiveNotification`) the app releases its lease, and switching back
+asks for nothing. Giving the fans back is always safe. The alternative, holding the lease across the
+switch, would leave the user at the console refused with `leaseHeldByAnotherClient`.
+
+**Closing the last main window releases.** That is #155's text. The menu bar item keeps running, so
+"set 75 %, close the window" puts the fans back on automatic; the Settings window and the menu bar
+panel never release. Whether the lease should instead live as long as the menu bar item is the
+maintainer's open question on #153.
+
+**One effect of those defaults is the maintainer's to weigh as well: an idle sleep ends a held
+lease.** While it holds a lease the app keeps an App Nap activity with
+`.userInitiatedAllowingIdleSystemSleep` (`LeaseProcessAssertions`), which still allows idle sleep.
+A Mac left idle with its lid open sleeps, the helper hands the fans back across the sleep as this
+section describes, and wake does not ask for them again. Keeping the Mac awake while a lease is held
+would take a different option, and that is the maintainer's decision.
 
 The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is
 **answered for a read-only handle on `Mac16,5`**: #68 asked which of three outcomes happens, and
@@ -1324,7 +1431,12 @@ floor every permit is clamped to, is not recorded, whether a report or a re-asse
 it, and the refusal is logged at `.fault`; the record then keeps the
 step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
 RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
-([#395](https://github.com/blamechris/Aeolus/pull/395)).
+([#395](https://github.com/blamechris/Aeolus/pull/395)). The record's `commanded` has no setter: it
+is a get-only view of storage private to `HeldFan`, and `record(_:)`, which holds the check, is the
+one assignment to it. The compiler refuses an assignment to `commanded`, and to the storage from
+another file; no key path to `commanded` is writable at run time; and the one assignment in
+`HeldFan`'s own file is held by a lexical count, which catches accidents
+([#612](https://github.com/blamechris/Aeolus/issues/612), `ReclamationHeldFanAccessTests`).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1350,7 +1462,9 @@ worse than a UI that reports an error, because the user acts on it.
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationRecordIntegrityTests.swift` (a report or a re-assert's return below the floor or not a
 number, refused and logged at `.fault`; a report matching a system target below the floor; a target
-that is not a number; and every RPM a log line states, #395),
+that is not a number; every RPM a log line states, #395; and a cycle that cannot read, in a run
+short of `ReclamationLimits.blindCyclesBeforeDivergence`, leaving the record's target, so the next
+readable cycle still marks and re-asserts a divergence the blind one hid, #612, #615, #617),
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
 and #366's episode and given-up lease as values, in its extension in
@@ -1680,10 +1794,11 @@ control. Anything less and users are right not to trust the software.
 
 **The lease covers *client* death; reconciliation covers *helper* death.** Conflating the
 two processes is what let this section claim a signal handler was the answer. § 1's lease
-handles a crashed, killed, or hung app — `SIGKILL`, a kernel panic, a power loss on the
-*client* side — because the enforcer outlives it. When the helper is the one that dies, the
-enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
-and the SMC keeps the last value written. Only a restart can notice.
+handles a crashed or killed app, a hung one once it is force-quit — `SIGKILL`, a kernel
+panic, a power loss on the *client* side — because the enforcer outlives it. When the
+helper is the one that dies, the enforcer is the casualty: the TTL is not counted by
+anything, the watchdog is not watching, and the SMC keeps the last value written. Only a
+restart can notice.
 
 *Tested by:* `StartupReconciliationTests` drives the composed helper over scripted firmware —
 a fan starting in manual is restored exactly once, a failed mode read and a failed
@@ -1989,7 +2104,8 @@ and nothing else: the driver has no target verb, and the file that holds it neve
 type in code, so the control loop holds no writer it can command a target through but the
 governed one. The two share no *writing* protocol, so no code can be
 generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
-exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
+exactly that `GovernedFanWriter` declares neither § 3's bridge,
+`bridgeToMaximumThenRestore(of:)` (`commandMaximum(of:)` until #332), nor
 `restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
 either — the exclusion is about the verbs, not about every protocol in the language.
 `SafetyWriters.swift` records the same correction, having said "no protocol in common" once.)
@@ -2026,6 +2142,14 @@ unconditionally, after and regardless of the lease teardown. And it is why § 7 
 a corrupted or blind helper state at all: there is nothing in the verb for the corruption to
 invalidate. § 2 carries the fan-bounds-local half of the same principle — the restore verb takes
 no permit, and must never acquire one — with source tripwires holding it.
+
+**One stated exception, and it is not the keystone: § 3's bridge.** `bridgeThenRestore(_:)` takes
+a permit, because its command half writes the fan's maximum, and runs a `.fan(n)` restore in the
+same job, attempted whatever the command answered and reading nothing of the permit but the fan's
+index ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment). The keystone verbs are untouched by it, and § 3's revocation restores every fan through
+them afterwards. `ThermalEmergencyBridgeTests.theBridgeIsTheOneRestoreInsideAPermit` holds that it
+is the only such verb.
 
 *Tested by:* `SafetyPrecedenceTests` — the six levels in this order, that a constraint cannot be
 made `Comparable`, and that `Ungoverned` is exactly `allCases` minus the control loop.
@@ -2070,13 +2194,48 @@ scripted firmware: restored exactly once, failed mode read and failed enumeratio
 back to the machine-wide verb, a second pass declined, budget exhaustion. None of it proves a real
 firmware takes the mode write.
 
-**4. App quit restores automatic control.** *Executes: during E3/E4 bring-up.* Same mechanism as
-row 1 — lease teardown on connection invalidation — and write-blocked for the same reason.
+**4. App quit restores automatic control.** *Executes: during E3/E4 bring-up, and maintainer-only:
+the app's explicit release needs a signed Full build.* Write-blocked for the same reason as row 1,
+and it no longer shares row 1's mechanism. A quit now sends an explicit `releaseLease` on the app's
+control connection, waits up to `LeaseDriver.releaseBound` for the answer, and only then tears the
+connection down, so lease teardown on connection invalidation is the backstop rather than the
+mechanism (`LeaseLifecycle`, `AppComposition`, #155). The shutdown runs off the main actor and the
+reply comes back through the main run loop, because AppKit's `.terminateLater` loop can hold the
+main actor until the reply (`MainRunLoop`, #493).
+
+It passes when the helper's `Lease` log shows the restore as
+`returned to automatic control (the client released the lease).`,
+not `(the holding connection died)`, and the quit completes within about two seconds, expected well
+under it with a healthy helper. A quit that takes the full two seconds means the release was not
+answered within the bound, and the bound let it go. Watch it with:
+
+```bash
+log stream --level debug --style compact --predicate 'subsystem == "dev.aeolus.AeolusHelper" AND category == "Lease"'
+```
+
+Renewals are logged at debug level only. `LeaseLifecycleTests`, `AppCompositionLeaseTests` and
+`QuitOffTheMainActorTests` hold the order against a fake helper. The app takes a lease only on a
+click, and today's helper refuses every lease, so there is nothing to release on today's build.
+
+**A signal is not a quit.** `kill`, `launchctl` and a root `shutdown` send the app `SIGTERM`, which
+ends it without `applicationShouldTerminate(_:)`: no explicit release is sent, and the helper's
+connection-invalidation backstop ends the lease, logged `(the holding connection died)`. The app
+does not handle `SIGTERM`; handling it would be a design change for the architect.
 
 **5. Logout restores automatic control.** *Executes: during E3/E4 bring-up.* The orderly signal
 path. `SignalTeardownTests` covers the handler body end to end over the scripted plane; signal
 *delivery* is asserted at the source by `SignalTeardownTripwireTests` rather than tested,
-deliberately, because installing the real source would apply `SIG_IGN` to the test runner.
+deliberately, because installing the real source would apply `SIG_IGN` to the test runner. The app's
+half, on a signed Full build: on `NSWorkspace.willPowerOffNotification` it sends an explicit
+`releaseLease`, and the quit that follows finds nothing held. It passes on the same log evidence as
+row 4, with no "preventing logout" prompt (#153's checklist).
+
+The app also disables sudden and automatic termination while it is taking, holding or giving back a
+lease, and that is defence in depth, not what this row rests on: the sudden-termination counter
+starts at 1, the app's `Info.plist` sets neither `NSSupportsSuddenTermination` nor
+`NSSupportsAutomaticTermination`, and the App Nap activity it holds while it holds a lease already
+disables both. The counters also trail the driver by a main-actor turn, and are enabled again at a
+loss while the release after it may still be in flight (`LeaseProcessAssertions`).
 
 **6. Restart restores automatic control.** *Executes: during E3/E4 bring-up.* As row 5, plus row
 17's boot-start half.
@@ -2232,6 +2391,8 @@ Stated so the guarantees are not read as broader than they are:
 - A user who deliberately sets a low fixed speed within the permitted range, on a machine
   under sustained load, with the app running and healthy. The ceiling in §3 is the
   backstop; below it, the user's choice is the user's choice.
+- An app that has frozen while it holds a lease. It is alive, so its lease is too; force quit
+  ends it, and § 3 bounds the meantime.
 - Hardware faults — a failed fan, a blocked vent, a failing thermal sensor.
 - Bugs in the safety subsystem itself. Which is why it is tested first and reviewed
   hardest, and why the panic path in §7 is designed as it is — **designed, reachable, and

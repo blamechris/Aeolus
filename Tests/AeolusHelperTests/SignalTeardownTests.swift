@@ -66,11 +66,14 @@ struct SignalTeardownTests {
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
                 ]))
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         let helper = HelperComposition(
             plane: plane,
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,
@@ -242,7 +245,8 @@ struct SignalTeardownTests {
     ///
     /// **Mutation:** in `SignalTeardown.run(stoppingSupervisorsWith:)`, replace
     /// `leases.releaseEveryLease()` with `leases.revokeEveryLease(because: .allLeasesDropped)`.
-    /// Run: red on the attempt count — that sweep restores the table's fans, and it is empty.
+    /// Run: red on the attempt count — that sweep restores the table's fans, and it is empty. (Run
+    /// before #440, when that verb took a cause; its table-only sweep is unchanged.)
     @Test("The teardown asks again for a fan whose lease-end handback the firmware refused")
     func theTeardownRetriesAFanWhoseLeaseEndHandbackWasRefused() async throws {
         let journal = TeardownJournal()

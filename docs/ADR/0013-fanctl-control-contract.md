@@ -86,7 +86,11 @@ run that did not end in the safe state says it did on either stream.
 **A fan is cleared when its mode reads automatic and its availability does not say otherwise.**
 The availability is read for every fan, whatever its mode, and each reason is classified once, in
 one exhaustive switch (`SafeState.clearance(of:)`) with no `default:` arm, so a reason added to
-the vocabulary is a compile error until it has been decided:
+the vocabulary is a compile error until it has been decided. *2026-10-19:* the switch is now
+`ManualControlAvailability.clearance` in `FanKit`, with `FanState.isClearedToAutomatic` beside it,
+so the app shares the definition ([#153](https://github.com/blamechris/Aeolus/issues/153));
+`SafeState.clearance(of:)` and `SafeState.isCleared(_:)` delegate to them, and the table is
+unchanged:
 
 | Class | Reasons | Effect |
 |---|---|---|
@@ -487,7 +491,7 @@ hardware rows measure the restore's real latency.
 |---|---|---|
 | The helper ends every lease and attempts every fan it is accountable for when it takes `restoreAllToAutomatic` | `LeaseAuthority.releaseEveryLease` and SAFETY.md § 7, as built. *2026-10-10:* on a plane that can write, the request also includes the machine-wide restore ([ADR 0014](0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351) | `auto` reports what is left, as 5, 8 or 9. No CLI change. |
 | Ten seconds covers the restore's visible latency | Not measured. No restore has been performed on hardware | Raise the window, or `auto` reports 8 for a restore that was working. |
-| `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the classification decided on review of #321 | A new reason is a compile error in `SafeState.clearance(of:)`, and has to be decided there. |
+| `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the classification decided on review of #321 | A new reason is a compile error in `ManualControlAvailability.clearance` (`SafeState.clearance(of:)` until 2026-10-19, #153), and has to be decided there. |
 | The helper's `mode`, read beside the availability, is the best statement of a fan's state | `mode` alone is not (#178); the availability is the other field. *2026-10-15:* on a helper that can write, an unread mode is stated by the availability (#360) | #178 gives the wire a way to say "not known", and exit 0 is strengthened. |
 | A snapshot that fails after a successful handshake is the helper's state being inconsistent, and the request is safe to send | SAFETY.md § 7; the request needs no snapshot | `auto` would send a request the helper cannot act on, and exit 8. |
 | A first snapshot that fails with the handshake still in force proves the helper is identified; one that times out, or whose helper restarts under it (XPC 4097), does not | `HelperClient.translate` discards the connection on `helperNeverAnswered`, and `connectionWasInterrupted` clears the negotiated handshake on 4097; either way `negotiated` is `nil` afterwards | Those two cases send nothing and exit 1; the message opens "No restore request was sent." and tells the user to run `fanctl reset --all`. Unchanged unless the client keeps the evidence. |

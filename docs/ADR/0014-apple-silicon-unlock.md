@@ -29,8 +29,12 @@ Two pieces are not built: § 5's re-assert registering with § 3
 [#342](https://github.com/blamechris/Aeolus/pull/342): § 5 asks it once per examination, not
 around each write, which D4 below still requires.
 
-The production plane answers `writeCapability == .notBuilt`, `SMCConnection.write(_:to:)` throws,
-and no write selector exists under `Sources/`.
+When this ADR was written, the production plane answered `writeCapability == .notBuilt`,
+`SMCConnection.write(_:to:)` threw, and no write selector existed under `Sources/`. *(On
+`e4/bring-up` since [#431](https://github.com/blamechris/Aeolus/pull/431), the last two are not
+true: `write(_:to:)` sends one `WRITE_BYTES` round trip, and `selectorWriteBytes`, 6, is declared
+in `SMCConnection`. The plane still answers `.notBuilt`, and the helper calls the write only in
+the daemon's `private` forwarder, which nothing invokes, by the B1 seam amendment.)*
 
 What is known about the write path here is almost nothing, and the gap between known and reported
 decides most of this ADR:
@@ -74,6 +78,7 @@ Five facts about the tree constrain both:
    Apple's own management reads raw `0`. That has been observed only with no load and nothing
    holding a fan. Bring-up reads no key table. Its only fan enumeration happens inside
    `reconcileFans()`, through the composition's `FanEnumerating`. The plane never reads `Ftst`.
+   *(U0 failed in P1; see the P1′ amendment.)*
 
 The slices that implement this ADR, their order, and the maintainer's questions are in the slice
 plan on #9. D8 lists what run 1 depends on, so this document can be read without the plan.
@@ -186,7 +191,8 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
     `EngagementDriverTests.onlyTheDriverEngages` holds that.
   - § 5 runs the unlock only for a reclaimed mode. D3's first step refuses a fan whose raw mode is
     not `0`, so a fan still in manual whose target diverged is re-commanded alone, after the
-    driver's `requireEntitlement(for:)`.
+    driver's `requireEntitlement(for:)`. *(Since the P1′ amendment, a reclaimed mode reads `0` or
+    `3`, and D3 admits both.)*
   - `permitBearingVerbs` gained the driver's `engageManualControl(of:)`, `firstStep(of:)` and
     `requireEntitlement(for:)`, and § 3's role requirement `manualControlEngaged(_:)`.
     `permitFreeFunctions` gained `handBack(fanAt:)` (the undo), `handbackAccepted(fanAt:)`, the
@@ -241,13 +247,17 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
   - for `Ftst`, the preparation step's premise that a set key was left by a dead holder (D5), and
     D3 step 3's write over a key Apple itself sets.
 
+  *(Decided by the P1′ amendment: the fold and the pre-state read Apple's set `{0, 3}`, the poll
+  stays Y-write, and U14 holds.)*
+
 **For one fan *n*:**
 
 1. **Pre-state and the first write.** The driver asks the entitlement (D4). Then, in one plane
    turn:
    1. Check the restore epoch (D4).
    2. Read raw `F<n>Md` as the pre-state. If it is not `0`, throw `.notAutomatic` and write
-      nothing: a fan that is not automatic is not Aeolus's to take.
+      nothing: a fan that is not automatic is not Aeolus's to take. *(Since the P1′ amendment: a
+      raw value the fold does not call automatic, which means one outside `{0, 3}`.)*
    3. Resolve `F<n>Md`'s type and order from a fresh `READ_KEYINFO` (ADR 0004).
    4. Write `F<n>Md = 1`.
 
@@ -257,7 +267,8 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
    - **`1`** → `.engaged`, with the force key untouched. This is evidence of engagement only
      because the same turn read `0` immediately before the write. When the system is not actively
      asserting control, this is the reported first step. Under load it disagrees with the report.
-     It is recorded either way.
+     It is recorded either way. *(Since the P1′ amendment, the same turn read a value in Apple's
+     set, which never includes `1`, and the turn also holds the target at or above the floor.)*
    - **`0`** → accepted is not applied
      ([#291](https://github.com/blamechris/Aeolus/issues/291)): throw.
    - **Any other value** → throw, and back to the architect.
@@ -280,7 +291,7 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
    - **Y-write:** check the epoch, then write `F<n>Md = 1`. `0x00` → read back as in step 2.
      `0x82` → `.awaitingYield`. Anything else → throw.
    - **Y-read:** read raw `F<n>Md`. If it still reads the non-zero value → `.awaitingYield`, with
-     nothing written. Otherwise, proceed as Y-write.
+     nothing written. Otherwise, proceed as Y-write. *(Withdrawn by the P1′ amendment.)*
 
    When `UnlockLimits.yieldBudget` elapses — 3.5 s for run 1, so at most 35 steps — the driver
    undoes and refuses. **No turn is held between steps.** The step records the time from `Ftst`'s
@@ -378,13 +389,16 @@ the first build that has one. In full means:
 
 **The keystone gains no input:** incrementing a counter is not reading trusted data. **No restore
 waits for an engagement to finish.** A restore waits at most for the turn in flight and the turns
-queued ahead of it at `.supervisor` (D7).
+queued ahead of it at `.supervisor` (D7). *(Since ADR 0012's 2026-10-18 amendment a restore § 3
+causes — its bridge job's and its revocation's — is admitted in § 3's lane and waits for the turn
+in flight alone; every other restore waits as this says.)*
 
 ### D5 — The force key is the plane's, reference-counted by what the plane engaged, cleared last, and checked at every start
 
 - **An engaged set.** A fan joins when its mode write is accepted *and* raw `F<n>Md` reads back
   `1`, after a pre-state of `0` read in the same turn (D3). It leaves when any restore covering it
-  is **issued**, whatever the firmware answers.
+  is **issued**, whatever the firmware answers. *(Since the P1′ amendment: after a pre-state in
+  Apple's set.)*
 - **A touched set, which never shrinks.** It holds every fan index this plane has engaged or
   restored by index in this process. It lives in memory beside the engaged set, and is never read
   from the SMC.
@@ -565,6 +579,11 @@ has no source in ADR 0007, and is restated to match.
 
 ### D7 — Each write takes one supervisor turn; forward writes read, restores do not; the unlock holds no turn between steps
 
+*Amended by ADR 0012's 2026-10-18 amendment: each write takes one turn **at its plane's admission**
+— `.supervisor`, or § 3's lane through the view § 3 is given (`FanControlPlane.admitted(at:)`) —
+and § 3's bridge is one job, a command and then a `.fan(n)` restore, in one turn
+(`FanControlPlane.bridgeThenRestore(_:)`). Read "supervisor turn" below with that.*
+
 - **Forward verbs** — an engagement step, and `commandTarget` — take one `.supervisor` turn. The
   turn covers a fresh `READ_KEYINFO` (ADR 0004), the write and its read-back.
 - **`restoreToAutomatic` takes one `.supervisor` turn per call and issues no read.** It encodes
@@ -608,6 +627,7 @@ are covered under "Start 0" below.
 
 **On `main`**, in this order where they depend on each other. Items 1 to 4 are sequential; items 5
 and 6 are independent.
+*(Restated by the P1′ amendment: it adds item 7, the P1′ vocabulary; see D8, as restated.)*
 
 1. **#180**, ADR 0009 D2's per-fan lease check.
 2. **#104's two remaining code pieces:**
@@ -698,6 +718,8 @@ preparation step and then reconciliation, and either can write toward automatic.
   - read `Ftst` and every `F<n>Md` as `0`;
   - write nothing;
   - log that the preparation step's enumeration succeeded.
+
+  *(Restated by the P1′ amendment: every `F<n>Md` reads in Apple's set; see D8, as restated.)*
 - **Stop if start 0 logs no successful enumeration.** In that case `.everyFan` knows only the fans
   this process touches.
 - **Stop if start 0 writes anything.** A write means one of two things: the quiescence check was
@@ -707,7 +729,7 @@ preparation step and then reconciliation, and either can write toward automatic.
   run. Any toward-automatic write it makes is recorded in the helper's own log, and the gates apply
   to forward writes.
 
-**The run: start 0, then four steps, all on fan 0.**
+**The run: start 0, then four steps, all on fan 0.** *(Five since the P1′ amendment: 1d follows 1c.)*
 
 **The safety argument is the choice of target.** Every hold asks for more cooling than Apple's
 controller would ask for *at that moment*. So every stuck state it can produce — an unlock that
@@ -718,14 +740,18 @@ will not undo, a restore the firmware refuses — is a loud fan, not a hot one.
   load. So the loaded hold runs at the fan's declared maximum, the one target no automatic demand
   can exceed (U13).
 - **Fan 1 is left automatic on purpose.** Its behaviour under `Ftst = 1` is U7. Its `F1Tg` is a
-  live proxy for what Apple would ask of fan 0 (abort 9).
+  live proxy for what Apple would ask of fan 0 (abort 9). *(At rest it cannot be seen. 1d is its
+  test, and 1b is one if `Ftst` is written there: the P1′ amendment.)*
 
 The four steps:
 
 - **1a — at rest:** `fanctl set 0 50% --for 60s --json`, after 60 s of baseline. This is where the
   report says the naive write succeeds, because the system is not actively asserting control.
+  *(Restated by the P1′ amendment: the refusal is predicted here, and the engaged turn raises
+  the target to the floor; see D8, as restated.)*
 - **1b — under a twelve-way load:** `fanctl set 0 100% --for 60s --json`, which commands `F0Mx`,
   5,777 RPM.
+  *(Restated by the P1′ amendment: under the sixteen-way busy loop; see D8, as restated.)*
   - **Engaged once `F0Tg` has stayed at least 300 RPM above `F0Mn` for 30 s,** so Apple's
     controller is actively managing the fan. This is where the report says the naive write is
     refused and the unlock is needed.
@@ -734,6 +760,8 @@ The four steps:
   `.everyFan` to two fans already in automatic while the thermal manager asserts control (U5b).
   Then stop the load, and wait until the package is within 3 °C of its pre-run baseline and `F0Tg`
   is back at rest.
+  *(Restated by the P1′ amendment: the sixteen-way load, and "at rest" means `F0Tg` at `F0Mn`
+  or 0; see D8, as restated.)*
 - **1c — at rest, 30 s at 50 %:** ended early from an SSH session with `fanctl reset --all`. This
   is row 18's hardware half.
 
@@ -745,6 +773,7 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
   test, labelled.
 - **Then observe for 120 s,** including a 20 s twelve-way load that must move `F0Tg` and `F0Ac`.
   The fan following load is the only proof that Apple's management came back.
+  *(Restated by the P1′ amendment: a target proof replaces the load; see D8, as restated.)*
 
 **Recorded** in `docs/SMC-RESEARCH.md`'s observed section, with machine state and build:
 
@@ -762,7 +791,7 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
   - whether `F0Tg` held the written value on every § 5 cycle;
   - `F0Ac`'s step response, from about 2,400 RPM and from rest (row 9).
 - **Fan 1 and the force key:** fan 1 under the force key (U7), and the force key's state at every
-  point.
+  point. *(Restated by the P1′ amendment: 1d's record.)*
 - **The client:** `apply`'s and each heartbeat's client round trip (#325).
 - **The examination gate:** how long each hold lasts, the actor hops made under a hold, and how
   late the gate's timers wake: what `FanExaminationGate.examinationMargin` assumes (the A6 PR-2
@@ -781,6 +810,8 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
 
    Fan 1 stays automatic, so `F1Tg` moving is Apple's controller; that is recorded, not an abort. A
    change in raw `F1Md` is recorded for U7, and guarded by abort 2.
+   *(Restated by the P1′ amendment: a raw mode outside `{0, 3}` at any time; see D8, as
+   restated.)*
 4. **A result or raw value outside D3's cases, or the budget expiring.** The helper undoes on its
    own; the maintainer verifies.
 5. **Any write round trip over 1 s.**
@@ -791,9 +822,12 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
    above 90 % of fan 0's commanded target. That is 3,208 RPM at 50 %, and 5,199 RPM at 100 %. On
    2026-08-20 fan 1's speed ran slightly above fan 0's, so the proxy errs early. The pre-flight
    checks that against `F<n>Tg` directly.
+10. *(Added by the P1′ amendment: raw `F0Md = 1` with `F0Tg` below `F0Mn` for more than 1 s.)*
+11. *(Added by the P1′ amendment: in 1d, `F1Tg` still 0 60 s into the load, or at a curated 50 °C.)*
 
 **If the restore does not land**, take these steps in order. Take each step only if raw `F0Md`,
 `F1Md` and `Ftst` are not all `0` on the recorder 10 s after the previous step.
+*(Restated by the P1′ amendment: outside Apple's set, not "not all `0`"; see D8, as restated.)*
 
 1. **`fanctl reset --all`.** Every lease is released, then `.everyFan` writes the mode of every
    enumerated and every touched fan and then the key, each attempted. This rests on D5's § 7 precondition. On a build without it, this step
@@ -857,6 +891,7 @@ every hold in run 1 aims there.
 - [#270](https://github.com/blamechris/Aeolus/issues/270), the missing bounds gate on
   `acquireLease`. It is unreachable on `Mac16,5`, whose bounds are plausible, and its issue names
   E3/E4 as its gate. *(Taken by the #128/#270 amendment below.)*
+- U7 observed holding, or the maintainer's lease shape built. *(Added by the P1′ amendment, item 9.)*
 
 ### D9 — Another SMC writer is excluded by the operator, gated read-only, and never detected by the helper
 
@@ -870,12 +905,16 @@ the maintainer's act, and it binds forward writes.**
 - **Census, read-only.** In run 1's session it runs before the branch build is installed; in later
   sessions, before the first forward write. The IORegistry's `AppleSMC` user clients must be only
   the Aeolus helper and the runbook's own sampler.
+  *(Restated by the P1′ amendment: three classes, passing when "other" is zero; see D9, as
+  restated.)*
   - That `ioreg` exposes each client with its creating process is U10. It is checked in the
     pre-flight session before anything relies on it.
   - The census counts clients and names no product. Nothing in the helper reads it.
 - **Quiescence, read-only.** 120 s at 2 Hz in which raw `F0Md`, `F1Md` and `Ftst` read `0` on every
   sample. This sees a writer that is holding, not one that is idle; on 2026-09-05 those two states
   were minutes apart on this machine. So quiescence backs the exclusion rather than replacing it.
+  *(Restated by the P1′ amendment: `F<n>Md` in Apple's set, and no `3` above a zero target; see
+  D9, as restated.)*
 - **In-run tripwire:** abort 3.
 
 **The helper detects nothing, and ADR 0011 D1 stands.** What ADR 0011 already gives is protection
@@ -907,7 +946,8 @@ Run 4 records raw values as a matter of course, once this project's own path is 
 
 1. **Run 1:** fan 0 only, at or above Apple's demand — at rest, and under load at maximum (D8).
 2. **Run 2:** both fans, below automatic (the declared minimum), under a moderate load for 5 min,
-   with § 3 armed. It needs D8's before-run-2 list. It covers:
+   with § 3 armed. *(P1's twelve-way load held Apple's demand at `F0Mn`, so "below automatic" is
+   meaningful only under a heavier load: the P1′ amendment.)* It needs D8's before-run-2 list. It covers:
    - rows 1 and 4, with the client the maintainer chooses (maintainer question 2 on #9);
    - rows 2 and 3: kill the helper with SIGKILL mid-hold, then confirm restart and reconciliation
      (H3);
@@ -964,7 +1004,8 @@ Each run's findings are recorded, and the branch revised, before the next.
 - **§ 4's `.refused` documentation** is corrected in the change that sets the seam's restore
   contract (D5).
 - **If U0 fails,** `FirmwareFanMode` needs an explicit classification of the value, and every E5
-  confirmation read is re-examined before run 1.
+  confirmation read is re-examined before run 1. *(U0 failed in P1; the P1′ amendment is the
+  classification.)*
 - **If U14 fails,** the preparation step and D3 step 3 are re-decided before run 1.
 - **If U5b fails,** a refused `F<n>Md = 0` on a fan already in automatic must not count as a failed
   restore. Otherwise `BoundedFanRestorer` mints durable refusals, and § 6's exit code reads a
@@ -1153,7 +1194,9 @@ Rejected:
 
 Rejected. On the report, the unlock is needed only while the thermal manager asserts control. So an
 unloaded run 1 might never exercise it, and run 2 — below automatic — would then be the first run
-that did.
+that did. *(Restated by the P1′ amendment: the report's mode 3 is this machine's rest state, so 1a
+is the likelier place for the unlock. 1b stays for the engagement from `0`, the 100 % hold, and U5
+and U5b under load.)*
 
 ### `fanctl auto` as the post-hold check
 
@@ -1165,6 +1208,8 @@ every hold's record. `fanctl status --json` reads the same snapshot and writes n
 
 Not rejected — conditional. It is better than polling by writing whenever a read can tell "held by
 the system" from "yielded". D3's pre-flight decides whether this machine offers such a read.
+*(Rejected by the P1′ amendment: under load Apple's management reads `0`, and at rest it leaves `3`
+to spin the fan, not to yield.)*
 
 ### Read the raw mode byte with the competing tool holding a fan, to settle #208 first
 
@@ -1257,7 +1302,8 @@ and both need that lease: #189's register that seals its own exit.
   reconciliation refusal, the mode guard (three-way since the #360 amendment below), § 3's kept set
   (#303), then `.foreignManualControl`. Under U0
   the system's hold reads raw `0` and never reaches the foreign answer. If U0 fails, the grant is
-  already wrong the same way, and D3 re-decides the fold before run 1.
+  already wrong the same way, and D3 re-decides the fold before run 1. *(U0 failed in P1: the
+  system's hold reads `0` or `3`, and the P1′ amendment's fold calls both automatic.)*
 - **A re-grant re-runs the unlock** with a fresh yield budget (D3, D6). A landed engagement clears the
   mark, and § 5 judges the fan afresh with a fresh re-assert budget. Every re-grant is a client's
   request (ADR 0013 D1), so the contest with the system is bounded per request.
@@ -2497,12 +2543,17 @@ first draft, which added a margin to 14.5 s.
   (`writeTurnRoundTrips`). The wait for a turn comes before it, and ADR 0012 ends the helper for no
   wait: G logs and ends nothing.
 - **It ran out inside a lawful hold.** At ADR 0012's design point, 12 supervisor readers at the
-  measured worst round trip, a supervisor-priority waiter may wait 6.43 s for each turn. An
-  engagement whose last step queued at 3.4 s, followed by its command, held the gate about 16.4 s,
-  and § 5's 15.5 s ran out inside that lawful hold.
-- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the longest legal
-  wait plus the longest write turn at the design point, for every curated set, and
-  `WatchdogLimitsTests` holds that.
+  measured worst round trip, a supervisor-priority waiter may wait 6.43 s for each turn (9.40 s
+  since ADR 0012's 2026-10-18 amendment, which puts § 3's lane turns in that wait; the hold below
+  takes each slot at G, which did not move). An engagement whose last step queued at 3.4 s,
+  followed by its command, held the gate about 16.4 s, and § 5's 15.5 s ran out inside that lawful
+  hold.
+- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the wait plus the
+  longest write turn at the design point, for every curated set, in ADR 0012's two **modelled
+  cases** (2026-10-18 amendment), and `WatchdogLimitsTests` holds that. The histories review
+  counted beyond them stay under G, but one is open: a take-back with writes recurring every § 3
+  cycle would make a slot 10.58 s, `lawfulHold` 31.75 s, and leave `examinationWait` short by
+  about 1.75 s, at an expiry's cost below.
 - **A hold is at most three slots, or the yield budget and two:**
   - an engagement's first step, its one retry, then its undo or its command;
   - or its last poll, which starts inside `yieldBudget`, then its undo or its command.
@@ -2514,9 +2565,9 @@ first draft, which added a margin to 14.5 s.
   ramp reset and report, and the driver's own entitlement around each step, its registration with
   § 3 and its after-check. Neither is measured; run 1 measures both (D8).
 - **What a wait that runs out means.** The contract was broken; or the helper is outside ADR 0012's
-  design point (more than 20 readers, or round trips slower than measured), where G's own alarm can
-  fire for a queue that is moving; or the wait spanned a system sleep, which the composition clock
-  counts. Each costs what an expiry costs:
+  design point (more than 12 readers since ADR 0012's 2026-10-18 amendment, 20 before it, or
+  round trips slower than measured), where G's own alarm can fire for a queue that is moving; or
+  the wait spanned a system sleep, which the composition clock counts. Each costs what an expiry costs:
   - a `.fault`;
   - an examination without the gate, whose re-assert stands down;
   - possibly a false divergence: the fan is marked for a cycle and an attempt is spent, which the
@@ -2682,7 +2733,17 @@ next re-apply runs the driver, which reads where the fan is instead of assuming 
 
 **Revisit if:**
 
-- #332 or D8 moves G or the design point;
+- #332 or D8 moves G or the design point. *(Fired 2026-10-18: #332's lane, ADR 0012's amendment
+  of that date, moved G's reach from 20 readers to 12 and left G at 10 s. The hold is taken at G,
+  so `lawfulHold` and `examinationWait` stand in ADR 0012's modelled cases: a supervisor wait of
+  9.40 s plus the longest write turn is still under G for every curated set, which
+  `WatchdogLimitsTests` holds.)*
+- ADR 0012's open take-back bound is settled the wrong way: if take-backs with writes can recur
+  every § 3 cycle, a slot passes G and `examinationWait` must be re-derived from the longer slot;
+  *(Widened 2026-10-31, on #465's review: any of ADR 0012's open families shown to recur. The
+  refused-revocation family's slot is over G, at 10.01 s since ADR 0012's #332 amendment and
+  10.15 s on `e4/bring-up`, but three such slots and `stepWait` come to 31.44 s, inside
+  `examinationWait`. The take-back family's come to 33.16 s on the branch, outside it.)*
 - run 1 measures holds, hops or timer wakes longer than assumed;
 - an outwaited `.fault` is ever logged, which would argue for deferral;
 - E8a needs concurrent applies, or `apply` leaves the sequencer.
@@ -2902,6 +2963,7 @@ its contract.
   deadline runs from its send. No client pipelines one today; before any does, a sequenced verb's
   deadline runs from when the sequenced verbs sent before it have settled
   ([#413](https://github.com/blamechris/Aeolus/issues/413)).
+- [#419](https://github.com/blamechris/Aeolus/issues/419) chose that the UI never cancels a sequenced verb it means to send again: the app's control sends through `AppComposition`'s synchronous entry points, each on a task of its own, and `LeaseDriver` never cancels an `acquireLease` or an `apply` (`InFlightMessages`'s note).
 
 **No `AeolusXPCVersion` bump:** the wire is unchanged. No field, case or method changes, and
 `helperNeverAnswered` is an existing client-side case; only the client's own deadline and its error
@@ -3232,8 +3294,14 @@ before. It lands on `main` before run 1.
   same table entry in the same hop, as `LeaseAccountability.leasedFans`.
 - **Not yet a confirmation.** The record is one only once B1's command turn reads the target back
   and throws outside `targetToleranceRPM` ([#9](https://github.com/blamechris/Aeolus/issues/9)).
-  Until then `ScriptedControlPlane.commandTarget` returns the requested value even for a write its
-  firmware discarded, so the tests here pin the rule, not the read-back.
+  Until then the tests here pin the rule against the scripted double's read-back.
+  `ScriptedControlPlane.commandTarget` returns the requested value for a target its in-turn
+  read-back finds: an `.honoured` write's, and, of the writes the firmware discards, only a
+  `.reverted` one's, held at the read-back and discarded after it. A target the firmware never
+  held (`Stage.targetsNotHeldAtReadBack`) throws `.targetNotConfirmed`. *(Corrected on
+  `e4/bring-up`: this said the double returned the requested value even for a write its firmware
+  discarded, which, of the discarded writes, has held only for `.reverted` since
+  [#430](https://github.com/blamechris/Aeolus/pull/430).)*
 
 **What remains.**
 - **A target-only reclamation is stated until § 5 judges it.** The rule reads `F<n>Md`, not
@@ -3267,9 +3335,10 @@ for the branch, and none of that exists on `main`.
 **Decided for B1, built on `e4/bring-up`.**
 - **A step, a command or a restore will be one synchronous job on the connection's actor, inside one
   scheduler write turn.**
-  - `SMCReadScheduler.withWriteTurn(_:)` will take a `.supervisor` turn and never wait for a
-    discovery walk. A write closes no handle, and D4 bounds a restore's wait to the turns ahead of
-    it.
+  - `SMCReadScheduler.withWriteTurn(_:)` will take a turn at its plane's admission and never
+    wait for a discovery walk: `.supervisor`, or § 3's lane since ADR 0012's 2026-10-18 amendment
+    (#332), whose `PlaneAdmission` has no `.snapshot` case. A write closes no handle, and D4 bounds
+    a restore's wait to the turns ahead of it, which in § 3's lane is the turn in flight alone.
   - The turn function will take an `isolated` channel. Its first statement will be the ledger's
     admission, and nothing inside it will suspend.
   - So U15 will hold by construction, a `CancellationError` will not be able to arise after
@@ -3277,14 +3346,16 @@ for the branch, and none of that exists on `main`.
     unchanged.
 - **The seam will be the helper's.**
   - `SMCWriteChannel: Actor` will be declared in the helper, and `SMCConnection` will conform
-    through an empty extension.
+    through an empty extension. *Reversed by the B1 seam amendment, below: `SMCConnection` conforms
+    to nothing, and the daemon's channel is a `private` forwarder in `AeolusHelperMain.swift`.*
   - SMCCore will gain one public read, `freshKeyInfo(for:)`. Its SPI members stay at two.
   - No SMCCore protocol will carry `write`, because a public requirement witnessed by the SPI member
     would let every client name the write.
 - **Write capability will be what the plane holds.**
   - `.built` will mean the plane holds a channel.
   - `HelperComposition.production` will withhold the channel unless the caller passes `writePath:
-    .connection`, and only `AeolusHelperMain` will.
+    .connection`, and only `AeolusHelperMain` will. *Now `writeChannel:`, a closure over the
+    factory's one connection, by the B1 seam amendment, below.*
   - So every test composition, hardware-gated or not, will be `.notBuilt` unless it names a fake. A
     wrong default in either direction fails safe.
 - **B1's restore will write `restorePayload(for:)`** (built here, below), never `encode`'s output.
@@ -3351,7 +3422,8 @@ for the branch, and none of that exists on `main`.
 
 **What remains.**
 - A test written deliberately to pass a real connection as a channel will be caught only by the
-  tripwire B1 adds, which looks for the two in the same file.
+  tripwire B1 adds, which looks for the two in the same file. *Superseded by the B1 seam amendment,
+  below: a real connection passed as a channel no longer compiles.*
 - The real write body meets the plane first at run 1.
 - `.built` on a platform without `F<n>Md` is decided before the merge (#360's revisit clause).
 - Restore turns on machines with more than four fans exceed `writeTurnRoundTrips`.
@@ -3386,31 +3458,647 @@ for the branch, and none of that exists on `main`.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
 
+## Amendment (2026-10-18, B1, [#436](https://github.com/blamechris/Aeolus/pull/436)) — the daemon's write channel is a file-private forwarder, and `SMCConnection` conforms to nothing
+
+Cited elsewhere as the B1 seam amendment.
+
+**Why.** The B1 amendment had `SMCConnection` conform to the helper's `SMCWriteChannel` through an
+empty extension. A conformance is visible wherever its protocol is, and `@testable import
+AeolusHelper` makes an internal protocol visible to every helper test. So, with no `@_spi(FanWrite)`
+opt-in:
+- `connection.write(bytes, to: key)` on a concrete `SMCConnection` typechecks. Lookup finds the
+  internal requirement, and the SPI member witnesses it.
+- Once b2 lands, so does any helper function that takes an `isolated any SMCWriteChannel`, called
+  with a real connection.
+
+On `e4/bring-up` the write has a body, so the first route was live. #431's rule, "the test files
+that can write are exactly the test files that opt into the SPI", was false. The tripwires added to
+compensate were text scans, and they missed function values, raw strings, interpolation and bound
+methods.
+
+**Decision.**
+- `SMCConnection` conforms to no helper protocol, and `SMCWriteChannel.swift` does not import the
+  SPI.
+- The daemon's channel is `DaemonWriteChannel`, a `private actor` in `AeolusHelperMain.swift`.
+  - It adopts the connection's executor (`nonisolated var unownedExecutor {
+    connection.unownedExecutor }`).
+  - It forwards each requirement to the same-named `SMCConnection` member through
+    `connection.assumeIsolated`.
+  - So a job on it runs on the connection's actor with nothing suspended, and the write still
+    crosses the one stamped IOKit call site (ADR 0012).
+- `HelperComposition.production` takes `writeChannel: (SMCConnection) -> (any SMCWriteChannel)? = {
+  _ in nil }` and applies it to its one connection. Only `main()` passes one. `ProductionWritePath`
+  is removed.
+- The channel is given only on macOS 14 or later, the first runtime with SE-0392's executor
+  semantics. Earlier, the plane holds none and answers `.notBuilt`.
+- `withWriteTurn(on:_:)` takes the channel and a synchronous `@Sendable (isolated any
+  SMCWriteChannel) throws -> T`. One job per turn, no suspension and no re-entry into the scheduler
+  now belong to the type. A job cannot `await`; a `Task` it spawns escapes the turn, so no
+  write-turn job spawns one, and a scan holds every call site to that.
+- A test that composes the real SMC requires `!plane.holdsWriteChannel` on its first use of the
+  binding, in place of `writeCapability == .notBuilt` before each drive. The channel is a `private
+  let` of a plane held as a `let`, so one check covers every later call. It can also fail on a build
+  whose capability is constant.
+- Write latency (U8) is measured from the daemon's per-write log lines, never by a test.
+
+**What this proves.** Measured on Swift 6.4 at `e2d738c`. From a file with `@testable import
+AeolusHelper` and a plain `import SMCCore`, each of these fails to compile:
+- a concrete or bound `connection.write`;
+- a test-module `extension SMCConnection: SMCWriteChannel {}`, with or without `@retroactive`;
+- a channel-taking function called with a real connection;
+- naming the forwarder;
+- a test's own forwarding wrapper.
+
+With `@_spi(FanWrite)`, the wrapper and the conformance compile. So the opt-in is again the only way
+a test file reaches a real write.
+
+The architect's model package ran its forwarder through 400 writes against concurrent reads with no
+overlap, at `-Onone` and `-O`, and compiled it for a 13.0 target. In this repository no test can
+execute the forwarder. `ExecutorSharingTests` runs a stand-in held word for word to the forwarder's
+pinned text: 200 writes in 100 turns against 100 concurrent direct reads, with no overlap, in debug
+and release, on macOS 27.0.1 (the `Mac16,5`) and on 26.6.2 (CI run 39125154937). With
+`unownedExecutor` removed from the stand-in, it trapped at its first call ("Incorrect actor executor
+assumption") before reaching the inner actor.
+
+At fix round 2 (`06171ae`, typechecked against a clean build), the entry point fails likewise in
+every spelling: its bare name, a typealias of it, and `.self.main()` each answer "cannot find
+'AeolusHelperMain' in scope".
+
+**What remains.**
+- A test that adds `@_spi(FanWrite) import SMCCore` can write. #431's rule is the control. It now
+  also matches the `_spi` token in the raw text of every file under `Tests/` and `Tools/` against a
+  fixed list, so no string, comment or backtick hides an ordinary opt-in, and refuses
+  `@_silgen_name`, `dlsym` and `@_private(` imports there the same way. The raw text under
+  `Sources/` is held to a fixed `_spi` list too, so a scoped `import class SMCCore.SMCConnection`
+  or a backticked `` @`_spi` `` in `fanctl` is a new file to justify. These censuses catch
+  accidents and ordinary spellings. Against a test written to evade them, the compiler's seam
+  above is the control, a residual the B1 plan accepted.
+- **No test can call the daemon's entry point.** `AeolusHelperMain` is a `private` type (fix round
+  2), so the compiler refuses every spelling of it outside its own file. A scan holds it `private`,
+  and a token scan over the code under `Tests/` and `Tools/` is depth beneath that. Until fix round
+  2, `main()` was accepted here as a residual held by a name scan, which a typealias and `.self`
+  both evaded.
+- No test can execute the forwarder. Its text is pinned, and its mechanism is tested on a stand-in,
+  in debug and release. Its first real run is the installed daemon's preparation step, which reads
+  through the channel before anything writes. So a broken executor share ends the daemon before its
+  first write.
+- Executor sharing is observed, on the stand-in, on macOS 26.6.2 (CI) and 27.0.1 (`Mac16,5`). It is
+  unobserved on 14.0–26.5. The macOS 14 gate's basis is SE-0392's runtime (Swift 5.9, macOS 14),
+  the first with custom-executor semantics.
+- A composition built in another file and driven without the require is a residual of the second
+  layer only. It also needs `production`'s default to have changed.
+
+**What this amends.**
+- The B1 amendment's "`SMCConnection` will conform through an empty extension". Reversed.
+- The B1 amendment's `writePath: .connection`. Now `writeChannel:`.
+- The first bullet of the B1 amendment's What remains. A real connection passed as a channel no
+  longer compiles.
+- ADR 0008's control on populated `extension SMCConnection` declarations. It now covers any
+  extension, empty or not, in any spelling, in the helper and its tests, backed by a runtime check
+  that `SMCConnection` does not conform to `SMCWriteChannel`.
+- `SMCConnection.write` now has exactly one caller in the helper, the forwarder. Write turns call
+  the requirement.
+
+**Alternatives considered.**
+- *Keep the conformance and contain it with scans.* Rejected. Every route is a spelling, four were
+  found in one review, and each turn function b2 adds would be another route.
+- *An SPI group on the helper's protocol and conformance.* Rejected. It hides the member from a file
+  without the opt-in, but not the conformance. Measured: such a file can still pass a real
+  connection to a function taking `isolated any SMCWriteChannel`. It would also put the opt-in in
+  every file that uses the fake.
+- *A forwarder that tests can construct over a fake inner actor,* generic over the actor and holding
+  closures. Safe, because a real write closure still needs the opt-in, but it adds machinery to the
+  root daemon to test four forwarded lines whose failure is a trap before the first write. Deferred.
+- *An async turn of several hops, to avoid `assumeIsolated`.* Rejected, for the B1 amendment's
+  reasons.
+
+**Revisit if:**
+- Swift changes how `@testable` treats `private` declarations, or how `assumeIsolated` and executor
+  sharing behave;
+- the forwarder traps in the field;
+- a test is proposed that needs a real connection as a channel;
+- writes are needed on macOS 13;
+- a second production caller of `SMCConnection.write` is proposed;
+- `-enable-private-imports` is adopted for any target, since an `@_private(sourceFile:)` import
+  sees the forwarder and the entry point;
+- `-disable-access-control` is passed to any target, which opens every `private` and SPI member to
+  a plain-import test. A manifest tripwire refuses both flags, and `unsafeFlags`, in
+  `Package.swift`.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
+**Erratum and addition (fix round 2 of [#436](https://github.com/blamechris/Aeolus/pull/436)).** This
+corrects two statements, and it closes one residual. The first statement was "the forwarder ran 400
+writes", which described the architect's model package, not this repository's test. The second was
+"unobserved on any runtime before macOS 27", which CI's macOS 26.6.2 run disproved. The residual was
+`main()`, now a `private` entry point. It also adds `-enable-private-imports` to Revisit if. None of
+this changes the decision.
+
+## Amendment (2026-10-19, B1 b2) — the write plane's bodies, and what the plan left open
+
+Cited elsewhere as the b2 amendment.
+
+b2 gives `SMCFanControlPlane` its write bodies and `.built`, on `e4/bring-up` only, as the B1 and B1
+seam amendments decide. It also settles five points those amendments left to the conformer, and it
+marked the points that waited on P1, the owner-present read-only pre-flight. P1 ran on 2026-10-31,
+and the P1′ amendment below decides them; "Settled by P1′" records how the bodies take it.
+
+**Decided.**
+- **The turn bodies are `SMCWriteTurns`**, a free `enum` whose functions take an `isolated any
+  SMCWriteChannel`. The plane takes one write turn per verb, at its own `admission`, through
+  `SMCReadScheduler.withWriteTurn(at:on:_:)`, whose admission has no default. The ledger's
+  admission, or a restore's issue, is each turn's first statement.
+- **The preparation step also takes each enumerated fan's `F<n>Tg` key info, and records it
+  nowhere.**
+  - *Why:* the step that reads back engaged also reads the raw target, which the A6 amendment's D3
+    bullet asks run 1 to log. That read costs one round trip only when the key's info is cached.
+    Taking it here keeps that turn at five, inside `writeTurnRoundTrips`. Nothing in the helper
+    clears the cache. *(Since P1′ the same read decides the floor hold, and the turn that raises
+    is eight, `engagedStepRoundTrips`: see "Settled by P1′".)*
+  - *Cost:* one round trip per fan at bring-up, so 34 at ten fans, inside D_bringUp.
+  - *Residual:* a fan whose target key info did not answer here costs its first engaged turn one
+    more round trip, if the key answers later.
+- **The forward encoder has a file of its own, `SMCWriteEncoding`.** It is the third importer of
+  `@_spi(FanWrite)`, beside the daemon's forwarder and the reachability probe, and it names `encode`
+  alone. The turn file writes only through the channel's requirement and holds no opt-in, so it
+  cannot name `SMCConnection.write(_:to:)`. The SPI's members stay two.
+- **The command refuses a target below the permit's floor, before it encodes or reads.**
+  - `AuthorisedFanTarget` carries the envelope it was clamped through, from the same read, and the
+    floor is `max(lowestCommandableRPM, minimumManualRPM)`.
+  - No permit can carry such a target, so the refusal is defence in depth: `encode` accepts zero,
+    negatives and subnormals.
+  - The refusal is `WriteTurnRefusal`, not a new `FanControlPlaneError` case, so the vocabulary
+    shared with `main` does not move. Every caller routes it as a refused command.
+- **Every write failure without a result byte is `.unanswered`.** That includes a refusal SMCCore
+  makes before any round trip. It is the conservative reading — counted as issued, thrown, and
+  undone — and nothing distinguishes the two causes of `connectionFailed`.
+- **§ 3's telemetry holds a read-only role**, `CriticalTemperatureReading`, which `FanControlPlane`
+  refines. On a plane that can write, the telemetry site therefore names no write verb by the
+  compiler's rule.
+
+**Settled by P1′** (the P1′ amendment below; [#465](https://github.com/blamechris/Aeolus/pull/465)
+after the sync of `main` through #637).
+- **U14 holds.** `Ftst` read `0` on every P1 sample, through both loads and both soaks. The
+  preparation step keeps taking a non-zero `Ftst` at start to be a dead holder's, and clears it.
+- **U0 resolves to Apple's set.** A first step's pre-state is admitted by
+  `EngagementRules.requireAutomatic`, which reads the fold: raw `0` or `3`. The engaged value stays
+  `1`, outside the set, so the read-back of `1` is the plane's own write.
+- **The poll stays Y-write** (decision 3). Every later step writes and logs its raw pre-state.
+- **`Ftst`'s not-found answer was not probed.** `SMCWriteTurns.forceKeyNotFoundAnswer` stays `nil`,
+  which fails safe: no failure classifies the key absent, every one is unknown, and D5 treats it as
+  present. On a machine that truly lacks the key (M1/M2, untested), the cost is one logged
+  machine-wide restore at every start.
+- **The engaged turn holds the floor** (decision 4). `SMCWriteTurns.step` takes the step's
+  permit, and after the read-back of `1` its `holdFloor` reads `F<n>Tg` and decides by
+  `EngagementRules.engagedTarget(reading:of:)`, the rule the scripted plane decides by. Below the
+  floor it writes the permit's target at `lowestCommandableRPM` through the command turn's own
+  body, `writeTarget`: a fresh key info, the observed `flt` of four bytes, the encoding, the write,
+  and a read-back within `targetToleranceRPM`. An unreadable or non-finite target, a refused or
+  unanswered floor, or a read-back that does not hold it throws, and the driver undoes. The fan
+  joins the engaged set only once the hold has held, as on the scripted plane. `SafetyLog` records
+  the raw target, the floor raised to, and the answer. The b2 C25 row is inverted: a target that
+  will not read now fails the step.
+- **The step takes a permit below the seam.** The rule needs the permit's envelope, and it is not
+  reimplemented: `step` and `holdFloor` take the `CommandableFan`, and its index is the fan
+  written. Both are on the write-verb allowlist's permit list, with the ledger, the log and the
+  `isolated` channel as their keyed companions.
+- **The turn bound is split.** `WatchdogLimits.engagedStepRoundTrips` is 9: the step that reads back
+  `1`, whatever it writes and whatever the key-info cache holds. It raises in eight with `F<n>Tg`'s
+  key info cached and nine without, and holds in five and six. `writeTurnRoundTrips` stays 5,
+  § 3's bridge job and every other turn, so D_cycle is unchanged. `readerTurnRoundTrips` is the
+  larger, 9, and G's slot adds it. *D_cycle counts the turn in flight ahead of each of § 3's turns
+  at 64 read round trips, which covers the nine-round-trip turn only while each of its round trips
+  takes at most 64 × 11.453 / 9 = 81.4 ms (91.6 ms at eight). That is below the 86.98 ms
+  break-even of § 3's own writes, so between 81.4 and 86.98 ms the engaged step, not § 3's writes,
+  would be the binding term; moot below G's write break-even of about 20.5 ms (ADR 0012's
+  2026-10-31 amendment).*
+- **G, re-run at N = 12** (ADR 0012's 2026-10-31 amendment, which records it;
+  `scripts/gate-wait-model/engaged_step.py`). Every queued reader at the engaged step fails G: four
+  of the histories ADR 0012 counts closed pass it (874–892 round trips at eight). So the queue counts
+  **at most one engaged step per fan**, at nine, and every other reader at five
+  (`WatchdogLimits.readerTurns`). One engagement per fan at a time is enforced by the examination
+  gate, its steps are sequential, and only the step that reads back `1` is long. On `Mac16,5`
+  (K = 34, F = 2):
+  - the queue is 64 + 34 + (9·2 + 5·7) + 64·6 = 535, against 527 before;
+  - the modelled case is **829 round trips, 9.49 s**, and the slot with the nine-round-trip turn
+    838, 9.60 s. G = 10 s holds to N = 12 and not at 13 (932, 10.67 s);
+  - the closed histories are 795–839 (9.11–9.61 s), and the event model's worst 619 (7.09 s), all
+    under G;
+  - **the open families stay open.** A take-back with writes every cycle is 927 (10.62 s), over G as
+    before. A refused revocation every latched cycle is 867–877 (9.93–10.04 s), and its upper
+    member's wait passes G. That member's slot was already over G before the engaged step existed
+    (874, 10.01 s).
+- **Ruled on #465's review (2026-10-31): the second fallback is not taken.**
+  - **What the instruction meant.** "Fails", in the P1′ amendment's instruction to re-run G, means
+    ADR 0012's closed criteria: the modelled cases and the slot, the closed histories, and the event
+    model. It never meant the open families, one of which has been over G since ADR 0012's #332
+    amendment.
+  - **What passing G costs in the open history.** It ends nothing and writes nothing away from
+    automatic control. It logs the gate fault, and its hold is 31.44 s, inside `examinationWait`.
+  - **What the fallback would cost.** It would leave every fan engaged at rest in manual at a target
+    of 0 for up to a slot, which is the window decision 4 closed. In exchange it would take that
+    family's wait 0.09 s under G, and leave both families' slots over G.
+- **Re-adoption, and the state it can meet.** Level 6's re-adoption of a kept fan
+  (`LeaseEngagements.read`) runs no floor rule. The state it can meet is raw `1` at target 0, at
+  rest: a fan in manual control and stopped. Four routes reach that state, and the first three
+  leave the fan kept, for the re-apply to meet:
+  - a floor hold that throws — the floor refused, unanswered or not held, or the target unreadable
+    — with the driver's undo refused;
+  - the mode write accepted and its read-back lost, so the step throws before any floor hold, with
+    the undo refused;
+  - the mode write unanswered and landed, with the undo refused;
+  - ADR 0012's D ending the helper between the mode write and the raise, which no undo follows.
+
+  The re-adopted fan is commanded in the same step, at its clamped target, before the step
+  returns; `ProductionReAdoptionTests` holds that over the production plane, and
+  `ProductionEngagementAtRestTests` that the driver's own undo hands the fan back when it lands.
+  Between a refused undo and the re-apply the fan is held stopped. It is bounded by the re-apply,
+  § 5, the lease's teardown and its three attempts, § 3's bridge (the driver registers the fan with
+  § 3 before the undo, and it stays in that registry), § 4, § 6 and § 7; the fourth route by
+  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. A fan kept the same
+  way under load is not stopped: it holds Apple's last target (#406). `docs/SAFETY.md` § 2 names
+  this residual beside "0 RPM is not reachable".
+
+**What remains.** The real write body, `freshKeyInfo` and the forwarder meet the plane first at
+run 1. Write latency (U8) is measured from the per-write log lines, never by a test. Restore turns
+on machines with more than four fans exceed `writeTurnRoundTrips`. A fan whose `F<n>Tg` key info
+has not answered before its engaged turn, at preparation or at any grant's control-state read,
+makes that turn one round trip longer: nine when it raises, which `engagedStepRoundTrips` counts.
+The preparation step's priming now saves that round trip and bounds nothing. G's modelled slot
+holds at N = 12 while a write round trip stays under about 20.5 ms (ADR 0012's 2026-10-31
+amendment), so run 1's per-write lines are read against that as well as U8's 50 ms.
+
+**Revisit if:**
+- a probe defines `Ftst`'s not-found answer;
+- the helper gains a call to `SMCConnection.invalidate()`: every cold key info, which ADR 0012 keeps
+  in the margin as once per key per process, would recur;
+- a second caller of the channel's write is proposed;
+- `freshKeyInfo` stops replacing the cache entry: the floor's read-back would then be cold too, and
+  the turn ten;
+- an open family of ADR 0012's histories is shown to recur, or a worst write round trip above 20 ms
+  is measured (ADR 0012's 2026-10-31 amendment).
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
+## Amendment (2026-10-31, P1′) — Apple's management reads two raw modes, a stopped fan is engaged at its floor, and the operator's gates read what Apple writes
+
+Cited elsewhere as the P1′ amendment.
+
+P1, D8's read-only pre-flight, ran on 2026-10-31 on `Mac16,5`, macOS 27.2 (26B123), owner present,
+with the `main` helper at `bfa1fe6`, which cannot write, and `smc-sampler` at `5b0d191`. It recorded
+raw `F0Md`, `F1Md`, `Ftst`, `F0Tg`, `F1Tg`, `F0Ac` and `F1Ac`: 41,631 samples at 9.08 Hz over
+4,586 s, idle and through two loads and their soaks, plus 240 samples in the quiescence window and
+60 before the exclusion. No read failed. The record is `docs/SMC-RESEARCH.md`'s section "Apple's own management reads `F<n>Md = 3` when it stops the fans, and `0` when it spins them — P1, macOS 27.2". U0
+failed, so D3's rule brought the fold, the pre-state and the poll here before run 1.
+
+**Scope.** Everything here was observed on `Mac16,5` with macOS 27.2. The code applies Apple's set
+on every machine (rule 9), but the evidence is that machine's only; Intel and M1/M2 stay `untested`
+(rule 11).
+
+**What P1 showed.**
+- **Two raw modes, both Apple's.** Raw `F<n>Md` read `3` while Apple's controller had the fan
+  stopped (target 0, actual 0), and `0` while it spun the fan, at every target from 1350 to
+  3731 RPM, apart from the edges counted below. No other value appeared in 41,931 samples, before or after the exclusion. In the main
+  capture, per fan:
+  - `3` with target 0: 27,722;
+  - `0` with a target above 0: 13,872;
+  - `0` with target 0: 37, all at the edges;
+  - `3` with a target above 0: **none**.
+
+  Both fans changed mode in the same sample, every time.
+- **Apple orders its writes.** Across five transitions (2 up, 3 down; first-seen stamps, late by up
+  to 0.11 s in the main capture and 0.53 s in quiescence), mode `0` came 1.00–1.09 s before the
+  target left 0, and mode `3` came 0.99–1.07 s after the target reached 0.
+- **`Ftst` read `0` on every sample**, through both loads and both soaks. U14 holds.
+- **Demand.**
+  - A twelve-way `yes` load held the targets at 1350/1458 for the rest of the ten-minute load.
+  - A sixteen-way busy loop raised them to 3455/3731, reached about 76 s in.
+  - After 10-minute loads, no soak rose above the load plateau.
+  - `F1Tg` ran 1.076–1.080 times `F0Tg`.
+  - U13 holds.
+- **Census.** Every `AppleSMC` user client carried `IOUserClientCreator`, so U10 holds. Seven
+  remained after the reboot: the helper, five Apple daemons and one third-party browser.
+
+**Decided.**
+1. **Apple's management is a set of raw values, defined once.**
+   - `FirmwareFanMode.systemManagedRawModes` is `{0, 3}`, with this amendment as its provenance.
+   - `FirmwareFanMode(declaredByFirmware:)` answers `.automatic` for a value that is exactly a byte
+     in the set. It answers `.manual` for anything else: `1`, an unobserved byte, a fraction, or a
+     non-finite value. Its asymmetry is kept.
+   - Every E5 confirmation read therefore reads a fan Apple has stopped as automatic. No consumer
+     treats `3` differently from `0`, so the enum keeps two cases.
+   - **The engaged value stays `1`, outside the set**, and a test holds the two disjoint. D3's
+     read-back can attribute a `1` to the plane's own write only because Apple produced none in
+     41,931 samples.
+2. **D3 step 1's pre-state admits exactly what the fold calls automatic.**
+   `EngagementRules.requireAutomatic` is `FirmwareFanMode(rawByte:) == .automatic`, so the grant's
+   read and the pre-state cannot disagree. `1`, and any value outside the set, throws
+   `.notAutomatic` and writes nothing.
+3. **D3's poll stays Y-write.** Every step's raw pre-state is logged. U0's pre-committed switch to
+   Y-read is withdrawn (see the alternatives).
+4. **The turn that reads back engaged holds the target at or above the fan's floor.** After the
+   read-back of `1`, the same turn reads `F<n>Tg`:
+   - **At or above the floor:** the turn answers `.engaged` and writes nothing more.
+   - **Below it** (`0` at rest, where Apple's stopped state leaves it): the turn takes `F<n>Tg`'s
+     fresh key info, writes the floor and reads it back within `targetToleranceRPM`, then answers
+     `.engaged`. Any other outcome throws, and the driver undoes.
+   - **Unreadable, undecodable or non-finite:** the turn throws, and the driver undoes.
+
+   The floor is the permit's: `CommandableFan.target(for: envelope.lowestCommandableRPM)`, never
+   below `FanSafetyLimits.minimumManualRPM`. ADR 0008's parameter list is unchanged.
+
+   *Why:* without this, a fan engaged at rest sits in manual at a target of 0 until the command's
+   turn, which can wait up to G under contention. Every stuck state from then on is a stopped fan.
+   That breaks D8's safety argument and #201's run-1 tolerance at rest, and it allows 0 RPM
+   (`CLAUDE.md` rule 3). *Under load*, Apple's target is already above the floor, so nothing is
+   written.
+5. **The restore is unchanged.** Every `F<n>Md = 0`, then `Ftst = 0`, in zero bytes, with no read.
+   "Restored to automatic" means the fold's `.automatic`, so a fan that Apple stops after the
+   handback, and that then reads `3`, is confirmed. A restore never writes `3`.
+6. **D9's census and quiescence read what Apple writes** (see D9, as restated).
+7. **D8 is restated where P1 changed its premises** (see D8, as restated).
+8. **Run 1 tests U7 where it can fail (1d).** Item 2 lets a hold start at rest, and U1 now predicts
+   `Ftst = 1` there, written while every fan the hold does not cover reads Apple's `3`. If U7 fails,
+   those fans stay stopped when load rises, and nothing in run 1 as first planned sees it:
+   - 1a and 1c have no load, and a fan nobody manages reads `3` with target 0, as a fan Apple has
+     stopped does;
+   - 1b engages under load, with fan 1 already spinning;
+   - abort 2 compares fan 1 against an automatic speed of 0.
+
+   So run 1's record of fan 1, which #9's gate counts toward U7, could not fail. 1d loads a hold
+   engaged at rest, at the maximum, and abort 11 ends it if fan 1's target has not left 0.
+9. **E4's merge waits on U7's observation, and no mechanism watches a fan no lease holds.** E4 does
+   not merge to `main` with a lease narrower than every enumerated fan reachable on `Mac16,5` until
+   U7 is recorded as observed holding (see U7). Otherwise the maintainer decides the lease shape
+   first, and E4 carries it. This binds E4 itself, not only #154's PR 8b: `fanctl set` holds a
+   one-fan lease for up to 8 hours (ADR 0013). It does not block run 1. On `main` every grant is
+   refused, and on the branch run 1's operator is the only client.
+
+   *Why no mechanism:* at rest a managed and an unmanaged stopped fan read the same mode and target,
+   so a mode watch cannot see the failure. A temperature watch needs Apple's start point, and P1
+   shows that is not a temperature (see the alternatives). If U7 fails, the all-fans shape removes
+   the state. If it holds, a watcher guards nothing.
+
+**D8, restated.**
+- **On `main`, item 7 (new, before run 1): the P1′ vocabulary.** It contains:
+  - Apple's set, with the fold and the pre-state reading it;
+  - the engaged-turn floor rule in `EngagementRules`;
+  - a scripted double that can script Apple's stopped state (raw `3`, target `0`);
+  - a recorded mutation for each of: the fold reverted to `!= 0`, the pre-state admitting `1`, and
+    the floor raise skipped or made unconditional.
+
+  The branch takes item 7 by sync before #465's review closes.
+- **Start 0** reads `Ftst` as `0` and every `F<n>Md` in Apple's set. It writes nothing and logs a
+  successful enumeration.
+- **1a** is now where the report's `0x82` is predicted, because the report ties it to "mode 3",
+  which is this machine's rest state. Its engaged turn raises the target from 0 to the floor, and
+  the log shows the raise.
+- **1b and 1b′ use P1's sixteen-way busy loop** (`sh -c 'while :; do :; done'` × 16). P1's
+  twelve-way `yes` load held `F0Tg` at `F0Mn` for the rest of the ten-minute load, and would never
+  meet 1b's engagement
+  condition, which stands. In 1b′, "back at rest" means `F0Tg` at `F0Mn` or 0.
+- **The post-hold proof** replaces the 20 s twelve-way load. Within 10 s of the restore's log line,
+  `F0Tg` must read a value other than the last commanded target, with no helper write to `F0Tg`
+  logged since then. That is Apple's controller writing it. In P1 it rewrote the target about once a
+  second while the target was moving, and not at all over plateaus of 8 and 13 minutes; whether it
+  rewrites an unchanged target is unobserved. The 10 s is run 1's threshold, not a P1 figure: P1
+  issued no restore. The run records each restore's latency to Apple's first target write, and the
+  window is re-derived from it. At rest, observation continues until `F0Md` reads `3` with `F0Tg`
+  at 0, or for 5 min.
+- **Abort 3 adds:** raw `F0Md` or `F1Md` outside `{0, 3}` at any time, except `F0Md = 1` during a
+  hold. Apple's own moves between `0` and `3` are recorded, not aborted.
+- **Abort 10 (new):** raw `F0Md = 1` with `F0Tg` below `F0Mn` for more than 1 s.
+- **The recovery ladder** takes each step only if, 10 s after the previous step, raw `Ftst` is not
+  `0`, or raw `F0Md` or `F1Md` is outside `{0, 3}`.
+- **Abort 9's margin stands:** `F1Tg / F0Tg` was 1.076–1.080.
+- **Also recorded:**
+  - Apple's transitions between `0` and `3`, with the target's order (U16);
+  - the engaged turn's raw `F0Tg`, and whether the floor was raised;
+  - each restore's latency to Apple's first target write.
+- **1d (new), last, after 1c: a hold engaged at rest, then load.** *(Added on #637's review.)*
+  - **Start:** both fans read `3` with target 0 for 60 s, `Ftst` reads `0`, and the hottest curated
+    temperature is within 3 °C of the pre-run baseline.
+  - **The hold:** `fanctl set 0 100% --for 120s --json`, so it engages from `3`, as 1a did. It is at
+    100 % because the hold meets load.
+  - **The load:** once `F0Tg` has read the commanded target for 10 s, P1's sixteen-way busy loop
+    (`sh -c 'while :; do :; done'` × 16). Its start time is logged and its PIDs recorded.
+  - **Pass:** `F1Tg` leaves 0 before abort 11. Hold the load 20 s more, then stop it and kill every
+    load-generator PID, leaving none. The hold runs to its end, and the post-hold proof applies.
+  - **Basis (P1):** under the same load, fan 1 left `3` about 13 s in, and its target left 0 about
+    14 s in, with the hottest curated key at 40.0 °C. Under the twelve-way load, about 42 s and
+    43 s, at 44.1 °C. The fans stopped with it at 42.9 °C and 42.5 °C.
+- **Abort 11 (new, 1d only).** From the load's start, while `F1Tg` reads 0, whatever `F1Md` reads,
+  run `fanctl reset --all` and then stop the load, at the first of:
+  - **60 s after the load started.** That is above the slowest start P1 recorded under either load,
+    and about four times the sixteen-way start, because fan 0 at its maximum may delay Apple's;
+  - **any curated temperature at 50 °C or above.** That is 5.9 °C above every temperature at which
+    P1 saw Apple start or stop the fans. Under the same load, with both fans running, P1 reached it
+    37 s in.
+
+  The abort's `.everyFan` writes `F1Md = 0` itself, so afterwards only `F1Tg` shows Apple. Record
+  whether it leaves 0 within 30 s of the restore's log line.
+- **In 1d, from the load's start:**
+  - abort 1's baseline clause reads 74 °C: P1's highest curated temperature under the same load,
+    64.0 °C, plus 10 °C. A hold at the maximum should run no hotter than P1's same load did;
+  - abort 2 cannot fire for fan 1 while `F1Tg` reads 0, and abort 11 stands in for it. Once `F1Tg`
+    leaves 0, abort 2 applies to fan 1 against `F1Tg`;
+  - abort 9 stands, at 5,199 RPM. P1's fan-1 peak was 3,731.
+- **1d's verdict.**
+  - **Pass, with `Ftst` written by 1d's engagement:** U7 is recorded as observed holding, for a
+    rest-to-load transition.
+  - **Abort 11 on the temperature clause:** U7 failed, for E4.
+  - **Abort 11 on the time clause, with every curated key below 50 °C:** not shown. The step cannot
+    tell U7 failing from fan 0's cooling delaying Apple.
+  - **No `Ftst` written:** 1d records fan 1 under fan 0's mode write alone. U7 is then seen only at
+    1b.
+- **1b's fan-1 record counts toward U7 only if `Ftst` was written there and `F1Tg` changed after it
+  was accepted.** On P1's figures, 1b's condition is met about 56 s into the load, and fan 1's target
+  rose until about 76 s, changing 20 times. After the plateau it did not change.
+- **Also recorded, in 1d:**
+  - whether its engagement wrote `Ftst`;
+  - the time from the load's start to `F1Md` leaving `3`, `F1Tg` leaving 0 and `F1Ac` leaving 0,
+    with the hottest curated temperature at each;
+  - whether fan 1 went back to `3` before the restore, with `Ftst` still set;
+  - every helper write from the engagement to the restore. None may name an `F1` key. If one does,
+    fan 1 leaving `3` is not Apple's, and 1d is void and goes to the architect.
+- **Decided on the result, added:** if neither 1d nor 1b records U7 as observed holding, every later
+  hold covers both fans, and the lease shape goes to the maintainer before E4 merges (item 9).
+- **Before the merge, added:** U7 recorded as observed holding, or the maintainer's lease shape
+  built (item 9).
+
+**D9, restated.**
+- **Census, read-only.** It runs at the same points as before. Each `AppleSMC` user client's
+  creator is put in one of three classes:
+  - the Aeolus helper or the runbook's sampler, by PID;
+  - an Apple platform binary, signed by Apple's Software Signing authority: a yes/no
+    `anchor apple` check, and nothing else is read from a client that is not Apple's;
+  - other.
+
+  **The gate passes when "other" is zero.** The record holds the three counts and names no
+  process, and nothing in the helper reads it. Apple's daemons are the thermal management every
+  run measures against. A third-party client that only reads cannot be told apart from one that
+  writes, so it is quit.
+- **Quiescence, read-only.** 120 s at 2 Hz on `F0Md`, `F1Md`, `Ftst`, `F0Tg` and `F1Tg`. On every
+  sample:
+  - `Ftst` reads `0`;
+  - `F<n>Md` reads `0` or `3`;
+  - no fan reads `3` with `F<n>Tg` above 0 (U16).
+
+  P1's quiescence capture passes this rule. The rule is the operator's, and it is stricter than
+  the fold (U17). It still sees a writer that is holding a fan, not one that is idle.
+
+**What remains.**
+- **The mode byte cannot tell a third-party hold that reads `0` or `3` from Apple (U17).** Aeolus
+  claims control only on its own read-back of `1`, and § 5 re-checks every cycle, so the remaining
+  risk is misattribution: the snapshot calls such a fan automatic, reconciliation leaves it alone,
+  and a grant contests it. Every mechanism that confirms a handback reads it as handed back:
+  - (a) § 3 forgets an owed handback, so that fan leaves § 3's coverage;
+  - (b) the lease core lifts `.restoreToAutomaticFailed`;
+  - (c) § 5 records `isReclaimedBySystem`;
+  - (d) reconciliation never restores the fan at startup.
+
+  Bounded by D9, which excludes this case through run 3, and by every machine-wide restore, which
+  writes `0` without reading.
+- **U5b has two arms.** A machine-wide restore at rest writes `0` over Apple's `3` at every sleep,
+  every exit and every `reset --all`. Run 1 tests the arm over `3` at 1c and the arm over `0` at 1b′.
+- **The engaged turn's floor write is the plane's first `F<n>Tg` write at rest.** It uses the same
+  key, type and encoding as the command.
+- **A command landing after a restore at rest, once Apple has written `3`,** would produce mode `3`
+  with a target above 0. That has not been observed, and it is recorded if it is seen.
+- **`Ftst`'s not-found answer was not probed in P1.** `forceKeyNotFoundAnswer` stays `nil`, which
+  fails safe.
+- **A hold that does not cover every fan, engaged at rest, leaves the others at Apple's `3` under
+  `Ftst = 1`, if its engagement wrote the key.** No read the helper takes can tell such a fan from
+  one Apple keeps stopped, and § 5 examines only held fans. If U7 fails, that fan stays stopped as
+  load rises, the snapshot calls it automatic, and only § 3's ceiling or the lease's end clears the
+  key. Under `fanctl set`, the lease can last 8 hours. Nothing reaches this on `main`. E4's merge
+  waits on U7 (item 9). *(On `e4/bring-up` it is reachable: since #465 the plane's steps write, so
+  a one-fan lease engaged at rest that writes `Ftst` reaches it. Run 1's 1d is its test, and the
+  branch has no client but run 1's operator.)*
+- **1d's time clause cannot tell U7 failing from fan 0's cooling delaying Apple's start.** That
+  outcome reads "not shown". #153's row 3, restated, holds fan 0 at its floor and has no such
+  confound. It is a hold below Apple's demand, so it runs under run 2's preconditions.
+- **1d holds fan 0 with fan 1 free.** The converse is assumed to behave the same.
+- **Whether clearing `Ftst` brings back a fan Apple had stopped managing is seen only if abort 11
+  fires,** and then with the load stopping. § 3's and the lease's bound rest on it.
+- **U7, if 1d shows it, holds for `Mac16,5` on 27.2 only.**
+
+**Alternatives considered.**
+- *Count `3` as Apple's only when `F<n>Tg` reads 0.*
+  - It puts U16 into every confirmation read.
+  - If Apple enters `3` with a target still set, it misreports the handback and refuses grants
+    with a false "another program".
+  - It makes the snapshot read two keys under #360.
+
+  It separates one shape of U17 failing: a hold that reads `3` above a non-zero target, which U16
+  says Apple never produces. It does not separate a hold that reads `0`, or one that reads `3` at a
+  target of 0, from Apple's. It is a possible mitigation, not a remedy; run 4 decides whether to
+  adopt it.
+- *A third `FirmwareFanMode` case.* Every consumer decides `3` exactly as it decides `0`.
+- *Pre-state `0` only.* It refuses every engagement at rest.
+- *Y-read.*
+  - Under load Apple reads `0`, so Y-read degenerates to Y-write.
+  - At rest, leaving `3` means Apple is spinning the fan up, not yielding.
+  - If the yield does not move the byte, Y-read never writes.
+- *Raise the floor in a separate turn, or leave it to the command.* The fan waits in manual at 0
+  for up to G. This is the second fallback: it applies if ADR 0012's arithmetic will not take the
+  turn even when it counts at most one long turn per fan with an engagement in progress (see the
+  cost below), with abort 10 as run 1's tripwire.
+- *Write `F<n>Tg` before the mode write.* That writes into a state Apple is managing, which has not
+  been observed.
+- *Restore to `3`.* The keystone reads nothing, so it cannot know whether the fan is at rest, and
+  `3` with a target above 0 is a pair Apple never produced.
+- *Key the census on user ID.* That rests on the unverified claim that non-root clients cannot
+  write.
+- *Drop the census.* U10 held, and the census found a third-party client that was present after the
+  reboot.
+- *Watch an unleased fan's mode in § 5 while `Ftst` is set.* At rest a fan Apple has stopped and one
+  nobody manages read the same mode and target, so it cannot see the failure. It would see only a
+  foreign writer (U17).
+- *Detect, in § 3, a fan still stopped once a curated temperature passes Apple's start point.* P1
+  shows the start point is not a temperature. Apple started the fans at 40.0 °C under one load and
+  44.1 °C under the other, and stopped them at 42.5–42.9 °C. A threshold set from two transitions on
+  one machine and one OS would be a safety mechanism with an uncalibrated trigger. It would revoke
+  leases when it misfired, and it would be dead code once U7 is settled either way.
+- *Report a fan outside the lease as `unknown` while `Ftst` is set.* It fixes the claim, not the
+  stopped fan, and puts a state on the wire for a hypothesis 1d settles before merge.
+- *Restrict every hold to all fans now.* It removes `fanctl set <fan>`, ADR 0015 D5 and #153's
+  per-fan Custom, on a hypothesis a two-minute step tests. It is U7's "If it fails" branch.
+- *Load 1a's own hold.* 1a holds at 50 %, which D8 rules out under load. It is the first write, so its
+  restore and post-hold proof stay at rest.
+- *1d right after 1a.* 1d is the only step in which U7 failing leaves a fan stopped under load, so it
+  goes last. By then 1c has shown its abort working in the same state. Its answer changes nothing in
+  1b's or 1c's safety.
+- *1d at 50 %.* Under this load P1's fan-0 target reached 3,455 against 3,564, and abort 9 at 50 %
+  (3,208) sits below fan 1's plateau (3,731).
+- *Abort on `F1Md` alone.* Mode `0` with target 0 is still a stopped fan. P1's mode led the target
+  by about 1 s, so `F1Tg` costs 1 s.
+- *A time bound alone.* It cannot tell U7 failing from a delayed start. The temperature clause can.
+- *P1's twelve-way load.* It started the fans about 42 s in and held them at the minimum.
+
+**Cost.** An engaged step that raises the floor takes eight round trips: key info, pre-state, mode
+write, read-back, target read, target key info, target write, target read-back. *(Nine when
+`F<n>Tg`'s key info is not cached, so `engagedStepRoundTrips` is 9: the b2 amendment, as settled by
+P1′, and ADR 0012's 2026-10-31 amendment.)*
+
+**Not built on `main`.** `WatchdogLimits` has `writeTurnRoundTrips` = 5,
+`readerTurnRoundTrips = max(modeReadKeys, writeTurnRoundTrips)` and no `engagedStepRoundTrips`;
+the real plane's turn bodies are #465's. Nothing on `main` can issue the eight-round-trip turn.
+*(On `e4/bring-up`, #465 issues it, and did each of the following; G's result is in the b2
+amendment, "Settled by P1′".)* #465 is to:
+- split the bound: `engagedStepRoundTrips` = 8 *(9, counting a cold target key info: ruled on
+  #465's review)*, with `writeTurnRoundTrips` = 5 left as § 3's bridge job, so § 3's cycle
+  arithmetic is unchanged;
+- take `readerTurnRoundTrips` as the larger of the two;
+- re-run ADR 0012's G at N = 12 before the plane's first production write. If it fails, count at
+  most one long turn per fan with an engagement in progress; if that fails too, raise the floor
+  in a separate turn (see the alternatives). *("Fails" means ADR 0012's closed criteria, never its
+  open families. Ruled on #465's review, 2026-10-31: see the b2 amendment's "Settled by P1′".)*
+
+**Revisit if:**
+- a raw `F<n>Md` outside `{0, 1, 3}` is recorded, or Apple produces `3` with a non-zero target;
+- Apple produces `1` outside a hold;
+- run 1 reads back a value other than `1` after an accepted mode write;
+- run 4 records a third-party hold reading `0` or `3`;
+- the firmware rewrites `F<n>Tg` on an accepted mode write;
+- the gate arithmetic will not take the eight-round-trip turn;
+- a report arrives from another OS or machine;
+- 1d ends on abort 11, or its engagement writes no `Ftst`;
+- any run or report records a fan Aeolus did not engage at raw `3` under load while `Ftst` reads `1`.
+
+**No `AeolusXPCVersion` bump:** raw `3` crosses the boundary as `.automatic`. **Status stays
+Proposed.**
+
 ## Assumptions and what would invalidate them
+
+U0, U1, U4, U5b, U6, U7, U10, U11, U13 and U14 are restated, and U16 and U17 added, by the P1′
+amendment.
 
 | # | Assumption | Basis | If it fails |
 |---|---|---|---|
-| U0 | Apple's own management reads raw `F<n>Md = 0` | Observed only with no load and nothing holding a fan (26.5.2, 27.0.1). "Mode 3" is reported. Never read under load (#208) | **Any non-zero raw value, `1` included:** before run 1, `FirmwareFanMode`'s fold and every E5 confirmation read are re-decided, and D3 polls by reading (Y-read) |
-| U14 | Apple's own management leaves raw `Ftst = 0`, under load included | Every raw read on record is `0`; none was taken under load | The preparation step would clear Apple's own state at each start, and D3 step 3 would write over it. Both go to the architect before run 1 |
-| U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review |
+| U0 | Apple's own management reads raw `F<n>Md` in `{0, 3}`: `0` while it spins the fan, and `3` while it has the fan stopped | Observed in P1 on 27.2, across 41,931 samples, idle and under two loads, before and after the exclusion. Every earlier raw `0` was taken with the fans spinning | A third value under Apple's management folds to manual and the pre-state refuses it. That fails safe, but it misattributes the fan. It goes to the architect before the next run, and a value joins the set only on P1-grade evidence |
+| U14 | Apple's own management leaves raw `Ftst = 0`, under load included | Observed in P1: `0` on all 41,931 samples, through both loads and both soaks | The preparation step would clear Apple's own state at each start, and D3 step 3 would write over it. Both go to the architect before run 1 |
+| U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported, and placed at "mode 3", which is this machine's rest state. So the refusal is predicted at 1a, and possibly not at 1b. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review. **Refused under load and accepted at rest:** recorded; nothing changes |
 | U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
 | U3 | The yield arrives within 3.5 s | Reported at about 3 s; budgets of about 30 s suggest a tail | Raise the budget and give `apply` its own client deadline. Beyond about 4 s, asynchronous engagement before merge |
-| U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half | **Mode:** D3 refuses, which is correct. The re-adoption of a kept fan reads the same predicate. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
+| U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half. In P1 Apple never produced `1`, so a `1` after the plane's accepted write is the plane's | **Mode:** D3 refuses, which is correct. The re-adoption of a kept fan reads the same predicate. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
 | U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place. A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
-| U5b | `F<n>Md = 0` written to a fan already in automatic is accepted, with or without the force key, whatever the thermal manager is doing | Unobserved. Tested by 1b′ and by every `.everyFan` | Refusal accounting changes before run 2 (Consequences). A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
-| U6 | With `Ftst = 1` and every raw `F<n>Md = 0`, Apple's management drives the fans | Unknown | D5's gate goes: every restore clears the key, and every engagement re-sets it. § 4's never-issued keystone becomes a priority residual |
-| U7 | `Ftst = 1` does not change the behaviour of a fan Aeolus did not engage | Unknown | A one-fan lease would take the others off Apple's management while the snapshot calls them automatic (rule 6). Engagement becomes all-fans-or-nothing on such firmware, and the lease shape is the maintainer's call |
+| U5b | `F<n>Md = 0` is accepted over a fan already under Apple's management, both over `0` and over `3` | Over `0`, tested at 1b′. Over `3`, tested at 1c on fan 1, and exercised by every machine-wide restore at rest, which means every sleep and every exit | Refusal accounting changes before run 2 (Consequences). A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
+| U6 | With `Ftst = 1` and every raw `F<n>Md` in Apple's set, Apple's management drives the fans | Unknown. Run 1's post-hold proof is its first test while the key is set | D5's gate goes: every restore clears the key, and every engagement re-sets it. § 4's never-issued keystone becomes a priority residual |
+| U7 | `Ftst = 1` does not change the behaviour of a fan Aeolus did not engage | Unknown. At rest it cannot be seen: a fan nobody manages reads `3` with target 0, as one Apple has stopped does, so 1a and 1c cannot show it. **Observed holding** means one of: 1d passes with `Ftst` written by its engagement; or, if `Ftst` is written only under load, `F1Tg` changes at 1b after `Ftst` is accepted, for which P1's figures leave about 20 s of Apple's ramp. Anything else leaves U7 unobserved | A one-fan lease would take the others off Apple's management while the snapshot calls them automatic (rule 6). At rest an unengaged fan reads `3` and the fold calls it automatic, so U7 failing at rest means a stopped fan that Apple no longer manages, reported as automatic. No mode read and no § 5 cycle can see it, and only § 3's ceiling or the lease's end clears `Ftst`. Engagement becomes all-fans-or-nothing on such firmware, the lease shape is the maintainer's call, and ADR 0015 D5 is revoked. **E4 treats unobserved as failed** (the P1′ amendment, item 9) |
 | U8 | Every write round trip stays under 50 ms (D/100), the teardown restore's and 1b′'s included | Reads: 11.45 ms worst. Writes: unmeasured | D8's decision rule |
 | U9 | Manual mode and the force key persist after the writer dies (ADR 0012 H3) | Reported | If they revert on close, ADR 0012 and the preparation step get cheaper; nothing changes |
-| U10 | `ioreg` lists every `AppleSMC` user client with its creating process | Hypothesis | D9's census gate is dropped |
-| U11 | A power cycle returns raw `F<n>Md` and `Ftst` to `0` | `RECOVERY.md` step 7 asserts that the force key resets. That `F<n>Md` does not persist is `docs/SAFETY.md` row 7's unverified assumption, and ADR 0011's | D8's recovery steps end in a loud fan and `RECOVERY.md` § 8. Run 1's target choice is what makes that acceptable |
+| U10 | `ioreg` lists every `AppleSMC` user client with its creating process | Observed in P1: 7 after the exclusion, each with `IOUserClientCreator`; 10 before it (count only retained) | D9's census gate is dropped |
+| U11 | A power cycle returns raw `F<n>Md` to Apple's set and `Ftst` to `0` | `RECOVERY.md` step 7 asserts that the force key resets. That `F<n>Md` does not persist is `docs/SAFETY.md` row 7's unverified assumption, and ADR 0011's. P1, after a reboot: the fans ran at minimum reading `0`, then stopped and read `3`, about 5 minutes after the reboot | D8's recovery steps end in a loud fan and `RECOVERY.md` § 8. Run 1's target choice is what makes that acceptable |
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
-| U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
+| U13 | Apple's controller never commands above the declared `F<n>Mx` | Before P1, the highest fan speed recorded under Apple's control was 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded), and the highest `F0Tg` was 2,195 RPM. P1 raised both: targets 3455/3731 and actuals 3546/3818 RPM under a sixteen-way load. The pre-flight records `F<n>Tg` through a load and its soak. Observed in P1: a peak of 3455/3731 under a 16-way load, against 5777; 1350/1458 under a 12-way load; no soak peak after 10-minute loads on 27.2 | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | U15 | A plane's step or command admission and its writes are one exclusive turn (D7), and `beginEngagement` precedes the entitlement. The order is what holds: a suspension between the two only makes the ticket older, which refuses more | D4 (the turn rule) and D7 | The ticket and the exit seal narrow the window instead of closing it |
+| U16 | Apple writes mode `0` before it raises `F<n>Tg` from 0, and mode `3` after the target reaches 0, so it never produces `3` with a target above 0 | P1's five transitions, about 1.0 s each way, both fans together, and none of the forbidden pair in 41,931 samples | Only the operator's gate and the run analysis use it. The quiescence rule is re-decided, and the fold is unchanged |
+| U17 | No writer other than Apple leaves a fan it holds at raw `0` or `3` | Unknown. Aeolus writes only `1`, and `0` on restore. A third-party hold is unrecorded by design (D9). The 2026-09 non-zero readings are confounded | The fold calls such a hold automatic, which is a rule-6 misattribution, and every mechanism that confirms a handback reads it as handed back: § 3 forgets an owed handback, so the fan leaves § 3's coverage; the lease core lifts `.restoreToAutomaticFailed`; § 5 records `isReclaimedBySystem`; reconciliation never restores the fan at startup. Bounded by D9 through run 3, and by every machine-wide restore, which writes `0` without reading. A possible mitigation for one shape of it is to count `3` as Apple's only when `F<n>Tg` reads 0, in the fold and in the snapshot's read (see the alternatives). It does not cover a hold that reads `0`, or `3` at a target of 0. What would is open, and is decided at run 4 with what a held fan reads |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record and one ticket per fan index, and a ticket taken by one engagement clears the record and replaces the ticket of another of the same fan, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap, and one engagement's ticket could admit the other's first step: key the record and the ticket per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live. A step already past its first is caught by the restore's epoch; a first step superseded by that restore takes a fresh ticket in its retry, past the restore, so only the after-check catches it (#410's ticket-and-seal amendment). Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other |
+| — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record and one ticket per fan index, and a ticket taken by one engagement clears the record and replaces the ticket of another of the same fan, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap, and one engagement's ticket could admit the other's first step: key the record and the ticket per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live. A step already past its first is caught by the restore's epoch; a first step superseded by that restore takes a fresh ticket in its retry, past the restore, so only the after-check catches it (#410's ticket-and-seal amendment). Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other. *Since #465, G's queue also counts at most one engaged step per fan (ADR 0012's 2026-10-31 amendment). With every reader at the engaged step, four of ADR 0012's closed histories pass G.* |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
-| — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
+| — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app asks for a lease only on a user's click, and its lease driver never re-acquires after a loss (`LeaseDriver`, #153) | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
 | — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys. Each path checks finiteness before the gate: the plane at its seam, and the snapshot's in `SMCFanEnumeration`, which turns a non-finite read into `.notDecodable`. A non-finite bound is therefore `.notMeasured` on both, and both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
@@ -3432,5 +4120,17 @@ Also revisit it when:
 - concurrent leases or self-renewing leases are proposed;
 - a second production plane exists;
 - a report arrives from M1/M2 or another M3+ machine.
+
+Since the P1′ amendment, also revisit it when:
+
+- a raw `F<n>Md` outside `{0, 1, 3}` is recorded, or Apple produces `3` with a non-zero target;
+- Apple produces `1` outside a hold;
+- run 1 reads back a value other than `1` after an accepted mode write;
+- run 4 records a third-party hold reading `0` or `3`;
+- the firmware rewrites `F<n>Tg` on an accepted mode write;
+- the gate arithmetic will not take the eight-round-trip turn;
+- a report arrives from another OS;
+- 1d ends on abort 11, or its engagement writes no `Ftst`;
+- any run or report records a fan Aeolus did not engage at raw `3` under load while `Ftst` reads `1`.
 
 The ruling is the architect's E4 consult, run on Opus.

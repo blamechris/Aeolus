@@ -45,15 +45,32 @@ import Testing
 /// ## Where the parse lives
 ///
 /// In `MemberAccessScan`, shared with `HelperConnectionSessionAccessTests` since
-/// [#98](https://github.com/blamechris/Aeolus/issues/98) split
-/// `HelperConnectionSession.swift` the same way and needed the same guard. It records why
-/// the modifier run is parsed rather than assumed absent — `private(set) var table` is the
-/// spelling that motivated it — why an attribute is skipped by its parentheses rather than by
-/// its whitespace, why a method's key carries its signature, and why a method is scanned as
-/// well as a property:
-/// `WriteVerbAllowlistTests` filters its population on `isAsync || mentions(anyOf: permits)`,
-/// so `func forceRelease(fanAt: Int) { table.remove(...) }` added here would be reachable
-/// from every file in `AeolusHelper` and caught by nothing else.
+/// [#98](https://github.com/blamechris/Aeolus/issues/98) split `HelperConnectionSession.swift` the
+/// same way and needed the same guard. It records why the modifier run is parsed rather than
+/// assumed absent — `private(set) var table` is the spelling that motivated it — why an attribute
+/// is skipped by its parentheses rather than by its whitespace, why a method's key carries its
+/// signature, and why a method is scanned as well as a property: `WriteVerbAllowlistTests` filters
+/// its population on `isAsync || mentions(anyOf: permits)`, so `func forceRelease(fanAt: Int) {
+/// table.remove(...) }` added here would be reachable from every file in `AeolusHelper` and caught
+/// by nothing else. Two files here declare nested types, whose members sit at eight spaces, so only
+/// the actor's own sit at the four the scan reads: its precondition. Computed properties are
+/// counted on purpose: `fansAeolusIsAccountableFor` is one, and the widening most worth watching.
+///
+/// ## As spelled, and what that does not reach
+///
+/// The two exhaustive tests compare the non-private members **as spelled**
+/// ([#607](https://github.com/blamechris/Aeolus/issues/607)), as `HelperClientAccessTests` has
+/// since [#604](https://github.com/blamechris/Aeolus/issues/604): an entry is the modifier run,
+/// the introducer and the key, so `public` or `package` on an acknowledged member, or any other
+/// modifier added to it, is red like a new one. Bare keys matched a respelling.
+///
+/// A member is read at four spaces, so **a member in the formatter's two-line spelling** — a
+/// modifier alone on a line, the declaration under it at eight — is in no population here,
+/// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
+/// Only an acknowledged member (it goes missing) and the ones `mustStayPrivate` names, which
+/// `declaration(of:in:from:)` judges with the line above, are guarded in that spelling. An
+/// `extension`'s own modifier is `HelperActorHeaderAccessTests`' (#610); `public extension
+/// LeaseAuthority {` alone does not compile against an internal actor.
 @Suite("The lease core's registry stays private to LeaseAuthority.swift")
 struct LeaseAuthorityAccessTests {
 
@@ -112,6 +129,8 @@ struct LeaseAuthorityAccessTests {
         "var machineWideRestoresInFlight = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
+        // #440's: the bracket's body, through a lent restorer, reached only through the verbs.
+        "func restore<Handback: FanRestoring & ~Copyable>(",
         "func outwaitHandback(of fan: Int) async {",
         "func refuseIfInvalidated(_ connection: ConnectionID) throws {",
         "func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {",
@@ -148,26 +167,28 @@ struct LeaseAuthorityAccessTests {
     /// `emergencyRestores` is #303's: § 3's `EmergencyRestoreConfirming` role, readable from
     /// `LeaseAuthorityRefusals.swift` for the same reason `foreignControl` is, and `private(set)`
     /// so only `bind(emergencyRestores:)` can change it. It is a role, not § 3's actor, so
-    /// reading it reaches one read-only question and none of § 3's mutators.
+    /// reading it reaches one read-only question and none of § 3's mutators. It is listed **as
+    /// spelled** (#607): acknowledged by name, a bare `var` kept its key, and nothing else
+    /// checked the setter. `var emergencyRestores` is a different string.
     ///
     /// `envelopes` is #270's: `FanEnvelopeReading`, one read verb, readable from
     /// `LeaseAuthorityRefusals.swift` for `foreignControl`'s reason. It is a role, not the plane:
     /// what it answers is a `FanEnvelope`, and turning one into a permit is a step the lease
     /// core's files are held to never naming, by `theLeaseCoreMintsNoPermit` below.
     private static let acknowledgedInternalProperties: Set<String> = [
-        "writeCapability",
-        "telemetry",
-        "foreignControl",
-        "envelopes",
-        "log",
-        "fansAeolusIsAccountableFor",
-        "leaseCount",
-        "tombstoneCount",
-        "fansWithUnconfirmedHandbacks",
-        "fansWithAbandonedHandbacks",
-        "fansMidHandback",
-        "fansARevocationAwaits",
-        "emergencyRestores",
+        "let writeCapability",
+        "let telemetry",
+        "let foreignControl",
+        "let envelopes",
+        "let log",
+        "var fansAeolusIsAccountableFor",
+        "var leaseCount",
+        "var tombstoneCount",
+        "var fansWithUnconfirmedHandbacks",
+        "var fansWithAbandonedHandbacks",
+        "var fansMidHandback",
+        "var fansARevocationAwaits",
+        "private(set) var emergencyRestores",
     ]
 
     /// Every method of `LeaseAuthority` that is not `private`, and what each of them is.
@@ -194,53 +215,57 @@ struct LeaseAuthorityAccessTests {
     /// and that changes **which** refusal a manual fan is given, never **whether** it is refused:
     /// both consumers consult the set only after a fresh read has already found the fan manual,
     /// and never as an exemption. It touches no register and no fan.
+    ///
+    /// **Spelled as declarations** (#607): the modifier run and `func` stand in front of each
+    /// signature, and an attribute counts from the line above, as `@discardableResult` does.
     private static let acknowledgedInternalMethods: Set<String> = [
-        "refuseIfWritePathNotBuilt(_: ConnectionID)",
-        "refuseIfBlind(_: ConnectionID)",
-        "refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
+        "func refuseIfWritePathNotBuilt(_: ConnectionID)",
+        "func refuseIfBlind(_: ConnectionID)",
+        "func refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
         // #311's. Synchronous, in the straight-line region, and like the three above it can
         // produce a refusal and nothing else: it reads `fansAeolusIsAccountableFor`, which is
         // already acknowledged below, and no register that set is derived from.
-        "refuseIfExemptionLapsed(_: ConnectionID, exempted: Set<Int>)",
+        "func refuseIfExemptionLapsed(_: ConnectionID, exempted: Set<Int>)",
         // #270's, § 2's bounds gate, above the marker. Like the three above it, it can produce a
         // refusal and nothing else: it reads `envelopes`, judges what it reads and drops it, and
         // touches no register.
-        "refuseIfBoundsImplausible(_: ConnectionID, wanting: Set<Int>)",
-        "acquireLease(_: LeaseRequest, from: ConnectionID)",
-        "renewLease(id: UUID, from: ConnectionID)",
-        "releaseLease(id: UUID, from: ConnectionID)",
-        "heldLease(id: UUID, from: ConnectionID)",
-        "expireLapsedLeases()",
-        "nextExpiryDeadline()",
+        "func refuseIfBoundsImplausible(_: ConnectionID, wanting: Set<Int>)",
+        "func acquireLease(_: LeaseRequest, from: ConnectionID)",
+        "func renewLease(id: UUID, from: ConnectionID)",
+        "func releaseLease(id: UUID, from: ConnectionID)",
+        "func heldLease(id: UUID, from: ConnectionID)",
+        "func expireLapsedLeases()",
+        "func nextExpiryDeadline()",
         // #180's, and ADR 0009 D2's question for § 5 and the engagement driver, about one
         // lease since #357. Synchronous and read-only: it reads `table` and `clock` and writes
         // neither, sweeps nothing, and answers one boolean about one lease and one fan — so a
         // caller holding a lease's ID can learn whether it is live, which `heldLease(id:from:)`
         // already answers its holder, and cannot change who holds it.
-        "hasLiveLease(id: UUID, coveringFan: Int)",
-        "connectionDidInvalidate(_: ConnectionID)",
-        "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
+        "func hasLiveLease(id: UUID, coveringFan: Int)",
+        "func connectionDidInvalidate(_: ConnectionID)",
+        "func revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         // #353's, § 5's terminal revocation. Strictly narrower than `revokeEveryLease` below,
         // which is already internal: one named lease, whole — revoked if live, ended as expired
         // if lapsed (#361's panel). The fan only chooses which handback a `.gone` outwaits
         // (#368): a caller can park itself, and it resumes nothing and restores nothing.
-        "revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
-        "revokeEveryLease(because: FanRestoreCause)",
-        "releaseEveryLease()",
-        "confirmAcceptedHandbacks()",
-        "sealForSleep(generation: UInt64)",
-        "unsealAfterWake(generation: UInt64)",
-        "recordUnconfirmedHandbacks()",
-        "activeLease()",
-        "activeLeaseView()",
+        "func revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
+        // § 3's revocation (#440): it cannot keep what it borrows, and only § 3 calls it.
+        "func revokeEveryLease(handingBackThrough: borrowing Handback)",
+        "func releaseEveryLease()",
+        "func confirmAcceptedHandbacks()",
+        "func sealForSleep(generation: UInt64)",
+        "func unsealAfterWake(generation: UInt64)",
+        "@discardableResult func recordUnconfirmedHandbacks()",
+        "func activeLease()",
+        "func activeLeaseView()",
         // #350's. It runs a caller's closure with the grant gate sealed, and it can only seal:
         // the count is private, the increment and decrement are paired in its own frame, and
         // nothing it is handed can reach `table` or `restore(_:because:)` except through the
         // internal methods already listed here. A caller elsewhere in the module can refuse
         // grants for as long as its closure runs — the safe direction — and nothing more.
-        "sealingGrants(during: @Sendable () async -> Outcome)",
-        "holdsTombstone(for: ConnectionID)",
-        "bind(emergencyRestores: some EmergencyRestoreConfirming)",
+        "func sealingGrants(during: @Sendable () async -> Outcome)",
+        "func holdsTombstone(for: ConnectionID)",
+        "func bind(emergencyRestores: some EmergencyRestoreConfirming)",
     ]
 
     /// The file set is a claim about the tree, so it is read off the tree — see
@@ -276,7 +301,7 @@ struct LeaseAuthorityAccessTests {
 
     @Test("Every member that decides who may hold or release a fan is still private")
     func theRegistryStaysPrivate() throws {
-        let code = try Self.strippedSource(of: Self.authorityFile)
+        let code = try MemberAccessScan.strippedSource(of: Self.authorityFile)
 
         for member in Self.mustStayPrivate {
             let declaration = try MemberAccessScan.declaration(
@@ -295,34 +320,34 @@ struct LeaseAuthorityAccessTests {
 
     @Test("Only the acknowledged properties of the lease core are internal")
     func onlyTheAcknowledgedPropertiesAreInternal() throws {
-        let internalProperties = Set(
-            try Self.members(keyword: .property).filter { !$0.isPrivate }.map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.authorityFiles, keyword: .property)
 
         #expect(
-            internalProperties == Self.acknowledgedInternalProperties,
+            found == Self.acknowledgedInternalProperties,
             """
-            the internal properties of LeaseAuthority changed: found \
-            \(internalProperties.sorted()), acknowledged \
-            \(Self.acknowledgedInternalProperties.sorted()). Widening one is a decision \
-            about what the rest of AeolusHelper may read out of the lease core — say why \
-            here, in the suite that records why the acknowledged ones were acceptable.
+            the non-private properties of LeaseAuthority changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalProperties)). \
+            Widening one, or respelling it, is a decision about what the rest of AeolusHelper \
+            may read out of the lease core — say why here, in the suite that records why the \
+            acknowledged ones were acceptable, and re-state the entry as it is now written.
             """
         )
     }
 
     @Test("Only the acknowledged methods of the lease core are internal")
     func onlyTheAcknowledgedMethodsAreInternal() throws {
-        let internalMethods = Set(
-            try Self.members(keyword: .method).filter { !$0.isPrivate }.map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.authorityFiles, keyword: .method)
 
         #expect(
-            internalMethods == Self.acknowledgedInternalMethods,
+            found == Self.acknowledgedInternalMethods,
             """
-            the internal methods of LeaseAuthority changed: found \
-            \(internalMethods.sorted()), acknowledged \
-            \(Self.acknowledgedInternalMethods.sorted()). A method of this actor that is \
-            not private is callable from every file in AeolusHelper, and inside it `table`, \
-            `tombstones` and `restore(_:because:)` are all in scope — say why here.
+            the non-private methods of LeaseAuthority changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalMethods)). A method \
+            of this actor that is not private is callable from every file in AeolusHelper, and \
+            inside it `table`, `tombstones` and `restore(_:because:)` are all in scope — say \
+            why here, and re-state the entry as it is now written.
             """
         )
     }
@@ -372,26 +397,4 @@ struct LeaseAuthorityAccessTests {
             lease core holding one is one edit from writing (docs/SAFETY.md § 2).
             """)
     }
-
-    // MARK: - The member parse
-
-    /// Every member of the requested kind declared at the actor's own member indent, across
-    /// every file it is written in.
-    ///
-    /// The parse itself is `MemberAccessScan`, shared with
-    /// `HelperConnectionSessionAccessTests` since #98 rather than copied into it. Two files
-    /// here declare nested types, whose members sit eight spaces in, so nothing but a member of
-    /// the actor sits at that depth — the precondition that scan states and its callers keep.
-    /// Computed properties are counted alongside stored ones deliberately —
-    /// `fansAeolusIsAccountableFor` is computed, and it is the widening most worth watching.
-    private static func members(
-        keyword: MemberAccessScan.Keyword
-    ) throws -> [MemberAccessScan.Member] {
-        try MemberAccessScan.members(in: Self.authorityFiles, keyword: keyword)
-    }
-
-    private static func strippedSource(of file: String) throws -> String {
-        try MemberAccessScan.strippedSource(of: file)
-    }
-
 }

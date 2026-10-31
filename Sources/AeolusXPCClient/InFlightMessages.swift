@@ -25,8 +25,8 @@ import os
 /// through the error handler, do not move it.
 ///
 /// What the deadline itself is, and when it runs out, is unchanged: `HelperClientDeadlines` picks
-/// the figure, `helperNeverAnswered` is the answer, and the caller's `translate(_:on:)` discards
-/// the connection. Only the instant it is counted from moves.
+/// the figure, `helperNeverAnswered` is the answer, and the caller's `translate(_:on:sentAfter:)`
+/// discards the connection. Only the instant it is counted from moves.
 ///
 /// ## Each connection has its own order
 ///
@@ -49,27 +49,46 @@ import os
 ///
 /// So the deadline belongs to the **message**, not to its caller. It keeps running when the caller
 /// goes, and when it runs out it settles the message and passes the turn. It does not discard the
-/// connection, because cancellation is not a teardown (`translate(_:on:)`): with nobody waiting,
-/// nothing reports the cut-off, and the message behind it then gets its own deadline. A healthy
-/// helper is never torn down for a caller that left.
+/// connection, because cancellation is not a teardown (`translate(_:on:sentAfter:)`): with nobody
+/// waiting, nothing reports the cut-off, and the message behind it then gets its own deadline. A
+/// healthy helper is never torn down for a caller that left.
 ///
 /// **What a wedged helper costs is one deadline per orphan, not one in all.** Each cancelled
 /// sequenced message ahead of a live read settles only when its own deadline runs out, and only
 /// then does the next one's begin. So a read behind N orphans waits N deadlines before its own
 /// starts. A caller that cancels and re-sends a `snapshot` every 2 s behind a wedged `apply` adds
 /// orphans faster than their 5 s deadlines retire them, and the read it is waiting for is never
-/// cut off. No client does that today: `fanctl` awaits each verb, and the app has no control UI.
-/// [#419](https://github.com/blamechris/Aeolus/issues/419) is the design note that the control UI
-/// must settle first — either it never cancels a sequenced verb it means to re-send, or an
-/// orphan's expiry discards when a live message waits behind it.
+/// cut off. No client does that: `fanctl` awaits each verb, and the app follows the rule below.
+///
+/// **The rule the app chose for [#419](https://github.com/blamechris/Aeolus/issues/419): the UI
+/// never cancels a sequenced verb it means to send again.** This client still does not bound the
+/// cost of orphans; the app simply makes none.
+///
+/// - **The read connection sends only `snapshot`, one at a time, and never cancels one.**
+///   `HelperSnapshotSource`, in the app, owns its own `HelperClient` and nothing else talks on
+///   it. Its loop awaits each answer before it pauses and sends the next; a consumer that leaves
+///   cuts short only the pause, and a request outstanding at that moment is left to finish.
+///   `HelperSnapshotSourceTests` holds it there with a parked reply: cancelling that request
+///   from `stop()` turns them red.
+/// - **A SwiftUI `.task` never owns an XPC await.** SwiftUI cancels a `.task` when its view
+///   disappears, which is exactly the cancellation this rule forbids. Views call the source's
+///   `start()` and `stop()`, and the request's task belongs to the source.
+/// - **Control travels on a second connection** (`AppComposition`, #153), so that no `snapshot`
+///   ever queues behind an `apply`. The app's control for all fans sends its verbs only through
+///   the root's synchronous entry points, each of which starts a task of its own, and the lease
+///   driver sends `acquireLease` and `apply` from tasks of its own and never cancels either
+///   (`LeaseDriver`, "It never cancels a sequenced verb"). So no caller's cancellation reaches a
+///   sequenced control verb. `AllFansControlRootTests.aCancelledCallerCancelsNothing` holds it: a
+///   take from a cancelled caller still acquires and applies, each verb answered to a caller
+///   nobody cancelled.
 ///
 /// ## A discard answers everything still in flight on its connection
 ///
 /// `abandonAll(on:answering:)` is how `HelperClient.discardConnection` settles a generation, and it
 /// answers each message **before** the connection is invalidated. That order is the point. The
 /// client's own `invalidate()` comes back to every message still parked on the connection as 4099,
-/// which `translate(_:on:)`'s default arm reads as "the helper is not installed or not yet
-/// approved": a message the client killed itself, misdiagnosed as a helper that was never there
+/// which `translate(_:on:sentAfter:)`'s default arm reads as "the helper is not installed or not
+/// yet approved": a message the client killed itself, misdiagnosed as a helper that was never there
 /// (#413's comment). Answered first, each one carries what is true instead, and the 4099 that
 /// follows finds its latch already resolved.
 ///
@@ -170,7 +189,7 @@ final class InFlightMessages: Sendable {
     ) -> Admission<Answer> {
         // Two fallbacks, because the two ways of giving up are different events and the
         // deadline's is acted on. A caller that was cancelled has said nothing about the
-        // helper; see `HelperClient.translate(_:on:)`.
+        // helper; see `HelperClient.translate(_:on:sentAfter:)`.
         let pending = PendingReply<Result<Answer, Error>>(
             ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline)),
             ifCancelled: .failure(CancellationError())

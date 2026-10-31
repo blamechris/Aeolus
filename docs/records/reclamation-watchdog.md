@@ -138,8 +138,9 @@ and `reengageRefused` for a first step refused because a same-lease engagement t
 — which keep `reassert`'s cyclomatic complexity at 10 where inline guards would have made it 13.
 
 **#395 spent five: 328 code lines, and about 22 left; `examine(fanAt:)` 50; file 957** (SwiftLint
-0.65.1). The record's check is `HeldFan.record(_:)`, the one write of `commanded`, which is
-`private(set)` so that both of its writers pass through it; the actor's share is the two writers
+0.65.1). The record's check is `HeldFan.record(_:)`, the one write of `commanded`, which was
+`private(set)` so that both of its writers pass through it, and since #612 is a get-only view of
+storage that only `record(_:)` assigns; the actor's share is the two writers
 binding the registry's answer and one private helper, `logRefusal(of:from:unless:)`, that logs a
 refusal at `.fault`. The helper keeps `reassert`'s cyclomatic complexity at 10, where an `if` of
 its own would have made it 11.
@@ -622,7 +623,8 @@ up after this one was the wrong shape regardless; the correction belongs here, a
 and restoring if the latch engaged underneath them.
 
 > **Corrected 2026-10-11 ([#345](https://github.com/blamechris/Aeolus/pull/345)).** "Indefinitely" above is false.
-> `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)`,
+> `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)` (since 2026-10-18 spelled `.thermalEmergencyRevocation`, and since #440
+> `revokeEveryLease(handingBackThrough: handback)`, which labels it itself),
 > which drops every live lease and restores the fans they covered, and a fan this mechanism
 > re-engages is under a live lease: `examine(fanAt:inBound:)` hands back any fan that none covers
 > (ADR 0009 D2). So the cycle that fires hands such a fan back even though no registry § 3

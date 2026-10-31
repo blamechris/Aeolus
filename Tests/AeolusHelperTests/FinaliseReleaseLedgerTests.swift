@@ -11,7 +11,7 @@ import Testing
 ///
 /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` hands the fan back and then
 /// revokes the lease it was holding the fan for. In the composition the daemon runs, that
-/// revocation reaches `HelperFanRestorer.restoreToAutomatic(fans:because:)`, which tells § 5 about
+/// revocation reaches `HelperFanRestorer.handBack(_:because:through:)`, which tells § 5 about
 /// every fan it hands back — `manualControlReleased(fanAt:)` — while `finaliseRelease` is still
 /// suspended inside the revocation. Until #346 that notification cleared the entry the terminal
 /// action had just been given, logged it "resolved", and a fan the system had taken was reported to
@@ -108,11 +108,14 @@ struct FinaliseReleaseLedgerTests {
     static func composed<Plane: FanControlPlane>(
         over plane: Plane, fanCount: Int = 1, log: RecordedLog
     ) -> HelperComposition<Plane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: plane,
             snapshotProvider: fanProvider(fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))

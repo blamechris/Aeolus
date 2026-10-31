@@ -43,11 +43,25 @@ struct SafetyLog: Sendable {
         case fault
     }
 
-    private let emit: @Sendable (Level, String) -> Void
+    /// The one route every line takes, held as the one type that escapes (#553).
+    ///
+    /// A `LogText.EscapingSink` rather than a closure: it writes out every character that
+    /// would break or hide a line (`LogText.escaped(_:)`) before the closure inside it — the
+    /// unified log, or a test's recorder — hears the message, and nothing that holds one can
+    /// skip that. **That is what forces the escape, not the shape of the initialisers.** Both
+    /// initialisers below assign it; a shipping `init(subsystem:category:)` that assigned a
+    /// closure of its own, as main's did before this, no longer compiles. Every test that reads
+    /// lines builds `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the composition
+    /// and `StartupReconciliation` default to is read back by no test, and a convention here
+    /// would have been checked by nothing either. What pins the stored type is
+    /// `LogTextTests.shippingSafetyLogHoldsOnlyAnEscapingSink`; what notices a method in this
+    /// file that builds a `Logger` or calls `os_log` is `LogRouteTests.safetyLogTakesTheOneRoute`,
+    /// a lexical scan that catches an accident and is not the control.
+    private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {
         let logger = Logger(subsystem: subsystem, category: category)
-        emit = { level, message in
+        emit = LogText.EscapingSink { level, message in
             switch level {
             case .notice: logger.notice("\(message, privacy: .public)")
             case .fault: logger.fault("\(message, privacy: .public)")
@@ -57,10 +71,10 @@ struct SafetyLog: Sendable {
 
     /// A sink a test can read back, **including the level**.
     ///
-    /// `LeaseLog` has no equivalent and its lines go unasserted, which was tolerable while
-    /// the log was commentary. It is not tolerable here: "partial loss is a degraded
-    /// **logged** cycle" is the stated justification for compiling a fixed key list into
-    /// the helper, and a review found that sentence true of nothing — `unreadableKeys` had
+    /// `LeaseLog` had no equivalent until #560 and its lines went unasserted, which was
+    /// tolerable while the log was commentary. It is not tolerable here: "partial loss is a
+    /// degraded **logged** cycle" is the stated justification for compiling a fixed key list
+    /// into the helper, and a review found that sentence true of nothing — `unreadableKeys` had
     /// no reader anywhere in `Sources/`. A claim that load-bearing needs a test that fails
     /// when it stops being true, and a test cannot read `os_log`.
     /// The level is passed through rather than discarded. An earlier version of this
@@ -69,7 +83,7 @@ struct SafetyLog: Sendable {
     /// claim no test could check, in the type whose own header says a load-bearing claim
     /// "needs a test that fails when it stops being true".
     init(recording sink: @escaping @Sendable (Level, String) -> Void) {
-        emit = sink
+        emit = LogText.EscapingSink(sink)
     }
 
     /// Some curated keys answered and some did not.
@@ -348,6 +362,24 @@ struct SafetyLog: Sendable {
             """
             Fan \(fan) reads automatic after its handback; § 3 no longer lists it as under \
             manual control.
+            """
+        )
+    }
+
+    // MARK: - docs/SAFETY.md § 3 — its lane (ADR 0012's 2026-10-18 amendment)
+
+    /// A request arrived in § 3's lane while another was outstanding, deeper than any earlier
+    /// report or at a power of two of the overlapping arrivals. Admitted in the lane anyway.
+    func thermalCycleLaneOverlapped(outstanding: Int, overlappingArrivals: Int) {
+        emit(
+            .fault,
+            """
+            \(outstanding) requests were outstanding at once in the thermal emergency \
+            override's own admission, which is the override's alone and serves one request at a \
+            time. The request was admitted; the override's cycle bound (ADR 0012) assumes one, \
+            so its waits are no longer the ones derived. \(overlappingArrivals) request(s) have \
+            arrived to find another outstanding since the helper started; this is reported \
+            again when that count doubles, or when more are outstanding at once.
             """
         )
     }
@@ -1674,6 +1706,55 @@ extension SafetyLog {
             \(report.forceKey), recorded the restore keys' declared sizes in bytes \
             [\(sizes.joined(separator: ", "))] (any other is written one zero byte), and \
             \(restore).
+            """
+        )
+    }
+}
+
+// MARK: - The write plane's turns (ADR 0014 D1, D3; ADR 0012 H6)
+
+extension SafetyLog {
+
+    /// One write call the plane made, and how the firmware answered it: the key, the bytes, the
+    /// result byte or what came back instead of one, and the round trip's duration. One line per
+    /// call, restores included, so run 1's record has every write (D1, D8) and write latency (U8,
+    /// ADR 0012 H6) is measured from these lines and from nothing a test runs. `.notice`: a
+    /// refusal is reported as a fault by the verb's caller, which knows what it meant.
+    func planeWrote(key: SMCKey, bytes: String, answer: String, roundTrip: Duration) {
+        emit(.notice, "Wrote \(key.rawValue) = \(bytes): answered \(answer), in \(roundTrip).")
+    }
+
+    /// One engagement step's turn: whether it was the engagement's first, the raw `F<n>Md` it
+    /// read before its write, what the write answered, the raw value it read back, how it ended,
+    /// and the turn's duration (D3's per-step record). The attempt index is the driver's line,
+    /// logged before the step (`engagementStepAttempted(fan:attempt:)`).
+    func planeStepped(_ trace: StepTrace, took turn: Duration) {
+        emit(
+            .notice,
+            """
+            Fan \(trace.fan)'s \(trace.firstStep ? "first" : "later") engagement step: raw \
+            F\(trace.fan)Md \(trace.before) before, the mode write answered \(trace.modeWrite), \
+            \(trace.after) after; \(trace.outcome), in \(turn).
+            """
+        )
+    }
+
+    /// The floor hold of a fan whose step just read back engaged, in the same turn (ADR 0014's P1′
+    /// amendment, decision 4): the raw target it read, and beside it the RPM it decoded to so run
+    /// 1's operator need not decode the `flt` by hand; the floor it raised the target to, if any;
+    /// and how the hold ended — held, the raise's answer and read-back, or what it threw. Each
+    /// write call has its own `planeWrote(key:bytes:answer:roundTrip:)` line as well. Run 1 reads
+    /// whether the floor was raised from this line, and 1d reads from it that no `F1` key was
+    /// written.
+    /// `.notice`: a hold that threw is reported by the driver's undo, which knows what it meant.
+    func planeHeldFloor(_ hold: FloorHoldTrace) {
+        let raise = hold.floorRaisedTo.map { "the raise to its floor, \($0) RPM, " } ?? ""
+        let decoded = hold.decodedRPM.map { " (\($0) RPM)" } ?? ""
+        emit(
+            .notice,
+            """
+            Fan \(hold.fan) read back engaged with raw \(hold.key.rawValue) \(hold.raw)\(decoded): \
+            \(raise)\(hold.outcome).
             """
         )
     }

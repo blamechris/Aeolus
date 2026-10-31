@@ -38,8 +38,9 @@ import Foundation
 /// to a process that was ending; the command before it wrote a target to a restored fan. Both are
 /// closed by the #410 ticket-and-seal amendment — the engagement's ticket and the exit's seal — and
 /// `SignalTeardownInFlightApplyTests` holds that an engagement, a command and a re-assert in flight
-/// at the exit write nothing after the keystone. All of this is a plane that can write: on this
-/// build nothing writes, because a `.notBuilt` plane grants no lease.
+/// at the exit write nothing after the keystone, over the scripted plane, and
+/// `ProductionExitTests` over the production one. All of this is a plane that can write: on a
+/// plane that cannot, nothing writes, because a `.notBuilt` plane grants no lease.
 protocol LeaseApplying: Sendable {
 
     /// Writes `settings` under `lease`, or refuses having undone what it engaged: `LeaseApplier`'s

@@ -13,14 +13,15 @@
 /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s adjudication decided the shape:
 /// *"the read-only path survives as a capability gate on the seam, not a literal."* The
 /// answer therefore comes from the conformer that would have to perform the write —
-/// `SMCFanControlPlane` answers `.notBuilt` because it holds no route to
-/// `SMCConnection.write(_:to:)`, which is SPI-gated and called by nothing in the helper, and
-/// `ScriptedControlPlane` answers `.built` because its scripted firmware really does take
-/// writes.
+/// `SMCFanControlPlane` answers `.built` exactly when it holds a write channel — the route to
+/// `SMCConnection.write(_:to:)`, which only the daemon's composition gives it (ADR 0014's B1
+/// amendment) — and `.notBuilt` otherwise, and `ScriptedControlPlane` answers `.built` because
+/// its scripted firmware really does take writes.
 ///
-/// **One line moves, and it is not the only one — say so rather than imply otherwise.** The
-/// day E3/E4 supply the three method bodies, `SMCFanControlPlane.writeCapability` flips and
-/// every gate that *reads* it flips with it: `LeaseAuthority.acquireLease` is the one that
+/// **One line moves, and it is not the only one — say so rather than imply otherwise.** On the
+/// E4 branch, the change that supplied the three method bodies made
+/// `SMCFanControlPlane.writeCapability` answer from the channel it holds, and every gate that
+/// *reads* it follows: `LeaseAuthority.acquireLease` is the one that
 /// matters, and it is the reason a lease is refused today. The snapshot's half was a literal
 /// too: `ReadOnlyFanReport`'s availability wrote `.unavailable(.writePathNotBuilt)` out, so
 /// flipping the seam alone would have granted leases while every fan in the snapshot reported

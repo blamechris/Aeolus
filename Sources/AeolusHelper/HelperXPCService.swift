@@ -23,8 +23,9 @@ import Foundation
 /// new one.** A heartbeat is the message that proves the client is still alive, and
 /// `docs/SAFETY.md` § 1 grants a 30 s TTL with a 10 s beat *so that two consecutive missed
 /// beats are tolerated* — a property of the client's sending, which a helper-side backlog
-/// defeats without the client doing anything wrong. § 3 has the app rendering the snapshot at
-/// 1 Hz on the connection it also holds its lease on, and one message at a time is one
+/// defeats without the client doing anything wrong. § 3 had the app rendering the snapshot at
+/// 1 Hz on the connection it would hold its lease on (the app now holds it on a second one,
+/// `AppComposition`, #153), and one message at a time is one
 /// message at a time: once the backlog is longer than the TTL, a `renewLease` sent exactly on
 /// schedule reaches `LeaseAuthority` after the lease it was renewing has gone. The direction
 /// was fail-safe — the fans go back to automatic — and it was still a live, healthy client

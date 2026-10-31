@@ -28,7 +28,8 @@ import SMCCore
 ///
 /// The scheduling this seam made *possible* is `SMCReadScheduler`'s, per
 /// [#127](https://github.com/blamechris/Aeolus/issues/127): the production conformer issues
-/// every read above at `.supervisor`, which is admitted ahead of a waiting snapshot turn.
+/// every read above at its admission — `.supervisor`, which is admitted ahead of a waiting
+/// snapshot turn, or § 3's lane through the view § 3 is given (`admitted(at:)`).
 /// Naming the keys was necessary and was never sufficient — a small read still waits for a
 /// big one on a connection that grants no turns.
 ///
@@ -47,11 +48,11 @@ import SMCCore
 ///
 /// ## What conforms
 ///
-/// `SMCFanControlPlane` is the production conformer. Its reads are real; **its writes throw
-/// and will keep throwing until E3 and E4 build a write path.** E5 is what gates those
-/// epics, so modelling the write side here — while implementing none of it — is the whole
-/// shape of this seam. `ScriptedControlPlane`, in the test target, is the scriptable mock
-/// every other E5 mechanism is tested through.
+/// `SMCFanControlPlane` is the production conformer. Its reads are real; on the E4 branch its
+/// writes are the Apple Silicon write path when it holds a write channel (`SMCWriteTurns`), and
+/// refuse with `.controlPathNotBuilt` when it holds none. `ScriptedControlPlane`, in the test
+/// target, is the scriptable mock every other E5 mechanism is tested through, and
+/// `WritePlaneContractTests` holds the two to one write contract.
 /// The read half of the seam: what a mechanism needs to know about one fan, and how to
 /// try again when it can no longer find out.
 ///
@@ -196,8 +197,9 @@ protocol KeystoneRestoring: Sendable {
     /// `PlaneWriteLedger` holds that state and `RestorePlan` the order, so every such plane
     /// keeps it by the same code: it calls `ledger.restoreRequested(scope)` before the restore's
     /// turn, and builds the restore from `ledger.plan(for: scope)` inside it, never from a scope
-    /// switch of its own. A contract B1's plane implements (ADR 0014's #410 ticket-and-seal
-    /// amendment, "B1's obligations"); on this build nothing writes.
+    /// switch of its own (ADR 0014's #410 ticket-and-seal amendment, "B1's obligations").
+    /// `SMCFanControlPlane` keeps it in `SMCWriteTurns.keystone`, and `WritePlaneContractTests`
+    /// runs the contract over both planes.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws
 }
 
@@ -210,20 +212,15 @@ protocol KeystoneRestoring: Sendable {
 /// protocol for why the answer is synchronous and why it must be asked before any read.
 /// `KeystoneRestoring` is refined for the same reason, one verb wider: § 7's panic verb is
 /// handed the restore and nothing that commands a fan.
-protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, KeystoneRestoring {
+protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, KeystoneRestoring,
+    CriticalTemperatureReading
+{
 
     // MARK: - Reads
 
-    /// Reads the curated critical temperature keys, as one subset read.
-    ///
-    /// The set is the caller's — #102 curates it in code, per family, never from
-    /// configuration — so it crosses as a parameter rather than being fixed here.
-    ///
-    /// - Throws: `FanControlPlaneError.criticalTelemetryUnavailable` when **no** requested
-    ///   key produced a usable reading, including when the requested set is empty. A
-    ///   supervisor that cannot see any temperature is blind, and blindness must not arrive
-    ///   as a successful report of nothing — see `CriticalTemperatureReport`.
-    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport
+    // `readCriticalTemperatures(_:)` and `admitted(at:)` are `CriticalTemperatureReading`'s
+    // requirements, refined above rather than restated: one declaration each, so the telemetry's
+    // read-only role and the plane cannot come to differ.
 
     // MARK: - The keystone
 
@@ -265,6 +262,10 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// whether the force key is needed — and its cadence is `EngagementDriver`'s. Each
     /// call performs one step inside one `.supervisor` turn (a fresh key info, the write, and
     /// its read-back) and returns `.engaged` or `.awaitingYield`; every refusal is a throw.
+    /// **The step that reads back `1` also holds the target at or above the fan's floor** before
+    /// it answers `.engaged`: it reads `F<n>Tg` in the same turn, and writes the floor and reads it
+    /// back when the target is below it (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's
+    /// P1′ amendment, decision 4). A target it cannot read, or a floor not held, is a throw.
     /// Nothing calls this but the driver, which asks the entitlement around every step and
     /// undoes on any throw. The parameter list is still ADR 0008's: one permit and nothing
     /// beside it, so the fan whose lease the driver checks is the fan written.
@@ -275,8 +276,8 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// (`beginEngagement(fanAt:)`), a later one only under the epoch its first recorded, and a
     /// plane sealed for exit refuses every step; each refusal is `FanControlPlaneError.superseded`
     /// with nothing written. One that finds the epoch moved after its mode write, before the force
-    /// key's, throws `.supersededAfterWrite`. A contract B1's plane implements (ADR 0014's #410
-    /// ticket-and-seal amendment); on this build nothing writes.
+    /// key's, throws `.supersededAfterWrite` (ADR 0014's #410 ticket-and-seal amendment).
+    /// `SMCFanControlPlane` keeps it in `SMCWriteTurns.step`.
     ///
     /// A first step that issues no write throws `.superseded`, `.notAutomatic` or
     /// `.failedBeforeFirstWrite`, and nothing else. A later step may be `.superseded` at its
@@ -301,11 +302,34 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// before key info or any write, and keeps the admission and the command's writes in that one
     /// turn (ADR 0014's U15, D7): the seal's command half depends on it. Once `.forExit` has been
     /// requested it refuses with `FanControlPlaneError.superseded`, having written nothing: the
-    /// exit's seal, and its only guard against a target written after the final keystone. A
-    /// contract B1's plane implements (ADR 0014's #410 ticket-and-seal amendment); on this build
-    /// nothing writes.
+    /// exit's seal, and its only guard against a target written after the final keystone (ADR
+    /// 0014's #410 ticket-and-seal amendment). `SMCFanControlPlane` keeps it in
+    /// `SMCWriteTurns.command`.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
+
+    /// `docs/SAFETY.md` § 3's bridge for one fan, as **one job**: `target` — the fan's maximum,
+    /// from § 3's writer — and then `restoreToAutomatic(.fan(target.fanIndex))`, both attempted
+    /// and both reported
+    /// ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment).
+    ///
+    /// **Its order.** The `.fan(n)` restore is **requested first**, synchronously and before the
+    /// job waits for its turn (`ledger.restoreRequested(_:)`, D4), so an engagement step that took
+    /// its ticket before the bridge was called and has **not yet been admitted to its turn** is
+    /// superseded and writes nothing. One already inside its turn is not interrupted — nothing
+    /// is, inside a turn — and the bridge's turn, restore half included, follows it. Then, inside
+    /// one turn, the command's body — `ledger.admitCommand()` first, so the exit's seal still
+    /// refuses it — and the restore's body, `ledger.plan(for:)`, each attempted whatever the
+    /// other answered (`BridgeOutcome.attempting(maximum:thenRestore:)`). Nothing inside the turn
+    /// suspends. It never throws: a half that failed is a `.failure` in the outcome.
+    ///
+    /// Only § 3 calls it, through `SafetyActorWriter.bridgeToMaximumThenRestore(of:)`, and
+    /// `GovernedFanWriter` declares no such verb, so § 8's ramp governor cannot reach it.
+    /// `SMCFanControlPlane` builds it from the command turn's and the restore turn's bodies with
+    /// no second copy of either, and a plane that cannot write refuses both halves without
+    /// reading.
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome
 
     // MARK: - Bring-up
 

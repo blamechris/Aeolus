@@ -77,10 +77,12 @@ public actor SMCConnection {
     //   cache was not observed to go wrong — but nothing re-fetched the metadata to
     //   compare, so a stale-but-still-correct cache and a genuinely stable one are
     //   indistinguishable in that data. See `docs/SMC-RESEARCH.md`, "Sleep/wake and the
-    //   read connection — observed". ADR 0004 already requires the write path to
-    //   re-resolve byte order from key info read at write time rather than trust an earlier
-    //   enumeration, for exactly this reason; `freshKeyInfo(for:)` is that read, and never
-    //   answers from here. This cache is a read-path performance optimisation only, and
+    //   read connection — observed". ADR 0004 already requires a forward write — an
+    //   engagement step or a target command — to re-resolve byte order from key info read at
+    //   write time rather than trust an earlier enumeration, for exactly this reason;
+    //   `freshKeyInfo(for:)` is that read, and never answers from here. A restore reads
+    //   nothing before it writes (ADR 0014 D7), so no read that can fail stands in front of
+    //   the keystone. This cache is a read-path performance optimisation only, and
     //   nothing in the write path may come to rely on it — `write(_:to:)` reads nothing at
     //   all. `close()` deliberately leaves it populated (see its documentation);
     //   `invalidate()` is the explicit escape hatch for a caller who suspects staleness.
@@ -336,45 +338,6 @@ public actor SMCConnection {
 
     // MARK: - Read path (public)
 
-    /// The largest `#KEY` decode this project will trust as a genuine firmware value,
-    /// rather than a byte-order decode fault.
-    ///
-    /// `Mac16,5` reports 3385. No hardware report this project has seen — its own dump or
-    /// any community source cited in `docs/SMC-RESEARCH.md` — describes an SMC key table
-    /// within even one order of magnitude of six figures; the most densely instrumented
-    /// Macs documented anywhere are in the low thousands. 100,000 is roughly 30x
-    /// `Mac16,5`'s own count: generous headroom for a Mac with meaningfully more sensors
-    /// than any observed so far, while sitting almost four orders of magnitude below the
-    /// one byte-swap artefact this project has actually measured — `#KEY`'s own raw bytes
-    /// (`00000d39`) decode to 957,153,280 read little-endian instead of the correct
-    /// big-endian 3385 (see ADR 0003). This ceiling only has to separate "any plausible
-    /// key table" from "a byte order got flipped"; it does not need to be tight, and
-    /// picking it wide keeps a legitimately larger future Mac from tripping it.
-    static let maxPlausibleKeyCount = 100_000
-
-    /// Sanity-bounds a decoded `#KEY` value before it is trusted to size an allocation or
-    /// bound a loop — the fix for the scenario `SMCError.implausibleKeyCount` documents.
-    ///
-    /// Pure and synchronous, deliberately not private, so the exact failure value ADR 0003
-    /// records (957,153,280, `#KEY` misdecoded little-endian on `Mac16,5`) is directly
-    /// unit-testable via `@testable import SMCCore` without hardware — see
-    /// `SMCConnectionKeyCountPlausibilityTests`.
-    static func validatePlausibleKeyCount(_ count: Int) throws -> Int {
-        guard count >= 0, count <= maxPlausibleKeyCount else {
-            logger.fault(
-                """
-                #KEY decoded to \(count, privacy: .public), outside the plausible range \
-                0...\(maxPlausibleKeyCount, privacy: .public). Refusing to use it to size \
-                an allocation or bound an enumeration — this is ADR 0003's byte-order \
-                tripwire firing on a decode fault, not a real key count. See \
-                docs/ADR/0003-integer-byte-order.md.
-                """
-            )
-            throw SMCError.implausibleKeyCount(declared: count)
-        }
-        return count
-    }
-
     /// The number of keys this machine exposes, read from `#KEY`.
     ///
     /// `#KEY` declares `ui32` with attribute bit `0x04` clear, so
@@ -390,76 +353,36 @@ public actor SMCConnection {
     ///   sensor reading on a machine with an undetectable generation, not just the
     ///   display-grade integers the fail-safe is scoped to (`docs/ARCHITECTURE.md` and
     ///   ADR 0003 both promise the control path is unaffected). This method therefore
-    ///   falls back to `decodeKeyCountFallback(bytes:)` for `#KEY` specifically, in this
+    ///   falls back to `decodeKeyCountFallback(value:)` for `#KEY` specifically, in this
     ///   enumeration layer rather than through the resolver — ADR 0003's own designated
     ///   fallback shape. See that function's documentation for the justification and for
     ///   why `verifyKeyCountCrossCheck()` still catches a wrong guess.
     ///
-    /// The decoded value — resolved or guessed — is sanity-bounded by
-    /// `validatePlausibleKeyCount(_:)` before it is returned: every caller of this method —
-    /// `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both allocate and
-    /// iterate on this value — inherits the bound automatically rather than needing to
-    /// apply it themselves.
+    /// The decoded value — resolved or guessed — is converted to an `Int` without trapping and
+    /// sanity-bounded by `validatePlausibleKeyCount(_:)` before it is returned: every caller
+    /// of this method — `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both
+    /// allocate and iterate on this value — inherits the bound automatically rather than
+    /// needing to apply it themselves. Everything after the read lives in
+    /// `decodeKeyCount(value:)`; see that function for the conversion.
+    ///
+    /// The interface generation reaches the decode by one route: `read(_:)` turns it into the
+    /// value's `byteOrder`, which is `nil` exactly when the generation is unknown. Until #531
+    /// the generation was also passed in beside the value, a second answer to the same question
+    /// that no test could pin.
+    ///
+    /// Only part of that route is pinned. On a connection that is never opened,
+    /// `SMCConnectionKeyCountGenerationFlowTests` pins two things: `read(_:)` computes no byte
+    /// order without a generation, observed through its zero-length return, and this method
+    /// hands the declared type to `decodeKeyCount(value:)`. `SMCConnectionKeyCountDecodeTests`
+    /// and `SMCConnectionKeyCountFallbackTests` pin how the decode uses `byteOrder`.
+    ///
+    /// **Not pinned, on hardware or off it:** that `byteOrder` survives `read(_:)`'s non-empty
+    /// return, and this method's hand-off, when the generation is unknown. Both run only after
+    /// `READ_BYTES` returns bytes, which only IOKit does, and `Mac16,5`'s generation is always
+    /// known. Substituting an order at either point leaves every test green; see #539.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
-
-        let decoded: Int
-        if let scalar = try value.scalar() {
-            decoded = Int(scalar)
-        } else if generation == nil, let fallback = Self.decodeKeyCountFallback(value: value) {
-            decoded = fallback
-        } else {
-            throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
-        }
-
-        return try Self.validatePlausibleKeyCount(decoded)
-    }
-
-    /// Decodes `#KEY` directly as big-endian, bypassing
-    /// `resolveByteOrder(generation:attributes:type:)` and `SMCValue.scalar()` entirely,
-    /// for the one case both of those correctly refuse:
-    /// the SMC interface generation could not be determined for this connection.
-    ///
-    /// This is ADR 0003's own designated fallback shape for exactly this situation —
-    /// "`#KEY` handled by the enumeration layer instead of this rule" — because without a
-    /// key count `SMCSensorProvider.readAll()` cannot enumerate a single reading, control
-    /// path included, which is a stronger failure than the fail-safe is meant to cause.
-    ///
-    /// Justification for guessing big-endian specifically here, when every other plain
-    /// integer correctly declines rather than guess:
-    /// - Unconditionally correct on `.legacy` (Intel), where all plain integers are
-    ///   big-endian regardless of the attribute byte — so this guess is right by
-    ///   construction on one of the two generations this project models.
-    /// - Correct on the only `.modern` case this project has observed: `#KEY` on
-    ///   `Mac16,5` carries attribute bit `0x04` clear (128), which
-    ///   `resolveByteOrder(generation:attributes:type:)` already resolves to big-endian
-    ///   when the generation *is* known — see `SMCByteOrderCapturedBytesTests`.
-    /// - The Asahi Linux SMC documentation names `#KEY` explicitly as one of the
-    ///   byte-reversed quirk keys on Apple Silicon, independent of and prior to this
-    ///   project's own attribute-bit hypothesis.
-    ///
-    /// This is a guess, not a resolved fact, and is not treated as one:
-    /// `verifyKeyCountCrossCheck()` independently validates whatever `keyCount()` returns —
-    /// resolved or guessed — against an actual walk of the key table. If `#KEY` were ever
-    /// little-endian on some future machine with an undetectable generation, the walk would
-    /// not reach the guessed count and the tripwire fires loudly, exactly as it would for a
-    /// wrong resolver decode. See issue #35 for the open question of whether attribute bit
-    /// `0x04` governs byte order beyond the plain integers this resolver actually covers.
-    ///
-    /// Scoped to `#KEY` only — `value.key` and `value.type` are checked so a caller cannot
-    /// accidentally widen this into a general "guess big-endian" escape hatch for other
-    /// plain integers, which must keep declining per the fail-safe. Returns `nil` if either
-    /// check fails, or if `bytes` is not the 4 bytes a `ui32` should be (defensive; not
-    /// expected, since `SMCValue.scalar()` already validates width before this is reached).
-    static func decodeKeyCountFallback(value: SMCValue) -> Int? {
-        guard value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4 else {
-            return nil
-        }
-        let bytes = value.bytes
-        let bits =
-            UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8
-            | UInt32(bytes[3])
-        return Int(bits)
+        return try Self.decodeKeyCount(value: value)
     }
 
     /// Returns the key at `index` in the SMC's key table. Used to enumerate every key on
@@ -478,9 +401,7 @@ public actor SMCConnection {
         }
         readIndexAttempts += 1
         let reply = try call(.readIndex(index32))
-        guard let key = SMCKey(fourCharCode: reply.key) else {
-            throw SMCError.malformedKeyCode(reply.key)
-        }
+        let key = try Self.indexedKey(fromCode: reply.key)
         keyTableCache[index] = key
         return key
     }
@@ -507,10 +428,17 @@ public actor SMCConnection {
     /// whatever the cache holds: always exactly one `READ_KEYINFO` round trip.
     ///
     /// `keyInfo(for:)` answers from the cache once a key is warm, which is right for the
-    /// read path and wrong for a write. ADR 0004 requires a write to resolve its byte order
-    /// from key info read at write time rather than from an enumeration that may be hours
-    /// old, and ADR 0014 D7 puts that read inside the write's own turn. A caller of this can
-    /// rely on what it returns having come from the firmware in this call.
+    /// read path and wrong for a forward write — an engagement step or a target command.
+    /// ADR 0004 requires a forward write to resolve its byte order from key info read at write
+    /// time rather than from an enumeration that may be hours old, and ADR 0014 D7 puts that
+    /// read inside the write's own turn. A caller of this can rely on what it returns having
+    /// come from the firmware in this call.
+    ///
+    /// **A restore never calls this.** D7 scopes ADR 0004 to forward writes: a restore issues
+    /// no read before it writes, and writes zero bytes of the size the preparation step
+    /// recorded, or one zero byte when it recorded none or a size outside 1–32
+    /// (`PlaneWriteLedger.restorePayload(for:)`; ADR 0014's B1 amendment). A read in front of a
+    /// restore would put a round trip that can fail ahead of the keystone (`docs/SAFETY.md`).
     ///
     /// On success the answer replaces the cache entry, so a later read uses what the
     /// firmware just said. A failure throws and leaves the cache as it was: the read path
@@ -610,25 +538,19 @@ public actor SMCConnection {
     ///   This method additionally probes index `declaredCount` itself and expects it to
     ///   fail; `KeyCountCrossCheck.keyExistsPastDeclaredCount` carries the result, and
     ///   `matches` folds it in, making the tripwire two-sided.
+    ///
+    /// - Note: A nonzero code `SMCKey` refuses counts as walked inside the bound, while a walk
+    ///   holds at most `KeyTableWalk.maximumWalkedRefusedCodes` of them, and as no key at the
+    ///   probe (#623). `KeyTableWalk.walkedCount` and `KeyTableEntry.isKeyPastDeclaredCount`
+    ///   say why; `walkKeyTable(declaredCount:keyAt:)` is the walk.
     public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
-        let declaredCount = try keyCount()
-
-        var walkedCount = 0
-        for index in 0..<declaredCount where (try? key(at: index)) != nil {
-            walkedCount += 1
-        }
-        let keyExistsPastDeclaredCount = (try? key(at: declaredCount)) != nil
-
-        let result = KeyCountCrossCheck(
-            declaredCount: declaredCount, walkedCount: walkedCount,
-            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
-        Self.logCrossCheck(result)
-        return result
+        try walkKeyTable().crossCheck
     }
 
     /// Logs loudly when a `KeyCountCrossCheck` disagrees; silent when it matches. Shared
     /// by `verifyKeyCountCrossCheck()` and `SMCSensorProvider.readAll()`, which computes
-    /// the same comparison from a walk it is already doing rather than repeating it.
+    /// the same comparison from a walk it is already doing rather than repeating it. A code
+    /// `SMCKey` refuses is logged on a line of its own; see `KeyTableWalk.finish(probe:)`.
     static func logCrossCheck(_ result: KeyCountCrossCheck) {
         guard !result.matches else { return }
         logger.fault(
@@ -664,9 +586,12 @@ public actor SMCConnection {
     /// - It reads nothing. There is no `READ_KEYINFO` and no read-back, so it neither consults
     ///   nor fills the key-info cache, and a write is exactly one round trip.
     /// - It does not check `bytes` against the key's declared type or size, and does not
-    ///   encode, retry, or decide what an answer means. Those are the caller's, which takes
-    ///   fresh key info for the key first, through `freshKeyInfo(for:)` (ADR 0004; ADR 0014
-    ///   D7).
+    ///   encode, retry, or decide what an answer means. Those are the caller's. A forward
+    ///   write's caller takes fresh key info for the key first, through `freshKeyInfo(for:)`
+    ///   (ADR 0004; ADR 0014 D7). A restore's caller reads nothing: it passes zero bytes of the
+    ///   size the preparation step recorded, or one zero byte when it recorded none or a size
+    ///   outside 1–32 (`PlaneWriteLedger.restorePayload(for:)`), so no read stands in front of
+    ///   the keystone (ADR 0014 D7 and its B1 amendment).
     ///
     /// - Important: Meant to be called as root from inside `AeolusHelper` only, and every
     ///   fan-speed write must already have been clamped and rate-limited. See E5. Whether the
@@ -691,8 +616,10 @@ public actor SMCConnection {
     ///   `AeolusHelper.WriteSeamReachability` for the probe that proves the level in the
     ///   build that ships the helper.
     ///
-    ///   Nothing in the helper calls this: the helper's write capability is still `.notBuilt`,
-    ///   and `WritePathAbsenceTests.helperNeverCallsWrite` holds it to that. Widening this —
+    ///   The helper calls this in one place, its daemon's `private` forwarder
+    ///   (`DaemonWriteChannel`), which the plane's write turns reach through one call of the
+    ///   channel's requirement, and `WritePathAbsenceTests.helperNeverCallsWrite` holds the helper
+    ///   to those two. Widening this —
     ///   to plain `public`, or by adding a third member to the group — is a safety review
     ///   under `docs/SAFETY.md`, not a refactor.
     @_spi(FanWrite) public func write(_ bytes: [UInt8], to key: SMCKey) throws {

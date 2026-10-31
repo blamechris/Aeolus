@@ -53,3 +53,24 @@ struct FormattingNumberTests {
         #expect(Formatting.number(0) == "0")
     }
 }
+
+/// `Formatting.exactNumber` is for a value refused because it is not whole. Rounding it to two
+/// places, as `number(_:)` does, would print it as a whole number.
+@Suite("Formatting.exactNumber — a fraction is shown in full, never rounded to look whole")
+struct FormattingExactNumberTests {
+
+    @Test(
+        "A fraction keeps every digit that tells it apart from a whole number",
+        arguments: [(1.999_999_9, "1.9999999"), (0.001, "0.001"), (0.25, "0.25"), (2.75, "2.75")])
+    func fractionIsShownInFull(_ value: Double, _ rendered: String) {
+        #expect(Formatting.exactNumber(value) == rendered)
+    }
+
+    @Test("A whole or non-finite value renders as number(_:) renders it")
+    func wholeAndNonFiniteMatchNumber() {
+        #expect(Formatting.exactNumber(2) == "2")
+        #expect(Formatting.exactNumber(9_000_000) == "9000000")
+        #expect(Formatting.exactNumber(.nan) == "NaN")
+        #expect(Formatting.exactNumber(-.infinity) == "-Infinity")
+    }
+}

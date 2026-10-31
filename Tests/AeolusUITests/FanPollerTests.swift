@@ -10,7 +10,7 @@ struct FanPollerTests {
         // FNum deliberately unstubbed: the fake reports .unknownKey for it, exactly what
         // a genuinely fanless machine's firmware would answer — see docs/SMC-RESEARCH.md.
         let provider = FakeSensorProvider(keyedResults: [:])
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         #expect(fans.isEmpty)
     }
 
@@ -24,7 +24,7 @@ struct FanPollerTests {
                 // F0Mx deliberately unstubbed — the fake reports .unknownKey for it.
             ])
 
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         let fan = try #require(fans.first)
 
         #expect(fan.actual.value == 1712)
@@ -46,7 +46,7 @@ struct FanPollerTests {
                 "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
             ])
 
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         let fan = try #require(fans.first)
         #expect(fan.actual.value == nil)
         #expect(!fan.actual.isAvailable)
@@ -66,7 +66,7 @@ struct FanPollerTests {
                 "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
             ])
 
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         let fan = try #require(fans.first)
         #expect(fan.actual.value == 1343.07)
     }
@@ -79,7 +79,7 @@ struct FanPollerTests {
             ])
 
         await #expect(throws: PollingError.self) {
-            _ = try await FanPoller.poll(provider: provider)
+            _ = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         }
     }
 
@@ -91,7 +91,7 @@ struct FanPollerTests {
             ])
 
         await #expect(throws: PollingError.self) {
-            _ = try await FanPoller.poll(provider: provider)
+            _ = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         }
     }
 
@@ -103,7 +103,7 @@ struct FanPollerTests {
         let provider = FakeSensorProvider(isAvailable: false)
 
         let error = await #expect(throws: PollingError.self) {
-            _ = try await FanPoller.poll(provider: provider)
+            _ = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         }
         #expect(error == .noSMC)
     }
@@ -116,7 +116,7 @@ struct FanPollerTests {
             ])
 
         let error = await #expect(throws: PollingError.self) {
-            _ = try await FanPoller.poll(provider: provider)
+            _ = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         }
         guard case .implausibleFanCount(let declared) = error else {
             Issue.record("expected .implausibleFanCount, got \(String(describing: error))")
@@ -133,7 +133,7 @@ struct FanPollerTests {
             ])
 
         let error = await #expect(throws: PollingError.self) {
-            _ = try await FanPoller.poll(provider: provider)
+            _ = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         }
         guard case .readFailed(_, let reason) = error else {
             Issue.record("expected .readFailed, got \(String(describing: error))")
@@ -142,8 +142,10 @@ struct FanPollerTests {
         #expect(reason == "firmware rejected the read")
     }
 
-    @Test("Every fan carries the hardcoded-safe honesty flags: automatic, never reclaimed")
-    func honestyFlagsAreHardcodedSafe() async throws {
+    /// A direct read makes no control claim: every fan is not tracked, for the reason the
+    /// caller gave, and none says automatic (ADR 0006's latent defect, #156).
+    @Test("Every directly read fan is not tracked, and carries the caller's reason")
+    func directlyReadFansAreNotTracked() async throws {
         let provider = FakeSensorProvider(
             keyedResults: [
                 "FNum": .success(.fake(key: "FNum", value: 2)),
@@ -155,11 +157,10 @@ struct FanPollerTests {
                 "F1Mx": .success(.fake(key: "F1Mx", value: 5312, kind: .rpm)),
             ])
 
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .snapshotStale)
         #expect(fans.count == 2)
         for fan in fans {
-            #expect(fan.mode == .automatic)
-            #expect(fan.isReclaimedBySystem == false)
+            #expect(fan.control == .notTracked(.snapshotStale))
         }
     }
 
@@ -173,7 +174,7 @@ struct FanPollerTests {
                 "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
             ])
 
-        let fans = try await FanPoller.poll(provider: provider)
+        let fans = try await FanPoller.poll(provider: provider, untracked: .noHelperInThisBuild)
         let fan = try #require(fans.first)
         #expect(fan.displayName == "Fan 0")
         #expect(fan.actual.key == "F0Ac")
@@ -198,8 +199,8 @@ struct FanPollerTests {
                 "F0Mx": .success(.fake(key: "F0Mx", value: 5000, kind: .rpm)),
             ])
 
-        let first = try await FanPoller.poll(provider: firstTick)
-        let second = try await FanPoller.poll(provider: secondTick)
+        let first = try await FanPoller.poll(provider: firstTick, untracked: .noHelperInThisBuild)
+        let second = try await FanPoller.poll(provider: secondTick, untracked: .noHelperInThisBuild)
 
         #expect(first.first?.actual.value == 1200)
         #expect(second.first?.actual.value == 3400)

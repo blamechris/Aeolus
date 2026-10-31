@@ -17,7 +17,8 @@ import Foundation
 /// ## Deliberately unimplemented in this target
 ///
 /// E5.1 ships the lease core and **writes nothing to the SMC**: `SMCConnection.write` is
-/// SPI-gated and nothing in the helper calls it. The conforming type is the helper's
+/// SPI-gated, and nothing in the helper reaches it — its one caller, the daemon's write
+/// channel, has none. The conforming type is the helper's
 /// control plane, which arrives with the
 /// write path. Declaring the seam here rather than there keeps the lease core testable in
 /// full today — every teardown path below is exercised against a recording double — and
@@ -100,7 +101,37 @@ import Foundation
 /// `FanRestoreScope` a production adapter uses per attempt, and whether the Apple Silicon
 /// force key is cleared on the way — and conforms its plane to `FanRestoreAttempting` to
 /// get the bound.
-protocol FanRestoring: Sendable {
+///
+/// ## `~Copyable`, so a restorer can be lent rather than handed over
+///
+/// The protocol suppresses `Copyable` (#440), and that suppression is additive: every conformer
+/// in the tree is still copyable, and so are `any FanRestoring` and `some FanRestoring`, so no
+/// existing holder changes. What it adds is a generic constraint the compiler holds to a contract.
+/// A parameter declared `borrowing` of a generic `Restorer: FanRestoring & ~Copyable` may be
+/// called, and — in safe Swift, through that parameter — may not be kept for later. The type
+/// checker refuses copying it, storing it, boxing it into an existential and casting it; the move
+/// checker refuses consuming it and capturing it in an escaping closure, a `Task`, an `async let`
+/// or a deferred `Task`. Two of the move checker's refusals — the deferred `Task`'s, and in review
+/// a task group's — come as its own "this is a compiler bug" diagnostic, which a later toolchain
+/// may stop emitting. A key path to it is refused only by a compiler crash, and could not keep it
+/// anyway.
+///
+/// What this does not cover is stated rather than left to be found. `withoutActuallyEscaping`
+/// and the `Unsafe*` family can move the bits out, which is why only the helper's two IOKit
+/// bridges may name them (`ThermalCycleHandbackShapeTripwireTests`); and a protocol requirement
+/// that handed back something derived from `self` would give the borrower a copy, which is why
+/// this protocol's body is pinned to its one requirement and nothing extends it (the same suite).
+/// Every refused shape but the key path is compiled again on CI's own toolchain
+/// (`scripts/lending-probes/`), each required to fail with its own diagnostic: the refusals were
+/// first observed on Swift 6.4, and the compiler-bug ones are the likeliest to change.
+///
+/// That is how `docs/SAFETY.md` § 3's lane is reached. § 3 holds `ThermalCycleHandback`, the one
+/// restorer whose writer is admitted in § 3's lane, and the lease core borrows it for one call,
+/// `LeaseAuthority.revokeEveryLease(handingBackThrough:)`. `ThermalCycleHandbackTripwireTests`
+/// pins the three lending signatures: dropping `borrowing` alone does not compile, but dropping
+/// `~Copyable` from `revokeEveryLease`'s or `handBack`'s constraint does, and so does dropping
+/// both words together.
+protocol FanRestoring: Sendable, ~Copyable {
 
     /// Returns `fans` to the system's own thermal management.
     ///
@@ -127,7 +158,19 @@ protocol FanRestoring: Sendable {
 /// paths to be independent, and "independent" is only checkable if an observer can tell
 /// which one acted. A restore whose cause cannot be named is a restore whose mechanism
 /// cannot be audited.
-enum FanRestoreCause: Sendable, Hashable {
+///
+/// **It selects nothing, and that includes § 3's lane** (#440). From #439 until #440,
+/// `HelperFanRestorer` routed a restore into § 3's lane on this value, which broke the sentence
+/// above: a value carried by every teardown path can be stored and replayed by any of them, and a
+/// replayed `.thermalEmergencyRevocation` reached the lane without naming it. The lane is reached
+/// now by holding it — `ThermalCycleHandback`, lent for one call — and this is a label again.
+///
+/// `CaseIterable` for one assertion: `ThermalCycleLaneRoutingTests` drives every cause through
+/// `HelperFanRestorer` and holds that every one restores at `.supervisor`, so a cause added here
+/// is driven the day it is added. The census of where § 3's cause is named stays, as provenance:
+/// it says who may label a restore § 3's, not who may reach the lane. Nothing in `Sources`
+/// enumerates the cases (`ThermalCycleLaneTripwireTests` holds that too).
+enum FanRestoreCause: Sendable, Hashable, CaseIterable {
 
     /// `docs/SAFETY.md` § 3 fired: a curated critical temperature went above its ceiling
     /// while this lease held the fans. Actor level 2.
@@ -142,14 +185,24 @@ enum FanRestoreCause: Sendable, Hashable {
     /// `ThermalEmergency` performs its own restore before this revocation reaches the lease
     /// core, per ADR 0007's keystone; the restore this cause labels is the idempotent second
     /// one.
-    case thermalEmergency
+    ///
+    /// **Provenance only.** `LeaseAuthority.revokeEveryLease(handingBackThrough:)` labels its
+    /// revocation with it, and is its one producer; § 3 passes no cause. It routes nothing: § 3's
+    /// lane is reached through the handback that verb borrows, never through this value.
+    ///
+    /// **Named for the revocation, not for § 3**, so that the word is this case's alone:
+    /// `SafetyActorLevel.thermalEmergency` is § 3's actor level. A word nothing else spells can be
+    /// counted file by file, whatever expression it sits in, and
+    /// `ThermalCycleLaneTripwireTests.theEmergencyCauseIsNamedOnlyWhereItIsWired` counts it, so a
+    /// mechanism that labelled a restore of its own as § 3's would show.
+    case thermalEmergencyRevocation
 
     /// `docs/SAFETY.md` § 5 confirmed divergence: the system took a fan back, and either
     /// the bounded re-assert was refused, its budget was spent, or § 3 was holding and
     /// level 3 must not fight level 2 for the fans. Actor level 3.
     ///
-    /// Like `.thermalEmergency`, this is a lease being **taken** rather than a lease ending
-    /// — but for the opposite reason. § 3 takes fans because the machine is too hot; this
+    /// Like `.thermalEmergencyRevocation`, this is a lease being **taken** rather than a lease
+    /// ending — but for the opposite reason. § 3 takes fans because the machine is too hot; this
     /// one records that the fans were *already* gone and Aeolus has stopped pretending
     /// otherwise. `CLAUDE.md` rule 6 is the whole of it: a lease left alive over a fan the
     /// firmware is no longer honouring is a client told it has control it does not have.
@@ -161,8 +214,8 @@ enum FanRestoreCause: Sendable, Hashable {
     ///
     /// **Its own case rather than `.systemReclaimed`**, because the two are diagnosed
     /// completely differently and this enum exists to keep such things apart — the same
-    /// argument `revokeEveryLease(because:)` makes for not sharing a predicate remover with
-    /// the panic path. A reclamation is a working helper losing a contest with the OS; this
+    /// argument `revokeEveryLease(handingBackThrough:)` makes for not sharing a predicate remover
+    /// with the panic path. A reclamation is a working helper losing a contest with the OS; this
     /// is a helper that has gone blind, which ADR 0007 calls hole 2 and
     /// [#68](https://github.com/blamechris/Aeolus/issues/68) is the motivating case for.
     case supervisorBlind

@@ -77,7 +77,7 @@ actor GatedHandbackReadBack: HandbackReadingBack {
 ///
 /// Used through the **composed** helper, so the read it parks is the one
 /// `StartupReconciliation.handbackReadings(of:)` issues in production.
-actor ControlStateGatePlane: FanControlPlane {
+actor ControlStateGatePlane: AdmissionBlindPlane {
 
     /// What a mode read does right now.
     enum ModeReads: Sendable {

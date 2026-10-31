@@ -84,10 +84,10 @@ struct ReadOnlyFanAuthorityModeTests {
         #expect(await machine.provider.subsetRequests.contains(["F0Md"]))
     }
 
-    /// `F<n>Md` is a flag key and is **not rounded** before it is judged: anything that is
-    /// not zero is manual. A decode artefact of `0.4` read as automatic would leave a pinned
-    /// fan looking managed, which is the asymmetry `FirmwareFanMode(declaredByFirmware:)`
-    /// records.
+    /// `F<n>Md` is **not rounded** before it is judged: anything that is not exactly one of
+    /// Apple's bytes, `0` or `3` (ADR 0014's P1′ amendment), is manual. A decode artefact of `0.4`
+    /// read as automatic would leave a pinned fan looking managed, which is the asymmetry
+    /// `FirmwareFanMode(declaredByFirmware:)` records.
     @Test("A mode that decodes to a fraction is manual, not rounded down to automatic")
     func fractionalModeIsManual() async throws {
         let machine = fixture(modeKey: .reading("F0Md", 0.4))

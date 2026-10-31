@@ -117,6 +117,52 @@ enum StallTolerantWait {
     /// How much stall a *passing* wait may compensate before it says so on standard error.
     static let noteThreshold: Duration = .seconds(1)
 
+    /// The scheduled waiting time a **setup** wait gives a message to cross the XPC boundary and
+    /// be acted on, or an event to reach the client
+    /// ([#592](https://github.com/blamechris/Aeolus/issues/592)).
+    ///
+    /// **Why the default 5 s is not enough.** Compensation adds back only an iteration that
+    /// overran by more than ``stallThreshold``. A runner that is busy rather than stopped delivers
+    /// a message late without any one 10 ms poll running 250 ms over, so a wait that needs a round
+    /// trip through the anonymous listener spends its 5 s in scheduled time and gives up with
+    /// "0.0 s of runner stall compensated" and nothing at the helper. Main failed that way on
+    /// `5034c41` (run 40946892305): 47 issues in 10 suites, the longest wait 5.0 s plus 7.5 s of
+    /// stall, and the helper side had received nothing.
+    ///
+    /// **When to pass it.** For a wait whose subject is the product having *done* something that
+    /// needs a hop to the other side ("is held at the helper", "is parked at the helper", "the
+    /// client has the reply in hand", "the client heard the helper die"), in a test whose
+    /// deadlines are counted on a clock only the test moves, or have all run out already
+    /// (`FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown` counts its 2 s on the wall
+    /// clock, and waits after `run()` has returned). The budget then carries no claim about time:
+    /// a longer one cannot make a wrong client pass, it only decides how long a failing test takes
+    /// to say so. A wait whose claim *is* a time keeps its own bound and a `budget:` that says so
+    /// (``WaitBudget/wallTime``).
+    ///
+    /// **Where it must not be used.** No wait whose condition is the client's *reaction to a
+    /// clock advance the test made* (a deadline having run out, a turn having come) may use this
+    /// constant. Its length is the backstop's, so the backstop can run a late deadline out while
+    /// the wait is still going, and a client with the wrong deadline then passes. The #595
+    /// review gave `HelperClientHandshakeCancellationTests`' "the handshake's deadline ran out
+    /// and gave the connection up" this budget, and a client with a doubled handshake deadline
+    /// went green at 30.034 s (30.026 s when repeated for #596): the backstop had run the
+    /// deadline out. With the default budget the same client is red at 5.04 s. That wait keeps
+    /// the default. One wait of the kind still has this constant, where no backstop moves the
+    /// client's clock and a later assertion catches a late deadline
+    /// (`HelperClientSequencedDeadlineTests`, "the snapshot's turn came when the apply's
+    /// deadline ran out"), and says so. A wait for the helper to *hear* something after the
+    /// test has asserted the client's reaction is a delivery, and is the constant's.
+    ///
+    /// **Why 30 s.** Over twice the longest wait that was missed, and no longer than the 30 s the
+    /// harness gives a lost reply (`ClockBackstop.defaultBudget`). It is not "before" the
+    /// backstop: that 30 s starts when the harness is built and a wait starts later, so a
+    /// delivery that never happens is reported **after** the backstop has fired and run the
+    /// harness's deadlines out, by as long as the harness had lived when the wait began. What the
+    /// bound keeps is that this lag does not grow with the budget. Under the 50 s ``ceiling`` and
+    /// the 60 s of the shortest `.timeLimit`. The relations are held by
+    /// `StallTolerantWaitTests.aDeliveryWaitFitsInsideTheBackstopAndTheTimeLimit`.
+    static let deliveryBudget: Duration = .seconds(30)
+
     enum Outcome: Sendable, Equatable {
 
         /// The condition held, having compensated `compensated` of stall on the way.
@@ -261,6 +307,11 @@ enum StallTolerantWait {
 /// A *pass* that compensated more than a second writes a line to `note`, standard error by
 /// default; see "What compensation cannot tell" on ``StallTolerantWait``.
 ///
+/// `what` is the event waited for, and is what a pass note and a timeout both name. A caller that
+/// can say why a timeout means something is wrong passes `ifItTimesOut`, which is appended to the
+/// timeout's issue and to nothing else: a wait that passed has no failure to explain, and a note
+/// that did would say so.
+///
 /// This is the injectable overload, and it is what the shipping one calls. `clock` has no
 /// default, so a call without it can only mean the overload below.
 func waitUntil(
@@ -272,6 +323,7 @@ func waitUntil(
     ceiling: Duration = StallTolerantWait.ceiling,
     clock: some WaitClock,
     note: (String) -> Void = StallTolerantWait.writeToStandardError,
+    ifItTimesOut explanation: String? = nil,
     _ condition: () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
@@ -287,7 +339,9 @@ func waitUntil(
     case .held:
         break
     case .timedOut(let expiry):
+        let said = expiry.message(waitingFor: what)
         Issue.record(
-            Comment(rawValue: expiry.message(waitingFor: what)), sourceLocation: sourceLocation)
+            Comment(rawValue: explanation.map { "\(said): \($0)" } ?? said),
+            sourceLocation: sourceLocation)
     }
 }

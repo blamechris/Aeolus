@@ -1,13 +1,15 @@
+import Foundation
 import SMCCore
+import Testing
 
 @testable import AeolusHelper
 
-// The parts of `ScriptedControlPlane`'s scripting that read none of the actor's private state, in
+// The parts of `ScriptedFirmware`'s scripting that read none of the actor's private state, in
 // a file of their own so `ScriptedControlPlane.swift` stays inside `file_length`'s error. The
 // vocabulary is P0's of B1 (#9): what the scripted firmware declares for the restore keys, the
 // writes it can leave unanswered, and the built stages that script them.
 
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// An engagement write the firmware does not answer: the call fails in the kernel, or its
     /// reply is cut short (`FirmwareWriteAnswer.unanswered`). Whether the register changed anyway
@@ -18,6 +20,19 @@ extension ScriptedControlPlane {
         case landed
         /// The register did not change either.
         case lost
+    }
+
+    /// `UnlockBehaviour.answers(code:)`'s precondition, held where the scenario is built: the
+    /// code is neither `0x00` nor `0x82`, each of which has a case of its own. An issue rather
+    /// than a trap, so the scenario that broke it fails by name and the run goes on.
+    static func requireAnUnlockAnswerOfItsOwn(_ unlock: UnlockBehaviour) {
+        guard case .answers(let code) = unlock, code == 0x00 || code == 0x82 else { return }
+        Issue.record(
+            """
+            UnlockBehaviour.answers(code: \(String(format: "0x%02x", code))) names a code with a \
+            case of its own — 0x00 is .naive's, 0x82 is .heldUntilForced's and .neverYields' — \
+            and B1's plane would not answer it as a refusal
+            """)
     }
 
     /// One RPM value as a readback, with the seam's finiteness rule applied.
@@ -52,6 +67,118 @@ extension ScriptedControlPlane {
         PlaneWriteLedger(
             enumerated: fans, forceKey: forceKey,
             declaredSizes: declaredSizes(enumerated: fans, forceKey: forceKey))
+    }
+}
+
+// The scripting vocabulary a stage and a scenario are written in, moved out of the actor body
+// with every case and doc comment unchanged, so `ScriptedControlPlane.swift` stays inside
+// `file_length`'s error and the actor inside `type_body_length`'s.
+extension ScriptedFirmware {
+
+    /// Whether rebuilding the connection works this stage.
+    ///
+    /// The default is `.refused`, and until #168 the reason was that this matched
+    /// `SMCFanControlPlane.reconnect()`, which had no body. It has one now, so the default
+    /// is a *scenario* choice rather than a mirror of the build: every stage that defaults
+    /// here is a § 5 blindness scenario, and the point of those is that the restore happens
+    /// whether or not the reconnect worked. A default of `.succeeded` would quietly make
+    /// every one of them test the easy branch.
+    enum ReconnectBehaviour: Sendable, Hashable {
+        /// The call returns. It says nothing about whether reads now work — that is
+        /// `ReadBehaviour`'s, on this stage or the next.
+        case succeeded
+        case refused(reason: String)
+    }
+
+    /// What the firmware does with a control write this stage.
+    ///
+    /// Three states on one axis, which is what makes a scenario readable. `.reverted` is
+    /// the reclamation signal `SAFETY.md` §5 exists for, and it applies to restore writes
+    /// too: firmware that accepts a restore and leaves the fan manual is the one case
+    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md) names as defeating everything
+    /// in E5, so it must be scriptable rather than assumed away.
+    enum WriteBehaviour: Sendable, Hashable {
+        /// The write lands and reads back.
+        case honoured
+        /// The firmware refuses it. Nothing changes and the call throws.
+        case refused(reason: String)
+        /// The firmware accepts the write and then discards it: the call succeeds and the
+        /// fan keeps the state it had. Nothing but a read-back can tell the difference,
+        /// which is exactly why the watchdog compares against what it last commanded.
+        ///
+        /// **A target write is held at the command's in-turn read-back and discarded after it**
+        /// (#9; ADR 0014's B1 amendment). B1's command turn reads `F<n>Tg` back before it
+        /// returns, so a target dropped before that read is a command that throws
+        /// (`Stage.targetsNotHeldAtReadBack`); this is the firmware that drops it later, so the
+        /// command returns the requested value and only a later read sees the old one. A mode
+        /// write is discarded before an engagement's own read-back, which reads the mode it had.
+        case reverted
+    }
+
+    /// How the firmware answers an engagement's mode writes on an honoured stage: the unlock
+    /// model ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D3), every case a
+    /// hypothesis the hardware runs will confirm or refute.
+    enum UnlockBehaviour: Sendable, Hashable {
+        /// A naive `F<n>Md = 1` is accepted and applied: the system is not asserting control.
+        case naive
+        /// Refuse-then-yield: every mode write is answered `0x82` until the force key is set,
+        /// and `stepsToYield` more after that; then it is accepted and applied.
+        case heldUntilForced(stepsToYield: Int)
+        /// Every mode write is answered `0x82`, force key or not: the yield never arrives.
+        case neverYields
+        /// The mode write is answered with this code — neither `0x00` nor `0x82`, which have
+        /// cases of their own (`naive`; `heldUntilForced` and `neverYields`) and which B1's plane
+        /// reads as accepted and as held. A scenario naming either would answer here as a refusal
+        /// what the production plane answers as something else, so building the firmware with one
+        /// records an issue (`ScriptedFirmware.requireAnUnlockAnswerOfItsOwn(_:)`).
+        case answers(code: UInt8)
+        /// The mode write is accepted and raw `F<n>Md` reads back this value: `0` is
+        /// accepted-not-applied (#291), anything but `1` is outside the hypothesis.
+        case readsBack(rawMode: UInt8)
+    }
+
+    /// One key write this plane received, whatever the firmware answered, in order.
+    enum KeyWrite: Sendable, Hashable {
+        /// `F<n>Md = value`.
+        case mode(fan: Int, value: UInt8)
+        /// `Ftst = value`.
+        case forceKey(UInt8)
+        /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
+        /// rather than only the attempt (ADR 0014's #410 ticket-and-seal amendment).
+        case target(fan: Int, rpm: Double)
+    }
+}
+
+// Apple's two states, as P1 recorded them on `Mac16,5` under macOS 27.2 (ADR 0014's P1′
+// amendment), and the byte the helper's own writes leave. In this file, for the vocabulary's
+// reason above: none of it reads the actor's private state.
+extension ScriptedFirmware.FanCondition {
+
+    /// `rawMode` through the production plane's own decode of `F<n>Md`, so every read this
+    /// firmware answers folds a byte as `SMCFanControlPlane` does. Setting it writes the byte the
+    /// helper writes for that mode: `0`, a restore's, or `1`, an engagement's.
+    var mode: FirmwareFanMode {
+        get { FirmwareFanMode(declaredByFirmware: Double(rawMode)) }
+        set { rawMode = Self.byte(writtenFor: newValue) }
+    }
+
+    /// Apple's controller has the fan stopped: raw `F<n>Md = 3`, `F<n>Tg` 0, and the fan still.
+    /// The development machine's idle state, and the one `F<n>Md`'s old `!= 0` fold called
+    /// another program's hold (#633).
+    static let stoppedByApple: Self = {
+        var stopped = Self(targetRPM: 0, actualRPM: 0)
+        stopped.rawMode = 3
+        return stopped
+    }()
+
+    /// Apple's controller is spinning the fan at its floor: raw `F<n>Md = 0`, `F<n>Tg` 1350, as P1
+    /// recorded fan 0 under a twelve-way load.
+    static let spinningByApple = Self.automatic(at: 1_350)
+
+    /// The byte the helper writes for `mode`: `0`, every restore's, or
+    /// `EngagementRules.engagedRawMode`, an engagement's (D3).
+    static func byte(writtenFor mode: FirmwareFanMode) -> UInt8 {
+        mode == .automatic ? 0 : EngagementRules.engagedRawMode
     }
 }
 

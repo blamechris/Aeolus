@@ -22,6 +22,8 @@ struct AcceptedHandbackCompositionTests {
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         log: RecordedLog = RecordedLog()
     ) -> HelperComposition<ControlStateGatePlane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: ControlStateGatePlane(
                 ScriptedControlPlane(
@@ -34,6 +36,7 @@ struct AcceptedHandbackCompositionTests {
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { log.append($0, $1) }),
@@ -224,7 +227,8 @@ struct AcceptedHandbackCompositionTests {
     /// **Mutation:** move the read inline into the restorer — make
     /// `ThermalEmergency.readBackAcceptedHandbacks()` non-`private` and call
     /// `await thermalEmergency?.readBackAcceptedHandbacks()` after the `handbackAccepted` loop
-    /// in `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red — "timed out waiting
+    /// in `HelperFanRestorer.handBack(_:because:through:)` (`restoreToAutomatic(fans:because:)`
+    /// before #440). Run: red — "timed out waiting
     /// for the restorer to return while § 3's read-back is held".
     @Test("The restorer returns while § 3's owed read-back is held")
     func theRestorerDoesNotWaitOnTheReadBack() async throws {

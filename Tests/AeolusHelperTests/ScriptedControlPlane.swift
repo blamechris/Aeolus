@@ -1,5 +1,6 @@
 import FanKit
 import SMCCore
+import Testing
 
 @testable import AeolusHelper
 
@@ -54,7 +55,17 @@ import SMCCore
 /// single most common way this repository has produced a test that passes while being
 /// structurally unable to reach the failure it names — `ScriptedSensorProvider` carries the
 /// same warning about a `try?` that turned a failing tick into an empty success.
-actor ScriptedControlPlane: FanControlPlane {
+///
+/// ## The firmware, and the planes that are views of it
+///
+/// This actor is the scripted **firmware**: one machine's state and the rules its reads and
+/// writes answer by. `ScriptedControlPlane`, in `ScriptedControlPlane+Admission.swift`, is the
+/// `FanControlPlane` a test hands the helper, and every value of it is a view of one of these at
+/// an admission, as `SMCFanControlPlane`'s views are of one scheduler and connection
+/// (`FanControlPlane.admitted(at:)`). So § 3's lane view and the plane share this firmware, its
+/// ledger and its record of attempts, and `admittedAttempts` says which admission each call
+/// came through.
+actor ScriptedFirmware {
 
     // MARK: - Scripting vocabulary
 
@@ -195,78 +206,11 @@ actor ScriptedControlPlane: FanControlPlane {
         case failed(reason: String)
     }
 
-    /// Whether rebuilding the connection works this stage.
-    ///
-    /// The default is `.refused`, and until #168 the reason was that this matched
-    /// `SMCFanControlPlane.reconnect()`, which had no body. It has one now, so the default
-    /// is a *scenario* choice rather than a mirror of the build: every stage that defaults
-    /// here is a § 5 blindness scenario, and the point of those is that the restore happens
-    /// whether or not the reconnect worked. A default of `.succeeded` would quietly make
-    /// every one of them test the easy branch.
-    enum ReconnectBehaviour: Sendable, Hashable {
-        /// The call returns. It says nothing about whether reads now work — that is
-        /// `ReadBehaviour`'s, on this stage or the next.
-        case succeeded
-        case refused(reason: String)
-    }
-
-    /// What the firmware does with a control write this stage.
-    ///
-    /// Three states on one axis, which is what makes a scenario readable. `.reverted` is
-    /// the reclamation signal `SAFETY.md` §5 exists for, and it applies to restore writes
-    /// too: firmware that accepts a restore and leaves the fan manual is the one case
-    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md) names as defeating everything
-    /// in E5, so it must be scriptable rather than assumed away.
-    enum WriteBehaviour: Sendable, Hashable {
-        /// The write lands and reads back.
-        case honoured
-        /// The firmware refuses it. Nothing changes and the call throws.
-        case refused(reason: String)
-        /// The firmware accepts the write and then discards it: the call succeeds and the
-        /// fan keeps the state it had. Nothing but a read-back can tell the difference,
-        /// which is exactly why the watchdog compares against what it last commanded.
-        ///
-        /// **A target write is held at the command's in-turn read-back and discarded after it**
-        /// (#9; ADR 0014's B1 amendment). B1's command turn reads `F<n>Tg` back before it
-        /// returns, so a target dropped before that read is a command that throws
-        /// (`Stage.targetsNotHeldAtReadBack`); this is the firmware that drops it later, so the
-        /// command returns the requested value and only a later read sees the old one. A mode
-        /// write is discarded before an engagement's own read-back, which reads the mode it had.
-        case reverted
-    }
-
-    /// How the firmware answers an engagement's mode writes on an honoured stage: the unlock
-    /// model ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D3), every case a
-    /// hypothesis the hardware runs will confirm or refute.
-    enum UnlockBehaviour: Sendable, Hashable {
-        /// A naive `F<n>Md = 1` is accepted and applied: the system is not asserting control.
-        case naive
-        /// Refuse-then-yield: every mode write is answered `0x82` until the force key is set,
-        /// and `stepsToYield` more after that; then it is accepted and applied.
-        case heldUntilForced(stepsToYield: Int)
-        /// Every mode write is answered `0x82`, force key or not: the yield never arrives.
-        case neverYields
-        /// The mode write is answered with this code — neither `0x00` nor `0x82`.
-        case answers(code: UInt8)
-        /// The mode write is accepted and raw `F<n>Md` reads back this value: `0` is
-        /// accepted-not-applied (#291), anything but `1` is outside the hypothesis.
-        case readsBack(rawMode: UInt8)
-    }
-
-    /// One key write this plane received, whatever the firmware answered, in order.
-    enum KeyWrite: Sendable, Hashable {
-        /// `F<n>Md = value`.
-        case mode(fan: Int, value: UInt8)
-        /// `Ftst = value`.
-        case forceKey(UInt8)
-        /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
-        /// rather than only the attempt (ADR 0014's #410 ticket-and-seal amendment).
-        case target(fan: Int, rpm: Double)
-    }
-
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
     struct FanCondition: Sendable, Hashable {
-        var mode: FirmwareFanMode
+        /// `F<n>Md` as the firmware holds it, never the fold: Apple leaves `0` or `3`, and an
+        /// engagement writes `1` (ADR 0014's P1′ amendment). `mode`, its fold, is an extension.
+        var rawMode: UInt8
         var targetRPM: Double
         var minimumRPM: Double
         var maximumRPM: Double
@@ -289,7 +233,7 @@ actor ScriptedControlPlane: FanControlPlane {
             minimumRPM: Double = 1_350,
             maximumRPM: Double = 5_777
         ) {
-            self.mode = mode
+            rawMode = Self.byte(writtenFor: mode)
             self.targetRPM = targetRPM
             self.actualRPM = actualRPM
             self.minimumRPM = minimumRPM
@@ -359,6 +303,8 @@ actor ScriptedControlPlane: FanControlPlane {
         case restoreToAutomatic(FanRestoreScope)
         case engageManualControl(fan: Int)
         case commandTarget(fan: Int, rpm: Double)
+        /// § 3's bridge job: `rpm` to `fan`, then its `.fan` restore (`bridgeTurn(_:at:)`).
+        case bridgeThenRestore(fan: Int, rpm: Double)
         case reconnect
     }
 
@@ -368,6 +314,9 @@ actor ScriptedControlPlane: FanControlPlane {
     private var stageIndex = 0
     private var fans: [Int: FanCondition]
     private(set) var attempts: [Attempt] = []
+
+    /// `attempts`, each with the admission of the plane it came through (`record(_:at:)`).
+    private(set) var admittedAttempts: [AdmittedAttempt] = []
 
     /// Every key write, in order, recorded before the firmware answers — the order a restore
     /// issues its writes in is ADR 0014 D5's, and only a per-key record can show it.
@@ -390,10 +339,14 @@ actor ScriptedControlPlane: FanControlPlane {
     /// How many times the preparation step ran.
     private(set) var preparations = 0
 
-    /// Run once, synchronously, inside the next step that wrote its mode and is about to write
-    /// the force key — the instant a production restore's epoch bump can arrive from another
-    /// thread mid-turn (ADR 0014 D3 step 3's re-check). See `duringNextModeWrite(_:)`.
+    /// Run once, synchronously, inside the next step that wrote its mode, before whatever follows —
+    /// the force key's re-check and write, or the read-back and floor hold — as the fake's
+    /// `onAfter(.write(F<n>Md))` runs: when a restore's epoch bump can land mid-turn (ADR 0014 D3).
     private var duringModeWrite: (@Sendable () -> Void)?
+
+    /// Run once, while the next bridge job waits for its turn: after its restore was requested and
+    /// before its turn's body (`duringNextBridgeWait(_:)`).
+    private var bridgeWait: (@Sendable () async -> Void)?
 
     /// The machine-wide Apple Silicon force key, `Ftst`, as the **firmware** holds it: set, or
     /// clear.
@@ -407,9 +360,9 @@ actor ScriptedControlPlane: FanControlPlane {
     /// ledger records the clear as issued, which is the lingering key the preparation step finds.
     private(set) var isForceKeySet = false
 
-    /// Raw `F<n>Md` values the unlock model's reads answer in place of the fold of a fan's mode:
-    /// one `FirmwareFanMode` cannot hold, or a read-back that disagrees with a write that landed
-    /// (#406). Set by `setRawMode(_:ofFan:)`.
+    /// Raw `F<n>Md` values the unlock model's reads answer in place of a fan's own byte
+    /// (`FanCondition.rawMode`): a read-back that disagrees with a write that landed (#406). Set by
+    /// `setRawMode(_:ofFan:)`.
     private var rawModes: [Int: UInt8] = [:]
 
     /// Fans whose next read-back, after a mode write, does not answer while every other read does.
@@ -436,6 +389,7 @@ actor ScriptedControlPlane: FanControlPlane {
         prepared: Bool = true
     ) {
         precondition(!stages.isEmpty, "a ScriptedControlPlane needs at least one stage")
+        Self.requireAnUnlockAnswerOfItsOwn(unlock)
         self.fans = fans
         self.stages = stages
         forceKeyDeclaration = forceKey
@@ -463,13 +417,13 @@ actor ScriptedControlPlane: FanControlPlane {
         fans[index]?.mode = mode
     }
 
-    /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
-    /// state under test is one the firmware was left in, not one this process wrote.
-    /// Runs `effect` inside the next step, between its mode write and its force-key write.
+    /// Runs `effect` inside the next step, after its mode write and before whatever follows it.
     func duringNextModeWrite(_ effect: @escaping @Sendable () -> Void) {
         duringModeWrite = effect
     }
 
+    /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
+    /// state under test is one the firmware was left in, not one this process wrote.
     func setForceKey(_ isSet: Bool) {
         isForceKeySet = isSet
         if !isSet { heldUnderForceKey.removeAll() }
@@ -477,20 +431,12 @@ actor ScriptedControlPlane: FanControlPlane {
 
     private var stage: Stage { stages[min(stageIndex, stages.count - 1)] }
 
-    /// `.built`, always: this firmware really does take writes, and `WriteBehaviour` is how
-    /// a scenario says one was refused.
-    ///
-    /// `nonisolated`, so the answer costs no actor hop and no read — see
-    /// `FanWriteCapabilityReporting`, which is the whole reason a mechanism can ask it before
-    /// touching hardware. It is deliberately **not** scriptable per stage: the capability is
-    /// a property of the build behind the seam, not of the machine at a moment, and a mock
-    /// that could toggle it would let a test drive a state no executable can be in.
-    nonisolated var writeCapability: FanWriteCapability { .built }
-
     // MARK: - Reads
 
-    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
-        attempts.append(.readCriticalTemperatures(keys))
+    func readCriticalTemperatures(
+        _ keys: [SMCKey], at admission: PlaneAdmission = .supervisor
+    ) async throws -> CriticalTemperatureReport {
+        record(.readCriticalTemperatures(keys), at: admission)
         try requireReadable(context: "critical temperatures")
 
         var readings: [CriticalTemperature] = []
@@ -509,8 +455,10 @@ actor ScriptedControlPlane: FanControlPlane {
         return try CriticalTemperatureReport(readings: readings, unreadableKeys: unreadable)
     }
 
-    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
-        attempts.append(.readEnvelope(fan: index))
+    func readEnvelope(
+        ofFan index: Int, at admission: PlaneAdmission = .supervisor
+    ) async throws -> FanEnvelope {
+        record(.readEnvelope(fan: index), at: admission)
         let minimum = try FanControlPlaneValue.finite(
             try boundReadable(.minimum, ofFan: index),
             describing: SMCFanEnumeration.minimumKey(forFan: index)
@@ -523,8 +471,10 @@ actor ScriptedControlPlane: FanControlPlane {
         return FanEnvelope(index: index, minimumRPM: minimum, maximumRPM: maximum)
     }
 
-    func readControlState(ofFan index: Int) async throws -> FanControlState {
-        attempts.append(.readControlState(fan: index))
+    func readControlState(
+        ofFan index: Int, at admission: PlaneAdmission = .supervisor
+    ) async throws -> FanControlState {
+        record(.readControlState(fan: index), at: admission)
         let fan = try modeReadable(ofFan: index, context: "fan \(index) control")
 
         return FanControlState(
@@ -542,8 +492,11 @@ actor ScriptedControlPlane: FanControlPlane {
     /// to have fixed the machine advances to a stage whose `reads` is `.answered`. Tying the
     /// two together here would agree with an implementation that treated a successful
     /// reconnect as a reason to skip the restore, which is exactly what § 5 says not to do.
+    ///
+    /// Recorded at `.supervisor` through **any** view, as production takes it: a recycle is
+    /// `withExclusiveAccess(_:)`'s supervisor turn whatever view asked (`admitted(at:)`).
     func reconnect() async throws {
-        attempts.append(.reconnect)
+        record(.reconnect, at: .supervisor)
         if case .refused(let reason) = stage.reconnects {
             throw FanControlPlaneError.readFailed(detail: "reconnect: \(reason)")
         }
@@ -561,14 +514,16 @@ actor ScriptedControlPlane: FanControlPlane {
     /// The writes are the ledger's plan — every `F<n>Md = 0` in scope, then `Ftst = 0` when the
     /// plan clears it — each attempted whatever the others answered (ADR 0014 D5). A refused or
     /// discarded write leaves its key exactly as it found it, like every other field.
-    func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
-        attempts.append(.restoreToAutomatic(scope))
+    func restoreToAutomatic(
+        _ scope: FanRestoreScope, at admission: PlaneAdmission = .supervisor
+    ) async throws {
+        record(.restoreToAutomatic(scope), at: admission)
         if case .fan(let index) = scope { _ = try condition(ofFan: index) }
         // Requested, then issued: one actor turn here, two moments on a plane whose restore
         // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart, and
         // decides the plan and the exit's seal by scope, so this plane and B1's cannot differ.
         ledger.restoreRequested(scope)
-        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
+        try issueRestore(scope)
     }
 
     /// A target command, admitted first in its turn: once the exit's restore has been requested the
@@ -576,9 +531,26 @@ actor ScriptedControlPlane: FanControlPlane {
     /// ticket-and-seal amendment). The attempt is still recorded, because it was made. The write
     /// and its in-turn read-back are `writeTarget(_:)`'s.
     @discardableResult
-    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+    func commandTarget(
+        _ target: AuthorisedFanTarget, at admission: PlaneAdmission = .supervisor
+    ) async throws -> CommandedTarget {
+        record(.commandTarget(fan: target.fanIndex, rpm: target.rpm), at: admission)
+        return try issueCommand(target)
+    }
+
+    /// § 3's bridge job's turn (`ScriptedControlPlane.bridgeThenRestore(_:)` requested the
+    /// restore before it): the command's body, then the `.fan` restore's, the second whatever the
+    /// first answered, in this one actor step — the shape B1's job has in one write turn.
+    func bridgeTurn(_ target: AuthorisedFanTarget, at admission: PlaneAdmission) -> BridgeOutcome {
+        record(.bridgeThenRestore(fan: target.fanIndex, rpm: target.rpm), at: admission)
+        return BridgeOutcome.attempting(
+            maximum: { try issueCommand(target) },
+            thenRestore: { try issueRestore(.fan(target.fanIndex)) })
+    }
+
+    /// The command turn's body: admitted first, then the write and its in-turn read-back.
+    private func issueCommand(_ target: AuthorisedFanTarget) throws -> CommandedTarget {
         let index = target.fanIndex
-        attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         try ledger.admitCommand()
         _ = try condition(ofFan: index)
         keyWrites.append(.target(fan: index, rpm: target.rpm))
@@ -587,6 +559,11 @@ actor ScriptedControlPlane: FanControlPlane {
         // (`.reverted`). The number the watchdog compares a later read-back against is what was
         // commanded, not what the fan ended up holding — otherwise reversion would be invisible.
         return CommandedTarget(fanIndex: index, rpm: target.rpm)
+    }
+
+    /// The restore turn's body: the ledger's plan for `scope`, every write attempted.
+    private func issueRestore(_ scope: FanRestoreScope) throws {
+        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
     }
 
     // MARK: - Shared rules
@@ -623,7 +600,7 @@ actor ScriptedControlPlane: FanControlPlane {
 
 // An extension in this file for the unlock model's reason below: it reads the actor's private
 // state directly, and the actor's own body stays the read and restore model it was.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// What `F<n>Md` reads for fan `index` this stage, **recording no attempt**: the snapshot's own
     /// read of the key, which `PlaneBackedProvider` serves from here.
@@ -633,6 +610,19 @@ extension ScriptedControlPlane {
     /// plane's `attempts` is counting what the safety mechanisms asked the firmware.
     func firmwareMode(ofFan index: Int) throws -> FirmwareFanMode {
         try modeReadable(ofFan: index, context: "fan \(index) mode").mode
+    }
+
+    /// `firmwareMode(ofFan:)`'s byte, unfolded: what the snapshot's provider hands its own decode.
+    func firmwareRawMode(ofFan index: Int) throws -> UInt8 {
+        try modeReadable(ofFan: index, context: "fan \(index) mode").rawMode
+    }
+
+    /// Moves fan `index` as Apple's controller does — `condition`'s mode byte and speeds, the
+    /// bounds untouched — recording no attempt, for `setMode`'s reason (`stoppedByApple`).
+    func setByApple(_ condition: FanCondition, ofFan index: Int) {
+        fans[index]?.rawMode = condition.rawMode
+        fans[index]?.targetRPM = condition.targetRPM
+        fans[index]?.actualRPM = condition.actualRPM
     }
 
     /// The one rule every read of `F<n>Md` answers by — `readControlState(ofFan:)`, the unlock
@@ -651,7 +641,7 @@ extension ScriptedControlPlane {
 // MARK: - The firmware's own answer for F<n>Mn and F<n>Mx (#270)
 
 // An extension in this file for the mode extension's reason above.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// Which of a fan's two declared bounds a read asks for.
     enum Bound: Sendable, Hashable {
@@ -709,7 +699,7 @@ extension ScriptedControlPlane {
 
 // An extension in this file, so it reads the actor's private state directly and the actor's
 // own body stays the read and restore model it was.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// The write path's preparation step (D5), against this firmware: enumerate through `fans`,
     /// record the key's presence, read it if present, and issue `.everyFan` once when
@@ -772,11 +762,13 @@ extension ScriptedControlPlane {
     }
 
     /// One step of the unlock model: D3, decided by `EngagementRules` and recorded in `ledger`.
-    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
-        attempts.append(.engageManualControl(fan: fan.index))
+    func engageManualControl(
+        of fan: CommandableFan, at admission: PlaneAdmission = .supervisor
+    ) async throws -> EngagementStep {
+        record(.engageManualControl(fan: fan.index), at: admission)
         _ = try condition(ofFan: fan.index)
         do {
-            let step = try unlockStep(fanAt: fan.index)
+            let step = try unlockStep(of: fan)
             if step == .engaged { ledger.recordEngaged(fanAt: fan.index) }
             return step
         } catch {
@@ -799,8 +791,9 @@ extension ScriptedControlPlane {
     /// first step, write the mode, then read back, set the key, or wait. A first step whose
     /// pre-state read fails says it failed before its first write, as B1's plane must (ADR 0014's
     /// #410 refused-hand-back amendment); the read-back's failure, after the write, is thrown as
-    /// it is.
-    private func unlockStep(fanAt index: Int) throws -> EngagementStep {
+    /// it is. A read-back of `1` holds the target at the floor before it answers (P1′ amendment).
+    private func unlockStep(of fan: CommandableFan) throws -> EngagementStep {
+        let index = fan.index
         let first = try ledger.admitStep(fanAt: index) == .first
         if first {
             let raw: UInt8
@@ -815,6 +808,8 @@ extension ScriptedControlPlane {
         let next = try EngagementRules.afterModeWrite(
             try answerModeWrite(fanAt: index), firstStep: first,
             forceKey: ledger.forceKey, forceKeySet: ledger.isForceKeySet)
+        duringModeWrite?()
+        duringModeWrite = nil
         switch next {
         case .readBack:
             if failingReadBacks.remove(index) != nil {
@@ -823,10 +818,10 @@ extension ScriptedControlPlane {
             }
             var raw = try readRawMode(ofFan: index)
             if case .readsBack(let scripted) = unlock { raw = scripted }
-            return try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            let engaged = try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
+            try holdTargetAtFloor(of: fan)
+            return engaged
         case .setForceKey:
-            duringModeWrite?()
-            duringModeWrite = nil
             guard ledger.isCurrent(fanAt: index) else {
                 throw FanControlPlaneError.supersededAfterWrite
             }
@@ -837,8 +832,8 @@ extension ScriptedControlPlane {
     }
 
     /// Makes the unlock model's raw reads of fan `index`'s `F<n>Md` — a first step's pre-state and
-    /// a step's read-back — answer `raw`, or the fold of its mode again for `nil`, recording no
-    /// attempt, for `setMode`'s reason. The snapshot's read, `firmwareMode(ofFan:)`, still folds.
+    /// a step's read-back — answer `raw`, or the fan's own byte again for `nil`, recording no
+    /// attempt, for `setMode`'s reason. Every other read of the key still answers the fan's byte.
     /// In this extension, so the actor's own body stays inside `type_body_length`'s warning.
     func setRawMode(_ raw: UInt8?, ofFan index: Int) {
         rawModes[index] = raw
@@ -852,18 +847,18 @@ extension ScriptedControlPlane {
         failingReadBacks.insert(index)
     }
 
-    /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual, unless
+    /// Raw `F<n>Md`, through the stage's read behaviour: the fan's own byte, unless
     /// `setRawMode(_:ofFan:)` set another.
     private func readRawMode(ofFan index: Int) throws -> UInt8 {
         let fan = try modeReadable(ofFan: index, context: "fan \(index) mode")
-        return rawModes[index] ?? (fan.mode == .automatic ? 0 : 1)
+        return rawModes[index] ?? fan.rawMode
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses
     /// it outright; a discarding stage accepts it and leaves the fan as it was. One the stage
     /// leaves unanswered answers nothing, whatever else it says, and lands as the stage says.
     private func answerModeWrite(fanAt index: Int) throws -> FirmwareWriteAnswer {
-        keyWrites.append(.mode(fan: index, value: 1))
+        keyWrites.append(.mode(fan: index, value: EngagementRules.engagedRawMode))
         ledger.recordModeWriteIssued(fanAt: index)
         if let unanswered = stage.unansweredModeWrites[index] {
             if unanswered == .landed { fans[index]?.mode = .manual }
@@ -932,7 +927,7 @@ extension ScriptedControlPlane {
 
 // In this file for the unlock model's reason; the rest of B1's scripting is in
 // `ScriptedControlPlane+Scripting.swift`, which reads no private state.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// `F<n>Tg = rpm`, and the command's in-turn read-back, as this stage says (#9). A refusal
     /// throws first. Otherwise `.honoured` holds the target; `.reverted` holds it at the read-back
@@ -951,47 +946,48 @@ extension ScriptedControlPlane {
             index: index, commandedRPM: target.rpm,
             readBackRPM: try condition(ofFan: index).targetRPM)
     }
-}
 
-/// The write permit for one of a scripted machine's own fans.
-///
-/// **Derived from the mock's `FanCondition`, never from figures restated in a test.** An
-/// earlier draft declared `FanControlEnvelope.nominal = validated(1_350, 5_777)` beside
-/// `FanCondition.nominal`'s own `1_350`/`5_777`, which put the development machine's
-/// envelope in two hand-maintained places with nothing enforcing that they agree — the
-/// precise hazard `FanSafetyLimits` documents itself as avoiding. Changing the mock fan's
-/// declared minimum now changes the permit clamped against it, because there is one number.
-///
-/// It also lives in a free function rather than in an `extension FanControlEnvelope`. A
-/// test-target extension on a `FanKit` type silently shadows a same-named member added
-/// later on the `FanKit` side — no ambiguity error and no warning — so every helper test
-/// would go on using the stale figures while the library's own moved.
-///
-/// Building a `FanEnvelope` by hand is the honest shape and is the *only* route: both permit
-/// types have `fileprivate` initialisers, and `@testable` does not widen `fileprivate`. A
-/// test that wants to command a fan has to fake a firmware reading, and it looks like it.
-///
-/// - Throws: `FanBoundsImplausibility` when the condition's declared bounds fail #37's gate
-///   — which is exactly what a test asserting "this fan cannot be commanded" wants to catch.
-func commandableFan(
-    _ index: Int, declaring condition: ScriptedControlPlane.FanCondition
-) throws -> CommandableFan {
-    try FanEnvelope(
-        index: index,
-        minimumRPM: condition.minimumRPM,
-        maximumRPM: condition.maximumRPM
-    ).commandable.get()
-}
-
-/// A four-character SMC key written out in a test, where a typo can only be a typo.
-///
-/// Traps rather than returning an optional, for the same reason `SMCKey.known(_:)` does:
-/// the failure it can have is an authoring mistake in this repository, caught by the suite
-/// rather than by a user, and threading an optional through every fixture would obscure
-/// what each test is actually asserting.
-func smcKey(_ raw: String) -> SMCKey {
-    guard let key = SMCKey(raw) else {
-        preconditionFailure("'\(raw)' is not a valid four-character SMC key")
+    /// The engaged turn's target rule, `EngagementRules.engagedTarget(reading:of:)`, after the
+    /// read-back of `1` (ADR 0014's P1′ amendment, decision 4): `F<n>Tg` read through the stage,
+    /// and a raise written and read back as a command's is (`writeTarget(_:)`), so a floor the
+    /// firmware refuses or does not hold throws and the driver undoes.
+    fileprivate func holdTargetAtFloor(of fan: CommandableFan) throws {
+        try requireReadable(context: "fan \(fan.index) target")
+        let target = Self.readback(
+            try condition(ofFan: fan.index).targetRPM, describing: "F\(fan.index)Tg")
+        guard case .raise(let floor) = try EngagementRules.engagedTarget(reading: target, of: fan)
+        else { return }
+        keyWrites.append(.target(fan: fan.index, rpm: floor.rpm))
+        try writeTarget(floor)
     }
-    return key
+}
+
+// MARK: - Which admission each call came through (#332)
+
+// In this file because it writes `attempts`, whose setter is private to it.
+extension ScriptedFirmware {
+
+    /// One call, and the admission of the plane it came through.
+    struct AdmittedAttempt: Sendable, Hashable {
+        let attempt: Attempt
+        let admission: PlaneAdmission
+    }
+
+    /// Records `attempt` in both logs. Every verb's first statement, before any refusal.
+    fileprivate func record(_ attempt: Attempt, at admission: PlaneAdmission) {
+        attempts.append(attempt)
+        admittedAttempts.append(AdmittedAttempt(attempt: attempt, admission: admission))
+    }
+
+    /// Runs `effect` once, while the next bridge job waits for its turn: the instant B1's job is
+    /// queued behind another turn, with its restore already requested.
+    func duringNextBridgeWait(_ effect: @escaping @Sendable () async -> Void) {
+        bridgeWait = effect
+    }
+
+    /// The effect `duringNextBridgeWait(_:)` installed, cleared as it is taken.
+    func takeBridgeWait() -> (@Sendable () async -> Void)? {
+        defer { bridgeWait = nil }
+        return bridgeWait
+    }
 }

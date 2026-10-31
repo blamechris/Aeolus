@@ -70,6 +70,7 @@ struct CriticalSensorSet: Sendable, Hashable {
 
     private let storedKeys: [SMCKey]
     private let storedProvenance: String
+    private let storedFanCount: Int?
 
     /// The curated keys, in no significant order. May be empty — see this type's
     /// documentation for why that is a state rather than a bug.
@@ -83,9 +84,21 @@ struct CriticalSensorSet: Sendable, Hashable {
 
     var isEmpty: Bool { storedKeys.isEmpty }
 
-    private init(keys: [SMCKey], provenance: String) {
+    /// How many fans the measured machine has, as recorded when its set was curated: `nil` for a
+    /// machine nobody measured.
+    ///
+    /// ADR 0012's D_cycle allowance is sized from it (since the 2026-10-18 amendment), because a
+    /// firing § 3 cycle takes a bridge job and up to `RestoreLimits.attemptBudget` restore attempts
+    /// per fan — so a machine with more fans moves the bound under the watchdog without touching
+    /// it. A **recorded** fact rather than a read one: a bound computed from what the machine
+    /// reports at run time is a bound no test checks (ADR 0012 I8), and `WatchdogLimitsTests` fails
+    /// for a curated set that records none.
+    var fanCount: Int? { storedFanCount }
+
+    private init(keys: [SMCKey], provenance: String, fanCount: Int?) {
         self.storedKeys = keys
         self.storedProvenance = provenance
+        self.storedFanCount = fanCount
     }
 
     /// This machine's critical set, or the empty set if nobody has measured this machine.
@@ -118,9 +131,13 @@ struct CriticalSensorSet: Sendable, Hashable {
     /// Asking for a key this firmware does not expose is not a failure: the seam reports
     /// it in `CriticalTemperatureReport.unreadableKeys`, and partial loss is a degraded
     /// logged cycle rather than blindness. That is what makes a fixed list safe here.
+    ///
+    /// Two fans: `FNum` read 2 on every one of the 10,570 ticks `docs/SMC-RESEARCH.md` records for
+    /// this machine ([#68](https://github.com/blamechris/Aeolus/issues/68)'s run).
     static let mac16x5 = CriticalSensorSet(
         keys: dieClusterKeys(prefixes: ["TPD", "TRD"]),
-        provenance: "Mac16,5 die cluster (TPD*/TRD*), measured 2026-08-20"
+        provenance: "Mac16,5 die cluster (TPD*/TRD*), measured 2026-08-20",
+        fanCount: 2
     )
 
     /// The empty set: a machine nobody has measured.
@@ -130,14 +147,16 @@ struct CriticalSensorSet: Sendable, Hashable {
     /// `docs/SAFETY.md` § 3 being a precondition of § 1 requires.
     static let unidentifiedHardware = CriticalSensorSet(
         keys: [],
-        provenance: "no measured critical-sensor set for this machine"
+        provenance: "no measured critical-sensor set for this machine",
+        fanCount: nil
     )
 
     /// Every curated set, and not the empty one: the sets a property has to be checked against
     /// as a whole.
     ///
     /// ADR 0012's D_cycle is sized from a set's key count (§ 3's own read and the grant path's
-    /// read each cost one round trip per key), so a set that adds keys can move the bound under
+    /// read each cost one round trip per key) and its recorded fan count (`fanCount`), and G from
+    /// both, so a set that adds keys can move the bound under
     /// the watchdog without touching it. `WatchdogLimitsTests` loops this list, and a source
     /// scan there refuses a curated `static let` that is missing from it. **A new family's set
     /// is added here in the same change that declares it.**

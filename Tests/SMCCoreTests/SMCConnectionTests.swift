@@ -4,7 +4,9 @@ import Testing
 // `write(_:to:)` is `@_spi(FanWrite) public` — see the 2026-09-06 amendment in
 // docs/ADR/0008-write-authorisation.md. `@testable` widens *internal* access and does
 // nothing for an SPI group, so `anUnopenedWriteIssuesNoRoundTrip` below needs the opt-in
-// by name. Because it has that opt-in, this file never obtains an opened connection.
+// by name. Because it has that opt-in, this file never obtains an opened connection, and
+// everything it declares is `private`, so no other file can call a helper here that writes
+// (`WriteSeamTestIsolationTests`, rule 5).
 @_spi(FanWrite) @testable import SMCCore
 
 // swiftlint:disable force_unwrapping
@@ -13,7 +15,7 @@ import Testing
 /// bit `0x80` is the readable flag, observed as a perfect correlation across all 3385
 /// keys on `Mac16,5` (see `docs/SMC-RESEARCH.md`), but the bit itself is just arithmetic.
 @Suite("SMC key info readability")
-struct SMCKeyInfoTests {
+private struct SMCKeyInfoTests {
 
     @Test("Bit 0x80 set makes a key readable")
     func bitSetIsReadable() {
@@ -41,7 +43,7 @@ struct SMCKeyInfoTests {
 /// checked before any IOKit call is issued, so it holds identically on real hardware
 /// and on CI's SMC-less virtual machines.
 @Suite("SMC connection, unopened")
-struct SMCConnectionUnopenedTests {
+private struct SMCConnectionUnopenedTests {
 
     @Test("keyCount() throws rather than reading through a closed connection")
     func keyCountThrowsWhenUnopened() async {
@@ -113,7 +115,7 @@ struct SMCConnectionUnopenedTests {
 /// at the top of `call(_:)` throws immediately on an unopened
 /// connection, before any wire call, so the only way to avoid that is a cache hit.
 @Suite("SMC connection, read cache")
-struct SMCConnectionCacheTests {
+private struct SMCConnectionCacheTests {
 
     @Test("keyInfo(for:) returns a seeded entry without attempting READ_KEYINFO")
     func keyInfoServesFromCache() async throws {
@@ -300,7 +302,7 @@ struct SMCConnectionCacheTests {
 /// allocation and a ~957-million-iteration loop instead of a report. Pure and synchronous,
 /// so none of this needs hardware.
 @Suite("SMC key count plausibility bound")
-struct SMCConnectionKeyCountPlausibilityTests {
+private struct SMCConnectionKeyCountPlausibilityTests {
 
     @Test("A normal count (3385, observed on Mac16,5) passes through unchanged")
     func normalCountPasses() throws {
@@ -342,7 +344,7 @@ struct SMCConnectionKeyCountPlausibilityTests {
 /// synchronous — no hardware, no actor, no connection needed — since it operates only on
 /// an already-constructed `SMCValue`.
 @Suite("SMC #KEY generation-undetermined fallback decode")
-struct SMCConnectionKeyCountFallbackTests {
+private struct SMCConnectionKeyCountFallbackTests {
 
     @Test("#KEY's captured Mac16,5 bytes decode to 3385 via the fallback, matching the resolver")
     func decodesTheCapturedBytes() {
@@ -372,6 +374,20 @@ struct SMCConnectionKeyCountFallbackTests {
         #expect(SMCConnection.decodeKeyCountFallback(value: short) == nil)
         #expect(SMCConnection.decodeKeyCountFallback(value: long) == nil)
     }
+
+    /// The fallback is for an unknown generation only, and `byteOrder == nil` is how an
+    /// unknown generation reaches it: `read(_:)` sets it, as `SMCValue.byteOrder` documents. The
+    /// same captured bytes that decode to 3385 above are refused once an order is attached,
+    /// in either direction, so the guess can never stand in for a resolved decode.
+    @Test("A #KEY whose byte order was resolved is refused, even with the captured bytes")
+    func refusesAResolvedByteOrder() {
+        for order in [SMCByteOrder.bigEndian, .littleEndian] {
+            let value = SMCValue(
+                key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39],
+                byteOrder: order)
+            #expect(SMCConnection.decodeKeyCountFallback(value: value) == nil)
+        }
+    }
 }
 
 /// `KeyCountCrossCheck.matches` folding in `keyExistsPastDeclaredCount` is what makes the
@@ -379,7 +395,7 @@ struct SMCConnectionKeyCountFallbackTests {
 /// succeeds on every index inside its own (too-small) bound, so `declaredCount ==
 /// walkedCount` alone reports a spurious match. Pure struct logic, no hardware.
 @Suite("KeyCountCrossCheck — two-sided matches")
-struct KeyCountCrossCheckMatchesTests {
+private struct KeyCountCrossCheckMatchesTests {
 
     @Test("Equal counts with nothing past the bound: matches")
     func equalCountsNothingPastBoundMatches() {

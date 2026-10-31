@@ -51,7 +51,8 @@ struct HelperClientSendTimingTests {
             try await SendObservingClock.$sending.withValue(true) { try await client.snapshot() }
         }
         try await waitUntil(
-            "the snapshot is held and its deadline has parked", timeout: .seconds(30)
+            "the snapshot is held and its deadline has parked",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await authority.hasBeenAsked && clock.hands.sleepers == 1
         }
@@ -107,7 +108,8 @@ struct HelperClientSendTimingTests {
 
         let first = Task { try await Self.send(on: client, recordingIn: record, as: "first") }
         try await waitUntil(
-            "the handshake reached the helper and is being held", timeout: .seconds(30)
+            "the handshake reached the helper and is being held",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             harness.arrivals == ["hello"]
         }

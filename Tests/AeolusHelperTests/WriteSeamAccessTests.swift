@@ -49,8 +49,29 @@ struct WriteSeamAccessTests {
     /// `SeamScanner.swiftFiles()` enumerates `Sources/` only, so `Tests/SMCCoreTests`'s
     /// `@_spi(FanWrite) @testable import SMCCore` was never read by this scan and that
     /// branch was unreachable. It matches now only because *every* attribute does.
+    ///
+    /// And a scoped import is one too: `@_spi(FanWrite) import class SMCCore.SMCConnection` grants
+    /// the write as surely as the whole-module form, and the pattern that read only `import
+    /// SMCCore` passed it in a `fanctl` file and in a third helper file (#436's delta review, S1).
+    /// An access level may stand before `import`, outside the captured run (#441, T06p).
     private static let spiImport = try? NSRegularExpression(
-        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)import\s+SMCCore"#)
+        pattern: #"((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)"#
+            + WriteSeamTestIsolationTests.importAccess + #"import\s+"#
+            + #"(?:(?:class|struct|enum|protocol|typealias|func|var|let)\s+)?"#
+            + #"SMCCore(?![A-Za-z0-9_])"#
+    )
+
+    /// The files under `Sources/` whose raw text mentions `@_spi` — the two members' declarations,
+    /// the three helper files that import the group, and the prose that explains them.
+    static let sourcesSPIMentioners: Set<String> = [
+        "Sources/AeolusHelper/AeolusHelperMain.swift",
+        "Sources/AeolusHelper/SMCWriteChannel.swift",
+        "Sources/AeolusHelper/SMCWriteEncoding.swift",
+        "Sources/AeolusHelper/WriteSeamReachability.swift",
+        "Sources/SMCCore/FanEnumeration.swift",
+        "Sources/SMCCore/SMCConnection.swift",
+        "Sources/SMCCore/SMCValue.swift",
+    ]
 
     /// Every `@_spi(…)` attribute, wherever one appears. Used both to read the group names
     /// out of an import's attribute run and to find declarations.
@@ -69,7 +90,14 @@ struct WriteSeamAccessTests {
         pattern: #"@_spi\s*\(\s*(\w+)\s*\)\s+([^{]+)"#)
 
     private static func code(of file: URL) throws -> String {
-        SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
+        withoutCommentsOrBackticks(try String(contentsOf: file, encoding: .utf8))
+    }
+
+    /// Comments stripped, and backticks: `` @`_spi`(FanWrite) import SMCCore `` compiles and grants
+    /// the group, and read with its backticks it matched neither pattern here (#436's final
+    /// review, B1).
+    static func withoutCommentsOrBackticks(_ source: String) -> String {
+        SeamScanner.strippingComments(source).replacingOccurrences(of: "`", with: "")
     }
 
     /// Path relative to `Sources/`, so a failure names something a reader can open.
@@ -120,7 +148,63 @@ struct WriteSeamAccessTests {
     /// this file, `WriteSeamReachability.swift`'s own documentation, and the ADR all discuss
     /// the import in prose, and a tripwire that fires on the sentence describing it is a
     /// tripwire nobody keeps.
-    @Test("The only SPI group imported under Sources is FanWrite, and only by the helper")
+    /// The fail-closed half, beneath the import pattern: the raw `_spi` token is counted, so an
+    /// import spelling the pattern has not met — `` @`_spi`(FanWrite) `` was one — is still a new
+    /// file. It catches accidents and ordinary spellings; against determined evasion the compiler's
+    /// seam (ADR 0014's B1 seam amendment) is the control.
+    ///
+    /// **Mutation:** `@_spi(FanWrite) import class SMCCore.SMCConnection` in a `fanctl` file. Run:
+    /// red here and at `spiImportAppearsOnlyInTheHelper`.
+    @Test("The raw text under Sources mentions @_spi only in the known files")
+    func everySourcesSPIMentionIsKnown() throws {
+        let mentioning = try WriteSeamTestIsolationTests.rawMentioners(
+            of: WriteSeamTestIsolationTests.spiToken, under: ["Sources"])
+        #expect(
+            mentioning == Self.sourcesSPIMentioners,
+            """
+            New: \(mentioning.subtracting(Self.sourcesSPIMentioners).sorted()). Gone: \
+            \(Self.sourcesSPIMentioners.subtracting(mentioning).sorted()). A Sources file that \
+            opts into the write SPI can write, and fanctl ships and is linked by the helper's tests.
+            """)
+    }
+
+    /// **Mutations:** drop the `(?:(?:class|…)\s+)?` kind from `spiImport`; drop `importAccess`
+    /// from it (#441, T06p). Run: red here, each — the second at the first access level.
+    @Test("An SPI import is found whole-module or scoped, at every access level")
+    func spiImportsAreFoundScopedOrNot() throws {
+        let pattern = try #require(Self.spiImport)
+        func read(_ raw: String) throws -> (count: Int, groups: [String]) {
+            let text = Self.withoutCommentsOrBackticks(raw)
+            let found = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            let run = found.first.flatMap { Range($0.range(at: 1), in: text) }
+            return (found.count, try run.map { try Self.spiGroups(in: String(text[$0])) } ?? [])
+        }
+        var spellings = [
+            "@_spi(FanWrite) import SMCCore", "@`_spi`(FanWrite) import SMCCore",
+            "@`_spi`(FanWrite) import class SMCCore.SMCConnection",
+            "@_spi(FanWrite) import class SMCCore.SMCConnection",
+            "@_spi(FanWrite) @preconcurrency import struct SMCCore.SMCKeyType",
+            "@_spi(FanWrite)\nimport func SMCCore.resolveByteOrder",
+            "@_spi(FanWrite) public/* */import SMCCore",
+        ]
+        for level in ["public", "package", "internal", "fileprivate", "private"] {
+            spellings += [
+                "@_spi(FanWrite) \(level) import SMCCore",
+                "@`_spi`(FanWrite) @preconcurrency \(level) import class SMCCore.SMCConnection",
+            ]
+        }
+        for raw in spellings {
+            #expect(try read(raw) == (1, ["FanWrite"]), "\(raw)")
+        }
+        for raw in [
+            "public import SMCCore", "@_spi(FanWrite) publicly import SMCCore",
+            "@_spi(FanWrite) import SMCCoreExtras", "@_spi(FanWrite) public import SMCCoreExtras",
+        ] {
+            #expect(try read(raw) == (0, []), "\(raw)")
+        }
+    }
+
+    @Test("The only SPI group imported under Sources is FanWrite, by exactly three helper files")
     func spiImportAppearsOnlyInTheHelper() throws {
         let pattern = try #require(Self.spiImport)
         var importers: [String] = []
@@ -158,16 +242,24 @@ struct WriteSeamAccessTests {
             """
         )
 
-        // Coverage, not decoration. Without it an enumerator that found no files, or a
-        // pattern that stopped matching the form actually written, would leave the loop
-        // making zero assertions and this test green over an unguarded tree.
+        // Exactly three helper files, and the list doubles as coverage: the reachability probe,
+        // which proves the Xcode helper target can name the seam; `main`'s file, whose `private`
+        // forwarder is the daemon's write channel (ADR 0014's B1 seam amendment); and the write
+        // turns' encoder, a free enum naming `encode` and no write, so the turn file that writes
+        // through the channel holds no opt-in and cannot name `SMCConnection.write` (b2).
+        // An enumerator that found nothing, or a pattern that stopped matching the form
+        // written, is red here rather than green over an unguarded tree.
         #expect(
-            importers.contains("AeolusHelper/WriteSeamReachability.swift"),
+            importers.sorted() == [
+                "AeolusHelper/AeolusHelperMain.swift", "AeolusHelper/SMCWriteEncoding.swift",
+                "AeolusHelper/WriteSeamReachability.swift",
+            ],
             """
-            The FanWrite SPI import was not found in AeolusHelper/WriteSeamReachability.swift. \
-            Either the reachability probe is gone — in which case nothing proves the Xcode \
-            helper target can still reach the write seam — or this scan is not reading the \
-            source tree.
+            The FanWrite SPI is imported by \(importers.sorted()), not exactly \
+            AeolusHelper/AeolusHelperMain.swift, AeolusHelper/SMCWriteEncoding.swift and \
+            AeolusHelper/WriteSeamReachability.swift. \
+            Any other helper file holding the opt-in can name the write; if the probe is gone, \
+            nothing proves the Xcode helper target still reaches the seam.
             """
         )
     }

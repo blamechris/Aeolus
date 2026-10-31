@@ -52,7 +52,8 @@ import SMCCore
 struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The single control plane. Every safety mechanism's reads and writes go through it, at
-    /// `.supervisor` priority.
+    /// `.supervisor` priority — § 3's through its view at § 3's own admission
+    /// (`FanControlPlane.admitted(at:)`), which is this plane.
     let plane: Plane
 
     /// The snapshot path: fan enumeration, the discovered sensor set, `F<n>Md` per fan.
@@ -63,6 +64,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// § 3's curated critical set, **shared** between the thermal emergency's cycle and the
     /// cache the lease core's grant-time blindness gate proves sightedness from.
+    ///
+    /// This instance is the cache's source, at `.supervisor`; § 3 reads through its lane view,
+    /// `admitted(at: .thermalCycle)`, which carries this instance's memo (#332).
     ///
     /// One instance, deliberately. `DegradationMemo` is per instance, so two of these would
     /// each log the same partial sensor loss on their own schedule — the collapse
@@ -100,7 +104,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// § 5's ledger, read by the snapshot and written by the watchdog.
     let ledger: ReclamationLedger
 
-    /// The lease core's terminal action, and the only `FanRestoring` in `Sources/`.
+    /// The lease core's terminal action, at `.supervisor`, and the one restorer whose notices
+    /// every handback goes through — § 3's lane handback included (`ThermalCycleHandback`, #440).
     let restorer: HelperFanRestorer<Plane>
 
     /// `docs/SAFETY.md` § 6's one-shot pass, and the post-reconciliation baseline it leaves
@@ -332,7 +337,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // auditable fact — which mechanism handed the fans back — travels separately, as the
         // `FanRestoreCause` every teardown path supplies and `LeaseLog` records. Whoever
         // makes the arbiter govern restores must revisit this: a `.allLeasesDropped` restore
-        // is § 7's level 1, not level 5.
+        // is § 7's level 1, not level 5. Since #440 the lease core restores at two levels: this
+        // standing restorer's `.leaseExpiry`, and the `.thermalEmergency` of the handback § 3 lends
+        // it for its revocation (below) — provenance on both, and the level § 3 itself writes at.
         let restorer = HelperFanRestorer(
             writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: leaseLog)
         self.restorer = restorer
@@ -358,16 +365,38 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             log: leaseLog)
         self.leases = leases
 
+        // § 3 at its own admission (ADR 0012's 2026-10-18 amendment): every read and write its
+        // cycle takes is admitted ahead of every waiting turn, behind only the turn in flight, so
+        // each waits for one turn whatever else is outstanding. Three views of the one plane here,
+        // a fourth inside the handback below, and nothing built beside them: the curated
+        // telemetry's view shares the cache source's memo, so a degraded set is logged once
+        // whichever of the two read it (#124); the read-back is reconciliation's own loop over the
+        // lane view, so § 3 and the lease core's confirmation cannot disagree about what a fan read
+        // (#295); and the writer is the plane's lane view at § 3's level. The cache's source above,
+        // § 7's read-back through `reconciliation`, and every other mechanism stay at
+        // `.supervisor`.
+        //
+        // The restores § 3's revocation causes reach the lane through the handback, built here
+        // once and held by § 3 alone (#440): a writer at § 3's level on the plane, which
+        // `ThermalCycleHandback` admits in the lane itself, notifying through the one restorer and
+        // logging to the lease log. § 3 lends it to
+        // `revokeEveryLease(handingBackThrough:)` and the lease core cannot keep it, so no other
+        // teardown restores in the lane. The lease core's own `restorer:` above stays the
+        // `.supervisor` one; handing it this would put every teardown in § 3's lane.
         let thermalEmergency = ThermalEmergency(
-            telemetry: telemetry,
+            telemetry: telemetry.admitted(at: .thermalCycle),
             sightings: sightings,
-            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            writer: SafetyActorWriter(
+                plane: plane.admitted(at: .thermalCycle), level: .thermalEmergency),
+            handback: ThermalCycleHandback(
+                notifying: restorer,
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency), log: leaseLog),
             leases: leases,
             latch: latch,
-            // § 6's reader, for the read-back that clears a fan whose handback the firmware
-            // accepted (#295). The same `.supervisor` reads the lease core's confirmation
-            // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
-            handbackReadBack: reconciliation,
+            // The read-back that clears a fan whose handback the firmware accepted (#295), or
+            // that § 3 restored itself (#300), through the seam that does not log each throw —
+            // § 3 asks at 1 Hz.
+            handbackReadBack: reconciliation.handbackReadBack(admittedAt: .thermalCycle),
             log: safetyLog)
         // The one examination gate, on the lease core's clock: § 5 takes it before each
         // examination and level 6 for each step; no restore path, § 3, driver or plane holds it.
@@ -717,18 +746,41 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// passed a source that never fires would have disarmed ADR 0012 without touching the
     /// watchdog, which is why the parameter is on this factory and not on a public surface, and
     /// why `HelperWatchdogCompositionTests` asks the *default* what it is.
+    ///
+    /// ## The write channel is withheld unless the daemon gives one
+    ///
+    /// `writeChannel` builds the plane's write channel over this graph's one connection, and it
+    /// defaults to none. **Only `AeolusHelperMain` passes one**, its file-private forwarder
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1 seam amendment); no test can,
+    /// because nothing outside that file can turn a real connection into a channel. Every test
+    /// that composes this graph over the real SMC — `HelperHardwareTests` runs one on every bare
+    /// `swift test` on the development machine, bring-up and teardown included — therefore gets a
+    /// plane holding no channel, which cannot write once the plane can. A wrong default fails
+    /// safe in either direction: none here leaves the daemon unable to write,
+    /// `CompositionWriteChannelTests` fails on any other default, and a test composing the real SMC
+    /// requires `!plane.holdsWriteChannel` on the binding's first use
+    /// (`NotBuiltRequireTripwireTests`).
+    ///
+    /// The closure is applied once, here, to `connection` — the local the provider reads through
+    /// and the plane recycles — for the reason that paragraph gives above. A plane given one
+    /// answers `.built` and writes through it (`SMCWriteTurns`); given none, `.notBuilt`.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams(),
-        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks()
+        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks(),
+        writeChannel: (SMCConnection) -> (any SMCWriteChannel)? = { _ in nil }
     ) -> HelperComposition<SMCFanControlPlane> {
         let connection = SMCConnection()
         let connectionHealth = ConnectionHealth()
         let gateMonitor = GateWaitMonitor()
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection),
-            observer: SchedulerObservers([connectionHealth, gateMonitor]))
-        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
+            observer: SchedulerObservers([
+                connectionHealth, gateMonitor, ThermalCycleLaneWatch(log: SafetyLog()),
+            ]))
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: SMCConnectionRecycler(connection: connection),
+            channel: writeChannel(connection))
         return HelperComposition(
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,

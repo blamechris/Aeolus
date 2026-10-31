@@ -28,12 +28,46 @@
 # ## The environment
 #
 # The script does not trust the one it is started in. `#!/bin/bash -p` makes macOS's bash 3.2
-# ignore BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE and import no shell
-# function from the environment; it is used instead of `env -i` so the script keeps its own
-# name and arguments. `bash script` ignores that flag, so the script also refuses (exit 2) to
-# run with BASH_ENV or ENV set, or with xtrace or verbose on, either of which would print the
-# signature it reads. It then pins PATH to /usr/bin:/bin and the locale to C, and unsets
-# GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and POSIXLY_CORRECT.
+# ignore BASH_ENV, ENV and SHELLOPTS and import no shell function from the environment; it is
+# used instead of `env -i` so the script keeps its own name and arguments. It does not make
+# bash 3.2 ignore CDPATH or GLOBIGNORE (CDPATH is still honoured by `cd`), which the scrub
+# below unsets for that reason; BASHOPTS does not exist in 3.2.
+#
+# `bash script` ignores the flag on the shebang line and imports functions, so the first thing
+# the script does is refuse to run unless bash was started with `-p`. The refusal is a
+# parameter expansion, `${…:?}`, because every command name, `echo` and `exit` included, could
+# be an imported function that swallows the refusal; a parameter expansion and `case` are
+# syntax and cannot be replaced. Bash 3.2 exits 1 for it, writes no record, and says why on
+# standard error. Two tests, both required:
+# - `$-` contains `p`.
+# - The kernel's record of this process's arguments, `/bin/ps -ww -o args= -p $$` (a path, so
+#   never a function), has `-p` straight after the shell's own name.
+# The first alone is not proof: `SHELLOPTS=privileged bash script`, and a BASH_ENV file that
+# runs `set -p` and unsets itself, both put `p` in `$-` after bash has imported the functions
+# or run the file. Neither puts `-p` in the arguments, which bash reads before it touches the
+# environment. (A parent that execs bash under a forged argument vector controls the process,
+# which is beyond what a script can check.) `SHELLOPTS=noexec bash script` is the one start
+# this cannot refuse, because noexec skips every command, the guard included: it exits 0 and
+# prints nothing, and no record is not a record.
+#
+# It then refuses (exit 2) to run with BASH_ENV or ENV set, or with xtrace or verbose on,
+# either of which would print the signature it reads. It pins PATH to /usr/bin:/bin and the
+# locale to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and
+# POSIXLY_CORRECT.
+#
+# ## The toolchain
+#
+# /usr/bin/git, /usr/bin/lipo and /usr/bin/strings are not the tools: they are launchers that
+# ask xcrun which developer directory to run the real one from, and DEVELOPER_DIR answers.
+# Pinning PATH does not help, because the launcher is on the pinned PATH. A directory holding
+# an `xcrun` of its own (macOS 27.0.1 runs `$DEVELOPER_DIR/usr/bin/xcrun`) is enough to
+# answer `git status` with nothing, so a tree with a tracked change and an untracked .swift
+# file recorded as `clean`. The script therefore unsets DEVELOPER_DIR, and TOOLCHAINS and
+# SDKROOT with it: xcrun(1) documents all three as choosing what it runs, though only
+# DEVELOPER_DIR was shown to redirect these tools. The launchers then use the active developer
+# directory (`xcode-select -p`). Not tested: whether xcrun's cache under $TMPDIR can be
+# planted. scripts/e4-verify-running.sh runs no launcher (`otool -L` shows none of its tools
+# linked against libxcselect), so it needs no such scrub.
 #
 # ## What a record proves
 #
@@ -47,16 +81,26 @@
 # ## What "clean" checks
 #
 # <source-worktree> must be the top level of its work tree (exit 2 otherwise): a subdirectory
-# would be checked without the files outside it. Every git call runs with
+# would be checked without the files outside it. The test is `-ef`, the same directory by
+# device and inode, so a differently cased path to the tree on a case-insensitive disk passes
+# and a subdirectory does not. Every git call runs with
 # `-c core.fsmonitor=false -c core.untrackedCache=false`, so a monitor that says nothing
-# changed is not believed. Then:
+# changed is not believed, and with `-c core.hooksPath=/dev/null`, because `git status` runs
+# repository hooks (post-index-change, when it refreshes the index) and a hook is code from
+# the tree being checked. Then:
 # - No tracked path has a `filter` attribute (exit 3), from any attribute source:
 #   `git check-attr filter` over every tracked path. A clean filter can make a modified file
 #   compare equal to the committed one. The repository has no .gitattributes, and a filter
 #   driver merely being configured is not refused: git-lfs is configured globally on many Macs
 #   and applies to nothing here.
+# - No tracked path is a submodule (exit 3): no mode-160000 entry in `git ls-files -s`.
+#   `git check-attr`, `git ls-files -v` and `git ls-files --others` stop at a submodule's
+#   boundary, so a clean filter, an assume-unchanged file or an untracked file inside one is
+#   invisible to every other check here: a clean filter in a submodule and a same-size edit
+#   recorded `clean`. This repository has no .gitmodules, and a record of one that does would
+#   say nothing about what is inside it.
 # - `git status --porcelain --untracked-files=all --ignore-submodules=none` is empty: no
-#   tracked change (staged or not), no untracked file, no change inside a submodule.
+#   tracked change (staged or not), no untracked file, no change a submodule reports.
 # - No tracked file is marked `--assume-unchanged` or `--skip-worktree` (`git ls-files -v`
 #   shows a lowercase letter or `S`), because git then reports a modified file as clean.
 # - **Every** untracked path, ignored or not, whatever ignored it (.gitignore,
@@ -64,19 +108,32 @@
 #   anything else is refused. SwiftPM compiles every .swift file under Sources/, reads a
 #   root Package@swift-*.swift, and treats an ignored Packages/ directory as an edited
 #   dependency. The allowed set is what the repository's own .gitignore names as local or
-#   generated, and a build tolerates:
-#     Configs/Signing.xcconfig             local signing settings; read by Full builds only
-#     Configs/Aeolus-Info.plist            generated from project.yml by xcodegen
-#     Configs/AeolusHelper-Info.plist      generated from project.yml by xcodegen
-#     Configs/fanctl-Info.plist            generated from project.yml by xcodegen
+#   generated, and a build tolerates. **Tolerates is not "does not read":** an incremental
+#   build reads several of these, which is why the list says what from each.
+#     Configs/Signing.xcconfig             the project-level xcconfig of both Full
+#                                          configurations (project.yml `configFiles`): it can
+#                                          set any build setting the targets do not override,
+#                                          not only the signing identity. Monitor builds do
+#                                          not read it
+#     Configs/Aeolus-Info.plist            generated from project.yml by xcodegen; the
+#     Configs/AeolusHelper-Info.plist      targets' Info.plists, which the build reads
+#     Configs/fanctl-Info.plist
 #     Aeolus.xcodeproj/                    generated from project.yml (and, inside it, the
-#                                          Xcode user state and IDEWorkspaceChecks.plist)
-#     .build/                              SwiftPM's build output
-#     DerivedData/, build/                 Xcode's build output
+#                                          Xcode user state and IDEWorkspaceChecks.plist);
+#                                          the build reads the project itself
+#     .build/                              SwiftPM's build output, which an incremental build
+#                                          reads: intermediates, and the swift-argument-parser
+#                                          checkout that fanctl links
+#     DerivedData/, build/                 Xcode's build output, read the same way. CI and
+#                                          ADR 0008 build with `-derivedDataPath DerivedData`,
+#                                          inside the tree
 #     dist/                                release artifacts a build only writes
 #     .DS_Store                            Finder state, anywhere
 #     .claude/settings.local.json          an agent's local settings; nothing builds from it
-#     autonomous-session-*.md              an agent's session log at the root; the same
+#     autonomous-session-*.md              an agent's session log, at the root. The pattern's
+#                                          `*` also matches `/`, so a file of that name below
+#                                          a directory that holds tracked files passes too;
+#                                          harmless, a Markdown file is not built
 #   Everything else the .gitignore lists is refused on purpose: *.p12, *.cer,
 #   *.provisionprofile and AuthKey_*.p8 (signing secrets that have no business in the tree),
 #   Packages/, Pods/ and Carthage/Build/ (dependencies a build would read), .swiftpm/ (it can
@@ -89,10 +146,16 @@
 #   link between the source and the hashes is the operator making the record straight after
 #   building from that clean tree. A record made later, or against another tree, is only as
 #   good as the operator's care. The script cannot tell.
-# - **That the ignored-but-allowed inputs were right.** Configs/Signing.xcconfig decides the
-#   signing identity, and nothing here reads it. The generated Info.plists and
-#   Aeolus.xcodeproj/ come from project.yml and can be stale: this script does not regenerate
-#   or compare them. The record says only whether each is present.
+# - **That the hashes come from this tree, unless the app was built from scratch.** An
+#   incremental build reads .build/, DerivedData/ and build/ (intermediates and a package
+#   checkout) as well as the tree, and this script sees only that those directories are
+#   allowed, never what is in them. Only a build with them absent, or emptied first, ties the
+#   hashes to the tree the record names. The script does not require that and cannot tell.
+# - **That the ignored-but-allowed inputs were right.** Configs/Signing.xcconfig can set any
+#   setting the targets do not override, the signing identity among them, and nothing here
+#   reads it. The generated Info.plists and Aeolus.xcodeproj/ come from project.yml and can
+#   be stale: this script does not regenerate or compare them. The record says only whether
+#   each is present.
 # - **That the bundle is intact.** It reads three binaries; it does not run
 #   `codesign --verify --deep --strict` on the app, and it does not read the app's resources.
 # - **That any signature is trustworthy.** It reads each CDHash and identifier and nothing
@@ -111,15 +174,32 @@
 #   2  the arguments, the environment or the source tree cannot be used: wrong number of
 #      arguments; BASH_ENV, ENV, xtrace or verbose is on; git is not available; the source
 #      tree is not a git work tree, is not its top level, or has no HEAD commit
-#   3  the source tree is not clean in the sense above: a record of a dirty build names no
-#      source anyone can review, so none is made
+#   3  the source tree is not clean in the sense above, or has a submodule: a record of a
+#      dirty build names no source anyone can review, so none is made
 #   4  an input of the app is missing: Contents/Info.plist, one of its two version keys, or
 #      one of the three binaries
 #   5  a binary is unsigned, or its signature or architectures cannot be read
 #   6  a system tool failed where it should not have (git, date, grep, or any other utility);
 #      the message says that and names no output of it
+#   1  (macOS's bash 3.2, for a failed `${…:?}`; not a code of this script's own) bash was not
+#      started with -p: see "The environment"; no record is made
 
 # --- The environment ----------------------------------------------------------------------
+
+# Nothing in this block names a command until it has passed: a function imported from the
+# environment would replace one. `case` and parameter expansions are syntax, and /bin/ps has a
+# path, which is never looked up as a function. `${name:?word}` ends a non-interactive shell,
+# whatever `exit` or `:` have been redefined to. See "The environment" in the header for why
+# both tests are needed.
+shell_privileged=${-//[!p]/}
+: "${shell_privileged:?refusing to run unless bash was started with -p, because without it bash imports shell functions from the environment; run the script itself (its first line asks for -p) or use bash -p}"
+shell_arguments=$(/bin/ps -ww -o args= -p "$$") || shell_arguments=
+shell_arguments=${shell_arguments#* }
+shell_started_with_p=
+case "${shell_arguments}" in
+    "-p" | "-p "*) shell_started_with_p=yes ;;
+esac
+: "${shell_started_with_p:?refusing to run: bash was not started with -p as its first argument, so SHELLOPTS or a BASH_ENV file may have put p in the flags after bash imported functions or ran the file; run the script itself (its first line asks for -p) or use bash -p}"
 
 case "$-" in
     *[xv]*)
@@ -137,7 +217,7 @@ LC_ALL=C
 export LC_ALL
 for scrub_name in $(compgen -e); do
     case "${scrub_name}" in
-        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT)
+        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT | DEVELOPER_DIR | TOOLCHAINS | SDKROOT)
             unset "${scrub_name}"
             ;;
     esac
@@ -187,9 +267,11 @@ source_tree="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
 # --- The source ---------------------------------------------------------------------------
 
 # Every git call goes through here. Its standard error can carry the tree's path, so it is
-# never passed on; and a file-system monitor or an untracked cache is never believed.
+# never passed on; a file-system monitor or an untracked cache is never believed; and no
+# repository hook runs (`git status` runs post-index-change when it refreshes the index).
 git_in_tree() {
-    git -C "${source_tree}" -c core.fsmonitor=false -c core.untrackedCache=false "$@" 2>/dev/null
+    git -C "${source_tree}" -c core.fsmonitor=false -c core.untrackedCache=false \
+        -c core.hooksPath=/dev/null "$@" 2>/dev/null
 }
 
 command -v git >/dev/null 2>&1 || die "${EX_USAGE}" "git is not available"
@@ -200,7 +282,9 @@ top_level=$(git_in_tree rev-parse --show-toplevel) \
     || die "${EX_USAGE}" "the source tree's top level could not be read"
 here=$(cd "${source_tree}" && pwd -P) \
     || die "${EX_USAGE}" "the source tree could not be entered"
-if [ "${top_level}" != "${here}" ]; then
+# `-ef` compares device and inode, not spelling: on a case-insensitive disk git and `pwd -P` can
+# spell the same directory differently. An empty top_level is no directory, so it fails here.
+if ! [ "${top_level}" -ef "${here}" ]; then
     die "${EX_USAGE}" "the source tree must be the top level of its work tree, not a subdirectory of it"
 fi
 
@@ -237,7 +321,26 @@ if [ -n "${filtered}" ]; then
     exit "${EX_DIRTY}"
 fi
 
-# 1. Tracked changes, untracked files and anything inside a submodule. Untracked files count:
+# 0b. No submodule. Everything below stops at a submodule's boundary: `git check-attr` does not
+#     look inside one, nor do `git ls-files -v` and `git ls-files --others`, and `git status`
+#     only asks the submodule's own git, which applies the submodule's own filters. A mode of
+#     160000 in the index marks one (a gitlink). This repository has none, so any is refused.
+staged=$(git_in_tree ls-files -s) || die "${EX_TOOL}" "git could not list the source tree's index entries"
+submodules=""
+while IFS= read -r line; do
+    case "${line}" in
+        160000\ *) submodules="${submodules}${line#*$'\t'}"$'\n' ;;
+    esac
+done <<EOF
+${staged}
+EOF
+if [ -n "${submodules}" ]; then
+    echo "error: the source tree has a submodule. The checks here do not look inside one, so a clean record would say nothing about its files. First paths:" >&2
+    show_first_ten "${submodules}"
+    exit "${EX_DIRTY}"
+fi
+
+# 1. Tracked changes and untracked files. Untracked files count:
 #    SwiftPM compiles every .swift file under Sources, tracked or not.
 dirty=$(git_in_tree status --porcelain --untracked-files=all --ignore-submodules=none) \
     || die "${EX_TOOL}" "git could not read the source tree's status"
@@ -412,8 +515,8 @@ E4 build record
   recorded (UTC): ${recorded_at}
   source branch:  ${branch}
   source HEAD:    ${head_sha}
-  source tree:    clean (top level; no filter, no tracked change, no untracked path outside the allowed set,
-                  no assume-unchanged or skip-worktree file)
+  source tree:    clean (top level; no filter, no submodule, no tracked change, no untracked path outside
+                  the allowed set, no assume-unchanged or skip-worktree file)
   local inputs, ignored and not part of the tree this record names (presence only):
     Configs/Signing.xcconfig: ${signing_label}
     generated Info.plists:    ${plists_found} of 3 present

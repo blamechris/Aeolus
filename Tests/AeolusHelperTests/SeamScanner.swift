@@ -133,10 +133,27 @@ enum SeamScanner {
 
     private static func swiftFiles(beneath root: URL) throws -> [URL] {
         let enumerator = try #require(
-            FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+            FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
+        let entries = enumerator.compactMap { $0 as? URL }
+        refuseSymbolicLinks(in: entries, under: root)
+        let files = entries.filter { $0.pathExtension == "swift" }
         #expect(!files.isEmpty, "the project's sources were not found under \(root.path)")
         return files
+    }
+
+    /// A symbolic link under a scanned root is refused, not followed: the enumerator does not
+    /// descend into a linked directory, and SwiftPM compiles what is behind one, so a suite behind
+    /// a link would build and be scanned by nothing (#436's review).
+    static func refuseSymbolicLinks(in entries: [URL], under root: URL) {
+        for entry in entries
+        where (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            Issue.record(
+                """
+                \(entry.path) is a symbolic link under \(root.lastPathComponent)/. SwiftPM \
+                compiles what it points at, and these scans do not follow it.
+                """)
+        }
     }
 
     /// Every `func` declared in one target, parsed rather than pattern-matched.
@@ -307,23 +324,27 @@ enum SeamScanner {
     /// maintainer's hand and nothing would have reported the site it hid. A pattern nothing
     /// puts a fixture through is a pattern whose misses are invisible.
     ///
-    /// An explicit generic clause and an argument list are both optional. Reading a `Task`
-    /// *type* as a spawn is possible in principle — a protocol's `var t: Task<Void, Never> {`
-    /// would match — and is **fail-loud**: the count rises, the message names the file, and a
-    /// maintainer looks. A missed spawn is the direction that fails silently, so the pattern
-    /// errs wide.
+    /// **The pattern is `WriteSeamSpellingTests.taskSpawn`**, the one the write-turn job scan
+    /// reads, so the two cannot disagree about what a spawn is (#442's review, S1). The pattern
+    /// this had matched `Task` only when a `{` followed an argument list, which missed
+    /// `Task(operation: { … })` and `Task.detached(priority:, operation: { … })`: neither has a
+    /// `{` straight after its parentheses, and a closure holds parentheses of its own. This
+    /// census is what notices a `Task` spawned through a helper function that a write-turn job
+    /// calls, which the job scan cannot see.
+    ///
+    /// The source is read as code: comments, trailing ones included, and string literals are
+    /// removed first, so the word in prose is not a site. Reading a `Task` *type* as a spawn is
+    /// possible in principle — a protocol's `var t: Task<Void, Never> {` would match — and is
+    /// **fail-loud**: the count rises, the message names the file, and a maintainer looks. A
+    /// missed spawn is the direction that fails silently, so the pattern errs wide.
     static func unstructuredTaskSpawns(inSource source: String) throws -> Int {
-        let spawn = try NSRegularExpression(
-            pattern: #"\bTask(\.detached)?\s*(<[^<>]*>)?\s*(\([^()]*\))?\s*\{"#)
-        let code = strippingComments(source)
-        return spawn.numberOfMatches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+        try RuleZeroScan.count(WriteSeamSpellingTests.taskSpawn, in: RuleZeroScan.code(of: source))
     }
 
     // MARK: - Parsing
 
-    /// Source with comments removed: every `/* … */` span, and then every whole line that is
-    /// a `//` comment.
+    /// Source with comments removed: every `/* … */` span, replaced by one space, and every
+    /// whole line that is a `//` comment **where the lexer is reading code**.
     ///
     /// The prose describing a forbidden signature is not that signature, and a tripwire that
     /// fires on the sentence explaining the rule is a tripwire nobody keeps. That argument
@@ -332,33 +353,60 @@ enum SeamScanner {
     /// signature quoted inside `/* … */` was scanned as a declaration and would have
     /// reddened the tripwire it was explaining.
     ///
+    /// A line is dropped when only blanks precede its `//` on its line of the source — a block
+    /// comment before it, which the walker has turned into a space, is blank
+    /// (`SeamScannerCommentLineTests` pins `/* x */ // c`), and the text after `\(` in an
+    /// interpolation is not a line of its own — and the walker reaches that `//` as code. A line
+    /// of a multi-line string literal
+    /// that begins `//` is the literal's text, and an interpolation on it is code: filtering lines
+    /// by their text, before the literal walker had looked, removed such a line and the call in
+    /// it, so no rule-zero scan saw a `production` in `"""` / `//\(X.production(log: L()))` /
+    /// `"""` (#457). A **trailing** `//` comment is left in place, because the prose that explains
+    /// a rule is usually a whole line; `strippingAllComments` says what leaving it costs a
+    /// receiver scan, and removes it.
+    ///
+    /// **A source with a carriage return is refused** (`refuseCarriageReturns(in:file:)`), so the
+    /// walker never has to say where a `\r` ends a comment.
+    ///
     /// `internal` rather than `private` so `SeamScannerParsingTests` can put a fixture
     /// through it. Nothing in `Sources` contains a block comment today, so the tree cannot
     /// exercise this and a test that only scans the tree cannot know it works.
     static func strippingComments(_ source: String) -> String {
-        strippingBlockComments(source)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-            .joined(separator: "\n")
+        refuseCarriageReturns(in: source)
+        return strippingBlockAndLineComments(source)
     }
 
-    /// Every `/* … */` span removed, newlines kept so the line-comment filter still sees the
-    /// lines it must judge.
+    /// Every `/* … */` span replaced by one space, and every `//` comment that is the whole of its
+    /// line removed with its newline. The space is what the lexer sees: a comment separates
+    /// tokens, so `public/* */import` is `public import` (#442's review, S3).
     ///
     /// Swift nests block comments, so the depth is counted rather than the first `*/` taken.
-    /// String literals — `"""` spans included — and `//` comments are copied through
-    /// untouched: a `/*` inside either opens nothing, and treating one as an opener would
-    /// swallow the rest of the file.
+    /// The text of a string literal — `"""` spans included — and a `//` comment **trailing code**
+    /// are copied through untouched: a `/*` inside either opens nothing, and treating one as an
+    /// opener would swallow the rest of the file.
     ///
-    /// The string handling is a quote-counter, not a lexer, so a `"` inside an
-    /// interpolation — `"\(row["key"])"` — ends the literal early and the remainder is read
-    /// as code. That can only matter alongside a `/*`, and it cannot silently weaken a scan
-    /// today: with no block comment anywhere in `Sources`, `depth` never rises, every branch
-    /// copies what it consumes, and the result is the input character for character. That
-    /// premise is **asserted rather than assumed** — `SeamScannerParsingTests`'
-    /// `noBlockCommentIsWrittenInSources` fails the day one is written, which is the day this
-    /// paragraph stops being true.
-    private static func strippingBlockComments(_ source: String) -> String {
+    /// **A whole-line `//` comment is judged here, where the walker knows it is reading code.** A
+    /// `//` the walker meets is outside every literal's text and every regex, so a line of a
+    /// multi-line literal that begins `//` is never offered: `copyDelimited` has already carried
+    /// the whole literal across. `copyOrDropLineComment` drops the comment when it is the whole of
+    /// its line (#457; this was a filter on each line's text, run after the walker, which could
+    /// not tell a literal's line from a comment).
+    ///
+    /// **An interpolation is code, so this walks it too.** `copyDelimited` hands the code of each
+    /// interpolation back to this function, and a comment in it — a line, a trailing one or a
+    /// block — is dropped or kept as it would be outside a literal, with one difference:
+    /// `startsLine` is false for it, because its first line follows `\(`. A `//` right after `\(`
+    /// trails code, as Swift reads it, and keeps its newline (#460's review, B1).
+    ///
+    /// Literals are walked by `copyDelimited`, which reads raw delimiters and interpolations (see
+    /// it), so a `"` inside `"\(row["key"])"` or `#"a "b"#` does not end the literal early, and
+    /// regex literals by `regexLiteralEnd`, so `/"/` and `#/a//b/#` are text. With no block
+    /// comment anywhere in `Sources`, `depth` never rises and the only change to the input is
+    /// the whole-line comments dropped — `SeamScannerParsingTests`'
+    /// `noBlockCommentIsWrittenInSources` fails the day one is written.
+    private static func strippingBlockAndLineComments(
+        _ source: String, startsLine: Bool = true
+    ) -> String {
         var output = ""
         var index = source.startIndex
         var depth = 0
@@ -382,54 +430,32 @@ enum SeamScanner {
                 continue
             }
 
-            if matches("/*", at: index) {
+            // A regex first: `#//a/#` is an extended regex whose text begins `//`, not a comment
+            // (#436's delta review, S2). A bare `/` followed by `/` or `*` opens no regex, so
+            // comments are unaffected.
+            if let end = regexLiteralEnd(at: index, in: source) {
+                output += source[index..<end]
+                index = end
+            } else if matches("/*", at: index) {
+                // One space per span, as Swift's lexer reads it: `public/* */import` is two
+                // words, and joined they are one that no pattern for `import` finds (#442, S3).
+                output.append(" ")
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {
-                while index < source.endIndex, source[index] != "\n" {
-                    output.append(source[index])
-                    index = source.index(after: index)
-                }
-            } else if matches("\"\"\"", at: index) {
-                index = copyDelimited(source, from: index, delimiter: "\"\"\"", into: &output)
+                index = copyOrDropLineComment(
+                    in: source, from: index, into: &output, startsLine: startsLine)
             } else if source[index] == "\"" {
-                index = copyDelimited(source, from: index, delimiter: "\"", into: &output)
+                let delimiter = matches("\"\"\"", at: index) ? "\"\"\"" : "\""
+                index = copyDelimited(source, from: index, delimiter: delimiter, into: &output) {
+                    strippingBlockAndLineComments(String(source[$0]), startsLine: false)
+                }
             } else {
                 output.append(source[index])
                 index = source.index(after: index)
             }
         }
         return output
-    }
-
-    /// Copies an opening `delimiter`, everything up to the matching closing one, and that
-    /// one too — honouring `\` escapes — and answers where to carry on.
-    ///
-    /// `internal` rather than `private`, like the three below it: `SeamScannerScopes` is this
-    /// same type in a sibling file, `private` at type scope does not reach there, and a second
-    /// copy of a string-literal walker is precisely the drift this suite exists to catch.
-    static func copyDelimited(
-        _ source: String, from open: String.Index, delimiter: String, into output: inout String
-    ) -> String.Index {
-        var index = source.index(open, offsetBy: delimiter.count)
-        output.append(delimiter)
-
-        while index < source.endIndex {
-            if source[index] == "\\", source.index(after: index) < source.endIndex {
-                output.append(source[index])
-                index = source.index(after: index)
-                output.append(source[index])
-                index = source.index(after: index)
-                continue
-            }
-            if source[index...].hasPrefix(delimiter) {
-                output.append(delimiter)
-                return source.index(index, offsetBy: delimiter.count)
-            }
-            output.append(source[index])
-            index = source.index(after: index)
-        }
-        return index
     }
 
     /// The `(` that opens a declaration's parameter list, skipping a generic clause.

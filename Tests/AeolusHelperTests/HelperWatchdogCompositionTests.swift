@@ -30,12 +30,15 @@ struct HelperWatchdogCompositionTests {
         ticks: ManualWatchdogTicks,
         journal: TeardownJournal
     ) -> HelperComposition<Plane> {
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         HelperComposition(
             plane: plane,
             snapshotProvider: provider,
             criticalSensors: .mac16x5,
             roundTrips: roundTrips,
             watchdogTicks: ticks,
+            clock: TestClock(),
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,
@@ -67,8 +70,10 @@ struct HelperWatchdogCompositionTests {
     /// **Mutation:** replace `production`'s default `watchdogTicks` with a source that never
     /// fires. Run: red.
     @Test("The shipped daemon's watchdog is given the real timer")
-    func theProductionGraphIsGivenARealTickSource() {
-        let ticks = HelperComposition.production(log: Self.helperLog).watchdog.ticks
+    func theProductionGraphIsGivenARealTickSource() throws {
+        let helper = HelperComposition.production(log: Self.helperLog)
+        try #require(!helper.plane.holdsWriteChannel, "the production graph holds a write channel")
+        let ticks = helper.watchdog.ticks
         let held = String(describing: type(of: ticks))
 
         #expect(
@@ -89,13 +94,15 @@ struct HelperWatchdogCompositionTests {
     /// **Mutation:** build the watchdog over `GateWaitMonitor()` instead of the `gateMonitor`
     /// parameter. Run: red, on both.
     @Test("The composed watchdog reads the gate monitor the composition holds")
-    func theWatchdogReadsTheMonitorTheCompositionHolds() {
+    func theWatchdogReadsTheMonitorTheCompositionHolds() throws {
         let monitor = GateWaitMonitor()
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let given = HelperComposition(
             plane: Self.scriptedPlane(), snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5, roundTrips: idleRoundTrips(),
-            watchdogTicks: ManualWatchdogTicks(), gateMonitor: monitor, log: Self.helperLog,
-            leaseLog: LeaseFixture.log, safetyLog: Self.safetyLog,
+            watchdogTicks: ManualWatchdogTicks(), clock: TestClock(), gateMonitor: monitor,
+            log: Self.helperLog, leaseLog: LeaseFixture.log, safetyLog: Self.safetyLog,
             teardown: TeardownSeams(
                 sources: RecordingSignalSources(), terminate: TeardownJournal().terminate))
         #expect(given.watchdog.gateMonitor === monitor)
@@ -104,6 +111,8 @@ struct HelperWatchdogCompositionTests {
         // The shipped graph, built and thrown away on a machine with no SMC, like the tick-source
         // test above: nothing is armed and no timer is made.
         let production = HelperComposition.production(log: Self.helperLog)
+        try #require(
+            !production.plane.holdsWriteChannel, "the production graph holds a write channel")
         #expect(production.watchdog.gateMonitor === production.gateMonitor)
     }
 
@@ -330,12 +339,14 @@ struct HelperWatchdogCompositionTests {
     ///
     /// ## No dependence on the width of the cooperative pool
     ///
-    /// Holding an actor parks a pool thread, and this repository already has two tests that do
-    /// (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s). On a three-core runner
-    /// a third left none to resume any of them, and this pull request's first CI run stopped
-    /// for twenty minutes. So the held window asks nothing of the pool: the thread that drives
-    /// it and the failsafe that ends it are `Thread`s, and it lasts as long as two synchronous
-    /// ticks.
+    /// Holding an actor parks a pool thread, and this repository already has other tests that
+    /// do (`docs/TESTING.md` lists them). On a three-core runner a third left none to resume any
+    /// of them, and this pull request's first CI run stopped for twenty minutes. So the held
+    /// window asks nothing of the pool: the thread that drives it and the failsafe that ends it
+    /// are `Thread`s, and it lasts as long as two synchronous ticks. `SMCRoundTripMonitorTests`'
+    /// held connection is driven the same way. Only `ThreadBlockingRestorePlane`'s hold is
+    /// released by a pool task, and there is one of it
+    /// ([#554](https://github.com/blamechris/Aeolus/issues/554)).
     ///
     /// It used to give up the assertion that the process *ends* while the connection is held,
     /// because the ending was a `Task` and a `Task` needs a pool thread this window may be
@@ -362,7 +373,7 @@ struct HelperWatchdogCompositionTests {
                 release.signal()
                 window.withLock { $0.finished = true }
             }
-            guard entered.wait(timeout: .now() + .seconds(20)) == .success else { return }
+            guard signalled(entered, within: 20) else { return }
             window.withLock { $0.occupied = true }
 
             // Queued behind the held connection; it cannot run until the release.
