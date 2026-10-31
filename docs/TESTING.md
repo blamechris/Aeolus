@@ -110,18 +110,42 @@ CI runs this as the `Test on a cooperative pool of one` step of the `Test (debug
 
 ```bash
 swift build --build-tests --build-system native
+
+SKIP_ARGS=()
+for SUITE in HelperHardwareTests WatchdogHardwareTests \
+    SMCSensorProviderHardwareTests SMCSensorProviderMac165Tests \
+    SMCConnectionHardwareTests SMCConnectionMac165Tests \
+    SMCFanEnumerationMac165Tests KeyTableWalkMac165Tests SMCKeyRealTableTests \
+    SMCRoundTripHardwareTests HardwareSmokeTests; do
+  SKIP_ARGS+=(--skip "\\.${SUITE}(/|\$)")
+done
+
 AEOLUS_EXPECT_POOL_OF_ONE=1 LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 gtimeout -k 30 1200 \
-  swift test --skip-build --build-system native \
-  --skip HelperHardwareTests --skip HelperHardwareSightingTests --skip WatchdogHardwareTests \
-  --skip SMCSensorProviderTests --skip SMCConnectionTests --skip HardwareSmokeTests \
-  --skip theBudgetSurvivesARestoreThatBlocksItsThread
+  swift test --skip-build --build-system native "${SKIP_ARGS[@]}" \
+  --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)'
 ```
 
-`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` makes the cooperative pool one thread wide. The hardware
-suites are skipped because they need an SMC and a quiet machine. The last `--skip` is the only
-test that cannot run on a pool of one, for the reason in "The bound". The run should complete in
-about a minute with no failure. Anything that wedges it, or needs a second thread to pass, is a
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` makes the cooperative pool one thread wide. The skipped
+suites are the ones that read the real SMC: eleven names for twelve suites, because
+`HardwareSmokeTests` exists in both `AeolusUITests` and `fanctlTests`. On a hosted runner, which has
+no SMC, every one of them skips itself in the plain `Test` step too; that step counts them as
+skipped, and this one never starts them. On a Mac16,5 all but `WatchdogHardwareTests` (which also
+wants `AEOLUS_WATCHDOG_SOAK_SECONDS`) would run, and a run about thread counts should not read the
+SMC, so the command names all of them. `HelperHardwareSightingTests` needs no entry: it is an
+extension of `HelperHardwareTests`, and its tests carry that suite's name. The last `--skip` is the
+only test that cannot run on a pool of one, for the reason in "The bound". The run should complete
+in about a minute with no failure. Anything that wedges it, or needs a second thread to pass, is a
 new row for the first table, or a bug in the test.
+
+Each suite is named by its type and anchored, a `.` before the name and a `/` or the end of the ID
+after it, because `--skip` is an unanchored regular expression matched against the whole test ID,
+`Module.Suite/test()/File.swift:line:column`. The file's name is in what it matches. A bare
+`--skip SMCConnectionTests` removes every test in `SMCConnectionTests.swift`, hardware or not; named
+that way, this step once ran 43 tests that read no SMC fewer than it should (review of #646). To
+check that a change to the list removed what it should: `swift test list` counts every test, the
+listed suites' tests come off that, and one more for
+`theBudgetSurvivesARestoreThatBlocksItsThread`. On 2026-10-31 that was 3531 listed, 40 in these
+suites and 1, so the run's `Test run with` line read 3490 tests.
 
 `AEOLUS_EXPECT_POOL_OF_ONE=1` turns on `CooperativePoolWidthTests`, the step's positive control:
 it fails if the run is wider than one thread. A pool-of-one run is green whenever nothing wedges,

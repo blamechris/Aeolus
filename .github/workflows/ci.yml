@@ -103,28 +103,48 @@ jobs:
       - name: Build tests (native build system)
         run: swift build --build-tests --build-system native
 
-      # The skipped suites need an SMC and a quiet machine, which a hosted runner has neither of,
-      # and `theBudgetSurvivesARestoreThatBlocksItsThread` is the one test that cannot run on a
-      # pool of one (docs/TESTING.md, "The bound"). Nothing else is skipped: the step above still
-      # runs every suite, these included, so this step narrows only its own run.
+      # This run leaves out two things and nothing else; the step above still runs every suite:
+      #   - the suites that read the SMC. A hosted runner has none, so on CI they skip themselves
+      #     in the step above as well. On a Mac16,5 they would read the real one, and a run about
+      #     thread counts has no business doing that (docs/TESTING.md gives this command for that
+      #     machine too);
+      #   - `theBudgetSurvivesARestoreThatBlocksItsThread`, the one test that cannot run on a pool
+      #     of one (docs/TESTING.md, "The bound").
       #
-      # `AEOLUS_EXPECT_POOL_OF_ONE` turns on CooperativePoolWidthTests, which fails if this run
-      # is wider than one thread. Without it a toolchain that stopped honouring the variable
-      # would leave this step green and checking nothing.
+      # Each suite is named by its type, and the pattern is anchored at both ends: a `.` before the
+      # name and a `/` or the end of the ID after it. swift-testing's `--skip` is an unanchored
+      # regular expression matched against the whole test ID, `Module.Suite/test()/File.swift:l:c`,
+      # so a bare `SMCConnectionTests` matched the *file* of that name and removed every test in it,
+      # hardware or not: 43 tests that read no SMC, in two files (review of #646, run 41187988205).
+      # `HelperHardwareSightingTests` is an `extension HelperHardwareTests`, so its tests carry the
+      # name of the suite they extend and need no entry of their own. A suite that reads the SMC and
+      # is added later has to be named here and in docs/TESTING.md.
       - name: Test on a cooperative pool of one
         timeout-minutes: 10
         env:
           LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
           AEOLUS_EXPECT_POOL_OF_ONE: "1"
         run: |
+          SKIPPED_SUITES=(
+              HelperHardwareTests
+              WatchdogHardwareTests
+              SMCSensorProviderHardwareTests
+              SMCSensorProviderMac165Tests
+              SMCConnectionHardwareTests
+              SMCConnectionMac165Tests
+              SMCFanEnumerationMac165Tests
+              KeyTableWalkMac165Tests
+              SMCKeyRealTableTests
+              SMCRoundTripHardwareTests
+              HardwareSmokeTests
+          )
+          SKIP_ARGS=()
+          for SUITE in "${SKIPPED_SUITES[@]}"; do
+              SKIP_ARGS+=(--skip "\\.${SUITE}(/|\$)")
+          done
           swift test --skip-build --build-system native \
-            --skip HelperHardwareTests \
-            --skip HelperHardwareSightingTests \
-            --skip WatchdogHardwareTests \
-            --skip SMCSensorProviderTests \
-            --skip SMCConnectionTests \
-            --skip HardwareSmokeTests \
-            --skip theBudgetSurvivesARestoreThatBlocksItsThread
+            "${SKIP_ARGS[@]}" \
+            --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)'
 
   test-release:
     name: Test (release)
