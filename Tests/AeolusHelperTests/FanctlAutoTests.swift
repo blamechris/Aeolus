@@ -43,10 +43,7 @@ struct FanctlAutoTests {
     ) async throws -> Run {
         let output = RecordingTerminal()
         var command = try auto(arguments)
-        command.helper = HelperConnection(
-            transport: .endpoint(harness.endpoint),
-            pinning: UnenforcedClientPinning(),
-            deadlines: deadlines)
+        command.helper = harness.fanctlConnection(waiting: deadlines, counting: .harness)
         command.terminal = output.terminal
         if !realClock { command.clock = time.clock }
         let code = await exitCode { try await command.run() }

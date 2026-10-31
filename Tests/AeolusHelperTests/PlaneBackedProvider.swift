@@ -14,10 +14,10 @@ import SMCCore
 /// fold that was invisible: an unread mode is reported automatic. Once step 5 of the availability
 /// ladder judges an unread mode as the grant does, it is not.
 ///
-/// So the mode key is the firmware's, through `ScriptedControlPlane.firmwareMode(ofFan:)`, which
-/// shares `readControlState(ofFan:)`'s rule and records no attempt: a scripted fan in manual
-/// reads manual here, a stage that leaves its mode unanswered fails here, and a fan the firmware
-/// does not have is an unknown key.
+/// So the mode key is the firmware's, through `ScriptedControlPlane.firmwareRawMode(ofFan:)`, which
+/// shares `readControlState(ofFan:)`'s rule and records no attempt: a scripted fan's raw byte
+/// reads here as the byte, for the snapshot's own decode to fold, a stage that leaves its mode
+/// unanswered fails here, and a fan the firmware does not have is an unknown key.
 ///
 /// **The bound keys are the firmware's too, since #270**, for the same reason one step on: the
 /// grant now reads `F<n>Mn` and `F<n>Mx` through `readEnvelope(ofFan:)`, and an agreement test
@@ -86,9 +86,11 @@ actor PlaneBackedProvider: SensorProvider {
         ofFan index: Int, key: String
     ) async -> Result<SensorReading, SensorReadFailure> {
         do {
-            let mode = try await firmware.firmwareMode(ofFan: index)
+            // The byte, as the SMC answers it, so the snapshot's own decode folds it
+            // (`SnapshotFanModeReads`): Apple's stopped `3` reaches the fold as `3`.
+            let raw = try await firmware.firmwareRawMode(ofFan: index)
             answeredModeReads += 1
-            return .reading(key, mode == .automatic ? 0 : 1)
+            return .reading(key, Double(raw))
         } catch FanControlPlaneError.fanNotAddressable {
             return .failure(.unknownKey(key))
         } catch {

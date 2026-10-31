@@ -23,6 +23,16 @@ struct DumpFormattingHelperTests {
         #expect(hexString([]).isEmpty)
     }
 
+    /// `SMCError.readableDescription` renders raw bytes itself, because `SMCCore` cannot call
+    /// this function. The two must agree, so bytes quoted in an error can be found in a dump.
+    @Test("An SMCError's raw bytes are written the way dump's bytes column writes them")
+    func errorBytesMatchDumpBytes() {
+        let bytes: [UInt8] = [0x80, 0x20, 0xE7, 0x3F]
+        let description = SMCError.nonNumericKeyCount(type: .hex, bytes: bytes)
+            .readableDescription
+        #expect(description.contains("(raw bytes \(hexString(bytes)))"))
+    }
+
     @Test("resolvedByteOrderDescription is nil when the generation is undetermined")
     func nilGenerationYieldsNilDescription() {
         let info = SMCKeyInfo(key: SMCKey("VP3b")!, type: .flt, dataSize: 4, attributes: 133)
@@ -112,82 +122,6 @@ struct DumpFormattingHelperTests {
         let flag = SMCKeyInfo(key: SMCKey("AC-E")!, type: .flag, dataSize: 1, attributes: 0x80)
         #expect(resolvedByteOrderDescription(info: ui8, generation: .modern) == nil)
         #expect(resolvedByteOrderDescription(info: flag, generation: .modern) == nil)
-    }
-}
-
-/// `describeDumpError(_:)` must never hand back the default `String(describing:)` dump of
-/// an `SMCError` case, and must never be a bare stack trace — every case gets a
-/// human-readable, specific message. Pure and synchronous.
-@Suite("fanctl dump — error descriptions")
-struct DumpErrorDescriptionTests {
-
-    @Test("notReadable names the key and the attribute bit, not just the enum case")
-    func notReadableIsSpecific() {
-        let key = SMCKey("AC-E")!
-        let description = describeDumpError(SMCError.notReadable(key))
-        #expect(description.contains("AC-E"))
-        #expect(description.contains("0x80"))
-    }
-
-    /// `notPermitted` is SMCCore refusing by its own rule before any round trip, an empty or
-    /// oversized write or a value its type cannot hold. It said "this connection has no write
-    /// access" while the write had no body, which a reader would take as a reason to retry as
-    /// root (#433).
-    @Test("notPermitted says it was refused before any round trip, not that access was missing")
-    func notPermittedSaysNothingWasSent() {
-        let description = describeDumpError(SMCError.notPermitted)
-        #expect(description.contains("before any round trip"))
-        #expect(!description.contains("access"))
-    }
-
-    @Test("firmware includes the SMC result code as hex")
-    func firmwareIncludesResultCode() {
-        let description = describeDumpError(SMCError.firmware(code: 0x82))
-        #expect(description.contains("0x82"))
-    }
-
-    @Test("valueTooLargeForSingleRead names the key and the declared size")
-    func oversizedIsSpecific() {
-        let key = SMCKey("ATP0")!
-        let description = describeDumpError(
-            SMCError.valueTooLargeForSingleRead(key: key, dataSize: 96))
-        #expect(description.contains("ATP0"))
-        #expect(description.contains("96"))
-    }
-
-    /// Every case in the switch inside `describeDumpError(_:)` is exhaustive over
-    /// `SMCError` at compile time — if a case were missing, this file would not build.
-    /// What this test adds is the runtime guarantee the compiler cannot: every case
-    /// actually produces a non-empty, readable string rather than an empty fallthrough.
-    @Test("Every SMCError case produces a non-empty description")
-    func everyCaseIsHandled() {
-        let key = SMCKey("F0Ac")!
-        let cases: [SMCError] = [
-            .connectionFailed(kernReturn: -1),
-            .keyNotFound(key),
-            .firmware(code: 0x00),
-            .sizeMismatch(key: key, declared: .flt, reportedBytes: 2),
-            .invalidFlagValue(key: key, byte: 0x02),
-            .encodingFailed(key: key, type: .flt),
-            .encodingNotImplemented(type: .flt),
-            .notPermitted,
-            .notReadable(key),
-            .valueTooLargeForSingleRead(key: key, dataSize: 96),
-            .malformedKeyCode(0),
-            .invalidIndex(-1),
-            .truncatedReply(expected: 80, received: 40),
-            .integerByteOrderUndetectable(key: key),
-            .implausibleKeyCount(declared: 957_153_280),
-        ]
-        for error in cases {
-            #expect(!describeDumpError(error).isEmpty)
-        }
-    }
-
-    @Test("A non-SMCError still produces a description rather than crashing")
-    func nonSMCErrorFallsBackGracefully() {
-        struct OtherError: Error {}
-        #expect(!describeDumpError(OtherError()).isEmpty)
     }
 }
 
@@ -320,7 +254,7 @@ struct DumpEntryConstructionTests {
         let info = SMCKeyInfo(key: key, type: .flag, dataSize: 1, attributes: 80)
         let entry = DumpEntry.forFailedRead(
             index: 3, key: key, info: info,
-            description: describeDumpError(SMCError.notReadable(key)), generation: .modern)
+            description: SMCError.notReadable(key).readableDescription, generation: .modern)
 
         #expect(entry.type == "flag")
         #expect(entry.dataSize == 1)
@@ -341,7 +275,7 @@ struct DumpEntryConstructionTests {
         let info = SMCKeyInfo(key: key, type: .ui32, dataSize: 4, attributes: 148)
         let entry = DumpEntry.forFailedRead(
             index: 1714, key: key, info: info,
-            description: describeDumpError(SMCError.firmware(code: 0xC7)), generation: .modern)
+            description: SMCError.firmware(code: 0xC7).readableDescription, generation: .modern)
 
         #expect(entry.attributes == 148)
         #expect(entry.byteOrder == "little-endian")

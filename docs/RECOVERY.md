@@ -9,12 +9,14 @@ to the most. Follow it in order.
 > always a safe state, and every option below does exactly that. None of these steps can
 > damage your Mac, and none of them lose data.
 >
-> Also, with one distinction that matters: if the **app** stops — it crashed, you force-quit
-> it, it hung — its lease expires within about 30 seconds and the background helper returns
-> the fans to automatic on its own. If the **helper itself** stops, nothing is counting that
-> lease; what covers it is the helper restarting and handing back whatever it finds, or the
-> steps below. A stuck fan usually means Aeolus is still running and holding control — not
-> that it has abandoned the fans in a bad state.
+> Also, with one distinction that matters: if the **app** stops — it crashed, or you
+> force-quit it — its lease expires within about 30 seconds and the background helper
+> returns the fans to automatic on its own. **A frozen app has not stopped:** it keeps
+> the speed you set until you force-quit it (Option-Command-Esc). If the **helper
+> itself** stops, nothing is counting that lease; what covers it is the helper
+> restarting and handing back whatever it finds, or the steps below. A stuck fan usually
+> means Aeolus is still running and holding control — not that it has abandoned the fans
+> in a bad state.
 
 ---
 

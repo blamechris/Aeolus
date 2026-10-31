@@ -50,11 +50,14 @@ struct FanctlResetCorruptedStateTests {
         stages: [ScriptedControlPlane.Stage],
         lines: RecordedHelperLines
     ) -> HelperComposition<ScriptedControlPlane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: ScriptedControlPlane(fans: fans, stages: stages),
             snapshotProvider: fanProvider(fanCount: fans.count),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperLog(
                 subsystem: "dev.aeolus.AeolusHelperTests", category: "ResetCorrupted",
                 recording: { lines.append($0, $1) }),
@@ -169,7 +172,7 @@ struct FanctlResetCorruptedStateTests {
 
         let harness = ClientListenerHarness(authority: helper.authority)
         let emitted = try await FanctlResetTests.emitted(
-            over: harness, waiting: FanctlResetTests.unhurried)
+            over: harness, waiting: FanctlResetTests.unhurried, counting: .harness)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))
@@ -244,7 +247,7 @@ struct FanctlResetCorruptedStateTests {
 
         let harness = ClientListenerHarness(authority: helper.authority)
         let emitted = try await FanctlResetTests.emitted(
-            over: harness, waiting: FanctlResetTests.unhurried)
+            over: harness, waiting: FanctlResetTests.unhurried, counting: .harness)
 
         #expect(emitted.exitCode == .success, "fanctl reset --all exited \(emitted.exitCode)")
         #expect(emitted.message.contains("accepted the reset request"))

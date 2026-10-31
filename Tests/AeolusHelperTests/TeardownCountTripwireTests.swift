@@ -237,7 +237,7 @@ struct TeardownCountTripwireTests {
 
     /// `code` with whitespace and line breaks collapsed to single spaces, then the space around
     /// each `.` and before each `(` removed.
-    private static func normalised(_ code: String) -> String {
+    static func normalised(_ code: String) -> String {
         SeamScanner.collapsingWhitespace(code)
             .replacingOccurrences(of: #"\s*\.\s*"#, with: ".", options: .regularExpression)
             .replacingOccurrences(of: #"\s+\("#, with: "(", options: .regularExpression)
@@ -247,7 +247,7 @@ struct TeardownCountTripwireTests {
     /// scanner's `strippingAllComments`, which leaves a `//` inside a string literal alone. A
     /// trailing `// await` would otherwise read as a suspension, and once whitespace is collapsed
     /// a trailing comment would swallow the rest of the function.
-    private static func leaseCoreWithoutAnyComment() throws -> String {
+    static func leaseCoreWithoutAnyComment() throws -> String {
         SeamScanner.strippingAllComments(try TeardownSweepTripwireTests.leaseCoreSource())
     }
 
@@ -255,7 +255,7 @@ struct TeardownCountTripwireTests {
     /// when it is not declared there. `(` is part of the match, so `revokeLease` does not find
     /// `revokeLeases`; a generic parameter clause between the name and the `(` is allowed, so a
     /// verb that borrows a generic restorer (#440) is read too.
-    private static func function(
+    static func function(
         named name: String, in code: String
     ) -> (parameters: Substring, body: Substring)? {
         functions(named: name, in: code).first

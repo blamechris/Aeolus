@@ -50,7 +50,9 @@ struct HelperClientTeardownTests {
 
         await client.disconnect()
 
-        try await waitUntil("the helper was told its connection died") {
+        try await waitUntil(
+            "the helper was told its connection died", timeout: StallTolerantWait.deliveryBudget
+        ) {
             for call in await authority.calls {
                 if case .connectionDidInvalidate = call { return true }
             }
@@ -83,7 +85,7 @@ struct HelperClientTeardownTests {
     /// round is answering.
     ///
     /// **Mutation:** delete the `case XPCTransportCode.replyInvalid` arm from
-    /// `HelperClient.translate(_:on:)`. Run: red three times over — the error becomes
+    /// `HelperClient.translate(_:on:sentAfter:)`. Run: red three times over — the error becomes
     /// `helperUnreachable(code: 4101)`, `negotiated` is cleared, and the next call builds a
     /// second connection.
     @Test("A reply that could not be delivered costs the message, not the connection")
@@ -97,8 +99,9 @@ struct HelperClientTeardownTests {
 
         let undeliverable = NSError(
             domain: NSCocoaErrorDomain, code: XPCTransportCode.replyInvalid)
+        // Sent with no death notice counted: nothing has died. Only a 4097 reads it.
         let translated = await client.translate(
-            undeliverable, on: await client.currentGeneration)
+            undeliverable, on: await client.currentGeneration, sentAfter: 0)
 
         #expect(translated as? HelperClientError == .replyNotDelivered)
         #expect(
@@ -237,14 +240,21 @@ struct HelperClientTeardownTests {
     /// told `manualControlUnavailable` is proof the helper was reached, in a way that a
     /// second `snapshot` — parked in the same authority — could not be.
     ///
-    /// **Mutation:** in `HelperClient.translate(_:on:)`, delete the `case
+    /// **The first verb's deadline is the claim, and the second's is not** (#421). The test moves
+    /// the harness's clock to the first and asserts the figure it was given; the second verb's
+    /// deadline is counted on the same clock and nothing moves it again, so a runner stall cannot
+    /// run it out. It used to be 250 ms on the wall clock, and main went red on `bacad45` when the
+    /// second verb's came back `helperNeverAnswered(after: 0.25 seconds)` on a saturated runner.
+    ///
+    /// **Mutation:** in `HelperClient.translate(_:on:sentAfter:)`, delete the `case
     /// .helperNeverAnswered` arm that discards the connection. Run: red on this
-    /// expectation — `acquireLease` queues behind the parked snapshot and comes back as
-    /// `helperNeverAnswered` instead of the fault.
+    /// expectation — `acquireLease` queues behind the parked snapshot and never comes back, so the
+    /// wait for it fails, and the cancelled call is told `CancellationError` instead of the fault.
     @Test("A verb that timed out does not wedge the verbs after it")
     func aTimedOutVerbDoesNotWedgeTheVerbsAfterIt() async throws {
         let gate = AsyncSignal()
-        let harness = ClientListenerHarness(authority: GatedSnapshotAuthority(gate: gate))
+        let authority = GatedSnapshotAuthority(gate: gate)
+        let harness = ClientListenerHarness(authority: authority)
         let deadline = Duration.milliseconds(250)
         // The **gated** bound is the assertion, so it is short and explicit. Neither of the
         // other two is asserted by anything here — the `hello` only has to succeed, and the
@@ -258,16 +268,29 @@ struct HelperClientTeardownTests {
                 panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
+        let first = Task {
+            try await returnedOutcome(of: "the snapshot the helper never answers") {
+                try await client.snapshot()
+            }
+        }
+        try await waitUntil(
+            "the snapshot is parked at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
+            await authority.hasBeenAsked && harness.clock.sleepers == 1
+        }
+        harness.clock.advance(by: deadline)
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
-            try await client.snapshot()
+            _ = try await first.value.get()
         }
         #expect(await client.health == .unresponsive)
 
-        await #expect(
-            throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
-        ) {
-            _ = try await client.acquireLease(
+        let second = try await returnedOutcome(of: "acquireLease, behind a verb that timed out") {
+            try await client.acquireLease(
                 LeaseRequest(holderDescription: "test client", fanIndices: [0]))
+        }
+        #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)) {
+            _ = try second.get()
         }
         #expect(harness.sessions.count == 2, "the wedged connection was reused")
 
@@ -300,11 +323,26 @@ struct HelperClientTeardownTests {
                 panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
+        let snapshot = Task {
+            try await returnedOutcome(of: "the snapshot the helper never answers") {
+                try await client.snapshot()
+            }
+        }
+        try await waitUntil(
+            "the snapshot is parked at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
+            await authority.hasBeenAsked && harness.clock.sleepers == 1
+        }
+        harness.clock.advance(by: deadline)
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
-            try await client.snapshot()
+            _ = try await snapshot.value.get()
         }
 
-        try await client.restoreAllToAutomatic()
+        let restore = try await returnedOutcome(of: "the panic path, after a verb timed out") {
+            try await client.restoreAllToAutomatic()
+        }
+        #expect(throws: Never.self) { try restore.get() }
         #expect(await authority.hasRestored)
 
         await gate.signal()
@@ -319,39 +357,31 @@ struct HelperClientTeardownTests {
     /// message that is wrong. `OrderingExemptionTests` asserts the helper's half against
     /// `HelperXPCService` directly; this one asserts the pair.
     ///
-    /// **The panic bound is what kills the mutation, and it is still the product's.** #255 was
-    /// filed expecting the opposite — that raising `panicVerb` from `.seconds(5)` to the
-    /// shipping 10 s would leave the mutation below alive, because nothing else here measures
-    /// the panic path. Measured on `Mac16,5`, it does not: the queued panic path never answers
-    /// at all, so the deadline expires whatever its value is and the only thing 5 s bought was
-    /// a red five seconds sooner. What the short bound did buy was **attribution**, and that is
-    /// kept by moving the *gated* term instead: at `.seconds(30)` against the panic path's 10 s
-    /// the thrown `helperNeverAnswered(after: 10 seconds)` can only be the panic bound, where
-    /// two equal bounds would have made the reported figure ambiguous between them. So nothing
-    /// at this call site is now tighter than the product, and a contended runner cannot fail a
-    /// panic round trip the client got right.
+    /// **The claim is that the panic path comes back while a verb is parked, and nothing in it is
+    /// a deadline** (#421). The harness's deadlines are the product's, counted on a clock nothing
+    /// moves. #255 had raised the panic bound to the product's 10 s and kept the gated term at
+    /// 30 s so a red could be attributed to the panic bound; with the mutation below the panic
+    /// path never answers, and the red is now the wait for it, naming it, with the call cancelled.
     ///
     /// **Mutation:** in `HelperXPCService.restoreAllToAutomatic(reply:)`, replace `Task { … }`
     /// with `sequencer.enqueue { … }`. Run: red — the panic path queues behind the parked
-    /// snapshot and this client's `panicVerb` deadline expires.
+    /// snapshot, so the wait for it fails and `hasRestored` stays false.
     @Test("The panic path is dispatched while a gated verb is still parked")
     func thePanicPathIsNotBlockedByAParkedVerb() async throws {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
-        // The gated verb has to outlast the panic path rather than race it: it is parked for
-        // the whole test, and under the mutation it is the term that would otherwise expire
-        // first and make the reported bound ambiguous. See the note above.
-        let client = harness.client(
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(30),
-                panicVerb: HelperClientDeadlines.panicVerb,
-                handshakeVerb: HelperClientDeadlines.handshakeVerb))
+        let client = harness.client()
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
-        try await client.restoreAllToAutomatic()
+        let restore = try await returnedOutcome(of: "the panic path, behind a parked verb") {
+            try await client.restoreAllToAutomatic()
+        }
+        #expect(throws: Never.self) { try restore.get() }
         #expect(await authority.hasRestored)
 
         await gate.signal()
@@ -359,14 +389,19 @@ struct HelperClientTeardownTests {
         #expect(harness.sessions.count == 1, "the panic path opened a second connection")
     }
 
+}
+
+// The suite continues here: its struct body is at SwiftLint's 250-line limit.
+extension HelperClientTeardownTests {
+
     // MARK: - Cancellation is not a teardown
 
     /// A **cancelled** caller does not cost the connection.
     ///
     /// This is the trap the deadline remedy set. `PendingReply` gives up for two reasons —
     /// the deadline fired, or the caller's task was cancelled — and until the fallbacks were
-    /// separated both produced `helperNeverAnswered`, which `translate(_:on:)` now acts on by
-    /// invalidating the connection. So a SwiftUI view whose `.task` was cancelled by
+    /// separated both produced `helperNeverAnswered`, which `translate(_:on:sentAfter:)` now acts
+    /// on by invalidating the connection. So a SwiftUI view whose `.task` was cancelled by
     /// navigating away tore down a healthy, handshaken connection, and the helper released
     /// **every lease bound to it**: the fans handed back to automatic because a user changed
     /// tabs.
@@ -378,7 +413,7 @@ struct HelperClientTeardownTests {
     /// reader invariant that ADR exists to protect, broken by a cancellation.
     ///
     /// The distinction is drawn at the producer rather than guessed at afterwards: the
-    /// cancellation fallback is a `CancellationError`, and `translate(_:on:)` passes it
+    /// cancellation fallback is a `CancellationError`, and `translate(_:on:sentAfter:)` passes it
     /// through untouched. **Nothing about the deadline changes** — a helper that genuinely
     /// does not answer still costs its connection.
     ///
@@ -395,9 +430,7 @@ struct HelperClientTeardownTests {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
-        let client = harness.client(
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(30), panicVerb: .seconds(30), handshakeVerb: .seconds(30)))
+        let client = harness.client()
 
         // A completed round trip first, so the connection is unambiguously healthy before
         // anything is cancelled. `acquireLease`'s refusal is a round trip that *finished*;
@@ -411,17 +444,19 @@ struct HelperClientTeardownTests {
         #expect(await client.health == .handshaken)
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
         parked.cancel()
 
         // What the caller is *told* is a second assertion, and it needs its own mutation.
         // Separating the fallbacks is what saves the connection; passing the cancellation
-        // through `translate(_:on:)` untouched is what stops the client reporting
+        // through `translate(_:on:sentAfter:)` untouched is what stops the client reporting
         // `helperUnreachable` — a statement that the helper did not answer, about a helper
         // that was never given the chance to fail.
         //
         // **Mutation:** delete `if error is CancellationError { return error }` from
-        // `translate(_:on:)`. Run: red here alone — the teardown expectations below stay
+        // `translate(_:on:sentAfter:)`. Run: red here alone — the teardown expectations below stay
         // green, because a bridged `CancellationError` is not in `NSCocoaErrorDomain` and so
         // misses the arm that discards. That is exactly why this expectation exists: the
         // first version of this test asserted only the teardown and the mutation survived it.
@@ -476,16 +511,16 @@ struct HelperClientTeardownTests {
         )
         let authority = LeaseGrantingAuthority(lease: lease, snapshotGate: gate)
         let harness = ClientListenerHarness(authority: authority)
-        let client = harness.client(
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(30), panicVerb: .seconds(30), handshakeVerb: .seconds(30)))
+        let client = harness.client()
 
         let acquired = try await client.acquireLease(
             LeaseRequest(holderDescription: "test client", fanIndices: [0]))
         #expect(acquired == lease)
 
         let parked = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the authority") {
+        try await waitUntil(
+            "the snapshot reached the authority", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.hasBeenAskedForSnapshot
         }
         parked.cancel()

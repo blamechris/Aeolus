@@ -9,8 +9,8 @@ import Testing
 struct MenuBarReadoutTests {
 
     private static func fan(
-        index: Int = 0, actualValue: Double = 1712, mode: FanControlMode = .automatic,
-        isReclaimedBySystem: Bool = false
+        index: Int = 0, actualValue: Double = 1712,
+        control: FanControlSource = .notTracked(.noHelperInThisBuild)
     ) -> FanPollingReading {
         FanPollingReading(
             index: index,
@@ -18,8 +18,7 @@ struct MenuBarReadoutTests {
             actual: .value(key: "F\(index)Ac", actualValue),
             minimum: .value(key: "F\(index)Mn", 1200),
             maximum: .value(key: "F\(index)Mx", 5312),
-            mode: mode,
-            isReclaimedBySystem: isReclaimedBySystem)
+            control: control)
     }
 
     private static func sensor(
@@ -41,18 +40,19 @@ struct MenuBarReadoutTests {
         #expect(resolved.label == "Fan 0")
         #expect(resolved.kind == .rpm)
         #expect(resolved.reading.value == 1712)
-        #expect(resolved.fanControlState?.mode == .automatic)
-        #expect(resolved.fanControlState?.isReclaimedBySystem == false)
+        #expect(resolved.fanControl == .notTracked(.noHelperInThisBuild))
+        #expect(resolved.fanControl?.reportsReclamation == false)
     }
 
-    @Test("A .fan readout carries reclamation and mode honestly when a fan reports them")
+    @Test("A .fan readout carries the fan's control source as it is, reclamation included")
     func fanReadoutCarriesReclamationHonestly() {
         let readout = MenuBarReadout(key: "F0Ac", source: .fan)
-        let reclaimedFan = Self.fan(mode: .manualFixed, isReclaimedBySystem: true)
-        let resolved = readout.resolve(fans: [reclaimedFan], sensors: [])
+        let state = SnapshotTestSupport.fan(mode: .manualFixed, reclaimed: true)
+        let control = FanControlSource.reported(state, thermalEmergency: false)
+        let resolved = readout.resolve(fans: [Self.fan(control: control)], sensors: [])
 
-        #expect(resolved.fanControlState?.mode == .manualFixed)
-        #expect(resolved.fanControlState?.isReclaimedBySystem == true)
+        #expect(resolved.fanControl == control)
+        #expect(resolved.fanControl?.reportsReclamation == true)
     }
 
     @Test("A .sensor readout resolves to that sensor's sample, with its catalog label if any")
@@ -66,7 +66,7 @@ struct MenuBarReadoutTests {
         #expect(resolved.key == "Tp09")
         #expect(resolved.label == "CPU Proximity")
         #expect(resolved.reading.value == 44.2)
-        #expect(resolved.fanControlState == nil)
+        #expect(resolved.fanControl == nil)
     }
 
     @Test("An unlabelled sensor resolves fully, with a nil label rather than a degraded result")

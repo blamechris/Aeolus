@@ -43,9 +43,15 @@ struct FanctlResetTests {
     /// default of `FanctlAutoTests.run`, named by `FanctlStatusTests` and the corrupted-state
     /// suite): 10 s gated, 10 s panic, and the product's handshake. They are the values this
     /// constant had before #439 made it stall-tolerant (`7b19422^`), restored and not newly
-    /// chosen, so that a request nothing answers fails at 10 s, inside the one-minute limits
-    /// those suites carry (#443). `theOneMinuteSuitesDeadlinesFitInsideTheirTimeLimit` holds it
-    /// under them, and `noHarnessDefaultImposesATighterDeadlineThanTheProduct` above the product.
+    /// chosen, so that a request nothing answers fails inside the one-minute limits those suites
+    /// carry (#443). `noHarnessDefaultImposesATighterDeadlineThanTheProduct` holds it no tighter.
+    ///
+    /// **Counted on the harness's clock since #583.** These suites build their connection with
+    /// `counting: .harness`, so a runner stall cannot spend the 10 s. A request nothing answers
+    /// fails with the client's "did not confirm" when `ClockBackstop` moves the clock, 30 s of
+    /// scheduled waiting time in (50 s of wall time at the most). That the backstop is inside the
+    /// limit is `theOneMinuteSuitesBackstopFitsInsideTheirTimeLimit`'s; the 10 s is only what the
+    /// client reports, and does not decide when the request fails (#589).
     static let unhurried = HelperClientDeadlines(
         gatedVerb: .seconds(10),
         panicVerb: .seconds(10),
@@ -163,17 +169,16 @@ struct FanctlResetTests {
     /// Only the connection is substituted — where to look, who may answer, how long to wait.
     /// The verb, the teardown and the report all come from the function under test.
     ///
-    /// `deadlines` has no default, so no suite inherits one: the others name `unhurried`, and this
-    /// suite's answering tests go through `answered(over:)`.
+    /// `deadlines` and `clock` have no default, so no suite inherits either: the others name
+    /// `unhurried` on the harness's clock, and this suite's answering tests go through
+    /// `answered(over:)`, which names `stallTolerant` on the wall clock.
     static func emitted(
         over harness: ClientListenerHarness,
-        waiting deadlines: HelperClientDeadlines
+        waiting deadlines: HelperClientDeadlines,
+        counting clock: FanctlDeadlineClock
     ) async throws -> Emitted {
         var command = try resetAll()
-        command.helper = HelperConnection(
-            transport: .endpoint(harness.endpoint),
-            pinning: UnenforcedClientPinning(),
-            deadlines: deadlines)
+        command.helper = harness.fanctlConnection(waiting: deadlines, counting: clock)
         do {
             try await command.run()
             Issue.record("fanctl reset returned without an exit code")
@@ -185,12 +190,14 @@ struct FanctlResetTests {
         }
     }
 
-    /// `emitted(over:waiting:)` under `stallTolerant`: how this suite's answering tests run the
-    /// command. It leaves them no deadline argument to drop, and `emitted` has no default to fall
-    /// back on, so tidying a call to one without a deadline does not compile, where it used to
-    /// bring #439's CPU-starved-runner flake back with the suite still green.
+    /// `emitted(over:waiting:counting:)` under `stallTolerant`, on the wall clock: how this suite's
+    /// answering tests run the command. It leaves them no deadline argument to drop, and `emitted`
+    /// has no default to fall back on, so tidying a call to one without a deadline does not
+    /// compile, where it used to bring #439's CPU-starved-runner flake back with the suite still
+    /// green. They stay on the wall clock because the 55 s and 60 s of `stallTolerant` already
+    /// outlast any stall this suite has seen (#583 classifies them).
     private static func answered(over harness: ClientListenerHarness) async throws -> Emitted {
-        try await emitted(over: harness, waiting: stallTolerant)
+        try await emitted(over: harness, waiting: stallTolerant, counting: .wall)
     }
 
     // MARK: - The helper accepted
@@ -275,7 +282,10 @@ struct FanctlResetTests {
         // Bounded: the helper's invalidation handler hands off to a detached task, so the
         // event is ordered after `run()` returns but not synchronous with it. A `run()` that
         // never disconnected leaves this empty for the whole timeout.
-        try await waitUntil("the helper was told the connection went away") {
+        try await waitUntil(
+            "the helper was told the connection went away",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains {
                 if case .connectionDidInvalidate = $0 { return true }
                 return false
@@ -318,7 +328,8 @@ struct FanctlResetTests {
             waiting: HelperClientDeadlines(
                 gatedVerb: Self.observableDeadline,
                 panicVerb: Self.observableDeadline,
-                handshakeVerb: HelperClientDeadlines.handshakeVerb))
+                handshakeVerb: HelperClientDeadlines.handshakeVerb),
+            counting: .wall)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("did not confirm the reset request"))
@@ -341,18 +352,14 @@ struct FanctlResetTests {
             """)
 
         // The precondition, so this cannot pass against a client that sent nothing at all —
-        // which produces the same `helperNeverAnswered` and the same text.
-        //
-        // A **bounded wait**, not an instantaneous read: the client gives up on its own
-        // deadline, so at the moment it returns there is no guarantee the message has been
-        // delivered *and* dispatched. Read straight after the timeout this raced, and failed
-        // under a full-suite run. It waits on the authority's own flag rather than on the
-        // arrival record, because the arrival is appended strictly upstream of the dispatch
-        // that sets the flag — waiting on the earlier event leaves the later one raced, which
-        // is the same window made smaller. What it must not become is a wait that *supplies*
-        // the condition, and it does not: a client that never sent the message leaves this
-        // false for the whole timeout and the wait records the issue itself.
-        try await waitUntil("the panic path reached the helper") { await authority.hasBeenAsked }
+        // which produces the same `helperNeverAnswered` and the same text. A **bounded wait**,
+        // not an instantaneous read: the client gives up on its own deadline, so the message
+        // may not be delivered *and* dispatched when it returns, and read straight after this
+        // raced under a full-suite run. It waits on the authority's own flag, since the arrival
+        // is recorded upstream of the dispatch that sets it, and never *supplies* the condition.
+        try await waitUntil(
+            "the panic path reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAsked }
 
         // Released so the parked helper task finishes rather than outliving the test.
         await gate.signal()

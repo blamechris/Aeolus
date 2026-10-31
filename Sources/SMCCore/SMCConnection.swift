@@ -392,29 +392,100 @@ public actor SMCConnection {
     ///   sensor reading on a machine with an undetectable generation, not just the
     ///   display-grade integers the fail-safe is scoped to (`docs/ARCHITECTURE.md` and
     ///   ADR 0003 both promise the control path is unaffected). This method therefore
-    ///   falls back to `decodeKeyCountFallback(bytes:)` for `#KEY` specifically, in this
+    ///   falls back to `decodeKeyCountFallback(value:)` for `#KEY` specifically, in this
     ///   enumeration layer rather than through the resolver — ADR 0003's own designated
     ///   fallback shape. See that function's documentation for the justification and for
     ///   why `verifyKeyCountCrossCheck()` still catches a wrong guess.
     ///
-    /// The decoded value — resolved or guessed — is sanity-bounded by
-    /// `validatePlausibleKeyCount(_:)` before it is returned: every caller of this method —
-    /// `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both allocate and
-    /// iterate on this value — inherits the bound automatically rather than needing to
-    /// apply it themselves.
+    /// The decoded value — resolved or guessed — is converted to an `Int` without trapping and
+    /// sanity-bounded by `validatePlausibleKeyCount(_:)` before it is returned: every caller
+    /// of this method — `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both
+    /// allocate and iterate on this value — inherits the bound automatically rather than
+    /// needing to apply it themselves. Everything after the read lives in
+    /// `decodeKeyCount(value:)`; see that function for the conversion.
+    ///
+    /// The interface generation reaches the decode by one route: `read(_:)` turns it into the
+    /// value's `byteOrder`, which is `nil` exactly when the generation is unknown. Until #531
+    /// the generation was also passed in beside the value, a second answer to the same question
+    /// that no test could pin.
+    ///
+    /// Only part of that route is pinned. On a connection that is never opened,
+    /// `SMCConnectionKeyCountGenerationFlowTests` pins two things: `read(_:)` computes no byte
+    /// order without a generation, observed through its zero-length return, and this method
+    /// hands the declared type to `decodeKeyCount(value:)`. `SMCConnectionKeyCountDecodeTests`
+    /// and `SMCConnectionKeyCountFallbackTests` pin how the decode uses `byteOrder`.
+    ///
+    /// **Not pinned, on hardware or off it:** that `byteOrder` survives `read(_:)`'s non-empty
+    /// return, and this method's hand-off, when the generation is unknown. Both run only after
+    /// `READ_BYTES` returns bytes, which only IOKit does, and `Mac16,5`'s generation is always
+    /// known. Substituting an order at either point leaves every test green; see #539.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
+        return try Self.decodeKeyCount(value: value)
+    }
+
+    /// Everything `keyCount()` does after its one `READ_BYTES`: decode `#KEY`, convert it to an
+    /// `Int`, and sanity-bound it.
+    ///
+    /// A `#KEY` that declares a non-numeric type is refused first, as
+    /// `SMCError.nonNumericKeyCount`. No byte order would turn that type into a count, so
+    /// whether the generation is known does not matter to it.
+    ///
+    /// The firmware declares `#KEY`'s type, and `scalar()` decodes whatever it declares. A
+    /// `flt` can decode to NaN, ±infinity or a fraction, and a fixed-point type (`fpe2`,
+    /// `fp78`, `sp78`, `ioft`) to a fraction. A `ui64` or `si64` of 2^63 − 512 or more decodes
+    /// to 2^63 or above, because `Double` rounds it up. `Int(_: Double)` traps on
+    /// all of those except the fraction, which it silently truncates. A trap here would end
+    /// the root helper (through `ReadOnlyFanAuthority` and `readAll()`) and `fanctl` on a
+    /// firmware value they should refuse, before `validatePlausibleKeyCount(_:)` could see
+    /// it. `Int(exactly:)` returns `nil` for every one of them, and the value is refused as
+    /// `SMCError.unrepresentableKeyCount`.
+    ///
+    /// **A fractional count is refused, never rounded.** No key count is fractional, and
+    /// rounding or truncating one would make up a count nothing declared. `SMCFanEnumeration`
+    /// refuses a fractional `FNum` by the same rule; until #531 it rounded one.
+    ///
+    /// `scalar()` declines a numeric type only when the value's byte order was never resolved,
+    /// which `read(_:)` leaves `nil` exactly when the generation is unknown. Then
+    /// `decodeKeyCountFallback(value:)` gets its one chance, at a `ui32`, and anything it
+    /// refuses is `SMCError.integerByteOrderUndetectable`.
+    ///
+    /// Pure and synchronous, and deliberately not private, for the same reason as
+    /// `validatePlausibleKeyCount(_:)`. `SMCConnection` has no scripted transport, so this is
+    /// the seam through which a test can hand `#KEY` a value no real Mac has produced. See
+    /// `SMCConnectionKeyCountDecodeTests`.
+    static func decodeKeyCount(value: SMCValue) throws -> Int {
+        guard value.type.isNumeric else {
+            logger.fault(
+                """
+                #KEY declares \(value.type.fourCharString, privacy: .public), which is not a \
+                numeric type, so it has no key count to decode. See SMCError.nonNumericKeyCount.
+                """
+            )
+            throw SMCError.nonNumericKeyCount(type: value.type, bytes: value.bytes)
+        }
 
         let decoded: Int
         if let scalar = try value.scalar() {
-            decoded = Int(scalar)
-        } else if generation == nil, let fallback = Self.decodeKeyCountFallback(value: value) {
+            guard let whole = Int(exactly: scalar) else {
+                logger.fault(
+                    """
+                    #KEY (\(value.type.fourCharString, privacy: .public)) decoded to \
+                    \(scalar, privacy: .public), which is not a whole number within Int's \
+                    range. Refusing it rather than converting it, since the conversion would \
+                    trap or truncate. See SMCError.unrepresentableKeyCount.
+                    """
+                )
+                throw SMCError.unrepresentableKeyCount(type: value.type, bytes: value.bytes)
+            }
+            decoded = whole
+        } else if let fallback = decodeKeyCountFallback(value: value) {
             decoded = fallback
         } else {
             throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
         }
 
-        return try Self.validatePlausibleKeyCount(decoded)
+        return try validatePlausibleKeyCount(decoded)
     }
 
     /// Decodes `#KEY` directly as big-endian, bypassing
@@ -453,8 +524,18 @@ public actor SMCConnection {
     /// plain integers, which must keep declining per the fail-safe. Returns `nil` if either
     /// check fails, or if `bytes` is not the 4 bytes a `ui32` should be (defensive; not
     /// expected, since `SMCValue.scalar()` already validates width before this is reached).
+    ///
+    /// Also returns `nil` when `value.byteOrder` is set: the generation was known, so there
+    /// is nothing to guess, and a guess must never stand in for a resolved order. Inside
+    /// `decodeKeyCount(value:)` this is a second line, since `scalar()` decodes every `ui32`
+    /// whose order was resolved and this function is reached only when it was not. It is
+    /// here so this function keeps its own promise whoever calls it.
+    /// `SMCConnectionKeyCountFallbackTests` pins it directly.
     static func decodeKeyCountFallback(value: SMCValue) -> Int? {
-        guard value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4 else {
+        guard
+            value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4,
+            value.byteOrder == nil
+        else {
             return nil
         }
         let bytes = value.bytes
@@ -480,9 +561,7 @@ public actor SMCConnection {
         }
         readIndexAttempts += 1
         let reply = try call(.readIndex(index32))
-        guard let key = SMCKey(fourCharCode: reply.key) else {
-            throw SMCError.malformedKeyCode(reply.key)
-        }
+        let key = try Self.indexedKey(fromCode: reply.key)
         keyTableCache[index] = key
         return key
     }
@@ -619,25 +698,19 @@ public actor SMCConnection {
     ///   This method additionally probes index `declaredCount` itself and expects it to
     ///   fail; `KeyCountCrossCheck.keyExistsPastDeclaredCount` carries the result, and
     ///   `matches` folds it in, making the tripwire two-sided.
+    ///
+    /// - Note: A nonzero code `SMCKey` refuses counts as walked inside the bound, while a walk
+    ///   holds at most `KeyTableWalk.maximumWalkedRefusedCodes` of them, and as no key at the
+    ///   probe (#623). `KeyTableWalk.walkedCount` and `KeyTableEntry.isKeyPastDeclaredCount`
+    ///   say why; `walkKeyTable(declaredCount:keyAt:)` is the walk.
     public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
-        let declaredCount = try keyCount()
-
-        var walkedCount = 0
-        for index in 0..<declaredCount where (try? key(at: index)) != nil {
-            walkedCount += 1
-        }
-        let keyExistsPastDeclaredCount = (try? key(at: declaredCount)) != nil
-
-        let result = KeyCountCrossCheck(
-            declaredCount: declaredCount, walkedCount: walkedCount,
-            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
-        Self.logCrossCheck(result)
-        return result
+        try walkKeyTable().crossCheck
     }
 
     /// Logs loudly when a `KeyCountCrossCheck` disagrees; silent when it matches. Shared
     /// by `verifyKeyCountCrossCheck()` and `SMCSensorProvider.readAll()`, which computes
-    /// the same comparison from a walk it is already doing rather than repeating it.
+    /// the same comparison from a walk it is already doing rather than repeating it. A code
+    /// `SMCKey` refuses is logged on a line of its own; see `KeyTableWalk.finish(probe:)`.
     static func logCrossCheck(_ result: KeyCountCrossCheck) {
         guard !result.matches else { return }
         logger.fault(

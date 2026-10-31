@@ -591,11 +591,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
     ///
     /// ## Only a reclaimed mode is re-engaged
     ///
-    /// The mode write runs ADR 0014 D3's unlock through the driver, whose first step refuses a
-    /// fan whose raw mode is not `0` — so it is issued only for `.modeReclaimed`. A fan still in
-    /// manual whose target diverged is re-commanded alone, after the same entitlement the driver
-    /// asks before every step (#181), and the post-write ruling covers both. Both are asked of a
-    /// driver bound to the lease the record was registered under (#357).
+    /// The mode write runs D3's unlock through the driver, whose first step refuses a fan whose
+    /// raw mode the fold does not call automatic (`0` or `3`, ADR 0014's P1′ amendment) — so it is
+    /// issued only for `.modeReclaimed`. A fan still in manual whose target diverged is
+    /// re-commanded alone, after the same entitlement the driver asks before every step (#181), and
+    /// the post-write ruling covers both. Both ask a driver bound to the record's lease (#357).
     ///
     /// ## It writes the fan as it stands, not as it was judged
     ///

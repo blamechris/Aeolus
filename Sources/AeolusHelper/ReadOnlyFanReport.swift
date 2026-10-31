@@ -6,7 +6,7 @@ import SMCCore
 /// How one enumerated fan and one sensor kind are stated on the wire.
 ///
 /// **Pure functions in their own type, rather than an extension on the actor.** The rules
-/// here — what may be clamped, what may be claimed, what a firmware bit is allowed to be
+/// here — what may be clamped, what may be claimed, what a raw mode byte is allowed to be
 /// read as — are the part of the snapshot path worth reading on its own, and they need none
 /// of the authority's state to apply. Splitting them out is what keeps
 /// `ReadOnlyFanAuthority.swift` inside the 400-line limit without making the actor's
@@ -165,7 +165,7 @@ enum ReadOnlyFanReport {
     /// a client reading all three sees a fan held by *something else*, which is exactly the
     /// state `docs/SAFETY.md` § 6's startup reconciliation exists to clean up. `manualCurve`
     /// would be worse and would be an invention: a curve is Aeolus's own intent and `F<n>Md`
-    /// is one bit that has never heard of one.
+    /// is a mode byte that has never heard of one.
     ///
     /// ## Unreadable, and the gap this leaves
     ///
@@ -196,7 +196,10 @@ enum ReadOnlyFanReport {
     /// Note the asymmetry with `FirmwareFanMode(declaredByFirmware:)`, which resolves an
     /// *ambiguous value* toward manual. That is a different question: there, the machine
     /// answered and the answer is odd; here, the machine did not answer at all, and the cost
-    /// of guessing falls on a whole architecture rather than on one redundant restore.
+    /// of guessing falls on a whole architecture. A wrong manual there costs a restore write to a
+    /// fan that is already automatic, and a snapshot that blames another program until the fan
+    /// reads one of Apple's values again — which is why Apple's own values are a set
+    /// ([#633](https://github.com/blamechris/Aeolus/issues/633)).
     private static func controlMode(_ observed: FirmwareFanMode?) -> FanControlMode {
         switch observed {
         case .automatic: return .automatic

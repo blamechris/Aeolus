@@ -41,14 +41,27 @@ struct XPCHandshakeValidationTests {
         #expect(thrown?.wireCode == "versionMismatch")
     }
 
-    @Test("A hello with a hostile client description is refused")
-    func hostileClientDescriptionIsRefused() {
+    /// The description shares `holderDescription`'s guard (`validateDescription`), so U+2028 and
+    /// U+2029, which that guard let through until #483, are refused here too.
+    ///
+    /// **Mutation (#483):** in `validateDescription`, make the guard's predicate
+    /// `{ CharacterSet.controlCharacters.contains($0) }` again. Run: red on the two separator
+    /// rows; the NUL row stays green.
+    @Test(
+        "A hello with a hostile client description is refused",
+        arguments: [
+            "Aeolus.app\u{0}", "Aeolus.app\u{2028}root: granted", "Aeolus.app\u{2029}root: granted",
+        ])
+    func hostileClientDescriptionIsRefused(_ description: String) {
         let request = HelloRequest(
             clientProtocolVersion: AeolusXPCVersion.current,
-            clientDescription: "Aeolus.app\u{0}"
+            clientDescription: description
         )
         #expect(
-            refusedParameter({ try AeolusXPCValidation.validate(request) }) == "clientDescription")
+            fault(from: { try AeolusXPCValidation.validate(request) })
+                == .invalidParameter(
+                    name: "clientDescription",
+                    detail: XPCDescriptionCharacterTests.characterRefusal))
     }
 
     /// The description is judged before the version. A client that is both out of range

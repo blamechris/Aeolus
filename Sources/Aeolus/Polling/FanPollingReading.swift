@@ -10,20 +10,21 @@ import Foundation
 /// `FanPoller` wraps for presentation. `displayName` ("Fan 0") is synthesised by this
 /// layer for a human to read; it is never presented as something the firmware reported,
 /// and `actual.key`/`minimum.key`/`maximum.key` are always available alongside it so a
-/// view can show the raw key too.
+/// view can show the raw key too. A fan from a helper snapshot gets the same three keys,
+/// from the same `SMCFanEnumeration` functions, because the snapshot does not carry them.
 ///
-/// ## The honesty flags, hardcoded safe
+/// ## Observations and control facts, kept apart
 ///
-/// `mode` and `isReclaimedBySystem` mirror `FanKit.FanState`'s identical fields exactly,
-/// on purpose: under the `Monitor` configuration there is no helper, no write path, and
-/// therefore no lease that could ever be reclaimed from — E2 (XPC client), E3/E4 (the
-/// write path), and E5 (the safety supervisor that owns reclamation) are all unstarted.
-/// Fan state here is *definitionally* always automatic. These fields are still modelled,
-/// not omitted, per `CLAUDE.md` rule 6 ("never claim control you do not have"): when a
-/// real `AeolusXPC.SystemSnapshot` arrives over a working helper connection, the
-/// rendering code built against this type swaps its data source for one that reports a
-/// real answer, instead of needing every view that renders a fan to be redesigned to grow
-/// a field it never carried before.
+/// `actual`/`minimum`/`maximum` are observations, and either source may supply them.
+/// `control` is every control claim at once, and it names its source: the helper's own
+/// `FanState`, from a snapshot within its freshness bound, or `.notTracked` and why.
+///
+/// This type used to carry `mode` and `isReclaimedBySystem` as fields, hardcoded to
+/// `.automatic` and `false` on the direct-read path, which ADR 0006 records as a latent
+/// rule-6 defect: a claim about the hardware that a stray helper or another vendor's tool
+/// could falsify, made by a process that had asked nobody. There is no default for
+/// `control` now, so no path can reach a fan row without saying where its control facts came
+/// from.
 public struct FanPollingReading: Sendable, Hashable, Identifiable {
     public let index: Int
     public let displayName: String
@@ -31,13 +32,8 @@ public struct FanPollingReading: Sendable, Hashable, Identifiable {
     public let minimum: KeyedReading
     public let maximum: KeyedReading
 
-    /// What is currently driving this fan. Always `.automatic` in this build — see this
-    /// type's documentation.
-    public let mode: FanControlMode
-    /// Whether the system has taken this fan back from manual control. Always `false` in
-    /// this build: nothing here has ever asked for manual control, so nothing can have
-    /// been reclaimed from it.
-    public let isReclaimedBySystem: Bool
+    /// Where this fan's control facts come from — see this type's documentation.
+    public let control: FanControlSource
 
     public var id: Int { index }
 
@@ -47,15 +43,21 @@ public struct FanPollingReading: Sendable, Hashable, Identifiable {
         actual: KeyedReading,
         minimum: KeyedReading,
         maximum: KeyedReading,
-        mode: FanControlMode = .automatic,
-        isReclaimedBySystem: Bool = false
+        control: FanControlSource
     ) {
         self.index = index
         self.displayName = displayName
         self.actual = actual
         self.minimum = minimum
         self.maximum = maximum
-        self.mode = mode
-        self.isReclaimedBySystem = isReclaimedBySystem
+        self.control = control
+    }
+
+    /// The same observations with every control claim withdrawn: what a fan from an earlier
+    /// helper snapshot becomes once that snapshot may no longer be rendered.
+    func untracked(_ why: ControlNotTracked) -> FanPollingReading {
+        FanPollingReading(
+            index: index, displayName: displayName, actual: actual, minimum: minimum,
+            maximum: maximum, control: .notTracked(why))
     }
 }

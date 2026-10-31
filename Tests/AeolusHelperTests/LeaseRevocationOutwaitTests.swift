@@ -52,7 +52,7 @@ struct LeaseRevocationOutwaitTests {
         }
 
         #expect(
-            await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .waiting,
+            try await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .waiting,
             """
             the revocation answered while the sweep that ended its lease was still handing fan 0 \
             back, so the sweep's release notice can reach § 5 after the terminal action returns
@@ -90,7 +90,7 @@ struct LeaseRevocationOutwaitTests {
         }
 
         #expect(
-            await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .finished,
+            try await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .finished,
             "a revocation parked on fan 0 with no handback of fan 0 under way")
         #expect(try await finishedBeforeCeiling("the revocation", revocation) == .gone)
         #expect(await restorer.restores.count == 1, "the revocation of an ended lease restored")
@@ -121,7 +121,7 @@ struct LeaseRevocationOutwaitTests {
         }
 
         #expect(
-            await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .finished,
+            try await revocationProgress(of: revocation, outwaiting: 0, in: authority) == .finished,
             "a revocation about fan 0 waited on fan 1's handback")
         #expect(try await finishedBeforeCeiling("the revocation", revocation) == .gone)
         await parking.release.signal()

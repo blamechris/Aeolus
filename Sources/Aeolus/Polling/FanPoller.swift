@@ -19,7 +19,14 @@ enum FanPoller {
     /// contract. Only a failure that makes enumeration itself impossible — no SMC, or
     /// `FNum` unreadable/implausible — throws, reclassified into `PollingError` so this
     /// module's callers keep speaking one error type.
-    static func poll(provider: some SensorProvider) async throws -> [FanPollingReading] {
+    ///
+    /// Every fan comes back `.notTracked(why)`. A direct read is an observation of RPM and
+    /// nothing else: it reads no mode register and no lease, so it has no control claim to
+    /// make, and `why` is the caller's account of why the helper is not making one instead.
+    /// Required rather than defaulted, so a caller cannot reach a fan row without saying.
+    static func poll(
+        provider: some SensorProvider, untracked why: ControlNotTracked
+    ) async throws -> [FanPollingReading] {
         let enumeration: SMCFanEnumeration
         do {
             enumeration = try await SMCFanEnumeration.enumerate(provider: provider)
@@ -33,7 +40,8 @@ enum FanPoller {
                 displayName: "Fan \(fan.index)",
                 actual: KeyedReading(key: fan.actual.key, outcome: fan.actual.result),
                 minimum: KeyedReading(key: fan.minimum.key, outcome: fan.minimum.result),
-                maximum: KeyedReading(key: fan.maximum.key, outcome: fan.maximum.result)
+                maximum: KeyedReading(key: fan.maximum.key, outcome: fan.maximum.result),
+                control: .notTracked(why)
             )
         }
     }

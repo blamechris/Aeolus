@@ -53,7 +53,8 @@ struct HelperClientSequencedDeadlineTests {
         let client = parked.client
         let snapshot = Task { try await client.snapshot() }
         try await waitUntil(
-            "the snapshot reached the helper behind the apply", timeout: .seconds(30)
+            "the snapshot reached the helper behind the apply",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             snapshotsArrived(at: parked.harness) == 2
         }
@@ -74,7 +75,8 @@ struct HelperClientSequencedDeadlineTests {
             running == 1, "\(running) deadlines are running behind a held apply",
             sourceLocation: sourceLocation)
         try await waitUntil(
-            "every running deadline has parked on the clock", timeout: .seconds(30),
+            "every running deadline has parked on the clock",
+            timeout: StallTolerantWait.deliveryBudget,
             { await parked.client.deadlinesRunning == parked.clock.sleepers },
             sourceLocation: sourceLocation)
     }
@@ -139,7 +141,7 @@ struct HelperClientSequencedDeadlineTests {
     /// snapshot was waiting for its turn on that connection. It must not be left waiting, and it
     /// must not be told the helper is not installed, which is what the client's own `invalidate()`
     /// says when it reaches a parked message as 4099. Health stays `.unresponsive`: the snapshot's
-    /// answer passes through `translate(_:on:)` as itself and is not a second timeout.
+    /// answer passes through `translate(_:on:sentAfter:)` as itself and is not a second timeout.
     ///
     /// **Mutation:** in `HelperClient.discardConnection`, delete
     /// `inFlight.abandonAll(on: generation, answering: verdict)`, which leaves the parked snapshot
@@ -163,7 +165,9 @@ struct HelperClientSequencedDeadlineTests {
 
         #expect(await parked.client.health == .unresponsive)
         #expect(parked.clock.sleepers == 0, "a deadline outlived the connection it was on")
-        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+        try await waitUntil(
+            "the helper saw the connection go", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await parked.authority.invalidatedConnections.count == 1
         }
 
@@ -197,7 +201,8 @@ struct HelperClientSequencedDeadlineTests {
         let client = parked.client
         let renewal = Task { try await client.renewLease(id: Self.lease.id) }
         try await waitUntil(
-            "the renewal is held beside the apply, its deadline running", timeout: .seconds(30)
+            "the renewal is held beside the apply, its deadline running",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await parked.authority.hasBeenAskedToRenew && parked.clock.sleepers == 2
         }
@@ -213,7 +218,9 @@ struct HelperClientSequencedDeadlineTests {
         }
         Self.expectToldTheClientGaveUp(error, "the apply the discard ended")
         #expect(await parked.client.health == .unresponsive)
-        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+        try await waitUntil(
+            "the helper saw the connection go", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await parked.authority.invalidatedConnections.count == 1
         }
 
@@ -242,7 +249,7 @@ struct HelperClientSequencedDeadlineTests {
         let renewal = Task { try await client.renewLease(id: Self.lease.id) }
         try await waitUntil(
             "the renewal is held beside the apply, its own deadline running from its send",
-            timeout: .seconds(30)
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             await parked.authority.hasBeenAskedToRenew && parked.clock.sleepers == 2
         }
@@ -317,8 +324,12 @@ struct HelperClientSequencedDeadlineTests {
         let snapshot = try await Self.snapshotBehind(parked)
 
         parked.clock.advance(by: Self.applyDeadline)
+        // 30 s though this waits on a reaction to the advance, which `deliveryBudget` is not for.
+        // Nothing here can run a late deadline out for it: `Parked`'s clock is one no backstop
+        // moves. The snapshot's answer below is what catches one (a doubled `apply` deadline).
         try await waitUntil(
-            "the snapshot's turn came when the apply's deadline ran out", timeout: .seconds(30)
+            "the snapshot's turn came when the apply's deadline ran out",
+            timeout: StallTolerantWait.deliveryBudget
         ) {
             parked.clock.sleepers == 1
         }

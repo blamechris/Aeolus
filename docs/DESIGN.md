@@ -154,8 +154,8 @@ Manual fan control is a **lease**, not a setting.
 
 - A client requests manual control with a TTL (default 30 s).
 - The client renews on a heartbeat (default every 10 s).
-- If the lease expires — client crashed, was `kill -9`'d, GUI hung, user logged out — the
-  helper **restores all fans to automatic and clears `Ftst`.**
+- If the lease expires — client crashed, was `kill -9`'d or force-quit, user logged out —
+  the helper **restores the fans it covered to automatic.**
 - A user-facing "persist across app quit" mode still uses a lease; the helper itself renews
   it, and the helper's own launchd job is the thing keeping it alive.
 

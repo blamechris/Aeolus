@@ -74,9 +74,12 @@ struct UnconfirmedHandbackTests {
         let observer = ScriptedPowerObserver()
         let witness = AcknowledgementWitness()
         let log = RecordedLog()
+        // Moved past the budget only once the restore is wedged: `SystemPowerTests.expireBudget`'s
+        // reason.
+        let clock = ManualClock()
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), fanCount: 2,
-            safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
+            fanCount: 2, safetyLog: log)
         observer.whenAcknowledging { [leases = helper.leases] in
             await witness.record(leaseCount: leases.leaseCount)
         }
@@ -89,7 +92,8 @@ struct UnconfirmedHandbackTests {
         #expect(await helper.leases.leaseCount == 1)
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
-        await yieldUntil("fan 0's restore to park") { await plane.restoreScopes == [.fan(0)] }
+        try await SystemPowerTests.expireBudget(
+            .milliseconds(50), on: clock, once: { await plane.restoreScopes == [.fan(0)] })
         try await observer.didAcknowledge.wait()
 
         #expect(
@@ -150,8 +154,13 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. A 300 ms stall at the top of the double's restore leaves it green, but it is not
+        // stall-proof: a stall over 50 ms before the lease core records the fan mid-handback lets
+        // the budget answer first (#542).
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()
@@ -210,8 +219,13 @@ struct UnconfirmedHandbackTests {
         let plane = WedgedThenRefusingRestorePlane(SystemPowerTests.machine())
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. A 300 ms stall at the top of the double's restore leaves it green, but it is not
+        // stall-proof: a stall over 50 ms before the lease core records the fan mid-handback lets
+        // the budget answer first (#542).
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), safetyLog: log)
 
         await helper.bindSafetyRegistries()
         helper.observeSystemPower()

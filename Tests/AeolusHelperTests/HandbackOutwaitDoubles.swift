@@ -5,9 +5,10 @@ import Testing
 
 // The seams #368's tests park a teardown and a revocation on. Every park is a continuation —
 // an `AsyncSignal`, or the lease core's own waiter — so no thread is blocked, and every wait the
-// fix could turn into a hang is bounded by a wall clock that only a failure reaches.
+// fix could turn into a hang is bounded by a budget that only a failure reaches.
 
-/// How long a test waits for something the fix might park before it calls it a hang.
+/// How long a test waits for something the fix might park before it calls it a hang: scheduled
+/// waiting time, not wall time ([#547](https://github.com/blamechris/Aeolus/issues/547)).
 ///
 /// **Failure-only, by margin, not by construction.** Nothing but this ceiling bounds the 30
 /// settling waits (revocations, sweeps, § 5 cycles). Every return of `revocationProgress` and
@@ -29,8 +30,32 @@ import Testing
 /// found.
 ///
 /// So this leaves 2.9 times the worst hold seen, and lowering it below about 3.4 s would have
-/// expired a passing test's wait. It does not cover a stall longer than itself: this is wall-clock
-/// time, and a CI runner was starved for about 30 s in #439.
+/// expired a passing test's wait.
+///
+/// **A stall is not spent from it.** Both outwaits below, `finishedBeforeCeiling` and
+/// `revocationProgress`, are `waitUntil` over this budget, so a poll that comes back more than
+/// 250 ms late has the difference added to its deadline (`StallTolerantWait`), up to that wait's
+/// 50 s cap. They used to measure it on the wall clock, and a runner that stopped the test
+/// process for longer than this (about 30 s in #439; tests that take milliseconds took 30 to 44 s
+/// in the two runs #547 is about) spent every wait in flight at once, so a double that had done
+/// nothing wrong read as one that had lost its ceiling.
+///
+/// **A slow or stuck hold is not what is compensated; a late poll is.** The condition is a flag
+/// read and the 1 ms sleep is asked for again each time it returns, so a hold that is merely slow
+/// or stuck adds nothing, and what a wait that really is stuck reports depends on the pool it ran
+/// on. A test of `finishedBeforeCeiling` on work that never finishes, on a real clock, was removed
+/// in #558 because its 10 s wait was CI's slowest test: 51.985 s of a 60 s limit, in the debug step
+/// of CI run 40828896951. The wait gave up at "10.0 s of waiting (plus N s of runner stall
+/// compensated)", and N was 7.8 in that run's debug step and 4.0 in its release step, both read
+/// from the run's log. Measured during #558's review, and not kept: N was 0.0 in all 20 runs of
+/// the four outwait and park suites alone (10 debug, 10 release), and in runs of the whole
+/// target with nothing stopped it was 2.3 locally in debug and 0.5 locally in release. The
+/// nonzero figures are late polls. A pool busy with other tests is the likely cause, but that is
+/// an inference: no run measured what the pool was doing. So a stuck wait runs past this ceiling
+/// by what made its polls late, to the 50 s cap at most. What compensation cannot tell from a stall
+/// is an iteration the process did not run for another reason: the OS descheduling it, or a
+/// cooperative pool with every thread blocked. Those are compensated as well, and the issue says
+/// how much.
 ///
 /// It exists so a mutant that never resumes a waiter fails red, naming what never finished,
 /// instead of wedging the run behind a continuation nothing resumes — `CeilingedRefusal`'s
@@ -90,52 +115,95 @@ enum RevocationProgress: Sendable, Equatable {
 /// revocation stays parked until the handback it outwaits is let go — so this waits for a state,
 /// not for a number of yields, and whichever it finds is the answer
 /// (`SnapshotAvailabilityDoubles.parkedHandback`'s shape). `nil`, with an issue recorded, when
-/// neither arrives within `outwaitCeiling`.
+/// neither arrives within `outwaitCeiling` of scheduled waiting time, which a runner stall does
+/// not spend (#547).
+///
+/// `clock` and `note` are `waitUntil`'s. There is one function and not a shipping forward over an
+/// injectable overload, so a test that drives it with a clock that can come back late runs the
+/// body every call site runs (#551).
 func revocationProgress(
     of work: ObservableWork<some Sendable>,
     outwaiting fan: Int,
     in leases: LeaseAuthority,
+    clock: some WaitClock = SystemWaitClock(),
+    note: (String) -> Void = StallTolerantWait.writeToStandardError,
     sourceLocation: SourceLocation = #_sourceLocation
-) async -> RevocationProgress? {
-    let deadline = ContinuousClock.now + outwaitCeiling
-    while ContinuousClock.now < deadline {
-        if await work.isFinished.isSet { return .finished }
-        if await leases.fansARevocationAwaits.contains(fan) { return .waiting }
-        await Task.yield()
+) async throws -> RevocationProgress? {
+    // The poll's last evaluation is what `waitUntil` acted on, so `progress` is `nil` exactly
+    // when it recorded the timeout.
+    var progress: RevocationProgress?
+    try await outwait(
+        (event: "the revocation to finish or park on fan \(fan)", ifItTimesOut: "it did neither"),
+        clock: clock, note: note, sourceLocation: sourceLocation
+    ) {
+        if await work.isFinished.isSet {
+            progress = .finished
+        } else if await leases.fansARevocationAwaits.contains(fan) {
+            progress = .waiting
+        } else {
+            progress = nil
+        }
+        return progress != nil
     }
-    Issue.record(
-        "the revocation neither finished nor parked on fan \(fan) within \(outwaitCeiling)",
-        sourceLocation: sourceLocation)
-    return nil
+    return progress
 }
 
-/// Waits for `work` to finish within `outwaitCeiling` of wall-clock time and returns its value,
-/// or records an issue and returns `nil` **without joining it**.
+/// Waits for `work` to finish within `outwaitCeiling` of scheduled waiting time and returns its
+/// value, or records an issue and returns `nil` **without joining it**.
 ///
-/// `finished(_:_:within:)`'s contract with a wall clock in place of a yield count: a revocation a
+/// `finished(_:_:within:)`'s contract with a clock in place of a yield count: a revocation a
 /// mutant never resumes cannot be cancelled — the outwait installs no handler, by design — so
 /// joining it would hang the run, and a yield count is a statement about the scheduler rather
-/// than about time.
+/// than about time. A runner that stops the test process for longer than `outwaitCeiling` does
+/// not turn a double that is about to return into one that never did (#547). The poll only
+/// sleeps, so a `.timeLimit` that expires first cancels it; joining the task is the one
+/// uncancellable step, and it is reached only for work that has finished.
+///
+/// `clock` and `note` are `waitUntil`'s. There is one function and not a shipping forward over an
+/// injectable overload, so a test that drives it with a clock that can come back late runs the
+/// body every call site runs (#551).
 @discardableResult
 func finishedBeforeCeiling<Value: Sendable>(
     _ description: String,
     _ work: ObservableWork<Value>,
+    clock: some WaitClock = SystemWaitClock(),
+    note: (String) -> Void = StallTolerantWait.writeToStandardError,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws -> Value? {
-    let deadline = ContinuousClock.now + outwaitCeiling
-    while await !work.isFinished.isSet, ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(1))
+    // `waitUntil` records the timeout, and the last look at the flag is what it decided on, so
+    // the work is joined exactly when no issue was recorded: a flag that flips between the
+    // final look and a second one here would otherwise return a value beside a failure.
+    var done = false
+    try await outwait(
+        (
+            event: "\(description) to finish",
+            ifItTimesOut: "something it awaits was never resumed"
+        ), clock: clock, note: note, sourceLocation: sourceLocation
+    ) {
+        done = await work.isFinished.isSet
+        return done
     }
-    guard await work.isFinished.isSet else {
-        Issue.record(
-            """
-            \(description) did not finish within \(outwaitCeiling): something it awaits was \
-            never resumed
-            """,
-            sourceLocation: sourceLocation)
-        return nil
-    }
+    guard done else { return nil }
     return try await work.task.value
+}
+
+/// The one budget both outwaits above are held to: `outwaitCeiling` of waiting, polled each
+/// millisecond, with `waitUntil`'s stall compensation and its cap.
+///
+/// `waiting.event` is what is waited for, and is all a passing wait's note says.
+/// `waiting.ifItTimesOut` is why a timeout is a failure, and goes into the issue a timeout records
+/// and nowhere else.
+private func outwait(
+    _ waiting: (event: String, ifItTimesOut: String),
+    clock: some WaitClock,
+    note: (String) -> Void,
+    sourceLocation: SourceLocation,
+    _ condition: () async -> Bool
+) async throws {
+    try await waitUntil(
+        waiting.event, timeout: outwaitCeiling, interval: .milliseconds(1), clock: clock,
+        note: note, ifItTimesOut: waiting.ifItTimesOut, condition,
+        sourceLocation: sourceLocation)
 }
 
 /// § 5's cycles up to the terminal action, under `outwaitCeiling`.

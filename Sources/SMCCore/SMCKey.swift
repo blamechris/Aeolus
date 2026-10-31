@@ -6,13 +6,44 @@ import Foundation
 /// from a hard-coded list. A hard-coded list would silently omit sensors on any Mac we
 /// have not personally seen — and we have seen very few. The named constants below are
 /// conveniences for keys the control path needs by name, not an inventory.
+///
+/// ## What a key is
+///
+/// Exactly four bytes, each printable ASCII, U+0020 to U+007E (#620). A key is a 32-bit code,
+/// so its length is counted in bytes, and counted in `Character`s it is not bounded:
+/// `"\r\n"` is one `Character` of two bytes, and `"ab\r\nc"` was four characters, five bytes
+/// and, to the old check, a key whose `fourCharCode` dropped its first byte off the top. The
+/// alphabet excludes C0 controls and DEL as well as everything past ASCII, because a key is
+/// later logged and shown beside a reading. Space is in it, because `FS! ` has one. All 3,514
+/// keys `Mac16,5` enumerates (macOS 27.2) are inside it, and the only characters among them
+/// that are not letters or digits are `!`, `#`, `-` and `?`.
+///
+/// The helper holds a client's sensor keys to the same alphabet in
+/// `AeolusXPCValidation.validateSensorKey`. That is a second definition, not a call into this
+/// one: `AeolusXPC` and `SMCCore` do not depend on each other, and joining them is a change to
+/// the target graph. `SMCKeyBoundaryAgreementTests` pins the two equal.
 public struct SMCKey: Sendable, Hashable, CustomStringConvertible {
     public let rawValue: String
 
-    /// Creates a key from a four-character string. Returns `nil` if the string is not
-    /// exactly four ASCII characters.
+    /// The number of bytes in a key.
+    static let byteCount = 4
+
+    /// The bytes a key may be made of: printable ASCII, space to tilde.
+    ///
+    /// The one place the alphabet is written in this module; both initialisers read it, so
+    /// the string and the code cannot be held to different rules.
+    static let permittedBytes: ClosedRange<UInt8> = 0x20...0x7E
+
+    /// Creates a key from a four-byte string. Returns `nil` unless the string is exactly four
+    /// UTF-8 bytes, each in `permittedBytes`.
+    ///
+    /// Bytes, never characters: see the type's documentation. A string whose bytes are all in
+    /// `permittedBytes` is one scalar to the byte, so it is also four `Character`s.
     public init?(_ rawValue: String) {
-        guard rawValue.count == 4, rawValue.allSatisfy(\.isASCII) else { return nil }
+        guard
+            rawValue.utf8.count == Self.byteCount,
+            rawValue.utf8.allSatisfy(Self.permittedBytes.contains)
+        else { return nil }
         self.rawValue = rawValue
     }
 
@@ -24,9 +55,11 @@ public struct SMCKey: Sendable, Hashable, CustomStringConvertible {
     }
 
     /// Builds a key from the four-character code IOKit hands back, e.g. from
-    /// `READ_INDEX` during enumeration. Returns `nil` if the code does not decode to
-    /// four ASCII characters — index-table entries are firmware data, not something
+    /// `READ_INDEX` during enumeration. Returns `nil` if any of the code's four bytes is
+    /// outside `permittedBytes` — index-table entries are firmware data, not something
     /// this project controls, so this is not force-unwrapped anywhere it is used.
+    ///
+    /// Every key this accepts round-trips: its `fourCharCode` is `code`.
     public init?(fourCharCode code: FourCharCode) {
         let bytes = [
             UInt8((code >> 24) & 0xFF),
@@ -34,7 +67,8 @@ public struct SMCKey: Sendable, Hashable, CustomStringConvertible {
             UInt8((code >> 8) & 0xFF),
             UInt8(code & 0xFF),
         ]
-        self.init(String(decoding: bytes, as: UTF8.self))
+        guard bytes.allSatisfy(Self.permittedBytes.contains) else { return nil }
+        self.rawValue = String(decoding: bytes, as: UTF8.self)
     }
 }
 

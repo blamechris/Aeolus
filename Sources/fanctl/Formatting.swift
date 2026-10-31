@@ -32,4 +32,19 @@ enum Formatting {
         }
         return String(format: "%.2f", value)
     }
+
+    /// Renders `value` exactly: like `number(_:)` for a non-finite value or one that is a
+    /// whole `Int`, and otherwise as Swift's shortest description that reads back as the same
+    /// `Double`, never rounded to two places.
+    ///
+    /// For a value that was refused *because* it is not whole, such as a fractional `FNum`.
+    /// `number(_:)` would print 1.9999999 as "2.00" and 0.001 as "0.00". Both read as whole
+    /// numbers inside the trusted range, which hides the one fact the message reports.
+    /// Never traps, for the same reason as `number(_:)`.
+    static func exactNumber(_ value: Double) -> String {
+        guard value.isFinite, Int(exactly: value) == nil else {
+            return number(value)
+        }
+        return "\(value)"
+    }
 }

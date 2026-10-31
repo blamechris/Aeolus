@@ -49,7 +49,7 @@ struct AbandonedHandbackRecoveryTests {
     ///
     /// The setup asserts the state it claims to have reached. Without that, a change that
     /// stopped recording the register at all would leave every test below green on an empty set.
-    private static func abandoned(
+    static func abandoned(
         leasing: [Int], refusing: Set<Int>,
         foreignControl: any ForeignManualControlSensing = LeaseFixture.automaticFans()
     ) async throws -> (leases: LeaseAuthority, firmware: RecoverableRefusal) {
@@ -74,7 +74,7 @@ struct AbandonedHandbackRecoveryTests {
     }
 
     /// § 7's two lease-core calls, in `SupervisedFanAuthority.restoreAllToAutomatic`'s order.
-    private static func panicPass(_ leases: LeaseAuthority) async {
+    static func panicPass(_ leases: LeaseAuthority) async {
         await leases.releaseEveryLease()
         await leases.confirmAcceptedHandbacks()
     }

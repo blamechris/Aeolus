@@ -23,7 +23,8 @@ struct PollingEngineTests {
         let provider = FakeSensorProvider(isAvailable: false)
         await #expect(throws: PollingError.self) {
             _ = try await PollingEngine.poll(
-                provider: provider, labelSource: NoSensorLabels(), discovery: [])
+                provider: provider, labelSource: NoSensorLabels(), discovery: [],
+                untracked: .noHelperInThisBuild)
         }
         let readAllCalls = await provider.readAllCallCount
         let readKeysCalls = await provider.readKeysCalls
@@ -36,13 +37,16 @@ struct PollingEngineTests {
         let provider = Self.provider()
 
         let first = try await PollingEngine.poll(
-            provider: provider, labelSource: NoSensorLabels(), discovery: [])
+            provider: provider, labelSource: NoSensorLabels(), discovery: [],
+            untracked: .noHelperInThisBuild)
         #expect(!first.discovery.isEmpty)
 
         _ = try await PollingEngine.poll(
-            provider: provider, labelSource: NoSensorLabels(), discovery: first.discovery)
+            provider: provider, labelSource: NoSensorLabels(), discovery: first.discovery,
+            untracked: .noHelperInThisBuild)
         _ = try await PollingEngine.poll(
-            provider: provider, labelSource: NoSensorLabels(), discovery: first.discovery)
+            provider: provider, labelSource: NoSensorLabels(), discovery: first.discovery,
+            untracked: .noHelperInThisBuild)
 
         let readAllCalls = await provider.readAllCallCount
         #expect(readAllCalls == 1)
@@ -52,7 +56,8 @@ struct PollingEngineTests {
     func snapshotCarriesFansAndSensors() async throws {
         let provider = Self.provider()
         let snapshot = try await PollingEngine.poll(
-            provider: provider, labelSource: NoSensorLabels(), discovery: [])
+            provider: provider, labelSource: NoSensorLabels(), discovery: [],
+            untracked: .noHelperInThisBuild)
 
         #expect(snapshot.fans.count == 1)
         #expect(snapshot.fans.first?.actual.value == 1712)
@@ -65,7 +70,8 @@ struct PollingEngineTests {
         let provider = Self.provider()
         let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
         let snapshot = try await PollingEngine.poll(
-            provider: provider, labelSource: NoSensorLabels(), discovery: [], now: fixedDate)
+            provider: provider, labelSource: NoSensorLabels(), discovery: [],
+            untracked: .noHelperInThisBuild, now: fixedDate)
         #expect(snapshot.capturedAt == fixedDate)
     }
 
@@ -91,12 +97,14 @@ struct PollingEngineTests {
             ])
 
         let first = try await PollingEngine.poll(
-            provider: firstProvider, labelSource: NoSensorLabels(), discovery: [])
+            provider: firstProvider, labelSource: NoSensorLabels(), discovery: [],
+            untracked: .noHelperInThisBuild)
         // The second tick's provider is different, but the discovered key set (which
         // only names *which* keys exist, not their values) from the first tick is reused
         // exactly as a real refresh loop would reuse it — see PollingViewModel.tick().
         let second = try await PollingEngine.poll(
-            provider: secondProvider, labelSource: NoSensorLabels(), discovery: first.discovery)
+            provider: secondProvider, labelSource: NoSensorLabels(), discovery: first.discovery,
+            untracked: .noHelperInThisBuild)
 
         #expect(first.fans.first?.actual.value == 1200)
         #expect(second.fans.first?.actual.value == 3400)
@@ -117,7 +125,8 @@ struct PollingEngineTests {
 
         await #expect(throws: PollingError.self) {
             _ = try await PollingEngine.poll(
-                provider: provider, labelSource: NoSensorLabels(), discovery: [])
+                provider: provider, labelSource: NoSensorLabels(), discovery: [],
+                untracked: .noHelperInThisBuild)
         }
     }
 }

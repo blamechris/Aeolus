@@ -29,6 +29,8 @@ struct RestoreUnconfirmedAttributionTests {
     private static func composed(
         writes: ScriptedControlPlane.WriteBehaviour, snapshotSeesManual: Bool = true
     ) -> HelperComposition<ControlStateGatePlane> {
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         HelperComposition(
             plane: ControlStateGatePlane(
                 ScriptedControlPlane(
@@ -45,6 +47,7 @@ struct RestoreUnconfirmedAttributionTests {
                 extraKeys: ["F0Md": .reading("F0Md", snapshotSeesManual ? 1 : 0)]),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: AvailabilityFixture.safetyLog,

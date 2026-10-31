@@ -53,6 +53,27 @@ import Testing
 /// the tree, so a fifth file declaring `extension ReclamationWatchdog` fails here. The
 /// registry's own half — its stores, `async`, closures — is `ReclamationRegistryAccessTests`.
 /// `HeldFan`'s methods are written inside its struct body, reached only through `Registry`.
+///
+/// ## As spelled, and what that does not reach
+///
+/// The two exhaustive tests compare the actor's non-private members **as spelled**
+/// ([#607](https://github.com/blamechris/Aeolus/issues/607)), as `HelperClientAccessTests` has
+/// since [#604](https://github.com/blamechris/Aeolus/issues/604): an entry is the modifier run,
+/// the introducer and the key, so `public` or `package` on an acknowledged member, or any other
+/// modifier added to it, is red like a new one. Bare keys matched a respelling. An attribute
+/// counts from the line above, so `@discardableResult` is part of `commandedTarget`'s.
+///
+/// A member is read at four spaces, so **a member in the formatter's two-line spelling** — a
+/// modifier alone on a line, the declaration under it at eight — is in no population here,
+/// whether new or already there ([#605](https://github.com/blamechris/Aeolus/issues/605)).
+/// Only an acknowledged member (it goes missing) and the ones `mustStayPrivate` names, which
+/// `declaration(of:in:from:)` judges with the line above, are guarded in that spelling. An
+/// `extension`'s own modifier is on no member's line: `HelperActorHeaderAccessTests` reads it
+/// ([#610](https://github.com/blamechris/Aeolus/issues/610)).
+/// `public extension ReclamationWatchdog {` alone does not compile against an internal actor,
+/// and neither does the first step, `public actor ReclamationWatchdog<…>` (its generic
+/// parameter is internal); that suite pins both lines. `HeldFan`'s members sit at eight spaces
+/// and are `ReclamationHeldFanAccessTests`'.
 @Suite("§ 5's registry stays private to the watchdog and is reached only through its members")
 struct ReclamationWatchdogAccessTests {
 
@@ -110,9 +131,10 @@ struct ReclamationWatchdogAccessTests {
 
     /// The two internal properties of the actor, both for tests and diagnostics: the registry's
     /// fan set, a copy of the keys, and the level its driver asks the arbiter about, a value.
-    /// Nothing reached through either can change who is held.
+    /// Nothing reached through either can change who is held. **Spelled as declared** (#607):
+    /// `engagementLevel` is `nonisolated`, and the modifier is part of the entry.
     private static let acknowledgedInternalProperties: Set<String> = [
-        "fansUnderManualControl", "engagementLevel",
+        "var fansUnderManualControl", "nonisolated var engagementLevel",
     ]
 
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement
@@ -120,17 +142,18 @@ struct ReclamationWatchdogAccessTests {
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
     /// there to reach — and level 6's hand-back notice, A6's fourth, a forwarder into `Registry`;
     /// and the snapshot's read (#410), another, synchronous and returning values, so nothing read
-    /// through it can change who is held.
+    /// through it can change who is held. **Spelled as declarations** (#607): the modifier run
+    /// and `func` stand in front of each signature, so the two classifiers are `static func`.
     private static let acknowledgedInternalMethods: Set<String> = [
-        "manualControlEngaged(_: CommandableFan, under: UUID)",
-        "commandedTarget(_: CommandedTarget, under: UUID)",
-        "manualControlReleased(fanAt: Int)",
-        "manualControlHandedBack(fanAt: Int, under: UUID)",
-        "lastCommanded(ofFan: Int)",
-        "recordedTargets(under: UUID)",
-        "cycle()",
-        "primaryDivergence(of: FanControlState, against: CommandedTarget?)",
-        "actualShortfall(of: FanControlState, against: CommandedTarget?)",
+        "func manualControlEngaged(_: CommandableFan, under: UUID)",
+        "@discardableResult func commandedTarget(_: CommandedTarget, under: UUID)",
+        "func manualControlReleased(fanAt: Int)",
+        "func manualControlHandedBack(fanAt: Int, under: UUID)",
+        "func lastCommanded(ofFan: Int)",
+        "func recordedTargets(under: UUID)",
+        "func cycle()",
+        "static func primaryDivergence(of: FanControlState, against: CommandedTarget?)",
+        "static func actualShortfall(of: FanControlState, against: CommandedTarget?)",
     ]
 
     /// The actor and every type nested in it, which no other file may reach by an alias or a
@@ -185,19 +208,19 @@ struct ReclamationWatchdogAccessTests {
         }
     }
 
-    /// **Mutation:** add `var heldCount: Int { registry.fans.count }` to the actor. Run: red.
+    /// **Mutations:** add `var heldCount: Int { registry.fans.count }` to the actor. Run: red.
+    /// Respell `var fansUnderManualControl` as `public var fansUnderManualControl`. Run: red.
     @Test("Only the acknowledged properties of the watchdog are internal")
     func onlyTheAcknowledgedPropertiesAreInternal() throws {
-        let internalProperties = Set(
-            try MemberAccessScan.members(in: Self.watchdogFiles, keyword: .property)
-                .filter { !$0.isPrivate }.map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.watchdogFiles, keyword: .property)
 
         #expect(
-            internalProperties == Self.acknowledgedInternalProperties,
+            found == Self.acknowledgedInternalProperties,
             """
-            the internal properties of ReclamationWatchdog changed: found \
-            \(internalProperties.sorted()), acknowledged \
-            \(Self.acknowledgedInternalProperties.sorted()). Say why here.
+            the non-private properties of ReclamationWatchdog changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalProperties)). Say why \
+            here, and re-state the entry as it is now written.
             """
         )
     }
@@ -206,18 +229,16 @@ struct ReclamationWatchdogAccessTests {
     /// Run: red.
     @Test("Only the acknowledged methods of the watchdog are internal")
     func onlyTheAcknowledgedMethodsAreInternal() throws {
-        let internalMethods = Set(
-            try MemberAccessScan.members(in: Self.watchdogFiles, keyword: .method)
-                .filter { !$0.isPrivate }.map(\.key))
+        let found = try MemberAccessScan.nonPrivateSpellings(
+            in: Self.watchdogFiles, keyword: .method)
 
         #expect(
-            internalMethods == Self.acknowledgedInternalMethods,
+            found == Self.acknowledgedInternalMethods,
             """
-            the internal methods of ReclamationWatchdog changed: found \
-            \(internalMethods.sorted()), acknowledged \
-            \(Self.acknowledgedInternalMethods.sorted()). A method of this actor that is not \
-            private is callable from every file in AeolusHelper with `registry` in scope — say \
-            why here.
+            the non-private methods of ReclamationWatchdog changed, as spelled: \
+            \(MemberAccessScan.difference(found, Self.acknowledgedInternalMethods)). A method \
+            of this actor that is not private is callable from every file in AeolusHelper with \
+            `registry` in scope — say why here, and re-state the entry as it is now written.
             """
         )
     }
@@ -272,9 +293,11 @@ struct ReclamationWatchdogAccessTests {
     func everyInternalPropertyIsAGetOnlyView() throws {
         let watchdog = try MemberAccessScan.strippedSource(of: Self.watchdogFile)
         let registry = try ReclamationRegistryAccessTests.registryMembersSource()
+        let actorViews = Self.acknowledgedInternalProperties
+            .map(MemberAccessScan.name(ofPropertySpelling:)).sorted()
         let views =
-            Self.acknowledgedInternalProperties.sorted().map { (Self.watchdogFile, $0) }
-            + ReclamationRegistryAccessTests.registryQueries.sorted().map { ("Registry", $0) }
+            actorViews.map { (Self.watchdogFile, $0) }
+            + ReclamationRegistryAccessTests.registryQueryNames.map { ("Registry", $0) }
         let writers = try NSRegularExpression(
             pattern: #"\b(set|_modify|willSet|didSet|unsafeMutableAddress)\b"#)
 

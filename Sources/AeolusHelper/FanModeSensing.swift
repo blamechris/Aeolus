@@ -177,21 +177,31 @@ actor ObservedFanModes {
 
 extension FirmwareFanMode {
 
-    /// `F<n>Md` is a flag key: zero is the system's thermal management, and **anything else
-    /// is manual.**
+    /// `F<n>Md` as decoded: the system's thermal management for a value that is **exactly** a
+    /// byte in `systemManagedRawModes` — `0` or `3` — and **manual for anything else**: `1`, a byte
+    /// never recorded, a fraction, a value outside a byte, or one that is not finite
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s P1′ amendment).
     ///
-    /// Not rounded, and that is the load-bearing part. A value of `0.4` — a decode artefact
-    /// rather than anything firmware would intend — reads as manual here, and would read as
-    /// automatic if this rounded first. The asymmetry decides it: reading a manual fan as
+    /// Not rounded, and that is the load-bearing part. A value of `0.4` or `3.0000001` — a decode
+    /// artefact rather than anything firmware would intend — reads as manual here, and would read
+    /// as automatic if this rounded first. The asymmetry decides it: reading a manual fan as
     /// automatic leaves it pinned with reconciliation satisfied that there is nothing to do,
     /// which is exactly the failure E5 exists to prevent. Reading an automatic fan as manual
-    /// costs one redundant restore write to a fan that is already automatic.
+    /// costs a restore write to a fan that is already automatic, and a snapshot that blames
+    /// another program until the fan reads one of Apple's values again — which is why Apple's
+    /// own values are a set, not the one byte this used to accept
+    /// ([#633](https://github.com/blamechris/Aeolus/issues/633)).
     ///
     /// Here rather than inside `SMCFanControlPlane`, where it used to be private, because
     /// the snapshot path now decodes the same key: two spellings of this rule would be two
     /// answers to "is this fan on automatic control", and the supervisor and the client would
-    /// eventually disagree about the same fan.
+    /// eventually disagree about the same fan. It answers through `init(rawByte:)`, which D3's
+    /// pre-state reads too.
     init(declaredByFirmware value: Double) {
-        self = value == 0 ? .automatic : .manual
+        guard let byte = UInt8(exactly: value) else {
+            self = .manual
+            return
+        }
+        self.init(rawByte: byte)
     }
 }
