@@ -281,9 +281,10 @@ extension ReadOnlyFanReport {
     ///
     /// `observedMode` is **required, with no default**: `nil` would make every fan blind, and
     /// `.automatic` would put the fold back here. The `switch` is exhaustive, so a third
-    /// `FirmwareFanMode` case — ADR 0014's U0 failing — is a compile error here rather than a fan
-    /// silently judged one way. Not stated over `.writePathNotBuilt`, for the durable refusal's
-    /// reason below and through the same `canWrite`.
+    /// `FirmwareFanMode` case is a compile error here rather than a fan silently judged one way.
+    /// U0 failed in P1 without one: Apple's management reads two raw values, and the fold calls
+    /// both automatic (ADR 0014's P1′ amendment). Not stated over `.writePathNotBuilt`, for the
+    /// durable refusal's reason below and through the same `canWrite`.
     ///
     /// ## § 5's fans are judged like any other
     ///
@@ -297,13 +298,19 @@ extension ReadOnlyFanReport {
     /// current evidence.
     ///
     /// The harm the exemption guarded against was blaming another program for the operating
-    /// system's hold. It does not need guarding here: under ADR 0014's U0 the system's hold
-    /// reads raw `F<n>Md = 0`, automatic, and never reaches the foreign answer, and Aeolus's own
-    /// restore that has not been confirmed is § 3's kept set below,
-    /// `.restoreToAutomaticUnconfirmed`. If U0 fails, the grant is already wrong the same way,
-    /// and ADR 0014 re-decides the mode fold before its first run. `isReclaimedBySystem` stays
-    /// set beside the answer, as history: it can go stale once another program takes the fan,
-    /// and the availability is the field that is current.
+    /// system's hold. It does not need guarding here. The system's hold reads raw `F<n>Md` in
+    /// `FirmwareFanMode.systemManagedRawModes` — `0` while Apple spins the fan, `3` while it has
+    /// the fan stopped — which the fold calls automatic, so it never reaches the foreign answer;
+    /// and Aeolus's own restore that has not been confirmed is § 3's kept set below,
+    /// `.restoreToAutomaticUnconfirmed`. Until ADR 0014's P1′ amendment the fold read only `0`
+    /// as the system's, and every fan Apple had stopped read `.foreignManualControl` here
+    /// ([#633](https://github.com/blamechris/Aeolus/issues/633)). If the system's management
+    /// produces a value outside the set, the grant is wrong the same way, and the set is
+    /// re-decided before anything relies on it (the amendment's U0). The residual is the other
+    /// direction: another program's hold that reads `0` or `3` reads automatic here and at the
+    /// grant (U17). `isReclaimedBySystem` stays set beside the answer, as history: it can go
+    /// stale once another program takes the fan, and the availability is the field that is
+    /// current.
     ///
     /// Everything else is overwritten, including `.available`. Writing the guard as "only
     /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
