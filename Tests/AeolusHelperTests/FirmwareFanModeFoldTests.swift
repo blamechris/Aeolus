@@ -22,8 +22,10 @@ struct FirmwareFanModeFoldTests {
     // MARK: - The fold
 
     /// **Mutation:** in `FirmwareFanMode(rawByte:)`, fold as before P1′,
-    /// `self = rawByte == 0 ? .automatic : .manual`. Run: red, on byte 3, here and in
-    /// `aDecodedValueFoldsAsItsByte`.
+    /// `self = rawByte == 0 ? .automatic : .manual`. Run: red on byte 3 here, on `3.0` in
+    /// `theIssuesTable`, and on byte 3 in `thePreStateAdmitsExactlyApplesSet`, with every
+    /// consumer case in `AppleStoppedFanTests`. `aDecodedValueFoldsAsItsByte` stays green under it,
+    /// because both of its sides answer through this initialiser.
     @Test("A raw byte is automatic exactly when it is 0 or 3, Apple's own values")
     func everyByteFoldsAsTheAmendmentSays() {
         for byte in UInt8.min...UInt8.max {
@@ -35,6 +37,11 @@ struct FirmwareFanModeFoldTests {
 
     /// The decoded value folds exactly as its byte does, for every byte: the snapshot's read and
     /// the plane's, which decode a `ui8` to a `Double`, cannot disagree with D3's raw pre-state.
+    ///
+    /// **Mutation:** in `init(declaredByFirmware:)`, fold as before P1′ without going through
+    /// `init(rawByte:)` — `self = value == 0 ? .automatic : .manual`. Run: red on byte 3 here
+    /// and on `3.0` in `theIssuesTable`, with every consumer case in `AppleStoppedFanTests` but
+    /// the engagement's, which reads the raw byte; the pre-state table stays green.
     @Test("A decoded value that is exactly a byte folds as that byte")
     func aDecodedValueFoldsAsItsByte() {
         for byte in UInt8.min...UInt8.max {
@@ -48,11 +55,9 @@ struct FirmwareFanModeFoldTests {
     /// a value outside a byte, and a value that is not finite. Rounding first would read `0.4`
     /// as Apple's `0` and `3.0000001` as Apple's `3`, which is the asymmetry the fold refuses.
     ///
-    /// **Mutation:** in `init(declaredByFirmware:)`, fold `UInt8(clamping: Int(value.rounded()))`
-    /// instead of `UInt8(exactly:)`. Not run: `Int(_:)` traps on `NaN` and on infinity, so the
-    /// mutant crashes the suite rather than reddening this test. **Mutation, run:** fold
-    /// `UInt8(value.rounded())` for finite values and `.manual` otherwise. Red on `0.4`,
-    /// `3.0000001` and `2.9999999`.
+    /// **Mutation:** in `init(declaredByFirmware:)`, round before the exact conversion —
+    /// `guard value.isFinite, let byte = UInt8(exactly: value.rounded())`. Run: red on `0.4`,
+    /// `3.0000001`, `2.9999999` and `.ulpOfOne`.
     @Test(
         "A value that is not exactly a byte is manual",
         arguments: [
@@ -79,8 +84,8 @@ struct FirmwareFanModeFoldTests {
     /// Apple's management never produces it; a set that held it would let Apple's state confirm an
     /// engagement that never happened.
     ///
-    /// **Mutation:** add `1` to `FirmwareFanMode.systemManagedRawModes`. Run: red here, and in the
-    /// fold's tables.
+    /// **Mutation:** add `1` to `FirmwareFanMode.systemManagedRawModes`. Run: red here on the set
+    /// and the fold of `1`, and in the fold's and the pre-state's tables.
     @Test("The engaged value is outside Apple's set, and the only value that reads as engaged")
     func theEngagedValueIsDisjointFromApplesSet() {
         #expect(EngagementRules.engagedRawMode == 1, "U4: the value D3 writes is the reported 1")
@@ -102,7 +107,9 @@ struct FirmwareFanModeFoldTests {
     ///
     /// **Mutation:** in `EngagementRules.requireAutomatic`, admit `1` as well —
     /// `guard FirmwareFanMode(rawByte: rawMode) == .automatic || rawMode == 1`. Run: red on byte 1.
-    /// **Mutation:** restore the pre-P1′ guard, `guard rawMode == 0`. Run: red on byte 3.
+    /// **Mutation:** restore the pre-P1′ guard, `guard rawMode == 0`. Run: red on byte 3, and on
+    /// every engagement of a fan Apple has stopped (`AppleStoppedFanTests`,
+    /// `EngagedTargetRuleTests`).
     @Test("D3's pre-state admits 0 and 3, and refuses every other byte with what it read")
     func thePreStateAdmitsExactlyApplesSet() {
         for byte in UInt8.min...UInt8.max {

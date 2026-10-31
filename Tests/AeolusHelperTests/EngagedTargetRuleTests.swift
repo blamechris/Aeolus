@@ -37,7 +37,9 @@ struct EngagedTargetRuleTests {
     ///
     /// **Mutation:** in `EngagementRules.engagedTarget(reading:of:)`, skip the raise —
     /// `return .holds` for every finite target. Run: red on both arguments, and on
-    /// `aFanEngagedAtRestIsRaisedToItsFloor`.
+    /// `theFloorIsNeverBelowTheManualMinimum`, `aFanEngagedAtRestIsRaisedToItsFloor` and both
+    /// arguments of `aFloorTheFirmwareDoesNotTakeIsUndone`. Nothing outside this file went red:
+    /// the raise is new behaviour.
     @Test("A target below the floor is raised to the floor", arguments: [0.0, 1_349])
     func aTargetBelowTheFloorIsRaised(_ rpm: Double) throws {
         let permit = try Self.permit()
@@ -55,7 +57,8 @@ struct EngagedTargetRuleTests {
     ///
     /// **Mutation:** in `EngagementRules.engagedTarget(reading:of:)`, raise unconditionally —
     /// `return .raise(to: floor)`. Run: red on every argument, and on
-    /// `aFanEngagedUnderLoadIsNotWritten`.
+    /// `aFanEngagedUnderLoadIsNotWritten`, with nineteen existing tests whose engagements now
+    /// lower a target to the floor.
     @Test(
         "A target at or above the floor is kept, never lowered",
         arguments: [1_350.0, 3_731, 9_000])
@@ -82,7 +85,8 @@ struct EngagedTargetRuleTests {
     /// **Mutation:** in `EngagementRules.engagedTarget(reading:of:)`, answer `.holds` for
     /// `.unreadable`. Run: red on the first argument, and on `anUnreadableTargetIsUndone`.
     /// **Mutation:** drop the `FanControlPlaneValue.finite` check, comparing the raw value. Run:
-    /// red on `NaN`, which compares below nothing and was raised.
+    /// red on `NaN`, which compares below nothing and was raised, and on infinity, which was
+    /// kept.
     @Test(
         "A target that did not read, or is not finite, throws",
         arguments: [
