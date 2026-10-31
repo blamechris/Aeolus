@@ -644,9 +644,11 @@ raw `0` on record (26.5.2, 27.0.1) was taken with the fans spinning, and this ca
 those. No one had read the stopped state raw before. U14, U13 and U10 hold.
 
 **The 2026-09-05 and 2026-09-13 non-zero readings are no longer attributable to the third-party
-tool.** - They are `FirmwareFanMode`'s fold, not the byte (#208). - Apple's own stopped state folds
-to non-zero. - The fans stop at rest on 26.6.2 too (2026-08-20). - No fan speed was recorded beside
-those readings.
+tool.**
+- They are `FirmwareFanMode`'s fold, not the byte (#208).
+- Apple's own stopped state folds to non-zero.
+- The fans stop at rest on 26.6.2 too (2026-08-20).
+- No fan speed was recorded beside those readings.
 
 What a held fan reads remains unrecorded, and ADR 0014 D9 keeps it that way until run 4.
 
