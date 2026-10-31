@@ -183,6 +183,28 @@ where `#KEY` is 3,514; #623). Indices 3,514, 3,515 and 3,614 each returned SMC r
 the bound sees no key here whichever way a code `SMCKey` refuses is counted. Three indices
 on one machine, read once each.
 
+**What the index table holds, and what `READ_INDEX` writes beside the key** (macOS 27.2,
+2026-10-31, #628; each index read once). Read with `fanctl dump --json`, and with a throwaway
+probe (not repo code) that issued `READ_INDEX` (8) and no other command code, after filling
+the reply buffer with `0xEE`:
+
+- `#KEY` is index 0 of 3,514, and `FNum` is index 816. Every entry is a key, no key appears
+  twice, and the codes ascend strictly from `#KEY` as big-endian four-character values.
+- Reply byte 4, the first byte of the version field, was `0x00` in all 3,514 replies, and bytes
+  4 to 11 were zero in every one. The call wrote them: none was left at `0xEE`. So a key field
+  read one byte forward on this little-endian host reads `TC0P` as `"\0TC0"`, which `SMCKey`
+  refuses.
+- The misreads #628 guards against, applied to this table offline: one byte forward onto a
+  printable byte leaves 1,048 distinct codes, and one byte back 3,216. Byte-reversed, the codes
+  stay 3,514 distinct, `#KEY` reads as `YEK#`, and two keys read as themselves: `CHHC` and
+  `MSSM`.
+
+**Not known:** whether any Intel, M1 or M2 index table lists `#KEY`, ascends, or holds zero at
+byte 4. No such table has been read here. The Asahi Linux SMC documentation calls `#KEY` the
+number of keys in the SMC, and does not describe the index table. So
+`KeyTableWalk.keySetIsPlausible` uses `#KEY` only as evidence of a reordered field, and never
+requires it.
+
 ### `flt` decodes little-endian on this machine — agrees, but not decisively about *why*
 
 | Key | Raw | As LE Float32 | As BE Float32 |
