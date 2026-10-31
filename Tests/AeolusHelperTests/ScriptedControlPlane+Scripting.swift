@@ -175,9 +175,10 @@ extension ScriptedFirmware.FanCondition {
     /// recorded fan 0 under a twelve-way load.
     static let spinningByApple = Self.automatic(at: 1_350)
 
-    /// The byte the helper writes for `mode`: `0`, every restore's, or `1`, an engagement's (D3).
+    /// The byte the helper writes for `mode`: `0`, every restore's, or
+    /// `EngagementRules.engagedRawMode`, an engagement's (D3).
     static func byte(writtenFor mode: FirmwareFanMode) -> UInt8 {
-        mode == .automatic ? 0 : 1
+        mode == .automatic ? 0 : EngagementRules.engagedRawMode
     }
 }
 

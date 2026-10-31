@@ -208,10 +208,8 @@ actor ScriptedFirmware {
 
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
     struct FanCondition: Sendable, Hashable {
-        /// `F<n>Md` as the firmware holds it: the byte, never the fold. Apple's controller
-        /// leaves `0` while it spins the fan and `3` while it has it stopped, and an engagement
-        /// writes `1` (ADR 0014's P1′ amendment), so one `FirmwareFanMode` cannot hold it. Its
-        /// fold, `mode`, is in `ScriptedControlPlane+Scripting.swift`.
+        /// `F<n>Md` as the firmware holds it, never the fold: Apple leaves `0` or `3`, and an
+        /// engagement writes `1` (ADR 0014's P1′ amendment). `mode`, its fold, is an extension.
         var rawMode: UInt8
         var targetRPM: Double
         var minimumRPM: Double
@@ -619,9 +617,8 @@ extension ScriptedFirmware {
         try modeReadable(ofFan: index, context: "fan \(index) mode").rawMode
     }
 
-    /// Moves fan `index` as Apple's own controller does, recording no attempt, for `setMode`'s
-    /// reason: `condition`'s mode byte and speeds, the declared bounds untouched. P1 recorded the
-    /// two states (`FanCondition.stoppedByApple`, `FanCondition.spinningByApple`).
+    /// Moves fan `index` as Apple's controller does — `condition`'s mode byte and speeds, the
+    /// bounds untouched — recording no attempt, for `setMode`'s reason (`stoppedByApple`).
     func setByApple(_ condition: FanCondition, ofFan index: Int) {
         fans[index]?.rawMode = condition.rawMode
         fans[index]?.targetRPM = condition.targetRPM
@@ -858,7 +855,7 @@ extension ScriptedFirmware {
     /// it outright; a discarding stage accepts it and leaves the fan as it was. One the stage
     /// leaves unanswered answers nothing, whatever else it says, and lands as the stage says.
     private func answerModeWrite(fanAt index: Int) throws -> FirmwareWriteAnswer {
-        keyWrites.append(.mode(fan: index, value: 1))
+        keyWrites.append(.mode(fan: index, value: EngagementRules.engagedRawMode))
         ledger.recordModeWriteIssued(fanAt: index)
         if let unanswered = stage.unansweredModeWrites[index] {
             if unanswered == .landed { fans[index]?.mode = .manual }

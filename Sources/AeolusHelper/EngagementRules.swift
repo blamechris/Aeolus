@@ -6,6 +6,9 @@
 // `SMCFanControlPlane` from the E4 branch's B1 — decides by these, so the two cannot come to decide
 // differently. Above it, level 6 reads one rule, `EngagementRules.isEngagedMode`, a predicate on a
 // value the driver's refusal carried.
+//
+// **Apple's management is a set of raw values** (ADR 0014's P1′ amendment): the pre-state admits
+// what `FirmwareFanMode(rawByte:)` calls automatic, and the engaged value stays outside that set.
 
 /// D3's decisions, as functions of what the firmware answered.
 ///
@@ -24,9 +27,16 @@ enum EngagementRules {
         case awaitYield
     }
 
-    /// Step 1: a fan whose raw mode is not `0` is not Aeolus's to take, and nothing is written.
+    /// Step 1: a fan whose raw mode the fold does not call automatic is not Aeolus's to take, and
+    /// nothing is written. Apple's management reads `0` or `3`
+    /// (`FirmwareFanMode.systemManagedRawModes`; ADR 0014's P1′ amendment), so a fan Apple has
+    /// stopped, this machine's rest state, is admitted, and `1` or any byte outside the set is
+    /// refused.
+    ///
+    /// The same fold the grant reads, `FirmwareFanMode(rawByte:)`, so a fan the grant called
+    /// automatic is never refused here as not automatic, and the reverse.
     static func requireAutomatic(rawMode: UInt8, fanAt index: Int) throws {
-        guard rawMode == 0 else {
+        guard FirmwareFanMode(rawByte: rawMode) == .automatic else {
             throw FanControlPlaneError.notAutomatic(index: index, rawMode: rawMode)
         }
     }
@@ -59,12 +69,18 @@ enum EngagementRules {
         }
     }
 
-    /// Raw `1`, the value an engagement writes (U4): what step 2 confirms it by, and what level 6
-    /// reads a fan whose hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
-    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == 1 }
+    /// Raw `1`, the value an engagement writes (U4) and the only one. It stays outside
+    /// `FirmwareFanMode.systemManagedRawModes`, so a read-back of it is the plane's own write and
+    /// never Apple's (ADR 0014's P1′ amendment).
+    static let engagedRawMode: UInt8 = 1
 
-    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read `0`
-    /// before the write (or an earlier step did, under the same epoch).
+    /// `engagedRawMode`: what step 2 confirms an engagement by, and what level 6 reads a fan whose
+    /// hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
+    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == engagedRawMode }
+
+    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read a value in
+    /// Apple's set before the write (or an earlier step did, under the same epoch), and Apple's set
+    /// never holds it.
     static func afterReadBack(rawMode: UInt8, fanAt index: Int) throws -> EngagementStep {
         guard isEngagedMode(rawMode) else {
             throw FanControlPlaneError.engagementNotConfirmed(index: index, rawMode: rawMode)

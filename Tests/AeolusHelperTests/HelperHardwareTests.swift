@@ -70,13 +70,14 @@ struct HelperHardwareTests {
             // the same pair, and since #243 it records rather than pins that too.
             //
             // The line carries two things and labels them as two. The snapshot's mode is
-            // the **decoded** one: `.automatic` covers both "firmware declared 0" and "the
-            // key could not be read" (`controlMode(_:)` folds a `nil` read into
-            // `.automatic`, #178), and `.manualFixed` covers any non-zero value, not only
-            // `1`. The **raw** `F<n>Md` bytes come from a second read through
-            // `SMCConnection.read(_:)`, before any fold (#208), so a recording taken here
-            // can say which of those it was. It is a second round trip, not the one the
-            // snapshot made, and `entry(decodedAutomatic:)` says so when the two disagree.
+            // the **decoded** one: `.automatic` covers "firmware declared 0", "firmware
+            // declared 3" (Apple's stopped fan; ADR 0014's P1′ amendment) and "the key could
+            // not be read" (`controlMode(_:)` folds a `nil` read into `.automatic`, #178),
+            // and `.manualFixed` covers any other value, not only `1`. The **raw** `F<n>Md`
+            // bytes come from a second read through `SMCConnection.read(_:)`, before any
+            // fold (#208), so a recording taken here can say which of those it was. It is a
+            // second round trip, not the one the snapshot made, and
+            // `entry(decodedAutomatic:)` says so when the two disagree.
             let raw = await RawFanModeReading.read(fan: fan.index, through: connection)
             print(
                 "fan \(fan.index), snapshot mode .\(fan.mode.rawValue): "

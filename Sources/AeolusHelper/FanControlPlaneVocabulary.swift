@@ -22,13 +22,36 @@ import SMCCore
 ///
 /// Deliberately not `FanKit.FanControlMode`, which distinguishes `manualFixed` from
 /// `manualCurve`. That distinction is Aeolus's own intent and the firmware has never heard
-/// of it; `F<n>Md` is one bit. A type that carried the richer vocabulary down here would
-/// invite somebody to read a curve out of a flag.
+/// of it; `F<n>Md` answers one question, whose fan it is. A type that carried the richer
+/// vocabulary down here would invite somebody to read a curve out of a mode byte.
+///
+/// **Two cases, though Apple's management reads two bytes.** Every consumer decides a fan Apple
+/// has stopped exactly as it decides one Apple is spinning, so a third case would be a third arm
+/// with the same body everywhere ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s P1′
+/// amendment). Code that needs the byte reads it raw, as D3 does.
 enum FirmwareFanMode: Sendable, Hashable {
     /// The system owns the fan. The safe state, and the destination of every restore.
     case automatic
     /// The fan is off automatic control.
     case manual
+
+    /// The raw `F<n>Md` values Apple's own thermal management leaves: `0` while it spins the fan
+    /// and `3` while it has the fan stopped. Defined once, here, with ADR 0014's P1′ amendment as
+    /// its provenance: P1 recorded these two values and no other in 41,931 samples on `Mac16,5`
+    /// under macOS 27.2, idle and through two loads, with `3` only ever beside a target of 0.
+    ///
+    /// A value joins the set only on evidence of that grade (the amendment's U0). It never holds
+    /// `EngagementRules.engagedRawMode`: D3 can attribute a read-back of that value to the plane's
+    /// own write only because Apple's management never produces it.
+    static let systemManagedRawModes: Set<UInt8> = [0, 3]
+
+    /// The fold of one raw `F<n>Md` byte: `.automatic` exactly for a byte in
+    /// `systemManagedRawModes`, and `.manual` for every other. D3's pre-state
+    /// (`EngagementRules.requireAutomatic`) and `init(declaredByFirmware:)` both answer through
+    /// this, so the grant's read and the engagement's cannot disagree about one byte.
+    init(rawByte: UInt8) {
+        self = Self.systemManagedRawModes.contains(rawByte) ? .automatic : .manual
+    }
 }
 
 /// What one step of an engagement achieved ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
