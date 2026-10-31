@@ -63,6 +63,12 @@ struct FanctlSetHoldLossCheckTests {
         }
     }
 
+    /// Fan 0's `observed.manualControl` in an event, or `nil` if the event does not carry one.
+    static func control(in event: [String: Any]) -> [String: Any]? {
+        let fan = (event["fans"] as? [[String: Any]])?.first
+        return (fan?["observed"] as? [String: Any])?["manualControl"] as? [String: Any]
+    }
+
     private static func run(
         _ authority: SimulatedFanAuthority
     ) async throws -> (Harness.Run, ClientListenerHarness) {
@@ -75,14 +81,22 @@ struct FanctlSetHoldLossCheckTests {
     /// reason and its recovery advice, from a snapshot read after the release, and never "Nothing
     /// is held".
     ///
+    /// **The reason exists only after the lease ends** (`failingToRestore`), so the 9 can only
+    /// have come from a read after it: the `holding` event shows the fan with no reason, and the
+    /// closing event shows the reason.
+    ///
     /// **Mutation (a hold-phase loss skips the check):** in `SetCommand.finish`, hand a `.lost`
     /// end a constant `.automatic` settlement. Run: red — exit 6 and no look, for every kind.
+    ///
+    /// **Mutation (judged from the hold's last snapshot):** in `SetCommand.finish`, build the
+    /// settlement from `SafeState.verdict(for: snapshot)` and read nothing after the release.
+    /// Run: red for every kind, on the exit and on the closing event's reason.
     @Test(
         "A loss during the hold, with a restore that failed, is exit 9",
         arguments: HoldLoss.allCases)
     func aLossAndARestoreThatFailed(loss: HoldLoss) async throws {
         let authority = SimulatedFanAuthority()
-        await authority.failingToRestore(afterRenewals: 1)
+        await authority.failingToRestore()
         await loss.script(authority)
 
         let (run, harness) = try await Self.run(authority)
@@ -95,6 +109,11 @@ struct FanctlSetHoldLossCheckTests {
             events.map { $0["event"] as? String } == ["started", "holding", "failed"],
             "the hold began, held for one heartbeat and then lost control: \(loss)")
         let failed = try #require(events.last)
+        let holding = try #require(events.first { $0["event"] as? String == "holding" })
+        #expect(Self.control(in: holding)?["reason"] is NSNull, "no reason while held: \(loss)")
+        #expect(
+            Self.control(in: failed)?["reason"] as? String == "restoreToAutomaticFailed",
+            "the reason, from the read after the release: \(loss)")
         #expect(failed["endedBecause"] as? String == "controlLost", "\(loss)")
         #expect(failed["releaseAccepted"] as? Bool == true || !loss.leavesTheLeaseListed, "\(loss)")
         #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the check looked: \(loss)")

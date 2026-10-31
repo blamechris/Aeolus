@@ -159,8 +159,7 @@ actor SimulatedFanAuthority: FanAuthority {
     private var applyLeavesFans: ApplyAftermath?
     private var heldTargetLostAfterRenewals: Int?
     private var heldRenewal: HeldRenewal?
-    private var restoreFailsAfterRenewals:
-        (renewals: Int, reason: ManualControlAvailability.Reason)?
+    private var restoreFailure: ManualControlAvailability.Reason?
     private var renewalFailure: AeolusXPCFault?
     private var heldAcquireReply: AsyncSignal?
     private var term = LeaseTerm()
@@ -434,9 +433,6 @@ actor SimulatedFanAuthority: FanAuthority {
         if let heldTargetLostAfterRenewals, renewals >= heldTargetLostAfterRenewals {
             for index in leasedFans { set(index, mode: .automatic, target: nil) }
         }
-        if let restoreFailsAfterRenewals, renewals == restoreFailsAfterRenewals.renewals {
-            for index in leasedFans { pin(index, as: restoreFailsAfterRenewals.reason) }
-        }
         let renewed = Lease(
             id: current.id, holderDescription: current.holderDescription,
             expiresAt: Date().addingTimeInterval(current.timeToLive),
@@ -528,6 +524,9 @@ actor SimulatedFanAuthority: FanAuthority {
     }
 
     private func endLease() {
+        if let restoreFailure {
+            for index in leasedFans { pin(index, as: restoreFailure) }
+        }
         for index in leasedFans where pinnedFans[index] == nil {
             set(index, mode: .automatic, target: nil)
         }
@@ -615,17 +614,19 @@ extension SimulatedFanAuthority {
     /// firmware took them, and the reclamation watchdog has not marked them yet.
     func losingHeldTarget(afterRenewals renewals: Int) { heldTargetLostAfterRenewals = renewals }
 
-    /// **At the `renewals`-th renewal the firmware stops taking the fans back.** The fans the
-    /// lease covers are left in manual and pinned for `reason` (`restoreToAutomaticFailed` by
-    /// default), once: a release that is accepted afterwards is a release that "succeeded" while
-    /// the restore did not, and the fan keeps its target, so the hold itself looks sound until
-    /// something else goes wrong.
+    /// **The restore at the lease's end fails.** However the lease ends (released, refused at a
+    /// renewal, swept, its connection lost, a machine-wide restore), the fans it covers are left
+    /// in manual and pinned for `reason`. That is where a refused restore arises on the helper,
+    /// which restores a lease's fans when the lease ends (`LeaseAuthority.releaseLease`), and a
+    /// release that is accepted is then one that "succeeded" while the restore did not.
+    ///
+    /// **No snapshot shows the reason while the lease is live**, so one that does was read after
+    /// the lease ended. A double that pinned the fans during the hold let a run that judged the
+    /// hold's last snapshot, and never read after the release, pass every exit-9 test (#438).
     func failingToRestore(
-        afterRenewals renewals: Int,
-        as reason: ManualControlAvailability.Reason =
-            .restoreToAutomaticFailed
+        as reason: ManualControlAvailability.Reason = .restoreToAutomaticFailed
     ) {
-        restoreFailsAfterRenewals = (renewals, reason)
+        restoreFailure = reason
     }
 
     /// The `number`-th `renewLease` (counting from one) is taken and **not answered until

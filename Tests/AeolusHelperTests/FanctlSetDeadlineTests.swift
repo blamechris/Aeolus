@@ -90,11 +90,12 @@ struct FanctlSetDeadlineTests {
     /// is given back and the safe state looked at, and a fan the restore failed to return is 9.
     ///
     /// **Mutation:** hand a `.timerFailed` end a constant `.automatic` settlement in
-    /// `SetCommand.finish`. Run: red.
+    /// `SetCommand.finish`. Run: red. **Mutation:** build the settlement from the hold's last
+    /// snapshot in `SetCommand.finish`, reading nothing after the release. Run: red.
     @Test("A timer that fails, with a restore that failed, is exit 9")
     func theTimerFailsAndARestoreFailed() async throws {
         let authority = SimulatedFanAuthority()
-        await authority.failingToRestore(afterRenewals: 1)
+        await authority.failingToRestore()
         let harness = ClientListenerHarness(authority: authority)
         let time = VirtualHoldTime(script: { number, _ in
             if number == 2 { throw CancellationError() }
@@ -104,8 +105,16 @@ struct FanctlSetDeadlineTests {
             Harness.thirtySeconds + ["--json"], over: harness, time: time)
 
         #expect(run.code == FanctlExitCode.cannotReturnToAutomatic.rawValue)
-        let failed = try #require(try run.output.events().last)
+        let events = try run.output.events()
+        let failed = try #require(events.last)
         #expect(failed["snapshotFollowsRelease"] as? Bool == true)
+        // The reason exists only once the lease has ended (`failingToRestore`): absent while
+        // held, present in the read after the release.
+        let holding = try #require(events.first { $0["event"] as? String == "holding" })
+        #expect(FanctlSetHoldLossCheckTests.control(in: holding)?["reason"] is NSNull)
+        #expect(
+            FanctlSetHoldLossCheckTests.control(in: failed)?["reason"] as? String
+                == "restoreToAutomaticFailed")
         #expect(run.output.standardError.contains("timer failed"))
         #expect(run.output.standardError.contains("(reason: restoreToAutomaticFailed)"))
         #expect(!run.output.standardError.contains("Nothing is held"))
