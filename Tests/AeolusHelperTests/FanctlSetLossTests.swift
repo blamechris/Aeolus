@@ -52,7 +52,7 @@ struct FanctlSetLossTests {
         #expect(failed["releaseAccepted"] is Bool, sourceLocation: sourceLocation)
         #expect(
             !run.output.standardError.contains("The helper now reports"),
-            "a loss never says the fans are fine", sourceLocation: sourceLocation)
+            "a loss never says a clean ending's closing line", sourceLocation: sourceLocation)
         return failed
     }
 

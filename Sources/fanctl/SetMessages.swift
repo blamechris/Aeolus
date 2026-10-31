@@ -7,11 +7,15 @@ import Foundation
 /// One rule runs through all of it ([CLAUDE.md](../../CLAUDE.md) rule 6): **say what the helper
 /// reported, and say that it is the helper's report.** The speed is a *target*; the fan's own
 /// reading is the helper's `actualRPM`. A sentence that could be read as "the fans are
-/// automatic" exists in exactly one place, `closingLine`, behind the one verdict that earns it,
-/// and `FanctlSetEndingTests.noFailureClaimsSuccess` holds every other outcome to never saying
-/// it. The same rule has a second half: **never present what was seen before the release as what
-/// the helper reports after it.** When no snapshot was read after the release, the lease and the
-/// fans are said to be unknown, not described from the snapshot before (`SetMessages+SafeState`).
+/// automatic" exists in two places, each behind the `.automatic` verdict of a snapshot read after
+/// the release and in the helper's voice: `closingLine`, for an ordinary ending (exit 0), and
+/// `afterApply`'s `.automatic` arm, for a loss, a timer failure or an `apply` that did not become
+/// a hold (`SetMessages+SafeState`). `FanctlSetEndingTests.noFailureClaimsSuccess` holds every
+/// outcome but exit 0 to never saying the first, and `SetHoldLossMessagesTests` holds the second
+/// to the check's verdict. The same rule has a second half: **never present what was seen before
+/// the release as what the helper reports after it.** When no snapshot was read after the
+/// release, the lease and the fans are said to be unknown, not described from the snapshot
+/// before (`SetMessages+SafeState`).
 enum SetMessages {
 
     typealias Hold = SetCommand.Hold

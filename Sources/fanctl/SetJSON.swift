@@ -4,7 +4,8 @@ import Foundation
 
 // `fanctl set --json`: newline-delimited JSON, one event per line, in this order and no other.
 //
-//     started          once, after `apply` was accepted and a snapshot listed the lease
+//     started          once, after `apply` was accepted and a snapshot listed the lease with the
+//                      helper's held target for every covered fan
 //     holding          after every successful heartbeat (the liveness signal, and the line a
 //                      consumer that is not draining is found out by)
 //     ended | failed   exactly one, on standard output if that is idle, otherwise on standard
@@ -68,7 +69,10 @@ struct SetClosingFacts: Sendable {
     var leaseID: UUID?
     /// `durationElapsed | signal | parentExited | outputClosed | controlLost | refused`, or
     /// `null` when `fanctl` never tried to take control (the helper could not be reached, or
-    /// answered something this build cannot read). A signal before the lease is `signal`.
+    /// answered something this build cannot read), and when the hold's own timer failed, which is
+    /// neither an ending anyone asked for nor a loss the helper reported. A signal before the
+    /// lease, while it was in flight, or while `apply` and its confirming snapshot were
+    /// outstanding (when they then showed the fans held) is `signal`.
     var endedBecause: String?
     /// `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`: the signal that
     /// ended the hold, before the lease was taken, while it was in flight, while `apply` was

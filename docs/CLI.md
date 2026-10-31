@@ -852,12 +852,19 @@ key a shape defines is always present, `null` for "not present".
   shared keys are `null` wherever there is nothing to say.
   - `leaseID` — the lease this run took, or `null` if it never took one.
   - `endedBecause` — `durationElapsed`, `signal`, `parentExited`, `outputClosed`, `controlLost` or
-    `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease).
+    `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease), and when
+    the hold's own timer failed (1, or 8 or 9 where the check found worse), which is neither an
+    ending anyone asked for nor a loss the helper reported.
     `refused` is a "no" to the request: exit 2, 4 or 5 before a hold, or an `apply` the helper
     answered with a fault **and the safe-state check that followed found every fan automatic and
-    no lease**. An `apply` fault followed by anything else, an `apply` that got no answer, and a
-    lease that ended while `apply` was outstanding are `controlLost`. A signal that arrived
-    before the lease, or while it was in flight, is `signal`.
+    no lease**. An `apply` fault followed by anything else, an `apply` that got no answer, and
+    control that could no longer be shown to be held before the hold began (a renewal that failed
+    while `apply` worked, an `apply` answered that the lease was gone, a confirming snapshot that
+    failed or showed no hold, a keeper that could not pace itself) are `controlLost`: nobody saw
+    the lease end. A signal is `signal` when it arrived before the lease, while the lease was in
+    flight, or while `apply` and its confirming snapshot were outstanding and they then showed the
+    fans held: the last is an ordinary ending before `started` (0, 8 or 9), whose text says the
+    hold was not begun.
   - `signal` — `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`, and also when
     a signal landed while `apply` was outstanding and the run then ended some other way.
   - `releaseAccepted` — whether the helper accepted the request to release the lease; `null` if

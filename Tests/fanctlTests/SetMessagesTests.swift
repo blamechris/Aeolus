@@ -308,7 +308,8 @@ struct SetMessagesTests {
             #expect(message.contains(expected), "\(loss): \(message)")
             #expect(message.contains("never re-acquires"))
             #expect(!message.contains("Nothing is held"), "only the check can say that")
-            #expect(!message.contains("now reports"), "a loss never says the fans are fine")
+            #expect(
+                !message.contains("now reports"), "a loss never says a clean ending's closing line")
         }
     }
 }

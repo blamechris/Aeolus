@@ -20,8 +20,9 @@ struct SetHoldLossMessagesTests {
     /// not confirmed) stay what they are.
     ///
     /// **Mutation:** say "Nothing is held by this process now." for an accepted release in
-    /// `SetMessages.lost` or `SetMessages.timerFailed`. Run: red on the `pinned` and
-    /// `notConfirmed` rows.
+    /// `SetMessages.lost`, or in `SetMessages.timerFailed`. Run: red on every row with an accepted
+    /// release, four for each, whatever the check found: the check's verdict does not license the
+    /// sentence, and neither does the release's answer.
     @Test("A loss or a timer failure never says 'Nothing is held', whatever the release said")
     func nothingIsHeldIsNotSaid() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
@@ -45,7 +46,9 @@ struct SetHoldLossMessagesTests {
                 ]
                 for message in messages {
                     #expect(!message.contains("Nothing is held"), "\(settlement.verdict)")
-                    #expect(!message.contains("now reports"), "a loss never says the fans are fine")
+                    #expect(
+                        !message.contains("now reports"),
+                        "a loss never says a clean ending's closing line")
                 }
             }
         }
