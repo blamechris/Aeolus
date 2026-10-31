@@ -4200,8 +4200,13 @@ says otherwise. Intel and M1/M2 stay `untested`.
      the cool-down after every post-hold check. If it does not hold within 30 minutes, the session
      writes nothing forward. 1b′'s "back at rest", `F0Tg` at `F0Mn` or 0, stays the end of 1b′.
    - **The hold's baseline (abort 1):** for a hold at rest, the mean of the hottest curated over
-     the 10 s before the `set`. Under the sixteen-way load, from the load's start, abort 1 reads
-     74 °C in 1b as it does in 1d. 85 °C applies throughout.
+     the 10 s before the `set`. From the sixteen-way load's start until the end of the step in
+     which it stops, abort 1 reads 74 °C: in 1b and 1b′, and in 1d, whose hold outlasts its load.
+     A baseline taken at rest does not apply again after a load. 85 °C applies throughout.
+
+     *Why to the step's end:* the machine leaves a load heat-soaked. In P1 the hottest curated key
+     read 48–49 °C 34 s into the sixteen-way load, already above 1d's rest baseline plus 10 °C,
+     45.5 °C. After the load stopped, it took 101 s to fall below that.
 
      1b's "loaded steady state" is P1's plateau under that load, 64.0 °C. When 1b engages, the
      temperature is still rising toward it (P1: 55.3 °C at 56 s). Starting 1b's load from rest, as
@@ -4243,6 +4248,13 @@ says otherwise. Intel and M1/M2 stay `untested`.
     its holds. That would be run 4's first contact (D9), unrecorded and ahead of runs 2 and 3. And
     the P1′ amendment's "the branch has no client but run 1's operator" then holds by what is
     installed, not by what is remembered.
+
+    The reinstall is checked like a restore. Ten seconds after the `main` helper's first log line,
+    `Ftst` reads `0` and both modes read in Apple's set. If the branch helper's exit restore was
+    refused, or that check fails, `fanctl reset --all` and `bootout` do nothing: the `main` helper
+    cannot write. In that case, reinstall the branch build, whose preparation step and
+    reconciliation restore at start, and if the check still fails, take the ladder's sleep and
+    then its power cycle.
 
 **What remains.**
 - The install procedure is the maintainer's and unverified on 27.2: stopping the `main` helper,
