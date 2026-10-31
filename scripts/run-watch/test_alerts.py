@@ -1,8 +1,12 @@
 """Alert states: entering, repeating aloud, clearing, latching; and the status line."""
 
+import json
+import os
+import tempfile
 import unittest
 
 import run_watch as rw
+import synth
 from support import idle, lines, replay, titles
 
 
@@ -114,6 +118,25 @@ class WatchLog(unittest.TestCase):
         self.assertEqual(titles(w), [])
         self.assertEqual(len(lines(w, "WARN")), 1)
         self.assertEqual(w.memory.alerts, [])
+
+    def test_a_message_with_newlines_is_still_one_record(self):
+        message = "Liveness watchdog fired\nin the cycle\r\nwith a TPD1 read in flight\u2028and more"
+        with tempfile.TemporaryDirectory() as d:
+            out = rw.Output(d)
+            w = rw.Watcher(out)
+            w.start(1000.0)
+            w.source_ended("fans")
+            w.source_ended("package")
+            w.on_log(rw.parse_log_line(json.dumps(synth.log_record(1000.5, message, "Fault"))))
+            out.close()
+            for name in ("watch.log", "ALERT"):
+                with open(os.path.join(d, name), encoding="utf-8") as handle:
+                    records = handle.read().split("\n")
+                if name == "watch.log":
+                    records = [r for r in records if " ALERT " in r]
+                records = [r for r in records if r]
+                self.assertEqual(len(records), 1, name)
+                self.assertIn("Liveness watchdog fired in the cycle with a TPD1 read in flight and more", records[0])
 
     def test_the_status_line_every_five_seconds(self):
         w = replay(idle(32))

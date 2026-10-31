@@ -293,6 +293,11 @@ def parse_ctx_line(raw, arrival=None):
 # --------------------------------------------------------------------------------------------
 
 
+def one_line(text):
+    """A record is one line: whatever a log message carries, it cannot split watch.log."""
+    return " ".join(str(text).splitlines())
+
+
 def format_time(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + (".%03dZ" % int((t % 1) * 1000))
 
@@ -312,12 +317,12 @@ class Output:
     def line(self, t, level, text):
         if self.log_file is None:
             self.log_file = open(self._path("watch.log"), "a", encoding="utf-8", buffering=1)
-        self.log_file.write("%s %s %s\n" % (format_time(t), level, text))
+        self.log_file.write("%s %s %s\n" % (format_time(t), level, one_line(text)))
 
     def alert(self, t, text):
         if self.alert_file is None:
             self.alert_file = open(self._path("ALERT"), "a", encoding="utf-8", buffering=1)
-        self.alert_file.write("%s %s\n" % (format_time(t), text))
+        self.alert_file.write("%s %s\n" % (format_time(t), one_line(text)))
 
     def heartbeat(self, wall):
         with open(self._path("watch.hb"), "w", encoding="utf-8") as handle:
