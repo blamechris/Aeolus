@@ -77,6 +77,29 @@ struct FirmwareFanModeFoldTests {
             FirmwareFanMode(declaredByFirmware: value) == (isAutomatic ? .automatic : .manual))
     }
 
+    /// The production plane's own read folds every byte as `init(rawByte:)` does:
+    /// `SMCFanControlPlane.readControlState(ofFan:)`, through its private decode, over a provider
+    /// answering each byte in turn. The tables above call the initialisers directly, so they could
+    /// not see the plane's decode spelt a second way.
+    ///
+    /// **Mutation:** in `SMCFanControlPlane.mode(from:)`, decode as before P1′,
+    /// `value == 0 ? .automatic : .manual`. Run: see the PR's mutation table.
+    @Test("The production plane's read folds every byte as the amendment says")
+    func theProductionPlaneFoldsEveryByte() async throws {
+        for byte in UInt8.min...UInt8.max {
+            let plane = supervisorPlane(
+                over: FakeSensorProvider(keyedResults: [
+                    "F0Md": .reading("F0Md", Double(byte)),
+                    "F0Tg": .reading("F0Tg", 0),
+                ]))
+
+            let state = try await plane.readControlState(ofFan: 0)
+
+            #expect(state.mode == FirmwareFanMode(rawByte: byte), "raw F<n>Md = \(byte)")
+            #expect(state.mode == (Self.isApplesValue(byte) ? .automatic : .manual))
+        }
+    }
+
     // MARK: - The engaged value
 
     /// The value an engagement writes is outside Apple's set, and is the only value that reads as

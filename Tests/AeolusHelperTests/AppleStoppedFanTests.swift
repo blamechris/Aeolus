@@ -37,7 +37,8 @@ struct AppleStoppedFanTests {
 
     /// The daemon's graph over `plane`, the snapshot reading `firmware`'s bytes.
     private static func composed<Plane: FanControlPlane>(
-        plane: Plane, firmware: ScriptedControlPlane, provider: PlaneBackedProvider
+        plane: Plane, firmware: ScriptedControlPlane, provider: PlaneBackedProvider,
+        safetyLog: SafetyLog = Self.safetyLog
     ) -> HelperComposition<Plane> {
         HelperComposition(
             plane: plane,
@@ -95,6 +96,34 @@ struct AppleStoppedFanTests {
                 which CLAUDE.md rule 6 forbids.
                 """)
         }
+        try await Self.expectStillStopped(firmware)
+    }
+
+    /// The shipped build's bring-up at rest: reconciliation reads both fans Apple has stopped,
+    /// finds nothing in manual, and says so. The unified log is #633's second surface — under the
+    /// old fold every start at rest logged a `.fault` that a fan was found in manual control with
+    /// nothing in this process having put it there, which is the same false claim the snapshot
+    /// made, in the record a maintainer reads after the fact.
+    @Test("The shipped bring-up at rest logs no fan found in manual, and completes")
+    func theShippedBringUpAtRestLogsNoManualFan() async throws {
+        let firmware = Self.stoppedFirmware()
+        let log = RecordedLog()
+        let helper = Self.composed(
+            plane: ControlStateGatePlane(firmware, capability: .notBuilt), firmware: firmware,
+            provider: PlaneBackedProvider(over: firmware, fanCount: 2),
+            safetyLog: SafetyLog(recording: { log.append($0, $1) }))
+        #expect(helper.plane.writeCapability == .notBuilt, "this case is about the shipped build")
+
+        await helper.bringUp()
+        await helper.shutDown()
+
+        #expect(
+            log.lines(containing: "in manual control with no live lease").isEmpty,
+            "bring-up logged a fan Apple had stopped as found in manual control")
+        #expect(
+            log.levels(containing: "Nothing was left in manual control") == [.notice],
+            "reconciliation did not complete over two fans Apple had stopped")
+        #expect(await firmware.keyWrites.isEmpty, "the shipped bring-up wrote to a fan")
         try await Self.expectStillStopped(firmware)
     }
 

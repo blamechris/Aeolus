@@ -151,17 +151,27 @@ struct EngagedTargetRuleTests {
     }
 
     /// A floor the firmware refuses, or accepts and does not hold at the read-back, fails the
-    /// step: the fan is never engaged, and the driver undoes the mode write it made.
+    /// step with that answer: the fan is never engaged, and the driver undoes the mode write it
+    /// made.
     @Test(
         "A floor the firmware refuses or does not hold is undone",
         arguments: [
-            ScriptedControlPlane.Stage.nominal(targetWrites: .refused(reason: "0x85")),
-            ScriptedControlPlane.Stage.nominal().holdingNoTarget(ofFan: 0),
+            (
+                ScriptedControlPlane.Stage.nominal(targetWrites: .refused(reason: "0x85")),
+                FanControlPlaneError.firmwareRefusedControl(detail: "0x85")
+            ),
+            (
+                ScriptedControlPlane.Stage.nominal().holdingNoTarget(ofFan: 0),
+                FanControlPlaneError.targetNotConfirmed(
+                    index: 0, commandedRPM: 1_350, readBackRPM: 0)
+            ),
         ])
-    func aFloorTheFirmwareDoesNotTakeIsUndone(_ stage: ScriptedControlPlane.Stage) async throws {
+    func aFloorTheFirmwareDoesNotTakeIsUndone(
+        _ stage: ScriptedControlPlane.Stage, throwing expected: FanControlPlaneError
+    ) async throws {
         let rig = try await Self.rig(.stoppedByApple, stage: stage)
 
-        await #expect(throws: FanControlPlaneError.self) {
+        await #expect(throws: expected) {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
@@ -180,13 +190,42 @@ struct EngagedTargetRuleTests {
         stopped.targetRPM = .nan
         let rig = try await Self.rig(stopped)
 
-        await #expect(throws: FanControlPlaneError.self) {
+        let error = await #expect(throws: FanControlPlaneError.self) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        guard case .readFailed(let detail)? = error else {
+            Issue.record("the step threw \(String(describing: error)), not the target's read")
+            return
+        }
+        #expect(detail.hasPrefix("F0Tg after the engaged read-back"))
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 0, value: 1), .mode(fan: 0, value: 0)],
+            "a target was written over a register that did not read, or the step was not undone")
+        #expect(rig.plane.ledger.engagedFans.isEmpty)
+    }
+
+    /// The raise belongs to the turn that read back `1`, and to no other. A fan Apple has stopped
+    /// whose mode write is accepted but reads back `3` is not engaged: the step throws on the
+    /// read-back, before any target write, and the driver undoes the mode write. A raise ahead of
+    /// the read-back would write `F<n>Tg` to a fan the plane never took.
+    ///
+    /// **Mutation:** in `ScriptedFirmware.unlockStep`, call `holdTargetAtFloor(of:)` before
+    /// `EngagementRules.afterReadBack(rawMode:fanAt:)`. Run: see the PR's mutation table.
+    @Test("No target is written unless the read-back confirmed the engagement")
+    func noTargetIsWrittenWithoutAConfirmedEngagement() async throws {
+        let plane = ScriptedControlPlane(
+            fans: [0: .stoppedByApple], stages: [.nominal()], unlock: .readsBack(rawMode: 3))
+        let rig = try await EngagementRig(
+            plane: plane, writes: InterferingFanStateSensing(plane, during: .restoreWrite))
+
+        await #expect(throws: FanControlPlaneError.engagementNotConfirmed(index: 0, rawMode: 3)) {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
         #expect(
             await rig.plane.keyWrites == [.mode(fan: 0, value: 1), .mode(fan: 0, value: 0)],
-            "a target was written over a register that did not read, or the step was not undone")
+            "a target was written before the read-back confirmed the engagement")
         #expect(rig.plane.ledger.engagedFans.isEmpty)
     }
 }
