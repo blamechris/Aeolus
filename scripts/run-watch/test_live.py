@@ -75,6 +75,10 @@ class Clock:
             self.queue["helper_log"].append((rw.parse_log_timestamp(r["timestamp"]), synth._line(r)))
         for line in run.ctx:
             self.queue["phases"].append((rw.parse_ctx_line(line).t, line))
+        for which, seconds in run.stops.items():  # a sampler's own last line
+            at = run.t0 + seconds
+            self.queue["fans" if which == "fans" else "package"].append(
+                (at, synth._line(synth.stop_record(at, 0))))
         for key, path in self.paths.items():
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write("")
@@ -256,6 +260,17 @@ class LiveLoop(unittest.TestCase):
             watcher, _, directory = live(idle(80), synth.T0 + 5, synth.T0 + 45)
         self.assertGreater(watcher.fan_samples, 300)
         self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR "), 1)
+
+    def test_a_samplers_stop_line_ends_its_source_in_the_live_loop_too(self):
+        # the fan sampler is stopped at 20 s with its own stop line; the package sampler runs on
+        run = idle(60).drop(20, 60, "fans")
+        watcher, _, directory = live(run.copy().add_stop("fans", 20.0), synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual(watcher.raised, [])
+        self.assertIn("fans file: its sampler wrote its stop line", read(
+            os.path.join(directory, "watch.log")))
+        # without the stop line the same gap is blind
+        watcher, _, _ = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
 
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):

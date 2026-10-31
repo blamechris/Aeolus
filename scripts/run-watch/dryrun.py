@@ -848,7 +848,7 @@ UNIT_ONLY = [
     ("B1: a sample is judged after 0.5 s, not 2 s (the readback's slack gone)", (
         "text", "delay = max(MODE_SECONDS, JUDGE_AFTER)", "delay = 0.5")),
     ("B1: the hold's F0Md = 1 is not exempt", (
-        "text", "(mode == 1 and self.hold_active):", "False):")),
+        "text", "or (mode == 1 and self.hold_active):", "or False:")),
     ("B2: 74 C holds only while the load runs", (
         "text", "self.load_window and hottest > TEMP_LOADED", "self.load_active and hottest > TEMP_LOADED")),
     ("B2: B + 10 applies again in the window", (
@@ -871,6 +871,8 @@ UNIT_ONLY = [
     ("S2: a sampler's stop line is ignored", ("blank", "on_source_stop")),
     ("S2: a sampler that starts again stays over", (
         "text", 'self.ended_sources.discard("fans")', "pass")),
+    ("S2: the live loop does not read a sampler's stop line", (
+        "text", "if parsed is None and name in STOP_KINDS:", "if False and name in STOP_KINDS:")),
     ("S3: an unreadable target is not heard", ("blank", "check_x_bad_context")),
     ("S3: a target of 0 is read as RPM", (
         "text", "return value if math.isfinite(value) and value > 0 else None",
