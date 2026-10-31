@@ -625,10 +625,10 @@ read the real count each assert only a broad sanity range.
 | `F0Md` against `F0Tg` (main capture; `F1` identical) | (3, target 0) 27,722, every one at actual 0; (0, target > 0) 13,872, of which 33 at actual 0, spinning up; (0, target 0) 37, of which 11 at actual > 0, spinning down; (3, target > 0) **0** |
 | Both fans | `F0Md` = `F1Md` in every sample. Every transition moves both fans in the same sample |
 | Order, five transitions | Mode `0` came 1.00–1.09 s before the target left 0 (2 of 2). Mode `3` came 0.99–1.07 s after the target reached 0 (3 of 3). Each time is the stamp of the first sample to show the event, so it is late by up to one sample interval: about 0.11 s in the main capture, which has four of the five, and about 0.53 s in the quiescence capture, which has the other |
-| Before the exclusion | 3/3, targets 0, 60 of 60 samples, with the third-party tool still running: the same state as after the reboot with it absent |
+| Before the exclusion | 3/3, targets 0, 60 of 60 samples. The census taken then listed no `AppleSMC` client created by the third-party tool (session record), so it was not holding the SMC open; the same state as after the reboot with it excluded |
 | After the reboot | Fans at 1350/1458 reading `0`. In the quiescence capture the targets read 0 from 01:15:37.5; mode `0` was last read at 01:15:38.0 and `3` first at 01:15:38.6 |
-| Load A (12 × `yes`) | Mode `0` about 42 s into the load, the targets leaving 0 about a second later; targets held at 1350/1458 for the whole load; the hottest of the 34 die keys 37 → 63 °C; fans stopped 3.6 min after the load ended |
-| Load B (16-way busy loop) | Mode `0` about 13 s into the load. The target rose in steps of 25–60 RPM on fan 0 (27–65 on fan 1), one about every 1.0 s, reaching 3455/3731 about 76 s in; the hottest of the 34 die keys about 63 °C. After the load the target began falling within about 1 s, in the same 25–60 RPM steps on fan 0 and ending with a 5 RPM step onto 1350: 1350 after about 57 s, then 0 after a further 111 s (2.8 min after the load), with mode `3` a second later |
+| Load A (12 × `yes`) | Mode `0` about 42 s into the load, the targets leaving 0 about a second later; targets held at 1350/1458 for the whole load; the hottest of the 34 die keys 37 → 63 °C; fans stopped 3.65 min after the load ended |
+| Load B (16-way busy loop) | Mode `0` about 13 s into the load. The target rose in steps of 25–60 RPM on fan 0 (27–65 on fan 1), one about every 1.0 s, reaching 3455/3731 about 76 s in; the hottest of the 34 die keys about 63–64 °C. After the load the target began falling within about 1 s, in the same 25–60 RPM steps on fan 0 and ending with a 5 RPM step onto 1350: 1350 after about 57 s, then 0 after a further 111 s (2.8 min after the load), with mode `3` a second later |
 | Soak | No peak above the load plateau |
 | `F1Tg / F0Tg` | 1.076–1.080 whenever both were non-zero; never below 1 |
 | Peaks | Targets 3455/3731 and actuals 3546/3818 RPM, against `F<n>Mx` 5777 |
@@ -649,7 +649,7 @@ those. No one had read the stopped state raw before. U14, U13 and U10 hold.
 **The 2026-09-05 and 2026-09-13 non-zero readings are no longer attributable to the third-party
 tool.**
 - They are `FirmwareFanMode`'s fold, not the byte (#208).
-- Apple's own stopped state folds to non-zero.
+- Apple's own stopped state folds to non-zero on 27.2 (see the note in the 2026-09-05 section).
 - The fans stop at rest on 26.6.2 too (2026-08-20).
 - No fan speed was recorded beside those readings.
 
