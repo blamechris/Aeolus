@@ -84,19 +84,23 @@ struct SMCWritePlaneTests {
         #expect(try fixture.ledger.touchedFans == [0])
     }
 
-    /// A fan whose raw mode reads `2` is not Aeolus's to take: `.notAutomatic` carries the byte as
-    /// read, decided by `EngagementRules.requireAutomatic`, and nothing is written.
+    /// A fan whose raw mode is outside Apple's set — `1`, the engaged value, or any byte P1 never
+    /// saw — is not Aeolus's to take: `.notAutomatic` carries the byte as read, decided by
+    /// `EngagementRules.requireAutomatic`, and nothing is written. Apple's `3` is admitted
+    /// (`anEngagementAtRestRaisesTheTarget`).
     ///
     /// **Mutation:** in `SMCWriteTurns.beforeTheModeWrite`, decide on the fold's answer,
-    /// `rawMode == 0 ? 0 : 1`, instead of the raw byte. Run: red here — `rawMode: 1`.
-    @Test("A raw mode of 2 is refused notAutomatic with the raw byte, and nothing is written")
-    func aRawModeOfTwoIsNotAutomatic() async throws {
+    /// `rawMode == 0 ? 0 : 1`, instead of the raw byte. Run: red here — `rawMode: 1` on the 2 row.
+    @Test(
+        "A raw mode outside Apple's set is refused notAutomatic with the raw byte, writing nothing",
+        arguments: [UInt8(1), 2, 4, 255])
+    func aRawModeOutsideApplesSetIsNotAutomatic(_ raw: UInt8) async throws {
         let fixture = WritePlaneFixture()
         let mark = await fixture.prepared()
-        await fixture.firmware.setRegister(Self.modeZero, [0x02])
+        await fixture.firmware.setRegister(Self.modeZero, [raw])
 
         fixture.plane.beginEngagement(fanAt: 0)
-        await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 2)) {
+        await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: raw)) {
             try await fixture.plane.engageManualControl(of: Self.fan(0))
         }
         #expect(fixture.writes(since: mark).isEmpty)
@@ -107,7 +111,7 @@ struct SMCWritePlaneTests {
     /// How a step can fail after its admission, one per row of C10's table.
     enum StepFailure: String, CaseIterable, Sendable {
         case notAutomatic, preStateUnread, refusedCode, unanswered, notConfirmed, readBackLost
-        case supersededAfterWrite
+        case supersededAfterWrite, targetUnread, floorRefused
     }
 
     private static func scripted(_ failure: StepFailure) async throws -> WritePlaneFixture {
@@ -122,6 +126,15 @@ struct SMCWritePlaneTests {
             let ledger = try fixture.ledger
             await fixture.firmware.onAfter(.write(Self.modeZero)) {
                 ledger.restoreRequested(.fan(1))
+            }
+            return fixture
+        case .targetUnread, .floorRefused:
+            let fixture = WritePlaneFixture(stoppedByApple: [0])
+            await fixture.prepared()
+            if failure == .targetUnread {
+                await fixture.firmware.setRead(of: Self.targetZero, .lost(Self.kernelError))
+            } else {
+                await fixture.firmware.queueWrites(to: Self.targetZero, [.refuses(code: 0x85)])
             }
             return fixture
         default:
@@ -140,17 +153,20 @@ struct SMCWritePlaneTests {
                 await fixture.firmware.queueReads(
                     of: Self.modeZero,
                     [.answers, .lost(.truncatedReply(expected: 80, received: 0))])
-            case .notConfirmed, .supersededAfterWrite: break
+            case .notConfirmed, .supersededAfterWrite, .targetUnread, .floorRefused: break
             }
             return fixture
         }
     }
 
     /// Every throw after a first step's admission records the step refused, so the engagement is
-    /// over and no later step is admitted under it (`isCurrent` false).
+    /// over and no later step is admitted under it (`isCurrent` false), and leaves the fan out of
+    /// the engaged set — a floor hold that throws included: the fan is engaged only once its step
+    /// answers `.engaged`, as on the scripted plane.
     ///
     /// **Mutation:** in `SMCWriteTurns.step`, skip `recordStepRefused(fanAt:)` when the error is
-    /// `.notAutomatic`. Run: red here, on that row only.
+    /// `.notAutomatic`. Run: red here, on that row only. **Mutation:** in `SMCWriteTurns.step`,
+    /// record the fan engaged before `holdFloor`. Run: red here, on the two floor rows.
     @Test("Every throw after admission records the step refused", arguments: StepFailure.allCases)
     func everyThrowAfterAdmissionIsRecorded(_ failure: StepFailure) async throws {
         let fixture = try await Self.scripted(failure)

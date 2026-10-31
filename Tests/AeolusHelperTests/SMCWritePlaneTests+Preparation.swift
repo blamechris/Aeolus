@@ -13,9 +13,13 @@ extension SMCWritePlaneTests {
 
     /// A quiescent machine: the step's reads in one turn — each fan's mode and target key info,
     /// then the key's info and its value — and no restore. Its first channel operation is a read.
-    @Test("On a quiescent machine the preparation step reads in one turn and restores nothing")
-    func aQuiescentPreparationRestoresNothing() async throws {
-        let fixture = WritePlaneFixture()
+    /// At rest too, with both fans in Apple's stopped state (raw `3`): the step reads no mode, so
+    /// a stopped fan asks for no restore (U14 holds, ADR 0014's P1′ amendment).
+    @Test(
+        "On a quiescent machine the preparation step reads in one turn and restores nothing",
+        arguments: [Set<Int>(), [0, 1]])
+    func aQuiescentPreparationRestoresNothing(_ stoppedByApple: Set<Int>) async throws {
+        let fixture = WritePlaneFixture(stoppedByApple: stoppedByApple)
         let report = await fixture.plane.prepareWritePath(
             enumerating: ScriptedFanEnumeration(indices: [0, 1]))
 
@@ -117,10 +121,11 @@ extension SMCWritePlaneTests {
         }
     }
 
-    /// **Waits on P1.** The not-found answer has not been observed, so the shipped classifier has
-    /// none, and no failure classifies `Ftst` absent until the pre-flight defines one.
-    @Test("No not-found answer ships until P1 observes one")
-    func noNotFoundAnswerShipsBeforeP1() {
+    /// **Unprobed** (ADR 0014's P1′ amendment): P1 did not probe the not-found answer, so the
+    /// shipped classifier has none, and no failure classifies `Ftst` absent until a probe defines
+    /// one.
+    @Test("No not-found answer ships while it is unprobed")
+    func noNotFoundAnswerShipsUnprobed() {
         #expect(SMCWriteTurns.forceKeyNotFoundAnswer == nil)
     }
 

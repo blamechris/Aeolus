@@ -590,8 +590,9 @@ actor SMCReadScheduler {
     /// One turn at `admission`, admitted exactly as a read at that admission is — FIFO with every
     /// other supervisor turn and spending the overtake quota at `.supervisor`, ahead of every
     /// waiter and outside the quota in the lane — because it is `takeTurn(at:)` and `endTurn(at:)`
-    /// and nothing more. The longest a job may hold it is `WatchdogLimits.writeTurnRoundTrips`,
-    /// its caller's obligation (`SMCWriteTurns`).
+    /// and nothing more. The longest a job may hold it is `WatchdogLimits.readerTurnRoundTrips` —
+    /// the engaged step that raises its fan to the floor, `engagedStepRoundTrips`; every other job
+    /// `writeTurnRoundTrips` — its caller's obligation (`SMCWriteTurns`).
     func withWriteTurn<T: Sendable>(
         at admission: PlaneAdmission,
         on channel: any SMCWriteChannel,
