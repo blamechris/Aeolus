@@ -239,8 +239,9 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// may have landed: unlike `.superseded`, this is never retried and always undone.
     case supersededAfterWrite
 
-    /// The fan's raw `F<n>Md` was not `0` before the first write, so the plane does not take it (D3
-    /// step 1). Nothing was written. Thrown only by a first step. The plane does not say whose the
+    /// The fan's raw `F<n>Md` was not one the fold calls automatic — `0` or `3`, Apple's set (ADR
+    /// 0014's P1′ amendment) — before the first write, so the plane does not take it (D3 step 1).
+    /// Nothing was written. Thrown only by a first step. The plane does not say whose the
     /// fan is: level 6 reads the raw value against its own account (ADR 0014's #410
     /// refused-hand-back amendment), and with none it is `foreignManualControl`.
     case notAutomatic(index: Int, rawMode: UInt8)

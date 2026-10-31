@@ -165,7 +165,7 @@ enum ReadOnlyFanReport {
     /// a client reading all three sees a fan held by *something else*, which is exactly the
     /// state `docs/SAFETY.md` § 6's startup reconciliation exists to clean up. `manualCurve`
     /// would be worse and would be an invention: a curve is Aeolus's own intent and `F<n>Md`
-    /// is one bit that has never heard of one.
+    /// is a mode byte that has never heard of one.
     ///
     /// ## Unreadable, and the gap this leaves
     ///
