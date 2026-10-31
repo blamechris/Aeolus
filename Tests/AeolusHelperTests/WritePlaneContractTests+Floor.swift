@@ -138,8 +138,8 @@ extension WritePlaneContractTests {
     ///
     /// **Mutation (production only):** in `SMCWriteTurns.step`, re-check the epoch before the
     /// floor hold — `guard ledger.isCurrent(fanAt: index) else { throw
-    /// FanControlPlaneError.supersededAfterWrite }`. Run: red on the smcPlane arm: the step throws,
-    /// and no floor is written.
+    /// FanControlPlaneError.supersededAfterWrite }`. Run: red on the smcPlane arm: the step throws
+    /// rather than answering engaged, and no floor is written.
     @Test(
         "Both planes raise the floor before a restore requested mid-step, which lands after",
         arguments: Arm.allCases)
@@ -153,7 +153,12 @@ extension WritePlaneContractTests {
         }
 
         plane.beginEngagement(fanAt: 0)
-        let step = try await plane.engageManualControl(of: Self.fan(0))
+        var step: EngagementStep?
+        do {
+            step = try await plane.engageManualControl(of: Self.fan(0))
+        } catch {
+            Issue.record("\(arm): the step threw \(error) where it raises and answers engaged")
+        }
         try await #require(restore.withLock { $0 }, "\(arm): the hook did not run").value
         let turns = harness.roundTripsPerTurn()
 
