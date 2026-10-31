@@ -21,7 +21,10 @@
 #      five slots, against applyPerFan);
 #   5. the write round trip at which G's modelled slot breaks, before the engaged step and with it,
 #      and the one past which the engaged step outgrows the 64-round-trip turn D_cycle counts in
-#      flight ahead of each of § 3's turns, against D_cycle's own break-even.
+#      flight ahead of each of § 3's turns, against D_cycle's own break-even. Both are in D_cycle's
+#      model: reads at the measured worst round trip, writes at W. The engaged step and D_cycle
+#      taken at one latency are printed apart, because that is another model and its figures do
+#      not compare with the first's.
 #
 # Integer microseconds, as the Swift does. Constants are WatchdogLimits', the scheduler's and
 # FanExaminationGate's.
@@ -233,11 +236,33 @@ def break_even(slot):
     return lo
 
 
+CYCLE_ROOM = 15_000_000 - INTERVAL - 100_000 - 5_000_000  # D_cycle less the interval, slop and D
+
+
+def cycle_round_trips():
+    """§ 3's firing cycle with every restore refused, as D_cycle's allowance counts it: its reads
+    (the 64-key slices and the curated read) and its writes."""
+    return TURN * (1 + F + F * ATT) + K, F * WRITE + F * ATT * FANRESTORE
+
+
 def cycle_break_even():
     """D_cycle's: 15 s against the interval, slop, D, § 3's reads at RT and its writes at W."""
-    writes = F * WRITE + F * ATT * FANRESTORE
-    reads = TURN * (1 + F + F * ATT) + K
-    return (15_000_000 - INTERVAL - 100_000 - 5_000_000 - reads * RT) / writes
+    reads, writes = cycle_round_trips()
+    return (CYCLE_ROOM - reads * RT) / writes
+
+
+def cycle_uniform_break_even():
+    """D_cycle's allowance with every round trip, reads and writes, at one latency. The other
+    model: it is the one a figure like TURN * RT / ENGAGED (nine round trips at one latency) is
+    in, and it breaks D_cycle far sooner than the first model does."""
+    return CYCLE_ROOM / sum(cycle_round_trips())
+
+
+def engaged_step_break_even(reads=7, writes=2):
+    """The write round trip past which the engaged step outgrows the TURN read round trips
+    D_cycle counts in flight ahead of each of § 3's turns, in D_cycle's model: reads at RT, writes
+    at W. The step that raises its fan is seven reads and two writes cold, six and two warm."""
+    return (TURN * RT - reads * RT) / writes
 
 
 def fmt(rt):
@@ -287,9 +312,13 @@ if __name__ == '__main__':
           f'{break_even(slot_with_writes) / 1000:.2f} ms with the engaged step at nine, '
           f'{break_even(lambda w: slot_with_writes(w, 6, 2)) / 1000:.2f} ms at eight, and '
           f'{break_even(slot_before_the_engaged_step) / 1000:.2f} ms before it')
-    print(f'  the engaged step fits the 64-round-trip turn in flight while a round trip is at most '
-          f'{TURN * RT / ENGAGED / 1000:.1f} ms (nine), {TURN * RT / 8 / 1000:.1f} ms (eight); '
-          f'D_cycle\'s own writes break even at {cycle_break_even() / 1000:.2f} ms')
+    print(f'  with reads at {RT / 1000:.3f} ms and writes at W, D_cycle\'s own writes break even '
+          f'at {cycle_break_even() / 1000:.2f} ms, and the engaged step outgrows the {TURN}-round-'
+          f'trip turn in flight only past a W of {engaged_step_break_even() / 1000:.1f} ms cold '
+          f'(seven reads, two writes), {engaged_step_break_even(6, 2) / 1000:.1f} ms warm')
+    print(f'  at one latency, another model: the engaged step fits that turn while a round trip is '
+          f'at most {TURN * RT / ENGAGED / 1000:.1f} ms (nine), {TURN * RT / 8 / 1000:.1f} ms '
+          f'(eight), and D_cycle itself breaks at {cycle_uniform_break_even() / 1000:.2f} ms')
 
     # ADR 0012's figures, reproduced: the 'five' model is the committed scripts' arithmetic.
     assert modelled(12, 'five') == (527, 821)
@@ -309,3 +338,9 @@ if __name__ == '__main__':
     # The bounded form: 819-863, slots 828-872, all under G.
     waits = [worst(h, 'once') for h in bounded.values()]
     assert (min(waits), max(waits)) == (819, 863) and (max(waits) + ENGAGED) * RT < G
+    # Write round trips, in D_cycle's model: G's slot breaks first (20.55 ms), then D_cycle's own
+    # writes (86.98 ms), and the cold raise outgrows the 64-round-trip turn only past 326.4 ms. At
+    # one latency D_cycle breaks at 14.08 ms, so 81.4 ms against 86.98 ms compares two models.
+    assert round(engaged_step_break_even() / 1000, 1) == 326.4
+    assert break_even(slot_with_writes) < cycle_break_even() < engaged_step_break_even()
+    assert 14.0 < cycle_uniform_break_even() / 1000 < 14.1

@@ -374,13 +374,16 @@ firmware at runtime.
   `F<n>Md = 1` at a target of 0, at rest. It arises when the step that wrote the mode throws
   before its floor holds — the floor refused, unanswered or not held, the target unreadable, the
   mode's read-back lost, or the mode write unanswered and landed — and the undo that follows is
-  refused too; or when ADR 0012's D ends the helper between the mode write and the raise, which
-  no undo follows. It is bounded, not excluded: by level 6's re-apply, which re-adopts and
-  commands the fan in one step; by § 5; by the lease's teardown and its three attempts; by § 3's
-  bridge, since the driver registers the fan with § 3 before its undo; by § 4, § 6 and § 7; and by
-  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. ADR 0014's b2
-  amendment, "Settled by P1′", lists the routes. (A fan kept the same way under load is not
-  stopped: it holds Apple's last target.)
+  refused too, or is answered `0x00` and not applied (firmware that accepts a mode write and
+  leaves the fan manual, #291; unobserved); or when ADR 0012's D ends the helper between the mode
+  write and the raise, which no undo follows. It is bounded, not excluded: by level 6's re-apply,
+  which re-adopts and commands the fan in one step; by § 5; by the lease's teardown and its three
+  attempts; by § 3's bridge, since the driver registers the fan with § 3 before its undo; by § 4,
+  § 6 and § 7; and by reconciliation at the next start. The undo that is answered and not applied
+  has the same bounds bar the re-apply, which meets only a fan whose undo was refused: § 3 keeps
+  the fan registered, owed a read-back, until it reads automatic. Run 1 watches for it with aborts
+  7 and 10. ADR 0014's b2 amendment, "Settled by P1′", lists the routes. (A fan kept the same way
+  under load is not stopped: it holds Apple's last target.)
 
 ### Why the floor is not simply `F0Mn`
 

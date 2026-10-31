@@ -3669,11 +3669,14 @@ after the sync of `main` through #637).
   key info cached and nine without, and holds in five and six. `writeTurnRoundTrips` stays 5,
   § 3's bridge job and every other turn, so D_cycle is unchanged. `readerTurnRoundTrips` is the
   larger, 9, and G's slot adds it. *D_cycle counts the turn in flight ahead of each of § 3's turns
-  at 64 read round trips, which covers the nine-round-trip turn only while each of its round trips
-  takes at most 64 × 11.453 / 9 = 81.4 ms (91.6 ms at eight). That is below the 86.98 ms
-  break-even of § 3's own writes, so between 81.4 and 86.98 ms the engaged step, not § 3's writes,
-  would be the binding term; moot below G's write break-even of about 20.5 ms (ADR 0012's
-  2026-10-31 amendment).*
+  at 64 read round trips, 733.0 ms at the measured worst read. Under D_cycle's own model, § 3's
+  reads at 11.453 ms and its writes at W, the cold raise (seven reads, two writes) fits that count
+  while 80.2 ms + 2W is at most 733.0 ms: up to a W of about 326 ms. That is far above the 86.98 ms
+  break-even of § 3's own writes, so they still bind first, and both are above G's write
+  break-even of about 20.5 ms (ADR 0012's 2026-10-31 amendment). The 81.4 ms this paragraph first
+  gave (64 × 11.453 / 9; 91.6 ms at eight) took all nine round trips at one latency, another model,
+  under which D_cycle itself breaks at about 14.1 ms, so comparing it with 86.98 ms mixed two
+  models. It erred safe.*
 - **G, re-run at N = 12** (ADR 0012's 2026-10-31 amendment, which records it;
   `scripts/gate-wait-model/engaged_step.py`). Every queued reader at the engaged step fails G: four
   of the histories ADR 0012 counts closed pass it (874–892 round trips at eight). So the queue counts
@@ -3699,17 +3702,23 @@ after the sync of `main` through #637).
     automatic control. It logs the gate fault, and its hold is 31.44 s, inside `examinationWait`.
   - **What the fallback would cost.** It would leave every fan engaged at rest in manual at a target
     of 0 for up to a slot, which is the window decision 4 closed. In exchange it would take that
-    family's wait 0.09 s under G, and leave both families' slots over G.
+    family's wait by 0.09 s, to 0.047 s under G (877 to 869 round trips, 10.044 s to 9.953 s), and
+    leave both families' slots over G.
 - **Re-adoption, and the state it can meet.** Level 6's re-adoption of a kept fan
   (`LeaseEngagements.read`) runs no floor rule. The state it can meet is raw `1` at target 0, at
-  rest: a fan in manual control and stopped. Four routes reach that state, and the first three
+  rest: a fan in manual control and stopped. Five routes reach that state, and the first three
   leave the fan kept, for the re-apply to meet:
   - a floor hold that throws — the floor refused, unanswered or not held, or the target unreadable
     — with the driver's undo refused;
   - the mode write accepted and its read-back lost, so the step throws before any floor hold, with
     the undo refused;
   - the mode write unanswered and landed, with the undo refused;
-  - ADR 0012's D ending the helper between the mode write and the raise, which no undo follows.
+  - ADR 0012's D ending the helper between the mode write and the raise, which no undo follows;
+  - the driver's undo answered `0x00` and not applied: firmware that takes the mode write and
+    leaves the fan manual (#291's `reverted`, unobserved: ADR 0011's assumption table). The undo is
+    not refused, so the fan is not kept and the re-apply does not meet it. The driver registered
+    the fan with § 3 before the undo, and `handbackAccepted` marks it owed a read-back: it stays
+    registered until § 3's own cycle reads `F<n>Md` automatic.
 
   The re-adopted fan is commanded in the same step, at its clamped target, before the step
   returns; `ProductionReAdoptionTests` holds that over the production plane, and
@@ -3717,9 +3726,11 @@ after the sync of `main` through #637).
   Between a refused undo and the re-apply the fan is held stopped. It is bounded by the re-apply,
   § 5, the lease's teardown and its three attempts, § 3's bridge (the driver registers the fan with
   § 3 before the undo, and it stays in that registry), § 4, § 6 and § 7; the fourth route by
-  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. A fan kept the same
-  way under load is not stopped: it holds Apple's last target (#406). `docs/SAFETY.md` § 2 names
-  this residual beside "0 RPM is not reachable".
+  reconciliation at the next start. The fifth has the same bounds bar the re-apply, which meets
+  only a kept fan: § 3 keeps the fan registered and owed a read-back until it reads automatic. Run 1
+  watches for it with aborts 7 and 10. A fan kept the same way under load is not stopped: it holds
+  Apple's last target (#406). `docs/SAFETY.md` § 2 names this residual beside "0 RPM is not
+  reachable".
 
 **What remains.** The real write body, `freshKeyInfo` and the forwarder meet the plane first at
 run 1. Write latency (U8) is measured from the per-write log lines, never by a test. Restore turns
@@ -4071,17 +4082,6 @@ amendment, "Settled by P1′".)* #465 is to:
 **No `AeolusXPCVersion` bump:** raw `3` crosses the boundary as `.automatic`. **Status stays
 Proposed.**
 
-## Assumptions and what would invalidate them
-
-U0, U1, U4, U5b, U6, U7, U10, U11, U13 and U14 are restated, and U16 and U17 added, by the P1′
-amendment.
-
-| # | Assumption | Basis | If it fails |
-|---|---|---|---|
-| U0 | Apple's own management reads raw `F<n>Md` in `{0, 3}`: `0` while it spins the fan, and `3` while it has the fan stopped | Observed in P1 on 27.2, across 41,931 samples, idle and under two loads, before and after the exclusion. Every earlier raw `0` was taken with the fans spinning | A third value under Apple's management folds to manual and the pre-state refuses it. That fails safe, but it misattributes the fan. It goes to the architect before the next run, and a value joins the set only on P1-grade evidence |
-| U14 | Apple's own management leaves raw `Ftst = 0`, under load included | Observed in P1: `0` on all 41,931 samples, through both loads and both soaks | The preparation step would clear Apple's own state at each start, and D3 step 3 would write over it. Both go to the architect before run 1 |
-| U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported, and placed at "mode 3", which is this machine's rest state. So the refusal is predicted at 1a, and possibly not at 1b. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review. **Refused under load and accepted at rest:** recorded; nothing changes |
-| U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
 ## Amendment (2026-10-31, run 1) — run 1 as executed: one recorder per rate, a watcher that alerts and never writes, and the terms the aborts read
 
 Cited elsewhere as the run-1 amendment.
@@ -4294,6 +4294,17 @@ says otherwise. Intel and M1/M2 stay `untested`.
 
 **No `AeolusXPCVersion` bump:** nothing crosses the boundary. **Status stays Proposed.**
 
+## Assumptions and what would invalidate them
+
+U0, U1, U4, U5b, U6, U7, U10, U11, U13 and U14 are restated, and U16 and U17 added, by the P1′
+amendment.
+
+| # | Assumption | Basis | If it fails |
+|---|---|---|---|
+| U0 | Apple's own management reads raw `F<n>Md` in `{0, 3}`: `0` while it spins the fan, and `3` while it has the fan stopped | Observed in P1 on 27.2, across 41,931 samples, idle and under two loads, before and after the exclusion. Every earlier raw `0` was taken with the fans spinning | A third value under Apple's management folds to manual and the pre-state refuses it. That fails safe, but it misattributes the fan. It goes to the architect before the next run, and a value joins the set only on P1-grade evidence |
+| U14 | Apple's own management leaves raw `Ftst = 0`, under load included | Observed in P1: `0` on all 41,931 samples, through both loads and both soaks | The preparation step would clear Apple's own state at each start, and D3 step 3 would write over it. Both go to the architect before run 1 |
+| U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported, and placed at "mode 3", which is this machine's rest state. So the refusal is predicted at 1a, and possibly not at 1b. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review. **Refused under load and accepted at rest:** recorded; nothing changes |
+| U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
 | U3 | The yield arrives within 3.5 s | Reported at about 3 s; budgets of about 30 s suggest a tail | Raise the budget and give `apply` its own client deadline. Beyond about 4 s, asynchronous engagement before merge |
 | U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half. In P1 Apple never produced `1`, so a `1` after the plane's accepted write is the plane's | **Mode:** D3 refuses, which is correct. The re-adoption of a kept fan reads the same predicate. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
 | U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place. A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |

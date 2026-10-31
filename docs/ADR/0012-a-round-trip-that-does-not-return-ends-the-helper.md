@@ -1077,11 +1077,16 @@ of its own.
   that step writes and whatever the cache holds. It raises in eight warm and nine cold, and holds in
   five warm and six cold. `readerTurnRoundTrips` is 9, and G's slot adds it. `writeTurnRoundTrips`
   stays 5, so D_cycle's allowance is unchanged: 632 round trips, 13.34 s. Each of § 3's lane turns
-  waits for at most one turn in flight, and that turn is counted at 64. That covers a
-  nine-round-trip turn only while each of its round trips takes at most 64 × 11.453 / 9 =
-  **81.4 ms**, down from 91.6 ms at eight, which is below D_cycle's 86.98 ms break-even for § 3's own writes: between 81.4
-  and 86.98 ms the engaged step in flight, not § 3's own writes, would be the binding term. It is
-  moot below the about 20.5 ms at which G's modelled slot already breaks (What remains).
+  waits for at most one turn in flight, and that turn is counted at 64 read round trips, 733.0 ms
+  at the measured worst read. Under D_cycle's own model, § 3's reads at that 11.453 ms and its
+  writes at W, the cold raise (seven reads and two writes) fits that count while 80.2 ms + 2W is at
+  most 733.0 ms: up to a W of about **326 ms**. That is far above D_cycle's 86.98 ms break-even for
+  § 3's own writes, so they still bind first, and both are above the about 20.5 ms at which G's
+  modelled slot already breaks (What remains).
+  *(Corrected on #465's delta review. This amendment first compared 64 × 11.453 / 9 = 81.4 ms,
+  91.6 ms at eight, with 86.98 ms. That takes all nine round trips at one latency, which is another
+  model: under it D_cycle itself breaks at about 14.1 ms, where 632 round trips fill the 8.9 s it
+  leaves after the interval, the slop and D. The figure erred safe.)*
 - **G's queue counts at most one engaged step per fan at nine, and every other reader at five**
   (`WatchdogLimits.readerTurns`). Taking every reader at the engaged step fails four of the
   histories this ADR counts closed: 874–892 round trips at eight. The one-per-fan count rests on ADR
@@ -1131,8 +1136,9 @@ of its own.
   #332 amendment's figures, 53.91 s.)*
 - **The floor is not moved to a turn of its own** (ADR 0014's second fallback). It would leave every
   fan engaged at rest in manual at a target of 0 for up to a slot. That is the stopped-fan window the
-  P1′ amendment closed. In exchange it would move this family's wait 0.09 s under G, while leaving
-  its slot at 10.01 s and the take-back family at 10.58 s.
+  P1′ amendment closed. In exchange it would move this family's wait by 0.09 s, to 0.047 s under G
+  (877 to 869 round trips, 10.044 s to 9.953 s), while leaving its slot at 10.01 s and the
+  take-back family at 10.58 s.
 
 ### What remains
 
