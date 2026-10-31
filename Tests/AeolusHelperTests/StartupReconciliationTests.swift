@@ -19,22 +19,28 @@ struct StartupReconciliationTests {
     private static let safetyLog = SafetyLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
 
-    /// The real graph over the scripted firmware, on a **frozen clock unless a test passes its
-    /// own** ([#407](https://github.com/blamechris/Aeolus/issues/407)).
+    /// The real graph over the scripted firmware, on a **frozen `TestClock` and the shipping
+    /// budget** ([#407](https://github.com/blamechris/Aeolus/issues/407),
+    /// [#411](https://github.com/blamechris/Aeolus/issues/411)).
     ///
     /// Reconciliation checks its 5 s budget against this clock, so on the system clock a runner
     /// stall longer than the budget runs it out mid-pass and the pass takes its keystone path
     /// (CI run 38994751749). That is the right answer to an expired budget and not what any
-    /// case that goes through here is about. A case about the deadline passes a `TestClock`
-    /// it moves itself, as `anExhaustedBudgetStillReturnsAndRefusesDurably` does.
+    /// case that goes through here is about.
+    ///
+    /// The clock and the budget are not parameters. They were, defaulted, and no case passed
+    /// either. A case about the deadline needs more than a different clock: it needs the clock
+    /// moved *during* the pass, which takes a plane that advances it on each read. So it does
+    /// not come through here. It builds its own graph, as
+    /// `anExhaustedBudgetStillReturnsAndRefusesDurably` does over `ClockAdvancingPlane` with a
+    /// 1 s budget. Without the parameters, every case that does come through here is frozen,
+    /// and none can be put back on the system clock by passing one.
     private static func composed(
         fans: [Int: ScriptedControlPlane.FanCondition],
         stages: [ScriptedControlPlane.Stage] = [],
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int? = nil,
-        extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
-        clock: some MonotonicClock = TestClock(),
-        budget: Duration = ReconciliationLimits.budget
+        extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
             plane: ScriptedControlPlane(
@@ -48,8 +54,7 @@ struct StartupReconciliationTests {
                 fanCount: fanCount ?? fans.count, extraKeys: extraKeys),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
-            clock: clock,
-            reconciliationBudget: budget,
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog)
@@ -509,6 +514,8 @@ struct ForeignManualControlReportingTests {
         // sources would on a machine another tool is holding. Nothing here brings the helper
         // up: this is the snapshot's own rule, and a reconciliation pass would restore the
         // fan out from under it.
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let manualHelper = HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .held(at: 2_400)],
@@ -517,6 +524,7 @@ struct ForeignManualControlReportingTests {
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -551,6 +559,8 @@ struct ForeignManualControlReportingTests {
     private static func helperSeeingFanZeroInManual(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured
     ) -> HelperComposition<ScriptedControlPlane> {
+        // Frozen, as `HelperRestorerTests.composed` is and for its reason (#411): the lease the
+        // leased-fan case takes must still be live when the snapshot reads it.
         HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .automatic(at: 2_400)],
@@ -562,6 +572,7 @@ struct ForeignManualControlReportingTests {
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -643,6 +654,8 @@ struct ForeignManualControlReportingTests {
     private static func helperWithAManualFan(
         markedBy mark: (ReclamationLedger) async -> Void
     ) async -> HelperComposition<ScriptedControlPlane> {
+        // Frozen though nothing here is timed, so a copied test cannot leave the composition
+        // on the wall clock by accident (#411).
         let helper = HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .held(at: 2_400)],
@@ -651,6 +664,7 @@ struct ForeignManualControlReportingTests {
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
