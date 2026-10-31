@@ -320,3 +320,22 @@ class Run:
             with open(paths[key], "w", encoding="utf-8") as handle:
                 handle.write("".join(line + "\n" for line in lines))
         return paths
+
+
+def fixture_run():
+    """The committed fixture: 22 s of a quiet machine with one well-formed hold in it. Every
+    value is made up. A watcher must raise nothing on it, and verify the hold's restore."""
+    run = Run.idle(22.0, hottest=44.0, f0mn=1350.0)
+    run.add_log(0.5, "The write path's preparation step enumerated 2 fan(s) [0, 1], found the force "
+                     "key Ftst, recorded the restore keys' declared sizes in bytes [F0Md 1], and "
+                     "issued the machine-wide restore, which landed.")
+    run.add_ctx(1.0, "armed pid=4242")
+    run.hold(go=3.0, restore=8.0, target=3000, step="1a", sit=12.0)
+    run.add_poll(1.0, "pgrep", pids=[4242]).add_poll(1.0, "pressure", level=0)
+    run.add_poll(1.0, "logstream", alive=True)
+    return run
+
+
+if __name__ == "__main__":
+    import sys
+    fixture_run().write(sys.argv[1])

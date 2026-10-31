@@ -765,9 +765,6 @@ def unit_sweep(work, mutations, python):
         for index, (label, how) in enumerate(jobs + extra):
             path = sweep.make("unit-%d" % index, apply_mutation(how))
             directory = os.path.dirname(path)
-            fixtures = os.path.join(mutate.HERE, "fixtures")
-            if os.path.isdir(fixtures) and not os.path.isdir(os.path.join(directory, "fixtures")):
-                shutil.copytree(fixtures, os.path.join(directory, "fixtures"))
             code, text = mutate.run_unit_tests(directory, python)
             failed = [l.split(" ")[1] for l in text.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
             ok = code != 0 and bool(failed)

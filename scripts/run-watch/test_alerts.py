@@ -3,9 +3,7 @@
 import unittest
 
 import run_watch as rw
-import synth
-from synth import wrote
-from support import first, idle, lines, replay, titles
+from support import idle, lines, replay, titles
 
 
 def speech_times(watcher):

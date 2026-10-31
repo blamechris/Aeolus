@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shutil
 import subprocess
 import sys
 
@@ -73,7 +74,12 @@ class Sweep:
         target = os.path.join(self.directory, label)
         os.makedirs(target, exist_ok=True)
         original = None
+        fixtures = os.path.join(HERE, "fixtures")
+        if os.path.isdir(fixtures) and not os.path.isdir(os.path.join(target, "fixtures")):
+            shutil.copytree(fixtures, os.path.join(target, "fixtures"))
         for name in sorted(os.listdir(HERE)):
+            if name.endswith(".sh"):
+                shutil.copy(os.path.join(HERE, name), os.path.join(target, name))
             if not name.endswith(".py") or name in ("mutate.py", "dryrun.py"):
                 continue
             with open(os.path.join(HERE, name), encoding="utf-8") as handle:

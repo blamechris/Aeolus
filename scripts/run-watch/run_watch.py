@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from collections import deque, namedtuple
 
 # --------------------------------------------------------------------------------------------
@@ -492,6 +493,15 @@ class Watcher:
         state = self.alerts[aid]
         state.active = False
         self.out.line(self.now, "CLEAR", "%s no longer holds" % state.title)
+
+    def internal_error(self, error):
+        """A rule raised. The live loop goes on, and the operator is told once per episode: a
+        watcher that dies is only heard by the companion ten seconds later."""
+        trace = " | ".join(traceback.format_exc().strip().splitlines()[-4:])
+        self.out.line(self._stamp(), "ERROR", trace)
+        state = self.alerts.get("x-internal")
+        if state is None or not state.active:
+            self.event("x-internal", "WATCHER ERROR", "%s: %s" % (type(error).__name__, error))
 
     def active_alerts(self):
         return sorted(s.title for s in self.alerts.values() if s.active)
@@ -1165,8 +1175,21 @@ def dispatch(watcher, kind, payload):
             watcher.on_logstream(t, bool(payload.get("alive")))
 
 
-def run_events(watcher, events, step=LOOP_SECONDS, mark_ended=False):
-    """Feed events in time order, ticking the clock between them as the live loop would."""
+def _unguarded(watcher, function, *args):
+    function(*args)
+
+
+def guarded(watcher, function, *args):
+    try:
+        function(*args)
+    except Exception as error:  # noqa: BLE001  a bug in a rule must be heard, not fatal
+        watcher.internal_error(error)
+
+
+def run_events(watcher, events, step=LOOP_SECONDS, mark_ended=False, guard=False):
+    """Feed events in time order, ticking the clock between them as the live loop would. A
+    replay lets a bug raise; the live loop's catch-up (`guard`) hears it and goes on."""
+    call = guarded if guard else _unguarded
     if events:
         watcher.start(events[0][0])
     last_end = {}
@@ -1177,15 +1200,15 @@ def run_events(watcher, events, step=LOOP_SECONDS, mark_ended=False):
     ended = {"fan": "fans", "package": "package"}
     for t, _, _, kind, payload in events:
         while watcher.now is not None and watcher.now + step < t:
-            watcher.advance(watcher.now + (step if t - watcher.now < 120 else 5.0))
-        dispatch(watcher, kind, payload)
-        watcher.advance(t)
+            call(watcher, watcher.advance, watcher.now + (step if t - watcher.now < 120 else 5.0))
+        call(watcher, dispatch, watcher, kind, payload)
+        call(watcher, watcher.advance, t)
         if mark_ended:
             for name, when in last_end.items():
                 if t >= when:
                     watcher.source_ended(ended[name])
     if events:
-        watcher.advance(watcher.now)
+        call(watcher, watcher.advance, watcher.now)
     return watcher
 
 
@@ -1195,7 +1218,11 @@ class Tail:
     def __init__(self, path):
         self.path, self.handle, self.inode, self.pending = path, None, None, b""
 
-    def read_new(self, limit=8 << 20):
+    CHUNK = 8 << 20
+
+    def read_new(self, limit=CHUNK):
+        """The complete lines appended since the last call; `limit` caps the bytes, None reads
+        to the end."""
         try:
             status = os.stat(self.path)
         except OSError:
@@ -1343,11 +1370,11 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: stopping.update(flag=True))
 
-    def read_events(now):
+    def read_events(now, limit=Tail.CHUNK):
         events, seq = [], 0
         for name, tail in tails.items():
             kind, parse = parsers[name]
-            for raw in tail.read_new():
+            for raw in tail.read_new(limit):
                 parsed = parse(raw, now) if kind == "ctx" else parse(raw)
                 if parsed is None or (kind == "ctx" and parsed.t is None):
                     continue
@@ -1356,9 +1383,9 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
         events.sort(key=lambda e: e[:3])
         return events
 
-    history = read_events(wall())
+    history = read_events(wall(), limit=None)  # to the end of each file, not one chunk of it
     watcher.info("catching up on %d events already in the files" % len(history))
-    run_events(watcher, history, step=0.5)
+    run_events(watcher, history, step=0.5, guard=True)
     watcher.go_live(wall())
     watcher.info("live")
     next_poll = {"pgrep": 0.0, "pressure": 0.0, "pmset": 0.0, "beat": 0.0}
@@ -1366,19 +1393,18 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
         while not stopping["flag"]:
             now = wall()
             for t, _, _, kind, payload in read_events(now):
-                dispatch(watcher, kind, payload)
-            watcher.advance(now)
+                guarded(watcher, dispatch, watcher, kind, payload)
+            guarded(watcher, watcher.advance, now)
             if now >= next_poll["pgrep"]:
                 next_poll["pgrep"] = now + 1.0
-                watcher.on_pgrep(now, poll_pgrep(spawn))
-                alive = logstream_alive(paths["logstream_pid"])
-                watcher.on_logstream(now, alive)
+                guarded(watcher, watcher.on_pgrep, now, poll_pgrep(spawn))
+                guarded(watcher, watcher.on_logstream, now, logstream_alive(paths["logstream_pid"]))
             if now >= next_poll["pressure"]:
                 next_poll["pressure"] = now + 1.0
-                watcher.on_pressure(now, poll_pressure(spawn))
+                guarded(watcher, watcher.on_pressure, now, poll_pressure(spawn))
             if now >= next_poll["pmset"]:
                 next_poll["pmset"] = now + 5.0
-                watcher.on_pmset(now, poll_pmset(spawn))
+                guarded(watcher, watcher.on_pmset, now, poll_pmset(spawn))
             if now >= next_poll["beat"]:
                 next_poll["beat"] = now + 1.0
                 out.heartbeat(now)

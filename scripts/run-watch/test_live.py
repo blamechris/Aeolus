@@ -7,7 +7,6 @@ fails the test whichever code path asked for it."""
 import contextlib
 import hashlib
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -18,8 +17,7 @@ from unittest import mock
 
 import run_watch as rw
 import synth
-from synth import wrote
-from support import idle
+from support import idle, replay
 
 
 class FakeChild:
@@ -210,6 +208,32 @@ class LiveLoop(unittest.TestCase):
         watcher, _, _ = live(idle(80), synth.T0 + 5, synth.T0 + 30, system=system, on_sleep=on_sleep)
         self.assertEqual([r.title for r in watcher.raised], ["ABORT 6"])
 
+    def test_a_rule_that_raises_is_heard_once_and_the_loop_goes_on(self):
+        run = idle(80).patch_hottest(30, 31, 90.0)
+        original = rw.Watcher.check_r1_absolute
+
+        def broken(self, hottest):
+            if hottest == 42.0:
+                raise ValueError("a value this rule did not expect")
+            return original(self, hottest)
+
+        with mock.patch.object(rw.Watcher, "check_r1_absolute", broken):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        titles = [r.title for r in watcher.raised]
+        self.assertEqual(titles.count("WATCHER ERROR"), 1)
+        self.assertIn("ValueError", watcher.raised[0].detail)
+        # the loop kept reading: the other rules still ran to the end
+        self.assertGreater(watcher.fan_samples, 300)
+        # It is one alert, raised once; like any held state it is repeated aloud every 15 s from
+        # the moment the watcher goes live (5 s into this run): at 5, 20 and 35.
+        self.assertEqual(system.spoken().count("watcher error"), 3)
+        self.assertIn(" ERROR ", read(os.path.join(directory, "watch.log")))
+
+    def test_a_replay_does_not_swallow_a_bug(self):
+        with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                replay(idle(10))
+
     def test_pgrep_failing_is_not_the_helper_vanishing(self):
         system = FakeSystem()
         original = system.__call__
@@ -231,6 +255,17 @@ class LiveLoop(unittest.TestCase):
         self.assertEqual(watcher.step, "1a")
         self.assertEqual(watcher.raised, [])
         self.assertAlmostEqual(watcher.engage_t, synth.T0 + 10.03, delta=0.01)
+
+    def test_catch_up_reads_each_file_to_its_end_not_one_chunk_of_it(self):
+        # A watcher started late reads history in one go. With a chunk of 2 KB the history is
+        # many chunks long; if only the first were read, the rest would arrive after the watcher
+        # went live and be said aloud as though it were new.
+        run = idle(120).patch_hottest(10, 11, 90.0)
+        with mock.patch.object(rw.Tail, "CHUNK", 2048):
+            watcher, system, _ = live(run, synth.T0 + 100, synth.T0 + 105)
+        self.assertGreater(watcher.fan_samples, 1000)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])  # found in the history
+        self.assertEqual(system.spoken(), [])  # ... and, being over, not said
 
     def test_a_hold_with_no_restore_is_abort_8_even_for_a_watcher_started_late(self):
         run = idle(400).hold(go=10, restore=390, target=3000)
