@@ -1711,6 +1711,55 @@ extension SafetyLog {
     }
 }
 
+// MARK: - The write plane's turns (ADR 0014 D1, D3; ADR 0012 H6)
+
+extension SafetyLog {
+
+    /// One write call the plane made, and how the firmware answered it: the key, the bytes, the
+    /// result byte or what came back instead of one, and the round trip's duration. One line per
+    /// call, restores included, so run 1's record has every write (D1, D8) and write latency (U8,
+    /// ADR 0012 H6) is measured from these lines and from nothing a test runs. `.notice`: a
+    /// refusal is reported as a fault by the verb's caller, which knows what it meant.
+    func planeWrote(key: SMCKey, bytes: String, answer: String, roundTrip: Duration) {
+        emit(.notice, "Wrote \(key.rawValue) = \(bytes): answered \(answer), in \(roundTrip).")
+    }
+
+    /// One engagement step's turn: whether it was the engagement's first, the raw `F<n>Md` it
+    /// read before its write, what the write answered, the raw value it read back, how it ended,
+    /// and the turn's duration (D3's per-step record). The attempt index is the driver's line,
+    /// logged before the step (`engagementStepAttempted(fan:attempt:)`).
+    func planeStepped(_ trace: StepTrace, took turn: Duration) {
+        emit(
+            .notice,
+            """
+            Fan \(trace.fan)'s \(trace.firstStep ? "first" : "later") engagement step: raw \
+            F\(trace.fan)Md \(trace.before) before, the mode write answered \(trace.modeWrite), \
+            \(trace.after) after; \(trace.outcome), in \(turn).
+            """
+        )
+    }
+
+    /// The floor hold of a fan whose step just read back engaged, in the same turn (ADR 0014's P1′
+    /// amendment, decision 4): the raw target it read, and beside it the RPM it decoded to so run
+    /// 1's operator need not decode the `flt` by hand; the floor it raised the target to, if any;
+    /// and how the hold ended — held, the raise's answer and read-back, or what it threw. Each
+    /// write call has its own `planeWrote(key:bytes:answer:roundTrip:)` line as well. Run 1 reads
+    /// whether the floor was raised from this line, and 1d reads from it that no `F1` key was
+    /// written.
+    /// `.notice`: a hold that threw is reported by the driver's undo, which knows what it meant.
+    func planeHeldFloor(_ hold: FloorHoldTrace) {
+        let raise = hold.floorRaisedTo.map { "the raise to its floor, \($0) RPM, " } ?? ""
+        let decoded = hold.decodedRPM.map { " (\($0) RPM)" } ?? ""
+        emit(
+            .notice,
+            """
+            Fan \(hold.fan) read back engaged with raw \(hold.key.rawValue) \(hold.raw)\(decoded): \
+            \(raise)\(hold.outcome).
+            """
+        )
+    }
+}
+
 extension SafetyLog {
 
     // MARK: - docs/SAFETY.md § 5 — the lease a fan was registered under (#353, #357)

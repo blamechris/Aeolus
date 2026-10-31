@@ -316,7 +316,7 @@ struct SupervisedFanAuthority: FanAuthority {
     /// at `.fault`, and the message still succeeds. The verb answers *accepted*, never *done*
     /// (ADR 0013): the snapshot's existing reasons report each fan, and the fault line is the
     /// only report of a force key left set. Until ADR 0014 this paragraph declined the restore,
-    /// because the plane verb throws on this build and a v1 message that succeeds would have
+    /// because the plane verb threw on every build then and a v1 message that succeeds would have
     /// become one that always fails ([#159](https://github.com/blamechris/Aeolus/issues/159)).
     /// Catching the throw keeps the success and the restore both, and the `.built` gate keeps
     /// the call off a plane that has nothing to write with.

@@ -29,6 +29,13 @@ extension FirmwareSMC {
         readAnswers[key] = answer
     }
 
+    /// The next reads of `key` that reach `READ_BYTES` are answered these ways, in order, ahead of
+    /// its standing answer (`setRead(of:_:)`) — so a scenario can let a pre-state read answer and
+    /// lose the read-back after it, in one turn (b2).
+    func queueReads(of key: SMCKey, _ answers: [ReadAnswer]) {
+        queuedReads[key, default: []].append(contentsOf: answers)
+    }
+
     /// The next writes to `key` are answered these ways, in order, ahead of the unlock rule and the
     /// default.
     func queueWrites(to key: SMCKey, _ answers: [WriteAnswer]) {

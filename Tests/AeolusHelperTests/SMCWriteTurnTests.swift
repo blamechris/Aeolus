@@ -5,7 +5,8 @@ import os
 @testable import AeolusHelper
 @testable import SMCCore
 
-/// `SMCReadScheduler.withWriteTurn(on:_:)`: one `.supervisor` turn, excluded against every other
+/// `SMCReadScheduler.withWriteTurn(at:on:_:)`: one turn at the given admission, excluded against
+/// every other
 /// turn, and taking neither of D22's waits (ADR 0014's B1 amendment; #103's D22 is why a recycle
 /// waits for a walk and a write need not).
 ///
@@ -49,7 +50,8 @@ struct SMCWriteTurnTests {
         let firmware = FirmwareSMC.mac16x5()
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
 
-        let info = try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
+        let info = try await scheduler.withWriteTurn(
+            at: .supervisor, on: firmware, runsOneWriteJob(on:))
 
         #expect(info.type == .ui8 && info.dataSize == 1)
         #expect(
@@ -73,7 +75,7 @@ struct SMCWriteTurnTests {
         let scheduler = SMCReadScheduler(provider: firmware.provider)
 
         await #expect(throws: SMCError.notPermitted) {
-            try await scheduler.withWriteTurn(on: firmware) { channel in
+            try await scheduler.withWriteTurn(at: .supervisor, on: firmware) { channel in
                 try channel.write([], to: Self.forceKey)
             }
         }
@@ -101,7 +103,7 @@ struct SMCWriteTurnTests {
         await yieldUntil("the walk to park inside the firmware") { await firmware.walksParked == 1 }
 
         let turn = observing {
-            try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
+            try await scheduler.withWriteTurn(at: .supervisor, on: firmware, runsOneWriteJob(on:))
         }
         let completed = await Self.completes(turn)
         #expect(
@@ -134,7 +136,9 @@ struct SMCWriteTurnTests {
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
         let held = HeldChannel()
 
-        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        let turn = observing {
+            try await scheduler.withWriteTurn(at: .supervisor, on: held, runsOneWriteJob(on:))
+        }
         await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
 
         let walk = observing { try await scheduler.readAll() }
@@ -163,7 +167,7 @@ struct SMCWriteTurnTests {
         await yieldUntil("the read to hold its turn") { await firmware.readsParked == 1 }
 
         let turn = observing {
-            try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
+            try await scheduler.withWriteTurn(at: .supervisor, on: firmware, runsOneWriteJob(on:))
         }
         // A disjunction, so the mutant's barging write ends this wait rather than timing it out.
         await yieldUntil("the write turn to queue behind the read, or to barge in") {
@@ -196,7 +200,9 @@ struct SMCWriteTurnTests {
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
         let held = HeldChannel()
 
-        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        let turn = observing {
+            try await scheduler.withWriteTurn(at: .supervisor, on: held, runsOneWriteJob(on:))
+        }
         await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
 
         let began = FirmwareLog.Entry.providerReadBegan(["F0Md"])
@@ -224,7 +230,9 @@ struct SMCWriteTurnTests {
         let plane = SMCFanControlPlane(scheduler: scheduler, connection: firmware.recycler)
         let held = HeldChannel()
 
-        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        let turn = observing {
+            try await scheduler.withWriteTurn(at: .supervisor, on: held, runsOneWriteJob(on:))
+        }
         await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
 
         let recycle = observing { try await plane.reconnect() }

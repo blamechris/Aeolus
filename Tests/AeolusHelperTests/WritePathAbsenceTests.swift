@@ -8,9 +8,9 @@ import Testing
 ///
 /// `SMCConnection.write(_:to:)` has a body on `e4/bring-up`: one `WRITE_BYTES` round trip.
 /// The helper calls it in one place, the daemon's `private` forwarder (`DaemonWriteChannel`),
-/// and nothing calls the forwarder: no plane-to-channel invocation exists, and the plane
-/// answers `.notBuilt`. So what is asserted here is where the write may be named and which
-/// command codes exist, not that no write exists anywhere.
+/// and the plane reaches the forwarder through the channel's requirement in one place, the
+/// write turns' `SMCWriteTurns.issue`. So what is asserted here is where the write may be named
+/// and called and which command codes exist, not that no write exists anywhere.
 ///
 /// That is a property of the source tree, not of a code path, so it is asserted against
 /// the source tree. Reading the files via `#filePath` rather than a test-bundle resource
@@ -21,7 +21,8 @@ import Testing
 /// selector, and it is not trying to — what it catches is the realistic regression: a
 /// second command constant nobody reviewed, or a helper file that starts calling the write.
 /// The real guard is that `SMCConnection.write(_:to:)` stays behind the `FanWrite` SPI group,
-/// and that the helper calls it only in the daemon's forwarder, which nothing invokes.
+/// that the helper calls it only in the daemon's forwarder, and that the plane reaches that
+/// forwarder only through one write-turn call.
 /// `WriteSeamAccessTests` guards the access level itself; this suite guards the calls.
 @Suite("The helper has no write path in this tree")
 struct WritePathAbsenceTests {
@@ -103,8 +104,20 @@ struct WritePathAbsenceTests {
     /// `main`'s file, where `DaemonWriteChannel` declares the forwarder and makes the one call.
     static let daemonChannelFile = "AeolusHelperMain.swift"
 
-    /// The helper names `SMCConnection.write(_:to:)` in exactly three files, each in one way, and
-    /// calls it in exactly one place (ADR 0014's B1 seam amendment).
+    /// The write turns' file, where `SMCWriteTurns.issue` makes the plane's one call of the
+    /// channel's write requirement.
+    static let writeTurnsFile = "SMCWriteTurns.swift"
+
+    /// The two uses of the name the helper has: the forwarder's call of the SMC write, and the
+    /// write turns' call of the channel's requirement.
+    static let permittedUses = [
+        "\(daemonChannelFile): DaemonWriteChannel.write's body",
+        "\(writeTurnsFile): SMCWriteTurns.issue's body",
+    ]
+
+    /// The helper names the write in exactly four files, and uses it in exactly two places: the
+    /// forwarder's call of `SMCConnection.write(_:to:)`, and the write turns' one call of the
+    /// channel's requirement, which reaches the forwarder (ADR 0014's B1 seam amendment; b2).
     ///
     /// Comments are dropped first — block comments, so `write /* c */ (…)` is the call it is, and
     /// whole `//` lines, so the prose explaining a rule does not trip it. **String literals are
@@ -116,10 +129,14 @@ struct WritePathAbsenceTests {
     ///   `.write(_:to:)` — in the probe and nowhere else;
     /// - a **declaration**, `func write(` — exactly one inside `protocol SMCWriteChannel`, and one
     ///   inside `DaemonWriteChannel`;
-    /// - a **use**, anything else — a call, or `.write` taken as a value — exactly one, inside
-    ///   `DaemonWriteChannel`'s `func write` body. The write turns will add theirs in their own
-    ///   file; B1 builds none.
-    @Test("The helper calls the SMC write once, in the daemon's forwarder, and declares it twice")
+    /// - a **use**, anything else — a call, or `.write` taken as a value — exactly two: one inside
+    ///   `DaemonWriteChannel`'s `func write` body, and one inside `SMCWriteTurns.issue`'s, the
+    ///   write turns' one write call. A second write-turn call is a write nothing times or logs.
+    ///
+    /// **Mutation:** in `SMCWriteTurns.keystone`, write the restore payload with
+    /// `try channel.write(payload, to: key)` rather than through `issue`. Run: red here, at the
+    /// use's container and at the use census.
+    @Test("The helper writes once in the forwarder and once in the write turns, and declares twice")
     func helperNeverCallsWrite() throws {
         let helperSources = try Self.swiftFiles().filter {
             $0.pathComponents.contains("AeolusHelper")
@@ -142,8 +159,8 @@ struct WritePathAbsenceTests {
                 let place = "\(name): \(try Self.container(of: at, in: prose))"
                 used.append(place)
                 #expect(
-                    place == "\(Self.daemonChannelFile): DaemonWriteChannel.write's body",
-                    "\(place) takes the write as a bare value; only DaemonWriteChannel may use it"
+                    Self.permittedUses.contains(place),
+                    "\(place) takes the write as a bare value; only \(Self.permittedUses) may use it"
                 )
             }
 
@@ -166,10 +183,10 @@ struct WritePathAbsenceTests {
                 case .use(let shape):
                     used.append(place)
                     #expect(
-                        place == "\(Self.daemonChannelFile): DaemonWriteChannel.write's body",
+                        Self.permittedUses.contains(place),
                         """
                         \(place) uses the write — write\(shape). Only DaemonWriteChannel's \
-                        forwarder may, and B1 builds no write turn.
+                        forwarder and SMCWriteTurns.issue may.
                         """)
                 }
             }
@@ -177,7 +194,10 @@ struct WritePathAbsenceTests {
 
         // Coverage, every half: an enumerator that found nothing, or a scan that stopped
         // recognising the name, would make zero assertions above and report the tree clean.
-        let expected = [Self.daemonChannelFile, Self.writeChannelDeclaration, Self.writeSeamProbe]
+        let expected = [
+            Self.daemonChannelFile, Self.writeChannelDeclaration, Self.writeSeamProbe,
+            Self.writeTurnsFile,
+        ]
         #expect(
             mentioning.sorted() == expected.sorted(),
             """
@@ -195,8 +215,11 @@ struct WritePathAbsenceTests {
             protocol SMCWriteChannel and once in DaemonWriteChannel.
             """)
         #expect(
-            used == ["\(Self.daemonChannelFile): DaemonWriteChannel.write's body"],
-            "The helper uses the write at \(used), not once, in DaemonWriteChannel's forwarder")
+            used.sorted() == Self.permittedUses.sorted(),
+            """
+            The helper uses the write at \(used.sorted()), not once in DaemonWriteChannel's \
+            forwarder and once in SMCWriteTurns.issue
+            """)
     }
 
     /// Nothing under `Sources/AeolusHelper` declares an extension of `SMCConnection` — in any form,

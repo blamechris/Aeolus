@@ -1,29 +1,30 @@
 import SMCCore
 
-/// The production `FanControlPlane`: real reads, and writes that refuse.
+/// The production `FanControlPlane`: real reads, and — on a plane that holds a write channel —
+/// the Apple Silicon write path.
 ///
-/// ## The write side is modelled and unimplemented, deliberately
+/// ## Write capability is what the plane holds
 ///
-/// `engageManualControl(of:)`, `commandTarget(_:)` and `restoreToAutomatic(_:)`
-/// all throw `FanControlPlaneError.controlPathNotBuilt`, and `bridgeThenRestore(_:)` reports it
-/// for both halves. That is not a stub waiting to be
-/// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
-/// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
-/// stays behind the `FanWrite` SPI group and nothing here calls it. Its one command code,
-/// `WRITE_BYTES` (6), sits beside the read codes 5, 8 and 9 in SMCCore, and
-/// `Tests/AeolusHelperTests/WritePathAbsenceTests` pins that set and holds the helper to
-/// calling no write.
+/// The plane takes an optional `SMCWriteChannel`
+/// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1 amendment, "write capability is
+/// what the plane holds"), which `HelperComposition.production`
+/// passes only when `AeolusHelperMain` asks, over the daemon's own connection. **`.built` holds
+/// exactly when the plane holds a channel**: a plane given none — every test composition over the
+/// real SMC, and the daemon below macOS 14 — answers `.notBuilt`, and every write verb refuses
+/// with `.controlPathNotBuilt` without reading anything, as it did before the write path existed.
 ///
-/// What ships today is the *shape*: every E5 mechanism can be written, reviewed and tested
-/// against this seam now, and E3/E4 supply three method bodies later rather than a design.
+/// A plane that holds one runs each write verb as **one synchronous job on the channel inside one
+/// scheduler write turn**, taken at this plane's `admission` (`SMCReadScheduler.withWriteTurn`),
+/// whose first statement is the ledger's admission or the restore's issue (`SMCWriteTurns`). Its
+/// state between calls is one `PlaneWriteLedger` — the restore epoch, the exit's seal, the engaged
+/// and touched sets, the force-key flag and what the preparation step recorded — which every view
+/// of the plane shares by reference, so `ScriptedControlPlane` and this plane decide every answer
+/// by the same code (`PlaneWriteLedger`, `EngagementRules`, `RestorePlan`).
 ///
-/// ## A write channel can be held, and nothing uses it
-///
-/// The plane takes an optional `SMCWriteChannel` (ADR 0014's B1 amendment, "write capability is
-/// what the plane holds"), which `HelperComposition.production` passes only when
-/// `AeolusHelperMain` asks. On this build it is **read by nothing** but `holdsWriteChannel`:
-/// `writeCapability` is the constant `.notBuilt` and every write verb below refuses. `.built`
-/// follows the channel in the change that gives those verbs bodies, and not before.
+/// **Every use of the stored channel is the channel argument of one write turn.** Each write verb
+/// unwraps it and hands it to `withWriteTurn(at: admission, on:)` in the same statement block, and
+/// nothing else reads it but `holdsWriteChannel`. `PlaneWriteChannelTests` holds each mention to
+/// one of those shapes.
 ///
 /// ## The reads are real, they are subset reads, and they go first
 ///
@@ -45,8 +46,9 @@ import SMCCore
 /// `admitted(at:)` copies this value with a different `admission` and nothing else, so the view
 /// holds the one scheduler and the one connection, and every stored property added later is
 /// shared by the copy as long as it is a reference: an actor, a class or an existential of one
-/// (`PlaneViewTests` fails on a stored value that is not). The write path's channel and its
-/// `PlaneWriteLedger` are both, so the view B1 builds on shares them too.
+/// (`PlaneViewTests` fails on a stored value that is not). The write path's channel, its
+/// `PlaneWriteLedger` and its log are all three, so every view writes through the one channel,
+/// decides by the one ledger and logs through the one log.
 ///
 /// **What that bounds, exactly.** *While it is the only supervisor-priority read outstanding*, a
 /// read issued here waits for the turn in flight, at most one snapshot turn the overtake quota
@@ -61,13 +63,15 @@ import SMCCore
 ///
 /// ## Restore issues no read, and that is the property to keep
 ///
-/// `restoreToAutomatic(_:)` refuses without touching the provider at all. When E3/E4
-/// implement it, that must stay true: `.everyFan` resolves from the fan set the helper
-/// established at startup, never from a read issued at restore time.
+/// `restoreToAutomatic(_:)` touches no provider and reads nothing through its channel: its turn
+/// is the ledger's plan and one zero-byte write per key (`SMCWriteTurns.keystone`). `.everyFan`
+/// resolves from the fan set the preparation step established at startup and the fans this
+/// process touched, never from a read issued at restore time.
 /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s keystone is that the terminal
 /// action of every safety mechanism stays available when reading is precisely what has
 /// failed, and a restore that reads first is a restore that is missing in the one case it
-/// exists for. `SMCFanControlPlaneTests` asserts the provider records no request.
+/// exists for. `SMCFanControlPlaneTests` asserts the provider records no request on a plane that
+/// cannot write, and `SMCWriteTurnBodyTests` that a keystone turn over the fake makes no read.
 struct SMCFanControlPlane: FanControlPlane {
 
     private let scheduler: SMCReadScheduler
@@ -87,8 +91,8 @@ struct SMCFanControlPlane: FanControlPlane {
 
     /// The admission every turn this plane takes is admitted at: `.supervisor` for the plane the
     /// composition builds, § 3's lane for the view § 3 is given (`admitted(at:)`). Set by nothing
-    /// else, so a plane's admission is fixed when the view is made. The write path's turns take it
-    /// too, when B1 builds them: a view's admission is its turns', reads and writes alike.
+    /// else, so a plane's admission is fixed when the view is made. The write turns take it too: a
+    /// view's admission is its turns', reads and writes alike (ADR 0012's #440 amendment, B1).
     private(set) var admission: PlaneAdmission = .supervisor
 
     /// Takes the scheduler rather than a `SensorProvider`, so that **this type names its
@@ -107,22 +111,36 @@ struct SMCFanControlPlane: FanControlPlane {
     /// `channel` **is** defaulted, to `nil`: a plane nobody gave a channel can never write, and
     /// every construction that predates it means what it meant. In the daemon it is
     /// `AeolusHelperMain`'s `DaemonWriteChannel`, over the same connection; `SMCConnection` itself
-    /// is not a channel (ADR 0014's B1 seam amendment).
+    /// is not a channel (ADR 0014's B1 seam amendment). In a test it is `FirmwareSMC`, and only
+    /// over a scheduler reading the same fake.
+    ///
+    /// `log` is where the write turns log every write and every step (`SMCWriteTurns`); the
+    /// composition's default is the helper's safety log.
     init(
         scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling,
-        channel: (any SMCWriteChannel)? = nil
+        channel: (any SMCWriteChannel)? = nil, log: SafetyLog = SafetyLog()
     ) {
         self.scheduler = scheduler
         self.connection = connection
         self.writeChannel = channel
+        self.writeLog = PlaneWriteLog(log)
     }
 
-    /// The channel the plane's write turns will run on, or `nil`. Held, and read by nothing but
-    /// `holdsWriteChannel` — see this type's documentation.
+    /// The channel the plane's write turns run on, or `nil` for a plane that cannot write. See this
+    /// type's documentation: every use is the channel argument of one write turn.
     private let writeChannel: (any SMCWriteChannel)?
 
-    /// Whether this plane was given a write channel. A fact for tests: not `writeCapability`,
-    /// and surfaced over no XPC message, in no snapshot and in no log line.
+    /// The plane's write state between calls (ADR 0014 D4, D5): one instance, stored here and
+    /// copied into every view by reference, so a restore through § 3's view supersedes a step
+    /// through the plane and the reverse. A plane that cannot write holds one too, and touches it
+    /// only to forward an engagement's ticket.
+    private let ledger = PlaneWriteLedger()
+
+    /// Where the write turns log, shared by every view.
+    private let writeLog: PlaneWriteLog
+
+    /// Whether this plane was given a write channel: what `writeCapability` answers from. A fact
+    /// for tests beyond that, surfaced over no XPC message, in no snapshot and in no log line.
     var holdsWriteChannel: Bool { writeChannel != nil }
 
     /// This plane at `admission`: a copy with every stored reference shared and the admission
@@ -283,55 +301,154 @@ struct SMCFanControlPlane: FanControlPlane {
         }
     }
 
-    // MARK: - Writes, all refused
+    // MARK: - Writes
 
-    /// `.notBuilt`, and it is the same fact the three verbs below throw — stated once, where
-    /// a mechanism can ask it **before** spending an SMC read on a grant it will refuse.
+    /// `.built` exactly when this plane holds a write channel (ADR 0014's B1 amendment), and the
+    /// same fact the verbs below act on: a plane given none answers `.notBuilt` and every verb
+    /// refuses with `.controlPathNotBuilt`, so `LeaseAuthority`, which asks this **before**
+    /// spending an SMC read on a grant, never grants a fan nothing can command (`CLAUDE.md` rule
+    /// 6). Computed rather than stored, so no initialiser can be given a different answer.
+    var writeCapability: FanWriteCapability { holdsWriteChannel ? .built : .notBuilt }
+
+    /// Requests the restore — the epoch moves and `.forExit` seals, synchronously, **before** it
+    /// waits for a turn (D4) — then issues it in one turn at this plane's admission: the ledger's
+    /// plan for `scope`, one zero-byte write per key, no read (`SMCWriteTurns.keystone`).
     ///
-    /// Computed rather than stored so no initialiser can be given a different answer. It
-    /// moves to `.built` in the change that gives `restoreToAutomatic(_:)`,
-    /// `engageManualControl(of:)` and `commandTarget(_:)` bodies, and not before: a plane
-    /// that claims a write path it does not have would have `LeaseAuthority` grant a lease
-    /// over a fan nothing can command, which is `CLAUDE.md` rule 6 reached through a
-    /// one-line lie.
-    /// **Not even when the plane holds a channel**: nothing writes through it yet, so `.built`
-    /// would be that same lie.
-    var writeCapability: FanWriteCapability { .notBuilt }
-
-    /// Refuses **without reading anything.** See this type's documentation: the absence of
-    /// a read here is the part that ships today.
+    /// A plane that cannot write refuses **without reading anything** and without requesting the
+    /// restore: it has nothing a request could supersede.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
-        throw FanControlPlaneError.controlPathNotBuilt
+        guard let writeChannel else { throw FanControlPlaneError.controlPathNotBuilt }
+        ledger.restoreRequested(scope)
+        try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
+            try SMCWriteTurns.keystone(scope, ledger: ledger, log: writeLog, on: channel)
+        }
     }
 
-    /// Does nothing: a plane that cannot write admits no step, so it has no ticket to take. B1's
-    /// write path forwards this to its `PlaneWriteLedger` (ADR 0014's #410 ticket-and-seal
-    /// amendment).
-    func beginEngagement(fanAt index: Int) {}
+    /// The engagement's ticket, forwarded to the ledger: synchronous, index-only, and write-free
+    /// (ADR 0014's #410 ticket-and-seal amendment). A plane that cannot write forwards it too; its
+    /// step refuses before the ledger is asked.
+    func beginEngagement(fanAt index: Int) {
+        ledger.beginEngagement(fanAt: index)
+    }
 
+    /// One step of D3, in one turn at this plane's admission (`SMCWriteTurns.step`): admitted
+    /// first, then the mode key's info, its raw pre-state, `F<n>Md = 1`, and the read-back, the
+    /// force key or nothing; a read-back of `1` then holds `F<n>Tg` at or above the permit's floor
+    /// before the step answers `.engaged` (ADR 0014's P1′ amendment, decision 4). The permit goes
+    /// into the turn for that floor, and its fan is the one written. Uncancellable once queued:
+    /// the turn's wait is not cancellable and the job is synchronous, so an admitted step never
+    /// throws a `CancellationError`.
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
-        throw FanControlPlaneError.controlPathNotBuilt
+        guard let writeChannel else { throw FanControlPlaneError.controlPathNotBuilt }
+        return try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
+            try SMCWriteTurns.step(fan, ledger: ledger, log: writeLog, on: channel)
+        }
     }
 
+    /// `F<n>Tg`, in one turn at this plane's admission (`SMCWriteTurns.command`): admitted first
+    /// (the exit's seal), refused below the permit's floor, then the key's info, the encoded
+    /// target, its write and its read-back. Returns the permit's rpm once the read-back holds it.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
-        throw FanControlPlaneError.controlPathNotBuilt
+        guard let writeChannel else { throw FanControlPlaneError.controlPathNotBuilt }
+        let command = TargetCommand(
+            fan: target.fanIndex, rpm: target.rpm, floor: target.lowestCommandableRPM)
+        return try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
+            try SMCWriteTurns.command(command, ledger: ledger, log: writeLog, on: channel)
+        }
     }
 
-    /// Refuses both halves **without reading anything**, and without requesting the restore: a
-    /// plane that cannot write has no ledger to request it in. B1's body is the command turn's and
-    /// the `.fan(n)` restore turn's, in one job (see the requirement).
+    /// § 3's bridge for one fan, as one job: the `.fan(n)` restore **requested first**, before the
+    /// job waits for its turn (D4), then — in one turn at this plane's admission — the command's
+    /// body and the restore's, the second whatever the first answered
+    /// (`BridgeOutcome.attempting`). The bodies are the command turn's and the restore turn's, with
+    /// no second copy of either. It never throws.
+    ///
+    /// A plane that cannot write refuses both halves **without reading anything**, and without
+    /// requesting the restore.
     func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
-        BridgeOutcome.attempting(
-            maximum: { throw FanControlPlaneError.controlPathNotBuilt },
-            thenRestore: { throw FanControlPlaneError.controlPathNotBuilt })
+        guard let writeChannel else {
+            return BridgeOutcome.attempting(
+                maximum: { throw FanControlPlaneError.controlPathNotBuilt },
+                thenRestore: { throw FanControlPlaneError.controlPathNotBuilt })
+        }
+        let command = TargetCommand(
+            fan: target.fanIndex, rpm: target.rpm, floor: target.lowestCommandableRPM)
+        let scope = FanRestoreScope.fan(target.fanIndex)
+        ledger.restoreRequested(scope)
+        do {
+            return try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
+                BridgeOutcome.attempting(
+                    maximum: {
+                        try SMCWriteTurns.command(
+                            command, ledger: ledger, log: writeLog, on: channel)
+                    },
+                    thenRestore: {
+                        try SMCWriteTurns.keystone(
+                            scope, ledger: ledger, log: writeLog, on: channel)
+                    })
+            }
+        } catch {
+            // Unreachable: the job throws nothing, and the turn's wait is not cancellable. Stated
+            // as both halves failing rather than assumed away, so the verb stays total.
+            return BridgeOutcome(maximum: .failure(error), restore: .failure(error))
+        }
     }
 
-    /// Does nothing, and that is the requirement on a plane that cannot write: no enumeration,
-    /// no key-info read, no force-key read and no restore. The step's body is the E4 branch's
-    /// (ADR 0014 D5, slice B1), and arrives with the `.built` that makes it reachable.
+    /// The write path's preparation step (ADR 0014 D5), on a plane that can write; `nil`, with no
+    /// enumeration, no read and no write, on one that cannot.
+    ///
+    /// 1. Enumerates the fans through `fans`, the composition's own enumeration.
+    /// 2. and 3. In one turn, its reads (`SMCWriteTurns.survey`): each fan's mode key info, for the
+    ///    declared size a restore writes zeros of, and its target key info; then `Ftst`'s key info
+    ///    and, when it answered, its raw value. `Ftst` is absent only on the firmware's not-found
+    ///    answer, which P1 did not probe (`SMCWriteTurns.forceKeyNotFoundAnswer`, `nil`), so every
+    ///    failure is unknown.
+    /// 4. Records what it found in the ledger, then issues `restoreToAutomatic(.everyFan)` once if
+    ///    the key read non-zero, is unknown, or would not read
+    ///    (`WritePathPreparation.needsMachineWideRestore`).
+    ///
+    /// **U14 holds** (P1: `Ftst` read `0` on every sample, through two loads and their soaks): a
+    /// non-zero `Ftst` at start is taken as a dead holder's, so the step clears it. It does not
+    /// read `F<n>Md`, so a fan Apple has stopped, raw `3`, asks for no restore here.
+    ///
+    /// It never throws: what it found and did is returned for the composition to log.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
-        nil
+        guard let writeChannel else { return nil }
+        let enumerated: Set<Int>?
+        do {
+            enumerated = try await fans.enumeratedFanIndices()
+        } catch {
+            enumerated = nil
+        }
+        let notFound = SMCWriteTurns.forceKeyNotFoundAnswer
+        let survey: SMCWriteTurns.Survey
+        do {
+            survey = try await scheduler.withWriteTurn(at: admission, on: writeChannel) { channel in
+                SMCWriteTurns.survey(fans: enumerated, notFound: notFound, on: channel)
+            }
+        } catch {
+            // Unreachable: the job throws nothing. A survey that found nothing is the honest
+            // record of it: no sizes, and a key that is unknown.
+            survey = SMCWriteTurns.Survey(
+                declaredSizes: [:], forceKey: .unknown(detail: "\(error)"))
+        }
+        ledger.recordPreparation(
+            enumerated: enumerated, forceKey: survey.forceKey.presence,
+            declaredSizes: survey.declaredSizes)
+
+        var restore: WritePathPreparation.MachineWideRestore?
+        if WritePathPreparation.needsMachineWideRestore(survey.forceKey) {
+            do {
+                try await restoreToAutomatic(.everyFan)
+                restore = .landed
+            } catch {
+                restore = .refused(detail: String(describing: error))
+            }
+        }
+        return WritePathPreparation(
+            enumeratedFans: enumerated, forceKey: survey.forceKey, machineWideRestore: restore,
+            declaredSizes: survey.declaredSizes)
     }
 
     // MARK: - Decoding

@@ -6,7 +6,7 @@
 /// [ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
 /// 2026-10-18 amendment gives § 3's cycle its own admission. The way a mechanism reaches it is a
 /// **view**: `FanControlPlane.admitted(at:)`, the same plane — the same scheduler, connection and,
-/// once B1 builds the write path, the same channel and `PlaneWriteLedger` — whose every turn is
+/// on a plane that can write, the same channel and `PlaneWriteLedger` — whose every turn is
 /// admitted at this class. There is one plane, and only what each turn waits for differs.
 ///
 /// That matters because the ledger is what the in-turn properties are decided by: ADR 0014's

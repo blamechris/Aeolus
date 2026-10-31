@@ -25,7 +25,7 @@ struct FirmwareSMCScriptingTests {
     func aSchedulerReadSeesAChannelWrite() async throws {
         let firmware = FirmwareSMC.mac16x5()
         let scheduler = SMCReadScheduler(provider: firmware.provider)
-        try await scheduler.withWriteTurn(on: firmware) { channel in
+        try await scheduler.withWriteTurn(at: .supervisor, on: firmware) { channel in
             try channel.write([0x01], to: Self.mode)
         }
         let outcomes = try await scheduler.read(keys: ["F0Md"], at: .supervisor)

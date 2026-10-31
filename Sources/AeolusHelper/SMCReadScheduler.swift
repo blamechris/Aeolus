@@ -156,7 +156,7 @@ import SMCCore
 /// caches what comes back for the life of the daemon, so the machine would run on a silently
 /// truncated sensor set until the next boot. `withExclusiveAccess(_:)` and `readAll()`
 /// therefore wait for each other, without either holding a turn while it waits; ruling D22 and
-/// that method's documentation have the shape. `withWriteTurn(on:_:)` takes neither wait,
+/// that method's documentation have the shape. `withWriteTurn(at:on:_:)` takes neither wait,
 /// because a write closes no handle.
 ///
 /// Ungated against *reads*, `readAll()`'s own walk hops the `SMCConnection`
@@ -535,11 +535,25 @@ actor SMCReadScheduler {
 
     // MARK: - Write turns
 
-    /// Runs `job` on `channel`, inside one `.supervisor` turn, and **takes neither of D22's
+    /// Runs `job` on `channel`, inside one turn at `admission`, and **takes neither of D22's
     /// waits**: the write path's turn ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s
     /// B1 amendment, which decides that a step, a command or a restore is one synchronous job on
     /// the connection's actor inside one of these, and its B1 seam amendment, which gave the job
     /// its type).
+    ///
+    /// ## The admission is the calling plane's, and has no default
+    ///
+    /// [ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment ([#332](https://github.com/blamechris/Aeolus/issues/332)) gives § 3's
+    /// cycle its own lane and counts its write turns in D_cycle's allowance, and its #440
+    /// amendment's B1 has each of the plane's write verbs take its turn at the plane's own
+    /// `admission`: § 3's bridge jobs and its handback's restores in the lane, every other write at
+    /// `.supervisor`. So the turn is taken at `admission`, through the same `takeTurn(at:)` and
+    /// `endTurn(at:)` a read takes, and the lane's counter sees it. `PlaneAdmission` has no
+    /// `.snapshot` case, so no write can be queued behind a client's refresh. The parameter has no
+    /// default: a default of `.supervisor` would put § 3's bridge and handback restores behind
+    /// every supervisor reader, the D_cycle defect #332 removed, at any call site that forgot it.
+    /// `SMCFanControlPlane` passes its own `admission` at every call, and nothing else calls this.
     ///
     /// ## The job's type is the contract
     ///
@@ -550,8 +564,8 @@ actor SMCReadScheduler {
     ///
     /// **A job cannot `await`; a `Task` it spawns escapes the turn.** `Task { try await
     /// channel.write(…) }` typechecks inside a job and runs after the turn has ended, outside any
-    /// turn. So no write-turn job spawns one — a b2 obligation, which
-    /// `WriteSeamSpellingTests.noWriteTurnJobSpawnsATask` holds over every call site.
+    /// turn. So no write-turn job spawns one, and every job is a closure written at its call:
+    /// `WriteSeamSpellingTests.noWriteTurnJobSpawnsATask` holds both over every call site.
     ///
     /// ## Why not `withExclusiveAccess(_:)`
     ///
@@ -573,29 +587,19 @@ actor SMCReadScheduler {
     ///
     /// ## What it costs the safety cycle
     ///
-    /// One `.supervisor` turn, admitted first-come first-served with every other supervisor turn
-    /// and spending the overtake quota exactly as a read does, because it is `takeTurn(at:)` and
-    /// `endTurn(at:)` and nothing more. The longest a job may hold it is
-    /// `WatchdogLimits.writeTurnRoundTrips`, its caller's obligation.
-    ///
-    /// ## `.supervisor` is the admission from before #332's ruling
-    ///
-    /// The ruling has landed:
-    /// [ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
-    /// 2026-10-18 amendment ([#332](https://github.com/blamechris/Aeolus/issues/332)) gives § 3's
-    /// cycle its own lane and counts its write turns in D_cycle's allowance, and its #440
-    /// amendment's B1 has each of the plane's write verbs take its turn at the plane's own
-    /// `admission`: § 3's bridge jobs and its handback's restores in the lane, every other write at
-    /// `.supervisor`. This verb still takes `.supervisor` whoever calls it. b2, which gives the
-    /// write verbs bodies, gives it the calling plane's admission (W1 and B1, with their
-    /// mutations). Until then nothing in the helper calls it: the plane's write turns, its only
-    /// intended callers, are not built, and the plane answers `.notBuilt`.
+    /// One turn at `admission`, admitted exactly as a read at that admission is — FIFO with every
+    /// other supervisor turn and spending the overtake quota at `.supervisor`, ahead of every
+    /// waiter and outside the quota in the lane — because it is `takeTurn(at:)` and `endTurn(at:)`
+    /// and nothing more. The longest a job may hold it is `WatchdogLimits.readerTurnRoundTrips` —
+    /// the engaged step, the one that reads back `1`, `engagedStepRoundTrips`; every other job
+    /// `writeTurnRoundTrips` — its caller's obligation (`SMCWriteTurns`).
     func withWriteTurn<T: Sendable>(
+        at admission: PlaneAdmission,
         on channel: any SMCWriteChannel,
         _ job: @Sendable (isolated any SMCWriteChannel) throws -> T
     ) async throws -> T {
-        await takeTurn(at: .supervisor)
-        defer { endTurn(at: .supervisor) }
+        await takeTurn(at: admission.priority)
+        defer { endTurn(at: admission.priority) }
         return try await job(channel)
     }
 

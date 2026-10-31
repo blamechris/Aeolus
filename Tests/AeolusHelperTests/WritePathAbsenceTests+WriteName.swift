@@ -106,9 +106,21 @@ extension WritePathAbsenceTests {
     }
 
     /// Where in its file an occurrence sits: inside `protocol SMCWriteChannel`, inside
-    /// `DaemonWriteChannel`'s `func write` body, elsewhere inside `DaemonWriteChannel`, or none of
-    /// those.
+    /// `DaemonWriteChannel`'s `func write` body, elsewhere inside `DaemonWriteChannel`, inside
+    /// `SMCWriteTurns`'s `func issue` body, elsewhere inside `SMCWriteTurns`, or none of those.
     static func container(of position: String.Index, in code: String) throws -> String {
+        if let turns = try Self.braced(#"enum\s+SMCWriteTurns\b[^{]*"#, in: code),
+            turns.contains(position)
+        {
+            let body = String(code[turns])
+            if let issue = try Self.braced(#"func\s+issue\s*\([^{]*"#, in: body) {
+                let offset = code.distance(from: turns.lowerBound, to: position)
+                let lower = body.distance(from: body.startIndex, to: issue.lowerBound)
+                let upper = body.distance(from: body.startIndex, to: issue.upperBound)
+                if (lower..<upper).contains(offset) { return "SMCWriteTurns.issue's body" }
+            }
+            return "SMCWriteTurns"
+        }
         if let actor = try Self.braced(#"actor\s+DaemonWriteChannel\b[^{]*"#, in: code),
             actor.contains(position)
         {

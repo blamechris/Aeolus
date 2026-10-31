@@ -367,7 +367,20 @@ firmware at runtime.
   state leaves `F<n>Tg` at 0, so the engagement step that reads back manual control also holds
   the target at or above this floor before it answers, raising it when it is below
   (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's P1′ amendment). On `main` the rule
-  and the scripted plane apply it; the production plane takes it with its write path (#465).
+  and the scripted plane apply it; on `e4/bring-up` the production plane's step applies it too,
+  in the same turn (#465).
+
+  **The residual, on `e4/bring-up`.** One state is still a stopped fan this software holds: raw
+  `F<n>Md = 1` at a target of 0, at rest. It arises when the step that wrote the mode throws
+  before its floor holds — the floor refused, unanswered or not held, the target unreadable, the
+  mode's read-back lost, or the mode write unanswered and landed — and the undo that follows is
+  refused too; or when ADR 0012's D ends the helper between the mode write and the raise, which
+  no undo follows. It is bounded, not excluded: by level 6's re-apply, which re-adopts and
+  commands the fan in one step; by § 5; by the lease's teardown and its three attempts; by § 3's
+  bridge, since the driver registers the fan with § 3 before its undo; by § 4, § 6 and § 7; and by
+  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. ADR 0014's b2
+  amendment, "Settled by P1′", lists the routes. (A fan kept the same way under load is not
+  stopped: it holds Apple's last target.)
 
 ### Why the floor is not simply `F0Mn`
 
