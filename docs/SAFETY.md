@@ -367,7 +367,8 @@ firmware at runtime.
   state leaves `F<n>Tg` at 0, so the engagement step that reads back manual control also holds
   the target at or above this floor before it answers, raising it when it is below
   (`EngagementRules.engagedTarget(reading:of:)`; ADR 0014's P1′ amendment). On `main` the rule
-  and the scripted plane apply it; the production plane takes it with its write path (#465).
+  and the scripted plane apply it; on `e4/bring-up` the production plane's step applies it too,
+  in the same turn (#465).
 
 ### Why the floor is not simply `F0Mn`
 
