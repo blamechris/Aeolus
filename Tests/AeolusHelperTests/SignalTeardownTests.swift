@@ -66,11 +66,14 @@ struct SignalTeardownTests {
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
                 ]))
+        // Frozen for the reason `HelperRestorerTests.composed` gives (#411): the lease TTL and
+        // reconciliation's budget run on this clock, and a runner stall must not run them out.
         let helper = HelperComposition(
             plane: plane,
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,

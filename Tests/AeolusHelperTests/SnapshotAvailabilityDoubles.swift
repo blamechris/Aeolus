@@ -118,10 +118,20 @@ enum AvailabilityFixture {
     ///
     /// `clock` is the lease core's and the sightings cache's, for a scenario that has to age a
     /// sighting out — a lease taken while § 3 could see, on a machine that then goes blind.
+    ///
+    /// **Every graph here defaults to a frozen `TestClock()`**
+    /// ([#411](https://github.com/blamechris/Aeolus/issues/411)). The composition hands its
+    /// clock to reconciliation's 5 s budget, the lease TTL and the sightings cache's age bound,
+    /// so on the system clock a runner stall longer than one of them changes what a test sees:
+    /// `UnreadModeAvailabilityTests`' reconciliation cases lose their refused handback when the
+    /// pass runs out before it reads fan 0. No caller drives a wait the composition bounds by
+    /// sleeping on that clock (a contended examination gate, an unlock that polls, § 4's
+    /// acknowledgement), and `TestClock`'s sleep jumps to its deadline, so a caller that starts
+    /// to do so wants a `ManualClock`. A scenario about time passes its own clock and moves it.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
-        clock: some MonotonicClock = SystemMonotonicClock(),
+        clock: some MonotonicClock = TestClock(),
         afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
         let firmware = Self.firmware(fanCount: fanCount, writes: writes, afterwards: afterwards)
@@ -134,7 +144,7 @@ enum AvailabilityFixture {
     /// `.notBuilt` over scripted firmware, or a provider of the test's own.
     static func composed<Plane: FanControlPlane>(
         plane: Plane, provider: some SensorProvider,
-        clock: some MonotonicClock = SystemMonotonicClock()
+        clock: some MonotonicClock = TestClock()
     ) -> HelperComposition<Plane> {
         HelperComposition(
             plane: plane,
@@ -154,7 +164,7 @@ enum AvailabilityFixture {
     static func wedging(
         firmware: ScriptedControlPlane = AvailabilityFixture.firmware(
             fanCount: 1, writes: .honoured),
-        clock: some MonotonicClock = SystemMonotonicClock()
+        clock: some MonotonicClock = TestClock()
     ) -> HelperComposition<CycleWedgingRestorePlane> {
         HelperComposition(
             plane: CycleWedgingRestorePlane(firmware),

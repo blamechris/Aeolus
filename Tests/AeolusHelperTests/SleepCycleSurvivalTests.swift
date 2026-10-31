@@ -144,8 +144,13 @@ struct SleepCycleSurvivalTests {
         let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
+        // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
+        // held. A 300 ms stall at the top of the double's restore leaves it green, but it is not
+        // stall-proof: a stall over 50 ms before the lease core records the fan mid-handback lets
+        // the budget answer first (#542).
         let helper = SystemPowerTests.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), fanCount: 2,
+            plane: plane, observer: observer, budget: .milliseconds(50),
+            clock: SystemMonotonicClock(), fanCount: 2,
             safetyLog: log)
 
         await helper.bindSafetyRegistries()
