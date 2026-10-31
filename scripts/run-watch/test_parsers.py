@@ -165,7 +165,7 @@ class CtxTests(unittest.TestCase):
 
     def test_parse_rpm(self):
         self.assertEqual(rw.parse_rpm("5777"), 5777.0)
-        for text in ("0", "-1", "nan", "inf", "1e3", " 5", "5 ", None, 5777):
+        for text in ("0", "-1", "nan", "inf", "1e3", " 5", "5 ", "5777\n", None, 5777):
             self.assertIsNone(rw.parse_rpm(text), text)
 
     def test_iso_stamp_and_missing_stamp(self):

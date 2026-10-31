@@ -6,7 +6,9 @@
 D1  P1 replayed as captured raises no alert.
 D2  P1 plus synthetic CTX lines: no ABORT 11 (F1Tg leaves 0 and the check disarms), no ABORT 9
     at 1b's GO. A synthetic accepted engage is added so rule 9 is live, and the target is moved
-    to show the same replay fires when it should.
+    to show the same replay fires when it should. D2e replays 1d in the runbook's order (GO at
+    rest, then the load, then load-stop while the hold is open): no alert, 74.1 C after the stop
+    still raises ABORT 1, and a watcher whose window ends at load-stop goes red.
 D3  Each injection (one violation in a copy of a P1 window, plus synthetic log lines) raises its
     own alert within its latency and no other.
 D4  Each injection against a copy of the watcher with that rule's check removed stays silent;
@@ -22,6 +24,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +54,9 @@ PREP = "The write path's preparation step enumerated 2 fan(s) [0, 1], found the 
 V = "ABORT 4 — VERIFY"
 R = "ABORT 4 — RESET"
 BLIND = "BLIND — NO GO"
+QUOTED = (
+    "The engagement of fan 0 was refused after 3 attempt(s): the plane said the restore landed. "
+    "Its hand-back was refused, so the fan may still be off automatic control.")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -176,7 +182,7 @@ def _d2_files(p1, work, label, ctx, logs):
     return directory
 
 
-def d2(p1, work, watcher):
+def d2(p1, work, watcher, mutations):
     ok = True
     print("D2  P1 plus synthetic CTX lines")
     load = ("2026-10-31T02:19:52Z", "load-start step=1d")
@@ -226,6 +232,71 @@ def d2(p1, work, watcher):
         if key == "c":
             print("        first alert at %s (F1Tg crossed 0.9 x %d)" % (
                 rw.format_time(alerts[0][0]) if alerts else "-", target))
+    return d2e(p1, work, watcher, mutations) and ok
+
+
+def _d2e_ctx(tl, stop):
+    """1d in the runbook's order: GO at rest 30 s before the load, the load, L2 `stop` s into it,
+    and step=none at t_L + 130 s."""
+    return [
+        (rw.format_time(tl - 30), "step=1d target=5777 GO"), (rw.format_time(tl), "load-start step=1d"),
+        (rw.format_time(tl + stop), "load-stop"), (rw.format_time(tl + 130), "step=none")]
+
+
+def d2e(p1, work, watcher, mutations):
+    """B2: P1's load B with 1d's CTX lines in the runbook's order, load-stop at t_L + 34 s and at
+    t_L + 60 s. Each replay: no alert; B about 35.5 C; F1Tg leaves 0 at about 14 s at about
+    40 C; an injected 74.1 C at t_L + 90 s (after load-stop, before step=none) raises ABORT 1; and
+    a watcher whose window ends at load-stop goes red at the stop."""
+    ok = True
+    tl = _p1_epoch("2026-10-31T02:19:52Z")
+    print("    D2e 1d in the runbook's order: GO at t_L - 30 s, load-start at t_L, load-stop, "
+          "step=none at t_L + 130 s")
+    with mutate.Sweep(mutations) as sweep:
+        mutant = sweep.make(
+            "d2e-window-ends-at-load-stop",
+            apply_mutation(("text", "self.load_stopped = True", "self.load_window = False")))
+        for stop in (34, 60):
+            ctx = _d2e_ctx(tl, stop)
+            directory = _d2_files(p1, work, "d2e-%d" % stop, ctx, [])
+            files = dict(
+                fans=p1.fans, package=p1.package, helper_log=os.path.join(directory, "helper-log.ndjson"),
+                phases=os.path.join(directory, "phases.log"))
+            result = run_watcher(watcher, directory, tmpdir(work, "d2e-out-%d" % stop), **files)
+            alerts = alerts_of(result)
+            b = [float(t.split("B = ")[1].split(" ")[0]) for t in lines_of(result, "INFO", "B = ")]
+            left = [re.search(r"left 0 at ([0-9.]+) s .* hottest curated ([0-9.]+) C", t)
+                    for t in lines_of(result, "INFO", "F1Tg left 0")]
+            clean = (not alerts and len(b) == 1 and 35.0 <= b[0] <= 36.0 and len(left) == 1
+                     and left[0] is not None and 13.0 <= float(left[0].group(1)) <= 15.0
+                     and 39.0 <= float(left[0].group(2)) <= 41.0)
+            # 74.1 C at t_L + 90 s, in a copy of the window around the load
+            run = p1.window(rw.format_time(tl - 60), 220)
+            for t, body in ctx:
+                run.add_ctx(_p1_epoch(t) - run.t0, body)
+            run.patch_next_package(tl + 90 - run.t0, 74.1)
+            inj_dir = tmpdir(work, "d2e-inj-%d" % stop)
+            paths = run.write(inj_dir)
+            injected = alerts_of(run_watcher(
+                watcher, inj_dir, tmpdir(work, "d2e-inj-out-%d" % stop), fans=paths["fans"],
+                package=paths["package"], helper_log=paths["helper_log"], phases=paths["phases"]))
+            fired = bool(injected) and {a[1] for a in injected} == {"ABORT 1"} and (
+                0.0 <= injected[0][0] - tl - 90 <= 1.2)
+            red = alerts_of(run_watcher(
+                mutant, directory, tmpdir(work, "d2e-mut-out-%d" % stop), **files))
+            went_red = bool(red) and red[0][1] == "ABORT 1" and stop <= red[0][0] - tl <= stop + 5
+            ok = ok and clean and fired and went_red
+            print("        load-stop at t_L + %d s" % stop)
+            print("            alerts: %s  B = %s C  %s -> %s" % (
+                [a[1] for a in alerts] or "none", ", ".join("%.2f" % x for x in b) or "-",
+                left[0].group(0) if left and left[0] else "no F1Tg-left-0 line",
+                "as expected" if clean else "UNEXPECTED"))
+            print("            74.1 C at t_L + 90 s: %s -> %s" % (
+                ["%s at t_L + %.1f s" % (a[1], a[0] - tl) for a in injected] or "no alert",
+                "ABORT 1, as expected" if fired else "UNEXPECTED"))
+            print("            window ends at load-stop (mutant): %s -> %s" % (
+                ["%s at t_L + %.1f s" % (a[1], a[0] - tl) for a in red[:1]] or "no alert",
+                "red, as expected" if went_red else "NOT RED"))
     return ok
 
 
@@ -560,6 +631,88 @@ def _e26(run):
     return 20
 
 
+@injection("E27", "3", "idle", 90, [("ABORT 3", 2.0, 2.3)])
+def _e27(run):
+    """F0Md stuck at 1 after a 30 s hold's restore (latency from the restore line)"""
+    run.hold(go=10, restore=40, target=3000, close=False)
+    run.patch_fan(40.2, 90, Ftst=0, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+    return 40
+
+
+@injection("E28", "3", "idle", 170, [], quiet=True)
+def _e28(run):
+    """a 120 s hold whose F0Md readback lags the restore by 1.5 s (must not fire)"""
+    run.hold(go=10, restore=130, target=3000)
+    run.patch_fan(130.2, 131.5, Ftst=0, F0Md=1, F0Tg=3000.0, F0Ac=3000.0)
+    return 130
+
+
+@injection("E29", "context", "idle", 40, [("BAD CONTEXT", 0.0, 0.1)])
+def _e29(run):
+    """a CTX line with `target=5,777`"""
+    run.add_ctx(20, "step=1b target=5,777 GO")
+    return 20
+
+
+@injection("E30", "4", "idle", 40, [(R, 0.0, 0.3)])
+def _e30(run):
+    """a refusal whose detail quotes `the restore landed` but whose outcome is a refused hand-back"""
+    run.add_log(20, QUOTED)
+    return 20
+
+
+def _run_1d(run, stop=20):
+    """1d's CTX lines in the runbook's order, on a short window."""
+    run.add_ctx(5, "step=1d target=5777 GO").add_ctx(10, "load-start step=1d")
+    run.add_ctx(stop, "load-stop").add_ctx(60, "step=none")
+
+
+@injection("E31", "1", "idle", 70, [("ABORT 1", 0.0, 1.1)])
+def _e31(run):
+    """74.1 C after load-stop and before step=none (1d's order)"""
+    _run_1d(run)
+    return run.patch_next_package(40, 74.1)
+
+
+@injection("E32", "1", "idle", 70, [], quiet=True)
+def _e32(run):
+    """60 C after load-stop and before step=none, over B + 10 (must not fire)"""
+    _run_1d(run)
+    return run.patch_next_package(40, 60.0)
+
+
+def _ended(run):
+    return run.add_ctx(5, "armed pid=100").add_poll(6, "pgrep", pids=[100]).add_ctx(8, "end")
+
+
+@injection("E33", "12", "idle", 60, [("ABORT 12", 2.0, 2.3)])
+def _e33(run):
+    """a 4 s fan gap during a hold after CTX end"""
+    _ended(run).hold(go=10, restore=50, target=3000).drop(25, 29, "fans")
+    return run.last_time_before(25)
+
+
+@injection("E34", "fault", "idle", 40, [("HELPER FAULT", 0.0, 0.1)])
+def _e34(run):
+    """a Fault line after CTX end"""
+    _ended(run).add_log(20, "Could not restore Ftst", "Fault")
+    return 20
+
+
+@injection("E35", "7", "idle", 60, [("ABORT 7", 0.0, 0.1)])
+def _e35(run):
+    """the helper's PID changes during a hold after CTX end"""
+    _ended(run).hold(go=10, restore=50, target=3000).add_poll(30, "pgrep", pids=[101])
+    return 30
+
+
+@injection("E36", "7", "idle", 40, [], note="after CTX end", quiet=False)
+def _e36(run):
+    """the helper's PID changes after CTX end, no hold (a note only)"""
+    _ended(run).add_poll(20, "pgrep", pids=[101])
+    return 20
+
+
 WINDOWS = {"idle": ("2026-10-31T01:44:00Z", 330), "load": ("2026-10-31T01:56:00Z", 90)}
 
 
@@ -635,18 +788,20 @@ def d3(p1, work, watcher):
 
 #: The check each injection exists for. Blanking the function must leave the injection silent.
 BLANKED = [
-    ("check_r1_absolute", ["M4"]), ("check_r1_loaded", ["E1a"]), ("check_r1_rise", ["E2a"]),
+    ("check_r1_absolute", ["M4"]), ("check_r1_loaded", ["E1a", "E31"]), ("check_r1_rise", ["E2a"]),
     ("check_r2_automatic", ["M3", "E3"]), ("check_r2_held", ["E4"]),
-    ("check_r3_ftst", ["M1"]), ("check_r3_f1_mode", ["M2"]), ("check_r3_f0_mode", ["E7"]),
+    ("check_r3_ftst", ["M1"]), ("check_r3_f1_mode", ["M2"]), ("check_r3_f0_mode", ["E7", "E27"]),
+    ("_judge_f0_modes", ["E7", "E27"]),
     ("check_r3_hold", ["E5", "E6"]),
-    ("check_r4_refused", ["M10a", "M10b", "E23"]), ("_r4_decide", ["M10a", "M10b"]),
+    ("check_r4_refused", ["M10a", "M10b", "E23", "E30"]), ("_r4_decide", ["M10a", "M10b"]),
     ("check_r5_write", ["M9a", "M9b", "E18"]), ("check_r6_pressure", ["E9"]),
-    ("check_r7_restart", ["E11", "E12"]), ("check_r7_prep_step", ["E13"]),
+    ("check_r7_restart", ["E11", "E12", "E35"]), ("check_r7_prep_step", ["E13"]),
     ("check_r8_restore", ["E14"]), ("check_r9_f1_follows", ["E8"]),
     ("check_r10_floor", ["M8"]), ("check_r11_time", ["M6"]),
     ("check_r11_temperature", ["M7"]),
-    ("check_r12_blind", ["M5", "E19a", "E19b", "E20"]),
-    ("check_x_fault", ["E16"]), ("check_x_no_context", ["E17"]),
+    ("check_r12_blind", ["M5", "E19a", "E19b", "E20", "E33"]),
+    ("check_x_fault", ["E16", "E34"]), ("check_x_no_context", ["E17"]),
+    ("check_x_bad_context", ["E29"]),
 ]
 
 NAIVE_DURATION = '''
@@ -671,6 +826,66 @@ SEMANTIC = [
     ("rule 11: 50 C raised to 50.2 C", ("text", "R11_TEMPERATURE = 50.0", "R11_TEMPERATURE = 50.2"), "M7", "no ABORT 11 TEMPERATURE"),
     ("rule 12: 2 s lengthened to 3 s", ("text", "FAN_STALE_SECONDS = 2.0", "FAN_STALE_SECONDS = 3.0"), "M5", "ABORT 12 late"),
     ("rule 8: 300 s lengthened to 330 s", ("text", "RESTORE_ABORT_SECONDS = 300.0", "RESTORE_ABORT_SECONDS = 330.0"), "E14", "ABORT 8 late"),
+    ("rule 1: the load window ends at load-stop", ("text", "self.load_stopped = True", "self.load_window = False"), "E32", "ABORT 1 appears"),
+]
+
+#: Mutations the unit tests must kill, with no injection of their own (the unit sweep only):
+#: (label, how). The first four are the first review's surviving mutants (S1); the rest are the
+#: guards that round added or changed. Each edit is the exact text, found once in run_watch.py.
+UNIT_ONLY = [
+    ("S1 R2a: the held fan's 10 s spin-up allowance removed", (
+        "text", "counted = self.tg_hit_t is not None and s.t >= self.tg_hit_t + HELD_SPINUP_SECONDS",
+        "counted = self.tg_hit_t is not None")),
+    ("S1 R2c: fan 1 not checked during a hold", (
+        "text", "            if n == 0 and self.hold_active:\n", "            if self.hold_active:\n")),
+    ("S1 R4a: VERIFY ignores F1Md", (
+        "text", 'for n in (0, 1))\n        if clean:', 'for n in (0,))\n        if clean:')),
+    ("S1 R10b: a recovery above the floor no longer restarts the 1 s", (
+        "text", "                self.r10_since = s.t\n        else:\n            self.r10_since = None",
+        "                self.r10_since = s.t\n        elif md != 1:\n            self.r10_since = None")),
+    ("B1: a write of any value explains a mode", (
+        "text", "k == key and lo <= t <= hi and _byte(data) == value", "k == key and lo <= t <= hi")),
+    ("B1: a sample is judged after 0.5 s, not 2 s (the readback's slack gone)", (
+        "text", "delay = max(MODE_SECONDS, JUDGE_AFTER)", "delay = 0.5")),
+    ("B1: the hold's F0Md = 1 is not exempt", (
+        "text", "(mode == 1 and self.hold_active):", "False):")),
+    ("B2: 74 C holds only while the load runs", (
+        "text", "self.load_window and hottest > TEMP_LOADED", "self.load_active and hottest > TEMP_LOADED")),
+    ("B2: B + 10 applies again in the window", (
+        "text", "self.step is not None and not self.load_window and limit is not None",
+        "self.step is not None and not self.load_active and limit is not None")),
+    ("B2: the window never ends", (
+        "text", "if self.load_stopped:  # the first step=none", "if False:  # the first step=none")),
+    ("B2: any step=none ends the window", (
+        "text", "if self.load_stopped:  # the first step=none", "if self.load_window:  # the first step=none")),
+    ("B2: a load-stop with no step open leaves the window", (
+        "text", "if self.step is None:  # no step is open to carry", "if False:  # no step is open to carry")),
+    ("S2 (ruling): the hold-blind `ended` guard back in rule 7", (
+        "text", "if self.ended and not self.hold_active:", "if self.ended:")),
+    ("S2 (ruling): the `ended` guard back in rule 12", (
+        "text", "        if self.now is None:\n            return\n        title = \"ABORT 12\"",
+        "        if self.ended or self.now is None:\n            return\n        title = \"ABORT 12\"")),
+    ("S2 (ruling): the Fault demotion back", (
+        "text", 'self.event("x-fault", "HELPER FAULT", text)',
+        '(self.note(text, "WARN") if self.ended else self.event("x-fault", "HELPER FAULT", text))')),
+    ("S2: a sampler's stop line is ignored", ("blank", "on_source_stop")),
+    ("S2: a sampler that starts again stays over", (
+        "text", 'self.ended_sources.discard("fans")', "pass")),
+    ("S3: an unreadable target is not heard", ("blank", "check_x_bad_context")),
+    ("S3: a target of 0 is read as RPM", (
+        "text", "return value if math.isfinite(value) and value > 0 else None",
+        "return value if math.isfinite(value) else None")),
+    ("S4: one raising check ends the event's other checks", (
+        "replace", "_guard", "def _guard(self, check, *args):\n    check(*args)\n")),
+    ("S4: a persistent bug writes a traceback at every sample", (
+        "text", "if count == 1 or count % 1000 == 0:", "if True:")),
+    ("S5: `Nothing was written.` read anywhere in the line", (
+        "text", 'outcome == "Nothing was written."', '"Nothing was written." in msg')),
+    ("S5: `the restore landed` read anywhere in the line", (
+        "text", 'outcome.endswith("the restore landed.")', '"the restore landed" in msg')),
+    ("S5: `Could not undo` read anywhere in the line", (
+        "text", 'msg.startswith("Could not undo the engagement of fan ")',
+        '"Could not undo the engagement" in msg')),
 ]
 
 
@@ -758,7 +973,7 @@ def unit_sweep(work, mutations, python):
     print("| mutation | exit | tests failed | result |")
     print("|---|---|---|---|")
     allok = True
-    extra = [("sem-" + label, how) for label, how, _, _ in SEMANTIC]
+    extra = [("sem-" + label, how) for label, how, _, _ in SEMANTIC] + UNIT_ONLY
     jobs = [("blank-" + f, ("blank", f)) for f, _ in BLANKED] + [
         ("blank-" + f, ("blank", f)) for f in ("check_r4_escalate", "check_r4_verdict", "_track_restore", "_track_r11_release", "_judge_pending", "_resolve_b", "_pump_speech")]
     with mutate.Sweep(mutations) as sweep:
@@ -795,7 +1010,7 @@ def main():
         if part == "d1":
             results[part] = d1(p1, args.work, watcher)
         elif part == "d2":
-            results[part] = d2(p1, args.work, watcher)
+            results[part] = d2(p1, args.work, watcher, args.mutations)
         elif part == "d3":
             results[part] = d3(p1, args.work, watcher)
         elif part == "d4":

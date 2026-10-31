@@ -135,7 +135,7 @@ _WROTE_RE = re.compile(
     r"^Wrote (?P<key>\S+) = (?P<bytes>.*?): answered (?P<answer>.*), in (?P<dur>\S+) seconds\.$",
     re.S)
 _DURATION_RE = re.compile(r"^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
-_RPM_RE = re.compile(r"^\d+(?:\.\d+)?$")
+_RPM_RE = re.compile(r"^\d+(?:\.\d+)?\Z")
 _REFUSED_RE = re.compile(r"^The engagement of fan \d+ was refused after \d+ attempt\(s\): ")
 _TEMPERATURE_KEY = re.compile(r"^T[A-Za-z0-9]{3}$")
 
