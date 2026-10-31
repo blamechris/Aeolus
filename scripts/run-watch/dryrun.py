@@ -200,7 +200,7 @@ def d2(p1, work, watcher):
         if abs(b.v["F0Tg"] - a.v["F0Tg"]) > 1.0]
     for key, label, ctx, logs, target in cases:
         if logs:
-            logs = logs + [(rw.format_time(t).replace(".", ".", 1), m) for t, m in moves]
+            logs = logs + [(rw.format_time(t), m) for t, m in moves]
         directory = _d2_files(p1, work, "d2-" + key, ctx, logs)
         out = tmpdir(work, "d2-out-" + key)
         result = run_watcher(
