@@ -29,9 +29,13 @@ struct WritePlaneContractTests {
         let plane: any FanControlPlane
         let ledger: PlaneWriteLedger
         let keyWrites: @Sendable () async -> [String]
-        /// Runs `effect` once, inside the next step, after its mode write and before its force
-        /// key's: the instant a restore requested from another thread lands mid-turn.
+        /// Runs `effect` once, inside the next step, after its mode write and before whatever
+        /// follows it — the force key's write, or the read-back and the floor hold: the instant a
+        /// restore requested from another thread lands mid-turn.
         let duringNextModeWrite: @Sendable (@escaping @Sendable () -> Void) async -> Void
+        /// The production arm's round trips per scheduler turn since the harness was built; `nil`
+        /// on the scripted arm, which has no turns to count.
+        var roundTripsPerTurn: @Sendable () -> [Int]? = { nil }
     }
 
     static let modeZero = smcKey("F0Md")

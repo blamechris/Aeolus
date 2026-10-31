@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 @testable import AeolusHelper
 @testable import SMCCore
@@ -62,7 +63,8 @@ extension WritePlaneContractTests {
                 keyWrites: { fixture.writes(since: mark).map(Self.normalised) },
                 duringNextModeWrite: { effect in
                     await firmware.onAfter(.write(Self.modeZero), run: effect)
-                })
+                },
+                roundTripsPerTurn: { fixture.roundTripsPerTurn(since: mark) })
         }
     }
 
@@ -73,9 +75,10 @@ extension WritePlaneContractTests {
 
     /// The floor rule on each plane: at rest the engaging turn writes the mode and then the floor,
     /// and the fan is engaged at it; under load it writes the mode alone and keeps Apple's target;
-    /// a floor refused, or not held at its read-back, fails the step after the floor's write, the
-    /// fan is not engaged, and the undo — the driver's `.fan` restore — hands it back. No arm ever
-    /// writes an `F1` key.
+    /// a floor refused, or not held at its read-back, fails the step after the floor's write and
+    /// the fan is not engaged. The `.fan` restore this test then issues by hand — the one the
+    /// driver's undo issues — hands it back; that the driver itself issues it, through the composed
+    /// graph, is `ProductionEngagementAtRestTests`'. No arm ever writes an `F1` key.
     ///
     /// **Mutation (production only):** in `SMCWriteTurns.step`, delete `try holdFloor(of: fan,
     /// log: log, on: channel)`. Run: red on the smcPlane arm, at rest and both refusals; green on
@@ -119,5 +122,45 @@ extension WritePlaneContractTests {
                 try await harness.plane.readControlState(ofFan: 0).mode == .automatic, "\(label)")
         }
         #expect(!(await harness.keyWrites()).contains { $0.hasPrefix("F1") }, "\(label)")
+    }
+}
+
+// MARK: - A restore requested mid-step
+
+extension WritePlaneContractTests {
+
+    /// A restore of the engaging fan requested in the middle of the engaged step's turn — after its
+    /// mode write, before its raise — does not stop the raise: no epoch re-check precedes it
+    /// (`SMCWriteTurns.holdFloor`, and ADR 0014 D4: "That order is correct"). The step raises and
+    /// answers `.engaged`; the restore's own turn comes after it, so its mode write is the last
+    /// word on the fan, and the engaged set is empty. On the production arm that is two turns, the
+    /// engaged step's eight round trips and the restore's one.
+    ///
+    /// **Mutation (production only):** in `SMCWriteTurns.step`, re-check the epoch before the
+    /// floor hold — `guard ledger.isCurrent(fanAt: index) else { throw
+    /// FanControlPlaneError.supersededAfterWrite }`. Run: red on the smcPlane arm: the step throws,
+    /// and no floor is written.
+    @Test(
+        "Both planes raise the floor before a restore requested mid-step, which lands after",
+        arguments: Arm.allCases)
+    func aRestoreRequestedMidStepLandsAfterTheRaise(_ arm: Arm) async throws {
+        let harness = try await Self.floorHarness(arm, .atRest)
+        let (plane, ledger) = (harness.plane, harness.ledger)
+        let restore = OSAllocatedUnfairLock<Task<Void, any Error>?>(initialState: nil)
+        await harness.duringNextModeWrite {
+            ledger.restoreRequested(.fan(0))
+            restore.withLock { $0 = Task { try await plane.restoreToAutomatic(.fan(0)) } }
+        }
+
+        plane.beginEngagement(fanAt: 0)
+        let step = try await plane.engageManualControl(of: Self.fan(0))
+        try await #require(restore.withLock { $0 }, "\(arm): the hook did not run").value
+        let turns = harness.roundTripsPerTurn()
+
+        #expect(step == .engaged, "\(arm)")
+        #expect(await harness.keyWrites() == ["F0Md=1", "F0Tg", "F0Md=0"], "\(arm)")
+        #expect(ledger.engagedFans.isEmpty, "\(arm)")
+        #expect(try await plane.readControlState(ofFan: 0).mode == .automatic, "\(arm)")
+        #expect(turns == (arm == .smcPlane ? [8, 1] : nil), "\(arm): \(String(describing: turns))")
     }
 }
