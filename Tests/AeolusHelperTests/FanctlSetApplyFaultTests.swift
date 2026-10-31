@@ -195,7 +195,9 @@ struct FanctlSetApplyFaultTests {
             desk: SignalDesk())
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         await authority.pin(0, as: .restoreToAutomaticFailed)
@@ -260,7 +262,9 @@ struct FanctlSetApplyFaultTests {
             })
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the keeper waited for the helper") { parked.withLock { $0 } }
+        try await waitUntil(
+            "the keeper waited for the helper", timeout: StallTolerantWait.deliveryBudget
+        ) { parked.withLock { $0 } }
         await failWait.signal()
         await apply.signal()
         let code = await running.value

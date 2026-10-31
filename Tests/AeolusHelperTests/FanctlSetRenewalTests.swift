@@ -103,7 +103,9 @@ struct FanctlSetRenewalTests {
             await $0.failingRenewals(with: .helperFailed(detail: "the heartbeat could not land"))
         }
         let running = try scene.start()
-        try await waitUntil("the first renewal reached the helper") {
+        try await waitUntil(
+            "the first renewal reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await scene.authority.calls.contains("renewLease")
         }
         // The keeper gave up on its first failed renewal, so nothing else moves this clock: the
@@ -146,7 +148,9 @@ struct FanctlSetRenewalTests {
             await $0.failingRenewals(with: .helperFailed(detail: "the heartbeat could not land"))
         }
         let running = try scene.start()
-        try await waitUntil("the first renewal reached the helper") {
+        try await waitUntil(
+            "the first renewal reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await scene.authority.calls.contains("renewLease")
         }
         scene.time.finishHelperWork()
@@ -216,7 +220,9 @@ struct FanctlSetRenewalTests {
             time: time, desk: SignalDesk())
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the lease was granted") { await authority.grantInstants.count == 1 }
+        try await waitUntil("the lease was granted", timeout: StallTolerantWait.deliveryBudget) {
+            await authority.grantInstants.count == 1
+        }
         time.advance(by: .seconds(25))
         await reply.signal()
         let code = await running.value
@@ -263,7 +269,9 @@ struct FanctlSetRenewalTests {
             })
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the keeper waited for the helper") { parked.withLock { $0 } }
+        try await waitUntil(
+            "the keeper waited for the helper", timeout: StallTolerantWait.deliveryBudget
+        ) { parked.withLock { $0 } }
         await failWait.signal()
         await apply.signal()
         let code = await running.value
@@ -297,11 +305,16 @@ struct FanctlSetRenewalTests {
             await $0.holdingRenewal(number: 3, until: renewal)
         }
         let running = try scene.start()
-        try await waitUntil("the third renewal reached the helper") {
+        try await waitUntil(
+            "the third renewal reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await scene.authority.ledger.filter { $0 == "renewLease received" }.count == 3
         }
         scene.time.finishHelperWork()
-        try await waitUntil("the apply was answered and the confirming snapshot read") {
+        try await waitUntil(
+            "the apply was answered and the confirming snapshot read",
+            timeout: StallTolerantWait.deliveryBudget
+        ) {
             let ledger = await scene.authority.ledger
             return ledger.contains("apply answered")
                 && ledger.filter { $0 == "snapshot received" }.count == 2

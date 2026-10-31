@@ -42,7 +42,9 @@ struct FanctlSetLostBeforeHoldTests {
             time: VirtualHoldTime(), desk: SignalDesk())
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         await authority.pin(0, as: .restoreToAutomaticFailed, reading: .automatic)
@@ -183,7 +185,9 @@ struct FanctlSetLostBeforeHoldTests {
             time: time, desk: SignalDesk())
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         // Past the lease's thirty seconds with nothing renewed, and the supervisor's sweep run.

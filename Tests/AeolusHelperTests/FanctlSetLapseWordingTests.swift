@@ -77,7 +77,9 @@ struct FanctlSetLapseWordingTests {
             await $0.markForeignManual(1)
         }
         let running = try scene.start()
-        try await waitUntil("the first renewal reached the helper") {
+        try await waitUntil(
+            "the first renewal reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await scene.authority.calls.contains("renewLease")
         }
         scene.time.finishHelperWork()

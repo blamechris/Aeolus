@@ -190,6 +190,17 @@ final class SignalDesk: Sendable {
 /// Runs the shipping `Fanctl.Set.run()` against one listener, the way `FanctlAutoTests` runs
 /// `auto`: the real `HelperClient`, a real `NSXPCListener`, the real `HelperConnectionSession`.
 /// Only the authority, where to write, how time passes and what the process is are doubles.
+///
+/// ## A wait for the run to reach the helper is a delivery
+///
+/// Every `waitUntil` in the `set` suites waits for the run to get somewhere at the helper (the
+/// handshake, a snapshot, the lease and `apply` on the way), so each takes
+/// `StallTolerantWait.deliveryBudget`, as the other `fanctl` suites' deliveries do. With the 5 s
+/// default, eleven of them in ten tests timed out together on CI once `e4/bring-up`'s suites ran
+/// in the same process (run 41230449709; three more in run 41228797500). None is the client's
+/// reaction to a clock the test advanced, which that budget must not wait for: the client counts
+/// its deadlines on the wall clock, which no backstop moves, and `VirtualHoldTime` moves only the
+/// run's own clock.
 enum SetHarness {
 
     struct Run {

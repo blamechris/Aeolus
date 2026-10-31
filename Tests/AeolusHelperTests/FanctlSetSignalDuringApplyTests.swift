@@ -41,7 +41,9 @@ struct FanctlSetSignalDuringApplyTests {
             output: output, time: VirtualHoldTime(), desk: desk)
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         desk.send(.interrupt)
@@ -93,7 +95,9 @@ struct FanctlSetSignalDuringApplyTests {
             time: VirtualHoldTime(), desk: desk)
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         desk.send(.terminate)

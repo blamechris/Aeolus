@@ -236,7 +236,9 @@ struct FanctlSetLossTests {
         let running = Task { await exitCode { try await command.run() } }
         try await atTheSecondHeartbeat.wait()
         harness.killHelperSideOfEveryConnection()
-        try await waitUntil("the helper noticed the connection went away") {
+        try await waitUntil(
+            "the helper noticed the connection went away", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("connectionDidInvalidate")
         }
         await restarted.signal()
@@ -331,7 +333,9 @@ struct FanctlSetLossTests {
             time: VirtualHoldTime(), desk: SignalDesk())
 
         let running = Task { await exitCode { try await command.run() } }
-        try await waitUntil("the apply reached the helper") {
+        try await waitUntil(
+            "the apply reached the helper", timeout: StallTolerantWait.deliveryBudget
+        ) {
             await authority.calls.contains("apply")
         }
         harness.killHelperSideOfEveryConnection()
