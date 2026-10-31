@@ -100,6 +100,7 @@ All of it runs inside the launchd-managed helper. The maintainer builds that hel
 from the head of `e4/bring-up` and installs it over the current one. It is driven by the signed
 `fanctl` embedded in that build, through the ordinary `acquireLease` and `apply` — that is, through
 `fanctl set` ([#324](https://github.com/blamechris/Aeolus/issues/324)), which the branch carries.
+*(Run 1 builds from #324's branch synced onto `e4/bring-up`: the run-1 amendment, item 1.)*
 
 - **No mode, no flag, no environment variable.** What an experiment varies — fan, target,
   duration, machine load — is a `fanctl set` argument or the operator's choice. What it measures is
@@ -728,7 +729,8 @@ preparation step and then reconciliation, and either can write toward automatic.
   keystone). Either way, stop and record which.
 - **In later sessions**, D9's reboot starts the installed branch helper before any recorder can
   run. Any toward-automatic write it makes is recorded in the helper's own log, and the gates apply
-  to forward writes.
+  to forward writes. *(Replaced by the run-1 amendment, item 10: every session installs its branch
+  build after the census and quiescence, and ends with the `main` build reinstalled and checked.)*
 
 **The run: start 0, then four steps, all on fan 0.** *(Five since the P1′ amendment: 1d follows 1c.)*
 
@@ -902,7 +904,8 @@ the maintainer's act, and it binds forward writes.**
 
 - **Exclusion, product-agnostic.** Quit every third-party fan or SMC utility. Switch its background
   item off in System Settings → General → Login Items & Extensions. Reboot, so no process survives.
-  Re-enable the item afterwards. Under ADR 0011 D1, that tool loses its settings once per Aeolus
+  Re-enable the item afterwards. *(Only once the `main` build is reinstalled and checked: the
+  run-1 amendment, item 10.)* Under ADR 0011 D1, that tool loses its settings once per Aeolus
   helper start.
 - **Census, read-only.** In run 1's session it runs before the branch build is installed; in later
   sessions, before the first forward write. The IORegistry's `AppleSMC` user clients must be only
@@ -3676,7 +3679,9 @@ after the sync of `main` through #637).
   break-even of about 20.5 ms (ADR 0012's 2026-10-31 amendment). The 81.4 ms this paragraph first
   gave (64 × 11.453 / 9; 91.6 ms at eight) took all nine round trips at one latency, another model,
   under which D_cycle itself breaks at about 14.1 ms, so comparing it with 86.98 ms mixed two
-  models. It erred safe.*
+  models. It erred safe. It is the longest by round trips, not by time. Under writes slower than
+  about 80 ms, `.everyFan`'s three-write restore (3W) outlasts it, and still fits 733.0 ms up to a W
+  of about 244 ms, above the 86.98 ms at which § 3's own writes bind.*
 - **G, re-run at N = 12** (ADR 0012's 2026-10-31 amendment, which records it;
   `scripts/gate-wait-model/engaged_step.py`). Every queued reader at the engaged step fails G: four
   of the histories ADR 0012 counts closed pass it (874–892 round trips at eight). So the queue counts
@@ -3713,7 +3718,8 @@ after the sync of `main` through #637).
   - the mode write accepted and its read-back lost, so the step throws before any floor hold, with
     the undo refused;
   - the mode write unanswered and landed, with the undo refused;
-  - ADR 0012's D ending the helper between the mode write and the raise, which no undo follows;
+  - the helper ending between the mode write and the raise (ADR 0012's D, a crash or a SIGKILL),
+    which no undo follows;
   - the driver's undo answered `0x00` and not applied: firmware that takes the mode write and
     leaves the fan manual (#291's `reverted`, unobserved: ADR 0011's assumption table). The undo is
     not refused, so the fan is not kept and the re-apply does not meet it. The driver registered
@@ -3723,13 +3729,23 @@ after the sync of `main` through #637).
   The re-adopted fan is commanded in the same step, at its clamped target, before the step
   returns; `ProductionReAdoptionTests` holds that over the production plane, and
   `ProductionEngagementAtRestTests` that the driver's own undo hands the fan back when it lands.
-  Between a refused undo and the re-apply the fan is held stopped. It is bounded by the re-apply,
-  § 5, the lease's teardown and its three attempts, § 3's bridge (the driver registers the fan with
-  § 3 before the undo, and it stays in that registry), § 4, § 6 and § 7; the fourth route by
-  reconciliation at the next start. The fifth has the same bounds bar the re-apply, which meets
-  only a kept fan: § 3 keeps the fan registered and owed a read-back until it reads automatic. Run 1
-  watches for it with aborts 7 and 10. A fan kept the same way under load is not stopped: it holds
-  Apple's last target (#406). `docs/SAFETY.md` § 2 names this residual beside "0 RPM is not
+  Between a refused undo and the re-apply the fan is held stopped.
+  It is bounded by the re-apply, and by § 5 after the re-apply re-adopts it; by the lease's
+  teardown and its three attempts; by § 3's bridge (the driver registers the fan with § 3 before
+  the undo, and it stays in that registry); and by § 4, § 6 and § 7. The fourth route is bounded by
+  reconciliation at the next start. The fifth is not kept, so neither the re-apply nor § 5 meets
+  it: § 3 keeps the fan registered and owed a read-back until it reads automatic.
+  **Under the fifth route's own premise, every restore repeats the mode write the firmware
+  ignored.** The lease's teardown, § 4, § 6, § 7, reconciliation, `fanctl reset --all` and
+  `bootout` are further attempts, not independent bounds. What does not rest on the firmware
+  applying an accepted mode write:
+  - § 3's owed read-back, which keeps the fan in § 3's registry;
+  - § 3's bridge, a target write to the maximum, whose effect on a manual fan with `Ftst` cleared
+    is unobserved;
+  - the recovery ladder's power cycle (U11).
+
+  Run 1 watches for it with aborts 7 and 10. A fan kept the same way under load is not stopped: it
+  holds Apple's last target (#406). `docs/SAFETY.md` § 2 names this residual beside "0 RPM is not
   reachable".
 
 **What remains.** The real write body, `freshKeyInfo` and the forwarder meet the plane first at
@@ -4088,9 +4104,9 @@ Cited elsewhere as the run-1 amendment.
 
 Drafting run 1's operator runbook from D8, as the P1′ amendment restated it, found places where D8
 cannot be run as written, contradicts itself, or uses a term it never defines. This amendment
-settles them before run 1. It changes no code and adds no mechanism to the helper. It sets two
-thresholds D8 left undefined. One of them, 1b's abort 1, is more lenient than a literal reading,
-and item 8 says why.
+settles them before run 1. It changes no code and adds no mechanism to the helper.
+It sets thresholds D8 left undefined. Two of them, 1b's abort 1 and 1d's before its load, are
+more lenient than a literal reading, and item 8 says why.
 
 **Scope.** `Mac16,5`, macOS 27.2, run 1. Runs 2 to 4 take these terms unless their own amendment
 says otherwise. Intel and M1/M2 stay `untested`.
@@ -4106,6 +4122,9 @@ says otherwise. Intel and M1/M2 stay `untested`.
    is no build, no test run, and no agent session other than the run's coordinator. The coordinator
    spawns no subagent. It runs only the recorders, the watcher (item 4), the load, and read-only
    reads. Before start 0, the 1-minute load average is below 3.
+   Every bundle the session installs, the branch build and the `main` build that ends it
+   (item 10), is built, recorded with `e4-build-record.sh` and staged before the exclusion, at a
+   path the reboot keeps.
 
    *Why:* the clause's reason is #227, load that distorts SMC timing, and U8 is what run 1
    measures. P1 ran with its coordinator at a load of about 2.
@@ -4148,8 +4167,10 @@ says otherwise. Intel and M1/M2 stay `untested`.
      an alert cannot.
      - The helper acts on its own for abort 4 (the driver's undo), abort 5 past D (ADR 0012's
        watchdog), abort 7 (restart and reconciliation) and abort 8 (the lease's end).
-     - It does not act for aborts 1, 2, 6, 9, 10 or 11: § 3's ceiling is far above their
-       thresholds.
+     - It ends no hold for aborts 1, 2, 3, 6, 9, 10, 11 or 12. § 3 acts only at its ceiling, far
+       above aborts 1 and 11. § 5 answers a change that abort 3 sees by re-asserting the hold,
+       which is a further write. Abort 10 is the state the engaged turn's floor rule prevents,
+       seen after it.
    - *Why it never writes:* see the alternatives.
 5. **Abort 12 (new): the record goes blind during a hold.** The fan sampler writes no sample for
    2 s, or the package sampler none for 5 s, or the log stream or the watcher stops. Outside a
@@ -4158,13 +4179,14 @@ says otherwise. Intel and M1/M2 stay `untested`.
    *Why:* every other abort is read from that record. A hold that no abort can see is a hold that
    no abort can end.
 6. **Abort 4 is the one the maintainer verifies before resetting.** The driver's undo is the first
-   restore, and `engagementRefused`'s line says whether it landed. The maintainer runs
+   restore. `engagementRefused`'s line says whether the firmware accepted it, and the first
+   recorded sample after the line says whether it landed. The maintainer runs
    `fanctl reset --all` at once if any of these holds:
    - the line says the hand-back was refused, or `engagementUndoRefused` is logged;
    - the first recorded sample after the line shows `Ftst` other than `0`, or `F0Md` or `F1Md`
      outside Apple's set;
    - any other abort's condition holds;
-   - 10 s pass after the alert with no verdict.
+   - 10 s pass after the line with no verdict.
 
    Otherwise the abort is verified, the recovery ladder is not taken, and the post-hold check
    runs. When in doubt, reset.
@@ -4197,15 +4219,18 @@ says otherwise. Intel and M1/M2 stay `untested`.
      passes.
    - **At rest:** both fans read raw `3` with target 0 for 60 s, `Ftst` reads `0`, and the hottest
      curated is at most T0 + 3 °C. It is the entry for 1a, for 1b's load, for 1c and for 1d, and
-     the cool-down after every post-hold check. If it does not hold within 30 minutes, the session
-     writes nothing forward. 1b′'s "back at rest", `F0Tg` at `F0Mn` or 0, stays the end of 1b′.
+     the cool-down after every post-hold check except 1b's, whose load 1b′ continues. If it does not
+     hold within 30 minutes, the session writes nothing forward. 1b′ ends, and its step closes,
+     once its load has stopped and `F0Tg` reads `F0Mn` or 0. 1c's entry follows.
    - **The hold's baseline (abort 1):** for a hold at rest, the mean of the hottest curated over
-     the 10 s before the `set`. From the sixteen-way load's start until the end of the step in
-     which it stops, abort 1 reads 74 °C: in 1b and 1b′, and in 1d, whose hold outlasts its load.
-     A baseline taken at rest does not apply again after a load. 85 °C applies throughout.
+     the 10 s before the `set`. B + 10 °C applies in 1a and 1c, the holds no load enters. From the
+     sixteen-way load's start until the end of the step in which it stops, abort 1 reads 74 °C: in
+     1b and 1b′, and in 1d, whose hold outlasts its load. In 1d, from its GO until its load starts,
+     only 85 °C stands: for those seconds fan 0 is commanded to its maximum at rest, and abort 2
+     covers a held fan that does not spin. 85 °C applies throughout.
 
      *Why to the step's end:* the machine leaves a load heat-soaked. In P1 the hottest curated key
-     read 48–49 °C 34 s into the sixteen-way load, already above 1d's rest baseline plus 10 °C,
+     read 49.2 °C 34 s into the sixteen-way load, already above 1d's rest baseline plus 10 °C,
      45.5 °C. After the load stopped, it took 101 s to fall below that.
 
      1b's "loaded steady state" is P1's plateau under that load, 64.0 °C. When 1b engages, the
@@ -4230,18 +4255,19 @@ says otherwise. Intel and M1/M2 stay `untested`.
 
      #325's sleep-handback arm is run 3's (D10), so #325 does not close on run 1.
    - **§ 7's reply round trip:** the wall time of `fanctl reset --all` under `/usr/bin/time`. That
-     is an upper bound, since it includes the process's start and the handshake; the restore
-     turn's own lines bound it from below. It is read against the client's `panicVerb` deadline,
-     10 s.
+     is an upper bound, since it includes the process's start and its connection (`reset --all`
+     sends no handshake); the restore turn's own lines bound it from below. It is read against the
+     client's `panicVerb` deadline, 10 s.
    - **The examination gate:** no line measures hold lengths, actor hops or timer lateness. Run 1
      records only whether the gate's fault lines appear, and
      `FanExaminationGate.examinationMargin` stays unmeasured.
 10. **A session ends with the `main`-build helper installed.** While the recorders still run, and
     before the third-party fan utility's background item is switched back on (D9), the maintainer
-    reinstalls a `main` `Full Release` build, which cannot write. Each later session installs its
-    branch build after the census and quiescence, as run 1 does, so every session has a start 0.
-    This replaces D8's "In later sessions, D9's reboot starts the installed branch helper before
-    any recorder can run."
+    reinstalls a `main` `Full Release` build, which cannot write. That bundle was built, recorded
+    and staged before the exclusion (item 2). After the reinstall, `e4-verify-running.sh` checks
+    the running helper against its record. Each later session installs its branch build after the
+    census and quiescence, as run 1 does, so every session has a start 0. This replaces D8's "In
+    later sessions, D9's reboot starts the installed branch helper before any recorder can run."
 
     *Why:* the branch helper writes a machine-wide restore at every sleep, at every exit, and in
     every start's preparation step. With the third-party fan utility re-enabled, those writes meet
@@ -4249,12 +4275,51 @@ says otherwise. Intel and M1/M2 stay `untested`.
     the P1′ amendment's "the branch has no client but run 1's operator" then holds by what is
     installed, not by what is remembered.
 
-    The reinstall is checked like a restore. Ten seconds after the `main` helper's first log line,
-    `Ftst` reads `0` and both modes read in Apple's set. If the branch helper's exit restore was
-    refused, or that check fails, `fanctl reset --all` and `bootout` do nothing: the `main` helper
-    cannot write. In that case, reinstall the branch build, whose preparation step and
-    reconciliation restore at start, and if the check still fails, take the ladder's sleep and
-    then its power cycle.
+    **The check, and what follows it.** Ten seconds after the `main` helper's first log line,
+    `Ftst` reads `0` and both modes read in Apple's set. The check alone decides. The branch
+    helper's exit restore writes only zeros, so whether the firmware accepted it does not change
+    the state the check reads.
+    - **The check passes:** the session ends with `main` installed. A refused exit restore is
+      recorded as U5b, and goes to the architect under D8's rule for a refused keystone. Nothing
+      is reinstalled for it.
+    - **The check fails:** the `main` helper cannot write, so `fanctl reset --all` and `bootout`
+      do nothing. Take these steps in order, each at most once, with the check after each:
+      1. Reinstall the branch build, whose preparation step and reconciliation restore at start.
+      2. If the check passes, reinstall `main`. If the check passes again, the session ends there.
+      3. Otherwise, take the ladder's sleep, then its power cycle (item 13).
+      4. If the check then passes with the branch build installed, reinstall `main` once more.
+    - **Any path that does not end with `main` installed and the check passing ends with the
+      branch build installed.** It is the only build that writes toward automatic, at every sleep,
+      exit and start. The third-party fan utility then stays off, nothing drives the helper, and
+      the case goes to the architect before the next session.
+
+11. **1c's early end is the maintainer's to time.** He sends `fanctl reset --all` from the SSH
+    session 10 s after `started` appears on his own screen, and no later than 20 s after it. The
+    coordinator's call is a prompt, not the trigger.
+    - If `set` exits on its duration first, no reset is sent. That is an operator miss, not a
+      failed step, and 1c is repeated once from its entry.
+    - A reset sent after `set` has exited is recorded as a machine-wide restore over automatic
+      fans, and does not count as 1c.
+12. **1d's bounds.**
+    - **Entry:** the hottest curated is at most 41 °C, as well as at rest. P1's sixteen-way load
+      raised the hottest key 9 °C in 24 s and 5 °C in 15 s, and Apple started fan 1 at about 14 s.
+      From 41 °C, abort 11's 50 °C clause therefore comes about 10 s after Apple's start in P1.
+      From 45 °C it would come at about the same moment, and could not tell U7 failing from
+      Apple's own delay. Above 41 °C, 1d waits for a cooler session.
+    - **The load starts no later than 30 s after `started`, and stops by itself 80 s after it
+      starts.** Abort 11's 60 s, and the 20 s the pass holds after `F1Tg` leaves 0, then end inside
+      the 120 s hold, so no verdict is read across the restore. A load not started by then is not
+      started, and 1d is repeated once from its entry: an operator miss, not a failed step.
+    - **1d's verdict, added:**
+      - **Abort 11 after the restore has cleared `Ftst`:** not a U7 verdict. A fan 1 still stopped
+        under load with `Ftst` cleared is U6's question; it is recorded and goes to the architect.
+      - **The hold ended with `F1Tg` still 0 and neither clause reached:** not shown.
+13. **After the ladder's power cycle, the record restarts before the check.** The recorders and
+    the watcher start again, into a new capture directory, before the ladder's check is read. The
+    helper's own start, which the power cycle runs before any recorder can, is read from
+    `log show`. This applies to D8's recovery step 4 in any run, and to item 10.
+14. **Run 1 waits for its runbook.** It runs from a runbook revised to this amendment and reviewed.
+    Where the two differ, this amendment governs.
 
 **What remains.**
 - The install procedure is the maintainer's and unverified on 27.2: stopping the `main` helper,
@@ -4273,6 +4338,10 @@ says otherwise. Intel and M1/M2 stay `untested`.
   - If it alerts falsely, that costs a session (item 7).
 - Abort 2's 10 s allowance for the held fan, and abort 12's 2 s and 5 s, are set without data from
   a write. Row 9's step response and the samplers' achieved rates re-derive them before run 2.
+- The reverse swap, from the branch helper back to `main`, cannot be rehearsed without installing
+  a write-capable build outside a run. It is first exercised at run 1's end, under the recorders
+  and item 10's check.
+- 1d's 41 °C entry is read from P1's curve shifted to a warmer start. It is not measured from one.
 
 **Alternatives considered.**
 - *The coordinator polls, with no watcher.* Its loop is a model turn, so "at once" would mean
@@ -4302,7 +4371,10 @@ says otherwise. Intel and M1/M2 stay `untested`.
 - a fan sampler's achieved rate falls below 8 Hz in a hold, or a package gap exceeds 2 s;
 - row 9's step response from rest takes more than 10 s to reach 80 % of the target;
 - the install rehearsal finds the approval lost, or the helper started unobserved;
-- "at rest" is not reached within 30 minutes.
+- "at rest" is not reached within 30 minutes;
+- a session ends with the branch build installed (item 10);
+- 1d cannot reach its 41 °C entry at rest in two sessions;
+- 1c or 1d is repeated as an operator miss (items 11, 12).
 
 **No `AeolusXPCVersion` bump:** nothing crosses the boundary. **Status stays Proposed.**
 

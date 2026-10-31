@@ -327,7 +327,7 @@ round trips (`WatchdogLimits.writeTurnRoundTrips`). A Y-write and a `commandTarg
 a restore takes one write per key and no read, three on `Mac16,5` for the machine-wide one.
 **Five is the longest turn only for a machine of up to four fans:** the machine-wide restore is
 fans + 1 writes, so a fifth fan makes it six and this term is re-run again. *(On `e4/bring-up`
-the longest turn is nine, the engaged step, per the 2026-10-31 amendment.)* One
+the longest turn by round trips is nine, the engaged step, per the 2026-10-31 amendment.)* One
 engagement in progress is one outstanding reader while it waits for a turn and none while it
 sleeps between steps, so writes enter N as readers with a longer turn, not as new readers.
 

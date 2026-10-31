@@ -223,11 +223,11 @@ enum WatchdogLimits {
     ///
     /// The turn in flight ahead of each of § 3's turns is taken as a 64-key read slice at the
     /// measured worst read, 733.0 ms: the longest any turn occupies the connection. The longest
-    /// write turn, the engaged step, stays under it by this bound's own model, § 3's reads at that
-    /// read and its writes at W: the cold raise (seven reads, two writes) fits while 80.2 ms + 2W
-    /// is at most 733.0 ms, up to W of about 326 ms. That is far above the 86.98 ms break-even of
-    /// § 3's own writes, so they bind first (ADR 0012's 2026-10-31 amendment), and both are far
-    /// above the about 20.5 ms at which G's modelled slot breaks
+    /// write turn by round trips, the engaged step, stays under it by this bound's own model,
+    /// § 3's reads at that read and its writes at W: the cold raise (seven reads, two writes) fits
+    /// while 80.2 ms + 2W is at most 733.0 ms, up to W of about 326 ms. That is far above the
+    /// 86.98 ms break-even of § 3's own writes, so they bind first (ADR 0012's 2026-10-31
+    /// amendment), and both are far above the about 20.5 ms at which G's modelled slot breaks
     /// (`scripts/gate-wait-model/engaged_step.py`). The 81.4 ms of 64 × 11.453 / 9 takes all nine
     /// round trips at one latency, which is another model: D_cycle itself breaks at about 14.1 ms
     /// there.
