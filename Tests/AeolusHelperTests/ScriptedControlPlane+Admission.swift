@@ -158,6 +158,14 @@ struct ScriptedControlPlane: FanControlPlane {
         try await firmware.firmwareMode(ofFan: index)
     }
 
+    func firmwareRawMode(ofFan index: Int) async throws -> UInt8 {
+        try await firmware.firmwareRawMode(ofFan: index)
+    }
+
+    func setByApple(_ condition: FanCondition, ofFan index: Int) async {
+        await firmware.setByApple(condition, ofFan: index)
+    }
+
     func firmwareBound(_ bound: Bound, ofFan index: Int) async throws -> Double {
         try await firmware.firmwareBound(bound, ofFan: index)
     }

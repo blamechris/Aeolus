@@ -208,7 +208,11 @@ actor ScriptedFirmware {
 
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
     struct FanCondition: Sendable, Hashable {
-        var mode: FirmwareFanMode
+        /// `F<n>Md` as the firmware holds it: the byte, never the fold. Apple's controller
+        /// leaves `0` while it spins the fan and `3` while it has it stopped, and an engagement
+        /// writes `1` (ADR 0014's P1′ amendment), so one `FirmwareFanMode` cannot hold it. Its
+        /// fold, `mode`, is in `ScriptedControlPlane+Scripting.swift`.
+        var rawMode: UInt8
         var targetRPM: Double
         var minimumRPM: Double
         var maximumRPM: Double
@@ -231,7 +235,7 @@ actor ScriptedFirmware {
             minimumRPM: Double = 1_350,
             maximumRPM: Double = 5_777
         ) {
-            self.mode = mode
+            rawMode = Self.byte(writtenFor: mode)
             self.targetRPM = targetRPM
             self.actualRPM = actualRPM
             self.minimumRPM = minimumRPM
@@ -358,9 +362,9 @@ actor ScriptedFirmware {
     /// ledger records the clear as issued, which is the lingering key the preparation step finds.
     private(set) var isForceKeySet = false
 
-    /// Raw `F<n>Md` values the unlock model's reads answer in place of the fold of a fan's mode:
-    /// one `FirmwareFanMode` cannot hold, or a read-back that disagrees with a write that landed
-    /// (#406). Set by `setRawMode(_:ofFan:)`.
+    /// Raw `F<n>Md` values the unlock model's reads answer in place of a fan's own byte
+    /// (`FanCondition.rawMode`): a read-back that disagrees with a write that landed (#406). Set by
+    /// `setRawMode(_:ofFan:)`.
     private var rawModes: [Int: UInt8] = [:]
 
     /// Fans whose next read-back, after a mode write, does not answer while every other read does.
@@ -610,6 +614,20 @@ extension ScriptedFirmware {
         try modeReadable(ofFan: index, context: "fan \(index) mode").mode
     }
 
+    /// `firmwareMode(ofFan:)`'s byte, unfolded: what the snapshot's provider hands its own decode.
+    func firmwareRawMode(ofFan index: Int) throws -> UInt8 {
+        try modeReadable(ofFan: index, context: "fan \(index) mode").rawMode
+    }
+
+    /// Moves fan `index` as Apple's own controller does, recording no attempt, for `setMode`'s
+    /// reason: `condition`'s mode byte and speeds, the declared bounds untouched. P1 recorded the
+    /// two states (`FanCondition.stoppedByApple`, `FanCondition.spinningByApple`).
+    func setByApple(_ condition: FanCondition, ofFan index: Int) {
+        fans[index]?.rawMode = condition.rawMode
+        fans[index]?.targetRPM = condition.targetRPM
+        fans[index]?.actualRPM = condition.actualRPM
+    }
+
     /// The one rule every read of `F<n>Md` answers by — `readControlState(ofFan:)`, the unlock
     /// model's raw read, and `firmwareMode(ofFan:)`: the SMC answers this stage, the fan exists,
     /// and its mode key is not one the stage leaves unanswered.
@@ -814,8 +832,8 @@ extension ScriptedFirmware {
     }
 
     /// Makes the unlock model's raw reads of fan `index`'s `F<n>Md` — a first step's pre-state and
-    /// a step's read-back — answer `raw`, or the fold of its mode again for `nil`, recording no
-    /// attempt, for `setMode`'s reason. The snapshot's read, `firmwareMode(ofFan:)`, still folds.
+    /// a step's read-back — answer `raw`, or the fan's own byte again for `nil`, recording no
+    /// attempt, for `setMode`'s reason. Every other read of the key still answers the fan's byte.
     /// In this extension, so the actor's own body stays inside `type_body_length`'s warning.
     func setRawMode(_ raw: UInt8?, ofFan index: Int) {
         rawModes[index] = raw
@@ -829,11 +847,11 @@ extension ScriptedFirmware {
         failingReadBacks.insert(index)
     }
 
-    /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual, unless
+    /// Raw `F<n>Md`, through the stage's read behaviour: the fan's own byte, unless
     /// `setRawMode(_:ofFan:)` set another.
     private func readRawMode(ofFan index: Int) throws -> UInt8 {
         let fan = try modeReadable(ofFan: index, context: "fan \(index) mode")
-        return rawModes[index] ?? (fan.mode == .automatic ? 0 : 1)
+        return rawModes[index] ?? fan.rawMode
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses

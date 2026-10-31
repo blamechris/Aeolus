@@ -149,6 +149,38 @@ extension ScriptedFirmware {
     }
 }
 
+// Apple's two states, as P1 recorded them on `Mac16,5` under macOS 27.2 (ADR 0014's P1′
+// amendment), and the byte the helper's own writes leave. In this file, for the vocabulary's
+// reason above: none of it reads the actor's private state.
+extension ScriptedFirmware.FanCondition {
+
+    /// `rawMode` through the production plane's own decode of `F<n>Md`, so every read this
+    /// firmware answers folds a byte as `SMCFanControlPlane` does. Setting it writes the byte the
+    /// helper writes for that mode: `0`, a restore's, or `1`, an engagement's.
+    var mode: FirmwareFanMode {
+        get { FirmwareFanMode(declaredByFirmware: Double(rawMode)) }
+        set { rawMode = Self.byte(writtenFor: newValue) }
+    }
+
+    /// Apple's controller has the fan stopped: raw `F<n>Md = 3`, `F<n>Tg` 0, and the fan still.
+    /// The development machine's idle state, and the one `F<n>Md`'s old `!= 0` fold called
+    /// another program's hold (#633).
+    static let stoppedByApple: Self = {
+        var stopped = Self(targetRPM: 0, actualRPM: 0)
+        stopped.rawMode = 3
+        return stopped
+    }()
+
+    /// Apple's controller is spinning the fan at its floor: raw `F<n>Md = 0`, `F<n>Tg` 1350, as P1
+    /// recorded fan 0 under a twelve-way load.
+    static let spinningByApple = Self.automatic(at: 1_350)
+
+    /// The byte the helper writes for `mode`: `0`, every restore's, or `1`, an engagement's (D3).
+    static func byte(writtenFor mode: FirmwareFanMode) -> UInt8 {
+        mode == .automatic ? 0 : 1
+    }
+}
+
 /// Built stages for the B1 vocabulary, so a scenario reads as the firmware it scripts.
 extension ScriptedControlPlane.Stage {
 
