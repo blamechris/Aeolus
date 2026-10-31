@@ -186,8 +186,8 @@ extension SMCWritePlaneTests {
         #expect(
             fixture.lines.lines(
                 containing:
-                    "Fan 0 read back engaged with raw F0Tg 0x0 0xc0 0xa8 0x44: held at or above "
-                    + "its floor; nothing written."
+                    "Fan 0 read back engaged with raw F0Tg 0x0 0xc0 0xa8 0x44 (1350.0 RPM): "
+                    + "held at or above its floor; nothing written."
             ).count == 1, "\(fixture.lines.lines)")
     }
 
@@ -223,10 +223,9 @@ extension SMCWritePlaneTests {
         #expect(fixture.writes(since: mark) == ["F0Md=1"], "\(target): a target was written")
         #expect(ledger.engagedFans.isEmpty, "\(target)")
         #expect(!ledger.isCurrent(fanAt: 0), "\(target): the step was not recorded refused")
-        #expect(
-            fixture.lines.lines(containing: "Fan 0 read back engaged with raw F0Tg").allSatisfy {
-                $0.contains(": threw readFailed")
-            }, "\(fixture.lines.lines)")
+        let holds = fixture.lines.lines(containing: "Fan 0 read back engaged with raw F0Tg")
+        #expect(holds.count == 1, "\(target): \(fixture.lines.lines)")
+        #expect(holds.allSatisfy { $0.contains(": threw readFailed") }, "\(holds)")
     }
 
     // MARK: - C26: round trips per turn

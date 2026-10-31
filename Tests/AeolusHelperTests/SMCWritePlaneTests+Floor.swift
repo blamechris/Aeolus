@@ -54,8 +54,8 @@ extension SMCWritePlaneTests {
         #expect(
             fixture.lines.lines(
                 containing:
-                    "Fan 0 read back engaged with raw F0Tg 0x0 0x0 0x0 0x0: the raise to its "
-                    + "floor, 1350 RPM, answered 0x00 and read back 1350.0 RPM."
+                    "Fan 0 read back engaged with raw F0Tg 0x0 0x0 0x0 0x0 (0.0 RPM): the raise "
+                    + "to its floor, 1350 RPM, answered 0x00 and read back 1350.0 RPM."
             ).count == 1, "\(fixture.lines.lines)")
     }
 

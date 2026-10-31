@@ -22,6 +22,8 @@ struct FloorHoldTrace: Sendable {
     let key: SMCKey
     /// The target's bytes as read, or `unreadable` when the read itself failed.
     var raw = "unreadable"
+    /// The target as it decoded, in RPM, for the operator beside the bytes; `nil` if it did not.
+    var decodedRPM: Double?
     /// The floor the target was raised to, in whole RPM, or `nil` when the target held.
     var floorRaisedTo: String?
     var outcome = "unfinished"

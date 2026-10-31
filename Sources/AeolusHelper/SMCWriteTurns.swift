@@ -231,7 +231,7 @@ enum SMCWriteTurns {
                 guard let scalar = try value.scalar() else {
                     throw FanControlPlaneError.readFailed(detail: "\(key) did not decode")
                 }
-                reading = .rpm(scalar)
+                (hold.decodedRPM, reading) = (scalar, .rpm(scalar))
             } catch {
                 reading = .unreadable(reason: "\(error)")
             }
