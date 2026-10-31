@@ -160,28 +160,53 @@ struct FanctlSetLostBeforeHoldTests {
     // MARK: - The simulated lapse and the sweep
 
     /// A lookup of a lapsed lease is refused and changes nothing; a sweep is what takes the lease.
-    /// Here the supervisor's sweep has already run when `apply` looks again, so the answer is
-    /// `leaseUnknown` and not `leaseExpired`, and both are the lease no longer being shown held.
+    /// Here the supervisor's sweep has already run when `apply` looks again, so `apply` answers
+    /// `leaseUnknown`, not `leaseExpired`, and that answer is **the whole of how this run knows**:
+    /// no renewal was sent while `apply` worked (the keeper's wait is never let elapse here, as
+    /// if the process had stalled), so no failed renewal is on record to take precedence. It is
+    /// control lost before the hold began, never a refusal.
+    ///
+    /// **Mutation:** in `SetCommand.lapse(afterApplyFault:)`, move `.leaseUnknown` to the arm
+    /// that returns `nil`. Run: red — the answer is read as a refusal ("did not accept the
+    /// speed", `refused`).
     @Test("An apply answered leaseUnknown after the supervisor's sweep is the same loss")
     func theLeaseWasAlreadySwept() async throws {
-        let scene = await RenewalScene(applyTakes: .seconds(35)) {
-            await $0.failingRenewals(with: .helperFailed(detail: "the heartbeat could not land"))
-        }
-        let running = try scene.start()
-        try await waitUntil("the first renewal reached the helper") {
-            await scene.authority.calls.contains("renewLease")
-        }
-        // Past the lease's thirty seconds, and short of the end of the helper's work.
-        scene.time.advance(by: .seconds(21))
-        await scene.authority.sweepExpiredLeases()
-        #expect(await scene.authority.lapseInstants.count == 1, "swept before apply looks again")
-        scene.time.finishHelperWork()
-        let code = await running.value
-        _ = scene.harness.sessions
+        let authority = SimulatedFanAuthority()
+        let time = VirtualHoldTime()
+        let gate = AsyncSignal()
+        await authority.expiringLeases(after: RenewalScene.lifetime, on: time.clock)
+        await authority.holdingApply(until: gate)
+        let harness = ClientListenerHarness(authority: authority)
+        let output = RecordingTerminal()
+        let command = try Harness.command(
+            Harness.thirtySeconds + ["--json"], endpoint: harness.endpoint, output: output,
+            time: time, desk: SignalDesk())
 
-        #expect(code == FanctlExitCode.controlLost.rawValue, "\(scene.output.standardError)")
-        let message = scene.output.standardError
+        let running = Task { await exitCode { try await command.run() } }
+        try await waitUntil("the apply reached the helper") {
+            await authority.calls.contains("apply")
+        }
+        // Past the lease's thirty seconds with nothing renewed, and the supervisor's sweep run.
+        time.advance(by: RenewalScene.lifetime + .seconds(1))
+        await authority.sweepExpiredLeases()
+        try #require(await authority.lapseInstants.count == 1, "swept before apply looks again")
+        await gate.signal()
+        let code = await running.value
+        _ = harness.sessions
+
+        #expect(code == FanctlExitCode.controlLost.rawValue, "\(output.standardError)")
+        #expect(await Harness.count("renewLease", in: authority) == 0, "no renewal on record")
+        let failed = try #require(try output.events().last)
+        #expect(failed["endedBecause"] as? String == "controlLost")
+        let message = output.standardError
         #expect(message.hasPrefix("Control was lost before the hold began"))
+        // The premise, in the text: `apply`'s own answer is `leaseUnknown`, quoted as the answer
+        // that the lease was gone, and not `leaseExpired`.
+        #expect(
+            message.contains(
+                "The helper answered the request to apply the speed that the lease was gone: "
+                    + SetCommand.describe(AeolusXPCFault.leaseUnknown)), "\(message)")
+        #expect(!message.contains(SetCommand.describe(AeolusXPCFault.leaseExpired)))
         #expect(!message.contains("did not accept"))
     }
 }
