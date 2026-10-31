@@ -52,7 +52,7 @@ struct SetMessagesTests {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let clauses = [
             SetCommand.Ending.durationElapsed, .signal(.interrupt), .signal(.terminate),
-            .signal(.hangup), .parentExited, .outputClosed,
+            .signal(.hangup), .parentExited, .outputClosed, .signalBeforeHold(.interrupt),
         ].map { SetMessages.why($0, hold: hold) }
         #expect(Set(clauses).count == clauses.count)
         #expect(clauses[0] == "the 30m it was asked for has passed")
@@ -61,6 +61,24 @@ struct SetMessagesTests {
         #expect(clauses[3] == "SIGHUP was received")
         #expect(clauses[4] == "the process that started it exited")
         #expect(clauses[5] == "standard output was closed or stopped taking lines")
+        #expect(clauses[6] == "SIGINT was received while the speed was being applied or confirmed")
+    }
+
+    /// A run that ended before `started` never said "Holding", so it does not say a hold ended.
+    ///
+    /// **Mutation:** return "The hold ended: …" for every ending in `SetMessages.lead`. Run: red.
+    @Test("A signal before started says the hold was not begun, not that it ended")
+    func leadBeforeTheHold() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let before = SetMessages.lead(.signalBeforeHold(.interrupt), hold: hold)
+        #expect(
+            before
+                == "The hold was not begun: SIGINT was received while the speed was being applied "
+                + "or confirmed.")
+        #expect(!before.contains("ended"))
+        #expect(
+            SetMessages.lead(.signal(.interrupt), hold: hold)
+                == "The hold ended: SIGINT was received.")
     }
 
     @Test("endedBecause values are the documented identifiers")
@@ -70,6 +88,8 @@ struct SetMessagesTests {
         #expect(SetCommand.Ending.parentExited.endedBecause == "parentExited")
         #expect(SetCommand.Ending.outputClosed.endedBecause == "outputClosed")
         #expect(SetCommand.Ending.signal(.hangup).signal == .hangup)
+        #expect(SetCommand.Ending.signalBeforeHold(.terminate).endedBecause == "signal")
+        #expect(SetCommand.Ending.signalBeforeHold(.terminate).signal == .terminate)
         #expect(SetCommand.Ending.parentExited.signal == nil)
     }
 

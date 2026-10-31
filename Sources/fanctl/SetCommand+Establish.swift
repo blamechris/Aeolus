@@ -149,7 +149,7 @@ extension SetCommand {
         // safe state looked at, as for every ordinary ending.
         if let signal {
             return await finish(
-                .ended(.signal(signal)), hold: hold, snapshot: snapshot, in: session)
+                .ended(.signalBeforeHold(signal)), hold: hold, snapshot: snapshot, in: session)
         }
 
         // Handed over, not written: nothing the hold does waits on a reader. If standard output

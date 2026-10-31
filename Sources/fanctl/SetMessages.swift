@@ -57,6 +57,8 @@ enum SetMessages {
                 + "has passed"
         case .signal(let signal):
             return "\(signal.name) was received"
+        case .signalBeforeHold(let signal):
+            return "\(signal.name) was received \(beforeHold)"
         case .parentExited:
             return "the process that started it exited"
         case .outputClosed:
@@ -64,10 +66,19 @@ enum SetMessages {
         }
     }
 
-    /// The first sentence of everything said about an ordinary ending.
+    /// The first sentence of everything said about an ordinary ending. A run that ended before
+    /// `started` never said "Holding", so it does not say a hold ended.
     static func lead(_ ending: Ending, hold: Hold) -> String {
-        "The hold ended: \(why(ending, hold: hold))."
+        if case .signalBeforeHold = ending {
+            return "The hold was not begun: \(why(ending, hold: hold))."
+        }
+        return "The hold ended: \(why(ending, hold: hold))."
     }
+
+    /// When a signal noted before `started` landed: after the lease was taken and before the
+    /// pending signal was looked at, which is once `apply` and the snapshot confirming it have
+    /// both been answered.
+    static let beforeHold = "while the speed was being applied or confirmed"
 
     static func releaseSentence(_ release: Release, hold: Hold) -> String {
         switch release {
@@ -148,11 +159,11 @@ enum SetMessages {
 
     // MARK: - Other ways a run does not hold
 
-    /// A sentence for a signal that landed while the speed was being applied, which a failure
-    /// that followed it must not lose. Empty when none did.
+    /// A sentence for a signal that landed while the speed was being applied or confirmed, which
+    /// a failure that followed it must not lose. Empty when none did.
     static func signalNote(_ signal: HoldSignal?) -> String {
         guard let signal else { return "" }
-        return "\n\n\(signal.name) was received while the speed was being applied."
+        return "\n\n\(signal.name) was received \(beforeHold)."
     }
 
     /// The hold's own timer failed. Released, and the safe state looked at: what is said of the

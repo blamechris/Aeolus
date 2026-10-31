@@ -165,14 +165,15 @@ struct SetApplyMessagesTests {
         #expect(timer.contains("fanctl's timer failed"))
     }
 
-    /// A signal that landed while the speed was being applied is not lost from a failure that
-    /// follows it.
+    /// A signal that landed while the speed was being applied or confirmed is not lost from a
+    /// failure that follows it. The pending signal is looked at once `apply` **and** the snapshot
+    /// confirming it are answered, so it may have landed during either.
     @Test("A signal during apply is named in the text of the failure that follows")
     func signalNote() {
         #expect(SetMessages.signalNote(nil).isEmpty)
         #expect(
             SetMessages.signalNote(.interrupt)
-                == "\n\nSIGINT was received while the speed was being applied.")
+                == "\n\nSIGINT was received while the speed was being applied or confirmed.")
     }
 
     /// `leaseExpired`'s own description says the fans "have returned to automatic control"; a

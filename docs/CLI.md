@@ -734,9 +734,11 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
   short (that would release the lease under an `apply` that is working); it takes effect when
   `apply` returns, bounded by `apply`'s own deadline (57 s for one fan, 109 s for two). It ends
   the run **before `started`**, so "Holding" is never printed to a person who has already asked
-  to stop: released, checked, an ordinary ending with `endedBecause: signal` and exit 0, 8 or 9.
-  If the run ends some other way, the signal is still in the closing event (`signal`) and in the
-  text.
+  to stop: released, checked, an ordinary ending with `endedBecause: signal` and exit 0, 8 or 9,
+  whose text opens "The hold was not begun", not "The hold ended". The signal is looked for once
+  `apply` and the snapshot confirming it are both answered, so it may have landed during either,
+  and the text says "while the speed was being applied or confirmed". If the run ends some other
+  way, the signal is still in the closing event (`signal`) and in the text.
 - **An `apply` the helper answered with a fault is followed by a release and the safe-state
   check, whatever the fault.** Level 6 can engage a fan, fail on the next, have the undo refused
   and answer only the original fault, so a refusal is not taken to mean no fan was touched. The

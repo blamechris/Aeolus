@@ -79,6 +79,10 @@ enum SetCommand {
     enum Ending: Equatable, Sendable {
         case durationElapsed
         case signal(HoldSignal)
+        /// A signal that landed while the speed was being applied or confirmed, and ended the run
+        /// before `started`: no hold was begun, so the text does not say one ended. `--json`
+        /// gives it the same `endedBecause` as `signal`; no `started` comes before it.
+        case signalBeforeHold(HoldSignal)
         case parentExited
         case outputClosed
 
@@ -86,15 +90,17 @@ enum SetCommand {
         var endedBecause: String {
             switch self {
             case .durationElapsed: return "durationElapsed"
-            case .signal: return "signal"
+            case .signal, .signalBeforeHold: return "signal"
             case .parentExited: return "parentExited"
             case .outputClosed: return "outputClosed"
             }
         }
 
         var signal: HoldSignal? {
-            guard case .signal(let signal) = self else { return nil }
-            return signal
+            switch self {
+            case .signal(let signal), .signalBeforeHold(let signal): return signal
+            case .durationElapsed, .parentExited, .outputClosed: return nil
+            }
         }
     }
 

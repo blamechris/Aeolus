@@ -21,10 +21,12 @@ struct FanctlSetSignalDuringApplyTests {
 
     /// The signal arrives while `apply` is held at the helper; `apply` is then accepted and the
     /// snapshot shows the fan held. The run ends there: the lease is released and the safe state
-    /// checked, and "Holding" is never said, in text or in `--json`.
+    /// checked, and "Holding" is never said, in text or in `--json`. Nor is "The hold ended",
+    /// for a hold that was never begun.
     ///
     /// **Mutation:** delete the pending-signal check in `SetCommand.begin` (before `started`).
-    /// Run: red — `started` is emitted, and the text says "Holding fan 0".
+    /// Run: red — `started` is emitted, and the text says "Holding fan 0". **Mutation:** end it
+    /// with `.signal` in place of `.signalBeforeHold` there. Run: red on the text's first line.
     @Test(
         "A signal during an accepted apply ends the run before started", arguments: [false, true])
     func aSignalDuringAnAcceptedApply(json: Bool) async throws {
@@ -62,15 +64,21 @@ struct FanctlSetSignalDuringApplyTests {
         } else {
             let lines = output.standardOutput.split(separator: "\n").map(String.init)
             #expect(lines.count == 1, "one closing line and no start line: \(lines)")
-            #expect(lines.first?.hasPrefix("The hold ended: SIGINT was received.") == true)
+            #expect(
+                lines.first?.hasPrefix(
+                    "The hold was not begun: SIGINT was received while the speed was being "
+                        + "applied or confirmed.") == true, "\(lines)")
+            #expect(!output.standardOutput.contains("The hold ended"))
         }
     }
 
     /// The signal arrives, and `apply` then answers a fault. The failure is reported as it
     /// always is, and the signal is still in the report: `signal` is not null.
     ///
-    /// **Mutation:** build `applyFaulted`'s report with `signal: nil` in
-    /// `SetCommand.Report.applyFaulted`. Run: red on `signal` and on the note.
+    /// **Mutations**, each red on its own assertion: build `applyFaulted`'s report with
+    /// `signal: nil` in `SetCommand.Report.applyFaulted` (red on `signal`, and only there: the
+    /// note is built from the parameter, not the field); drop `+ SetMessages.signalNote(signal)`
+    /// there (red on the note).
     @Test("A signal during an apply that then faults stays in the report")
     func aSignalDuringAnApplyThatFaults() async throws {
         let authority = SimulatedFanAuthority()
@@ -100,7 +108,8 @@ struct FanctlSetSignalDuringApplyTests {
         #expect(failed["endedBecause"] as? String == "refused", "the failure is what it was")
         #expect(output.standardError.contains("did not accept the speed"))
         #expect(
-            output.standardError.contains("SIGTERM was received while the speed was being applied.")
+            output.standardError.contains(
+                "SIGTERM was received while the speed was being applied or confirmed.")
         )
     }
 }
