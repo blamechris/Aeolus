@@ -165,7 +165,7 @@ deprecated and will be removed in a future release"), and it is what makes this 
 without it, `swift test` on that toolchain runs each target in its own process, which is not the
 run CI does, and a pool of one then applies to each target separately. CI spells the flag out
 rather than relying on it as a default, so when SwiftPM removes it the step fails on an unknown
-option and does not quietly become a different run.
+option and does not quietly become a different run. Replacing it is tracked in #654.
 
 Without the flag, on Apple Swift 6.4, the same command runs nine processes, each on a pool of one
 (the variable is inherited), and passes: 64 s, against 55 s for the one-process run, on the

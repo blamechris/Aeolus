@@ -42,6 +42,14 @@ jobs:
   test-debug:
     name: Test (debug)
     runs-on: macos-latest
+    # 25 minutes, for two reasons.
+    #   - It is 3.1 times the slowest passing run of this job, 489 s (run 41186416078, job
+    #     124496136514). The four passing runs on #646 took 424 to 489 s.
+    #   - It must leave the pool-of-one step's own 10-minute limit room to fire first. When that
+    #     step wedged (scratch run 41186425390, job 124494167175) the job took 1092 s: 473 s of
+    #     earlier steps, then the 10 minutes and its shutdown. That was 108 s under the 20 minutes
+    #     this job started with, so earlier steps 108 s slower would have let the job's limit win;
+    #     under 25 minutes the margin is 408 s.
     timeout-minutes: 25
 
     steps:
@@ -83,13 +91,16 @@ jobs:
       - name: Test
         run: swift test --skip-build
 
-      # The whole suite on a cooperative pool of one (#593, docs/TESTING.md). The step above runs
+      # The whole suite on a cooperative pool of one (#593, docs/TESTING.md). The `Test` step runs
       # it on the runner's three-thread pool, where a test that parks a pool thread on a release
       # only the pool can deliver still finds a second thread and passes. On one thread it cannot,
       # and the run wedges at 0% CPU instead of finishing; the step's time limit is what turns
-      # that wedge into a failure rather than a hang. It is 10 minutes against a healthy run of
-      # two, and it has to fire before the job's own limit does, or the job is cancelled instead
-      # and the step's message is lost: a wedge measured at 1092 s on a slow runner, of 25 minutes.
+      # that wedge into a failure rather than a hang.
+      #
+      # That limit is 10 minutes, 4.8 times the slowest healthy run of the step, 124 s (103 to 124 s
+      # over runs 41185591861, 41186416078 twice and 41187988205). It has to fire before the job's
+      # own limit does: when the job's limit fires first the job is cancelled and the step's message
+      # is lost. See `timeout-minutes` on the job for the margin.
       #
       # It is one process, which is the point: `--build-system native` runs every test target in
       # one, so the pool is one thread for the whole suite. That flag is deprecated and "will be
@@ -97,15 +108,16 @@ jobs:
       # so that the day it is removed this step fails loudly on an unknown option and does not
       # quietly become something else. On Swift 6.3.3, this runner's, native is the default and
       # this build is the one `Build` above made, so it costs a few seconds; on 6.4 it is a second
-      # full build. docs/TESTING.md says what stands in for the flag.
+      # full build. docs/TESTING.md says what stands in for the flag, and #654 tracks replacing it
+      # and re-measuring this job's headroom when it does.
       #
       # Only the test run below has the variable. A build has no reason to run on a pool of one.
       - name: Build tests (native build system)
         run: swift build --build-tests --build-system native
 
-      # This run leaves out two things and nothing else; the step above still runs every suite:
+      # This run leaves out two things and nothing else; the `Test` step still runs every suite:
       #   - the suites that read the SMC. A hosted runner has none, so on CI they skip themselves
-      #     in the step above as well. On a Mac16,5 they would read the real one, and a run about
+      #     in the `Test` step as well. On a Mac16,5 they would read the real one, and a run about
       #     thread counts has no business doing that (docs/TESTING.md gives this command for that
       #     machine too);
       #   - `theBudgetSurvivesARestoreThatBlocksItsThread`, the one test that cannot run on a pool
@@ -185,6 +197,11 @@ jobs:
   test-release:
     name: Test (release)
     runs-on: macos-latest
+    # 30 minutes. The slowest passing run of this job is 655 s (run 41186425390, job 124494167019;
+    # the others took 394 to 615 s), so the limit is 2.75 times that, not 3 times. The old single
+    # job's slowest run (41176350841, 1189 s of its 1200) projects to 796 s for this half, which is
+    # 2.3 times under the limit. It is a ceiling for a hang, not a target: #594 asked for 30%
+    # headroom and this leaves 64% on the measured figure and 56% on the projected one.
     timeout-minutes: 30
 
     steps:
