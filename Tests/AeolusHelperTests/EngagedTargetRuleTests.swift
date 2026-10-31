@@ -126,16 +126,27 @@ struct EngagedTargetRuleTests {
         #expect(rig.plane.ledger.engagedFans == [0])
     }
 
-    /// Engaging under load: Apple's target is above the floor, so the step writes only the mode,
-    /// and the target is as Apple left it.
-    @Test("A fan engaged under load keeps Apple's target, and nothing more is written")
-    func aFanEngagedUnderLoadIsNotWritten() async throws {
-        let rig = try await Self.rig(.automatic(at: 3_455))
+    /// Engaging while Apple spins the fan: its target is at or above the floor, so the step
+    /// writes only the mode, and the target is as Apple left it. `spinningByApple` is P1's
+    /// twelve-way load, at exactly the floor; 3455 is its sixteen-way plateau.
+    ///
+    /// **Mutation:** raise unconditionally, as above. Run: red on both arguments.
+    @Test(
+        "A fan engaged while Apple spins it keeps Apple's target, and nothing more is written",
+        arguments: [
+            ScriptedControlPlane.FanCondition.spinningByApple,
+            ScriptedControlPlane.FanCondition.automatic(at: 3_455),
+        ])
+    func aFanEngagedUnderLoadIsNotWritten(
+        _ spinning: ScriptedControlPlane.FanCondition
+    ) async throws {
+        let rig = try await Self.rig(spinning)
 
         try await rig.driver.engageManualControl(of: rig.fan(0))
 
         #expect(await rig.plane.keyWrites == [.mode(fan: 0, value: 1)])
-        #expect(try await rig.plane.readControlState(ofFan: 0).target == .rpm(3_455))
+        #expect(
+            try await rig.plane.readControlState(ofFan: 0).target == .rpm(spinning.targetRPM))
         #expect(rig.plane.ledger.engagedFans == [0])
     }
 
