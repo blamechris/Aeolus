@@ -40,7 +40,9 @@ import os
 )
 struct CooperativePoolWidthTests {
 
-    /// Synchronous, because `Thread.sleep` is refused in an `async` context.
+    /// Synchronous, because `Thread.sleep` is unavailable from an `async` context in Swift 6. The
+    /// invariant is that the hold has no suspension point, so the task keeps its pool thread for
+    /// the whole sleep; an `async` version that suspended would give the thread back.
     private static func holdAThread(
         for seconds: TimeInterval,
         counting occupancy: OSAllocatedUnfairLock<(inside: Int, widest: Int)>
