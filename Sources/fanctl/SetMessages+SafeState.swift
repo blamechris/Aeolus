@@ -227,7 +227,7 @@ extension SetMessages {
         switch lapse.apply {
         case .accepted:
             sentences.append("The helper accepted the request to apply the speed.")
-        case .answered(let answer) where lapse.renewalFailure == nil:
+        case .answered(let answer) where lapse.renewalFailure == nil && lapse.confirmation == nil:
             sentences.append(
                 "The helper answered the request to apply the speed that the lease was gone: "
                     + "\(answer)")

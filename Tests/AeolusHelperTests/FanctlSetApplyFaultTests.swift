@@ -2,6 +2,7 @@ import AeolusXPC
 import FanKit
 import Foundation
 import Testing
+import os
 
 @testable import AeolusHelper
 @testable import AeolusXPCClient
@@ -222,5 +223,60 @@ struct FanctlSetApplyFaultTests {
         #expect(!message.contains("did not accept the speed"))
         #expect(!message.contains("Nothing is held"))
         #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
+    }
+
+    // MARK: - A keeper whose timer failed while apply worked
+
+    private struct TimerFailure: Error {}
+
+    /// The keeper's wait fails while `apply` is outstanding, and `apply` then answers a fault. The
+    /// keeper renewed nothing from then on, so control could no longer be shown to be held, as it
+    /// is when the same timer fails under an accepted `apply`
+    /// (`FanctlSetRenewalTests.theKeepersTimerFails`): control lost, not the helper's refusal.
+    ///
+    /// **Mutation:** delete the `.timer?` arm in `SetCommand.afterFailedApply`. Run: red — exit
+    /// 4, `refused`, and "did not accept the speed", with the timer never mentioned.
+    @Test("A keeper whose timer fails while apply faults is control lost, not a refusal")
+    func theKeepersTimerFailsAndApplyFaults() async throws {
+        let authority = SimulatedFanAuthority()
+        let apply = AsyncSignal()
+        await authority.holdingApply(until: apply)
+        await authority.refusingApply(with: .boundsImplausible(fanIndex: 0, detail: "x"))
+        let harness = ClientListenerHarness(authority: authority)
+        let output = RecordingTerminal()
+        let time = VirtualHoldTime()
+        var command = try Harness.command(
+            Harness.thirtySeconds + ["--json"], endpoint: harness.endpoint, output: output,
+            time: time, desk: SignalDesk())
+        let parked = OSAllocatedUnfairLock(initialState: false)
+        let failWait = AsyncSignal()
+        let virtual = time.clock
+        command.clock = SettleClock(
+            now: virtual.now, sleep: virtual.sleep,
+            waitOnHelper: { _ in
+                parked.withLock { $0 = true }
+                try await failWait.wait()
+                throw TimerFailure()
+            })
+
+        let running = Task { await exitCode { try await command.run() } }
+        try await waitUntil("the keeper waited for the helper") { parked.withLock { $0 } }
+        await failWait.signal()
+        await apply.signal()
+        let code = await running.value
+        _ = harness.sessions
+
+        #expect(code == FanctlExitCode.controlLost.rawValue, "\(output.standardError)")
+        let failed = try #require(try output.events().last)
+        #expect(failed["endedBecause"] as? String == "controlLost")
+        #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the check looked")
+        let message = output.standardError
+        #expect(message.hasPrefix("Control was lost before the hold began"))
+        #expect(message.contains("The helper answered the request to apply the speed with: "))
+        #expect(!message.contains("that the lease was gone"), "a bounds fault is not that")
+        #expect(message.contains("timer failed"))
+        #expect(!message.contains("did not accept the speed"))
+        #expect(await Harness.count("renewLease", in: authority) == 0)
+        #expect(await Harness.count("releaseLease", in: authority) == 1)
     }
 }

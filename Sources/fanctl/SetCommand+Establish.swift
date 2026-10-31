@@ -26,14 +26,15 @@ extension SetCommand {
         case unanswered(String)
     }
 
-    /// What the snapshot after an **accepted** `apply` came to, when that is why the hold never
-    /// began.
+    /// What came after `apply`, when that is why the hold never began: the snapshot after an
+    /// **accepted** `apply`, or the keeper's timer, whatever `apply` said.
     enum LapseConfirmation: Equatable, Sendable {
         /// It could not be read.
         case snapshotFailed(String)
         /// It does not show control held.
         case notHeld(Loss)
-        /// The keeper that renews the lease could not pace itself.
+        /// The keeper that renews the lease could not pace itself while `apply` and the
+        /// confirming snapshot were outstanding.
         case timerFailed
     }
 
@@ -51,7 +52,7 @@ extension SetCommand {
         /// What `apply` itself said. With no failed renewal and an answer, this is the answer
         /// that the lease is gone, which is then the whole of how this run knows.
         let apply: ApplyAnswer
-        /// The snapshot after an accepted `apply`, if that is the reason.
+        /// The snapshot after an accepted `apply`, or the keeper's timer, if that is the reason.
         let confirmation: LapseConfirmation?
 
         init(
@@ -176,6 +177,9 @@ extension SetCommand {
     ///   `apply` then said. A renewal that timed out makes the client give up the connection,
     ///   and the `apply` in flight is then answered `connectionAbandoned`; reading that as "no
     ///   answer" and nothing more would never mention the renewal. The text states both facts.
+    /// - **The keeper's timer failed while it worked**: it renewed nothing from then on, so
+    ///   control could no longer be shown to be held, as after an accepted `apply` (#438). The
+    ///   text states what `apply` said and that the timer failed.
     /// - **It did not answer** (`helperNeverAnswered`, `replyNotDelivered`, `helperRestarted`,
     ///   `connectionAbandoned`, or any transport failure): it may have applied the speed, as a
     ///   refused `apply` may have engaged a fan.
@@ -195,12 +199,18 @@ extension SetCommand {
         let release = await release(hold.leaseID, using: session.client)
         let settlement = await checkSafeState(in: session)
         let answered = helperAnswered(error)
-        if case .renewal(let reason)? = renewal {
-            let said: ApplyAnswer =
-                answered ? .answered(describe(error)) : .unanswered(describe(error))
+        let said: ApplyAnswer = answered ? .answered(describe(error)) : .unanswered(describe(error))
+        switch renewal {
+        case .renewal(let reason)?:
             return .lapsed(
                 Lapse(renewalFailure: reason, apply: said), hold: hold, release: release,
                 settlement: settlement, signal: signal)
+        case .timer?:
+            return .lapsed(
+                Lapse(renewalFailure: nil, apply: said, confirmation: .timerFailed), hold: hold,
+                release: release, settlement: settlement, signal: signal)
+        case nil:
+            break
         }
         guard answered else {
             // The client's words for what it saw, not the error's own, which go on to claim what
