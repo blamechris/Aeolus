@@ -17,8 +17,11 @@ enum MisreadIndexTables {
     static let allZero = ScriptedIndexTable(
         codes: Dictionary(uniqueKeysWithValues: (0...declaredCount).map { ($0, 0) }))
 
-    /// Real-looking keys read one byte off, where the byte after the key field is zero: each
-    /// code shifted left eight bits, so `SMCKey` refuses every one. Past the table, `0xB8`.
+    /// Real-looking keys read one byte back, where the byte before the key field is zero: each
+    /// code shifted left eight bits, keeping the last three characters (`TC0P` reads as
+    /// `"C0P\0"`), so `SMCKey` refuses every one. Past the table, `0xB8`. A read one byte
+    /// forward on this little-endian host keeps the first three and takes reply byte 4 first
+    /// (`"\0TC0"`); byte 4 is zero on `Mac16,5`, so that is refused too.
     static let shifted = ScriptedIndexTable(
         codes: Dictionary(
             uniqueKeysWithValues: (0..<declaredCount).map { index in
@@ -243,6 +246,34 @@ struct KeyTableWalkNoKeyTests {
 
         _ = await provider.readAll(
             declaredCount: refused + 1, keyAt: MisreadIndexTables.oneKeyRefusing(refused).key(at:))
+
+        #expect(await discoveryCompleted(on: connection))
+    }
+
+    /// Refused codes at indices 0 and 1, then the table's two keys. Whether they count is
+    /// decided once the whole walk is known, so codes met before any key count as surely as
+    /// codes after one. A walk that decided as it went would see no key yet, and count neither.
+    static let refusedBeforeTheFirstKey = ScriptedIndexTable(codes: [
+        0: KeyTableCodes.refused[0], 1: KeyTableCodes.refused[1],
+        2: KeyTableCodes.fan.fourCharCode, 3: KeyTableCodes.temperature.fourCharCode,
+    ])
+
+    @Test("verifyKeyCountCrossCheck's walk counts refused codes met before the first key")
+    func crossCheckWalksRefusedCodesBeforeTheFirstKey() {
+        let walk = SMCConnection.walkKeyTable(
+            declaredCount: 4, keyAt: Self.refusedBeforeTheFirstKey.key(at:))
+
+        #expect(walk.tally.refusedCodeCount == 2)
+        #expect(walk.crossCheck.walkedCount == 4)
+        #expect(walk.crossCheck.matches)
+    }
+
+    @Test("readAll's walk completes discovery with refused codes before the first key")
+    func readAllCompletesDiscoveryWithRefusedCodesBeforeTheFirstKey() async {
+        let connection = SMCConnection()
+        let provider = SMCSensorProvider(connection: connection)
+
+        _ = await provider.readAll(declaredCount: 4, keyAt: Self.refusedBeforeTheFirstKey.key(at:))
 
         #expect(await discoveryCompleted(on: connection))
     }
