@@ -84,9 +84,9 @@ struct EngagementDriverTests {
         #expect(await rig.registry.accepted == [0])
     }
 
-    /// The answers D3 does not retry: accepted-not-applied (#291), a raw value outside the
-    /// hypothesis, and a first result that is neither `0x00` nor `0x82` — which also never
-    /// reaches the force key. Each is undone.
+    /// The answers D3 does not retry: a read-back in Apple's set after an accepted write — `0` or
+    /// `3`, accepted-not-applied (#291; ADR 0014's P1′ amendment) — and a first result that is
+    /// neither `0x00` nor `0x82`, which also never reaches the force key. Each is undone.
     @Test(
         "An answer outside the hypothesis is refused and undone",
         arguments: [
@@ -111,8 +111,9 @@ struct EngagementDriverTests {
         #expect(await rig.registry.engaged == [0])
     }
 
-    /// D3 step 1: a fan whose raw mode is not `0` is someone else's. Nothing is written — not
-    /// the mode write, and not an undo, which would be ADR 0011's contest.
+    /// D3 step 1: a fan whose raw mode the fold does not call automatic — anything but Apple's `0`
+    /// or `3` — is someone else's. Nothing is written — not the mode write, and not an undo, which
+    /// would be ADR 0011's contest.
     ///
     /// **Mutation:** make `EngagementRules.requireAutomatic` accept any raw mode. Run: red on the
     /// refusal. **Mutation:** delete the `.notAutomatic` early exit from the driver's `catch`.

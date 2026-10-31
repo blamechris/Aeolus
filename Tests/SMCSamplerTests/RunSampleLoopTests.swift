@@ -25,6 +25,45 @@ private struct FakeSensorProvider: SensorProvider {
     }
 }
 
+/// A `SensorProvider` that answers one read, cancelling the task reading it during that read
+/// unless told not to, and refuses a second one.
+///
+/// Cancelling is how a test cancels the loop at a point that does not depend on when a task gets
+/// scheduled: the cancellation lands inside tick 0, so the loop's next suspension point is the
+/// wait between ticks, and that wait is entered already cancelled. The refusal is what ends a
+/// loop that goes round again, so a regression is a failure and not a loop with no end.
+private final class OneReadSensorProvider: SensorProvider {
+    struct UnexpectedSecondRead: Error {}
+
+    let identifier = "fake-one-read"
+    private let cancelsDuringTheRead: Bool
+
+    init(cancelling: Bool) { cancelsDuringTheRead = cancelling }
+    var isAvailable: Bool { get async { true } }
+
+    private let reads = OSAllocatedUnfairLock(initialState: 0)
+
+    var readCount: Int { reads.withLock { $0 } }
+
+    func readAll() async throws -> [SensorReading] { [] }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        let call = reads.withLock { count -> Int in
+            count += 1
+            return count
+        }
+        guard call == 1 else { throw UnexpectedSecondRead() }
+        if cancelsDuringTheRead { withUnsafeCurrentTask { $0?.cancel() } }
+        return keys.map { key in
+            SensorReadOutcome(
+                key: key,
+                result: .success(
+                    SensorReading(
+                        key: key, value: 42.0, kind: .unknown, providerIdentifier: identifier)))
+        }
+    }
+}
+
 /// An in-memory `LineSink`, lock-protected the same way `StandardOutputSink` protects the
 /// real file descriptor — `runSampleLoop` writes synchronously and this must be safe to read
 /// back from a different task than the one driving the loop.
@@ -141,32 +180,132 @@ struct RunSampleLoopTests {
     /// `Task.sleep`'s `catch is CancellationError { return }` promises. An unbounded
     /// `--count` (`nil`) is used so the only way this test's task ends is the cancellation
     /// itself, not exhausting a tick count.
+    ///
+    /// **The cancellation is delivered from inside tick 0's read, not after a pause**
+    /// ([#592](https://github.com/blamechris/Aeolus/issues/592)). This test used to start the
+    /// loop on a 10 s interval, `Task.sleep` 50 ms, and then cancel, which assumes the test's
+    /// task is running again within the 10 s. On `5034c41` (run 40946892305) the one-process run
+    /// was backed up and the test's 50 ms sleep took 38.8 s to come back: the loop's own 10 s
+    /// wait had ended, tick 1 was written, and `sink.lines.count` was 2. Nothing was wrong with
+    /// the loop. Now the provider cancels the task during the first read, so the loop writes
+    /// tick 0 and meets the cancellation at the wait, whenever the scheduler gets to it; the
+    /// interval never comes into it. A second read is refused, so a loop that carried on after
+    /// being cancelled fails here and does not run for ever.
+    ///
+    /// **What this no longer covers is a cancellation that arrives while the loop is asleep**,
+    /// which is how production cancels it (`installOrderlyExit`, from a signal handler). That is
+    /// `cancellationDuringTheWaitReturnsCleanly`'s.
+    ///
+    /// **Mutation:** in `runSampleLoop`, replace `return` in the `catch is CancellationError`
+    /// clause with `continue`. Run: red on `try await task.value`, which throws the provider's
+    /// `UnexpectedSecondRead`.
+    /// **Mutation:** delete the `catch is CancellationError` clause. Run: red on the same line,
+    /// which throws `CancellationError`.
     @Test("cancellation between ticks returns cleanly, without throwing")
     func cancellationBetweenTicksReturnsCleanly() async throws {
         let sink = CapturingSink()
+        let provider = OneReadSensorProvider(cancelling: true)
         var options = CommandLineOptions()
         options.intervalSeconds = 10.0
         options.tickCount = nil
 
+        let tickState = TickState()
         let task = Task {
             try await runSampleLoop(
-                provider: FakeSensorProvider(),
+                provider: provider,
                 keys: ["F0Ac"],
                 options: options,
                 sink: sink,
                 continuousStart: ContinuousClock.now,
                 suspendingStart: SuspendingClock.now,
-                tickState: TickState())
+                tickState: tickState)
         }
-
-        // Give tick 0 time to run and the loop time to reach its (10-second) sleep before
-        // cancelling — cancelling before the first tick has run would prove nothing about
-        // cancellation *between* ticks specifically.
-        try await Task.sleep(nanoseconds: 50_000_000)
-        task.cancel()
 
         // Must not throw: a throw here is exactly the regression this test exists to catch.
         try await task.value
         #expect(sink.lines.count == 1)
+        #expect(provider.readCount == 1, "the loop read again after it was cancelled")
+        #expect(await tickState.tickCount() == 1)
+    }
+
+    /// A cancellation that arrives **while the loop is asleep** wakes it and returns cleanly
+    /// ([#596](https://github.com/blamechris/Aeolus/issues/596), item 3).
+    ///
+    /// This is how production cancels the loop: `installOrderlyExit` cancels from a signal
+    /// handler, at some point in a wait that lasts the whole interval. The test above enters the
+    /// wait already cancelled, so it cannot tell a sleep that is woken by a cancellation from
+    /// one that merely notices an earlier one. The interval here is an hour, so the only thing
+    /// that can end the wait inside the bound below is the cancellation, and no scheduler delay
+    /// can run an hour out.
+    ///
+    /// The test waits for tick 0, gives the loop 100 ms to reach its wait, and cancels. A
+    /// cancellation that lands before the loop is asleep is still a correct loop's to handle, so
+    /// that race can only let a wrong loop pass, never fail a right one. The wait for the loop to
+    /// come back is a poll on a flag, bounded at two minutes and under a three-minute time limit:
+    /// `await task.value` is not freed by a time limit, so a loop that is never woken would
+    /// otherwise stop the run and not fail the test. Two minutes is over three times the longest
+    /// stall a runner has shown a test (38.8 s, [#592](https://github.com/blamechris/Aeolus/issues/592)),
+    /// and only a failing run pays it.
+    ///
+    /// **Mutation:** in `runSampleLoop`, replace `try await Task.sleep(nanoseconds: …)` with
+    /// `try Task.checkCancellation()` followed by `await withCheckedContinuation { continuation in
+    /// DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(interval))) {
+    /// continuation.resume() } }`, `interval` being the clamped nanoseconds. That sees an earlier
+    /// cancellation and is not woken by a later one. Run: this test is red on "the loop did not
+    /// come back", after the two minutes; `cancellationBetweenTicksReturnsCleanly` stays green.
+    /// **Mutation:** delete the `do`/`catch is CancellationError` around the wait, leaving the
+    /// bare `try await Task.sleep(…)`. Run: red on `Caught error: CancellationError()`, thrown by
+    /// `try await task.value`; `cancellationBetweenTicksReturnsCleanly` is red on the same.
+    @Test(
+        "cancellation while the loop is asleep wakes it and returns cleanly",
+        .timeLimit(.minutes(3)))
+    func cancellationDuringTheWaitReturnsCleanly() async throws {
+        let sink = CapturingSink()
+        var options = CommandLineOptions()
+        options.intervalSeconds = 3_600.0
+        options.tickCount = nil
+
+        let tickState = TickState()
+        let returned = OSAllocatedUnfairLock(initialState: false)
+        let task = Task {
+            defer { returned.withLock { $0 = true } }
+            try await runSampleLoop(
+                provider: OneReadSensorProvider(cancelling: false),
+                keys: ["F0Ac"],
+                options: options,
+                sink: sink,
+                continuousStart: ContinuousClock.now,
+                suspendingStart: SuspendingClock.now,
+                tickState: tickState)
+        }
+
+        let wroteTick0 = try await polling { await tickState.tickCount() == 1 }
+        #expect(wroteTick0, "the loop never wrote tick 0")
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+
+        let cameBack = try await polling { returned.withLock { $0 } }
+        #expect(
+            cameBack, "the loop did not come back after a cancellation that arrived mid-wait")
+        guard cameBack else { return }
+
+        // Must not throw: a throw here is the regression `cancellationBetweenTicksReturnsCleanly`
+        // is named for. The task has finished, so this does not wait.
+        try await task.value
+        #expect(sink.lines.count == 1)
+        #expect(await tickState.tickCount() == 1)
+    }
+
+    /// Polls `condition` every 10 ms until it holds or `bound` has passed: whether it held.
+    /// Cancellable, so a time limit frees it, which `await task.value` is not.
+    private func polling(
+        for bound: Duration = .seconds(120), _ condition: () async -> Bool
+    ) async throws -> Bool {
+        let deadline = ContinuousClock.now + bound
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else { return false }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return true
     }
 }

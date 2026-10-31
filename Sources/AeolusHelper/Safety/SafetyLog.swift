@@ -43,11 +43,25 @@ struct SafetyLog: Sendable {
         case fault
     }
 
-    private let emit: @Sendable (Level, String) -> Void
+    /// The one route every line takes, held as the one type that escapes (#553).
+    ///
+    /// A `LogText.EscapingSink` rather than a closure: it writes out every character that
+    /// would break or hide a line (`LogText.escaped(_:)`) before the closure inside it — the
+    /// unified log, or a test's recorder — hears the message, and nothing that holds one can
+    /// skip that. **That is what forces the escape, not the shape of the initialisers.** Both
+    /// initialisers below assign it; a shipping `init(subsystem:category:)` that assigned a
+    /// closure of its own, as main's did before this, no longer compiles. Every test that reads
+    /// lines builds `SafetyLog(recording:)`, so the shipping `SafetyLog()` that the composition
+    /// and `StartupReconciliation` default to is read back by no test, and a convention here
+    /// would have been checked by nothing either. What pins the stored type is
+    /// `LogTextTests.shippingSafetyLogHoldsOnlyAnEscapingSink`; what notices a method in this
+    /// file that builds a `Logger` or calls `os_log` is `LogRouteTests.safetyLogTakesTheOneRoute`,
+    /// a lexical scan that catches an accident and is not the control.
+    private let emit: LogText.EscapingSink<Level>
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {
         let logger = Logger(subsystem: subsystem, category: category)
-        emit = { level, message in
+        emit = LogText.EscapingSink { level, message in
             switch level {
             case .notice: logger.notice("\(message, privacy: .public)")
             case .fault: logger.fault("\(message, privacy: .public)")
@@ -57,10 +71,10 @@ struct SafetyLog: Sendable {
 
     /// A sink a test can read back, **including the level**.
     ///
-    /// `LeaseLog` has no equivalent and its lines go unasserted, which was tolerable while
-    /// the log was commentary. It is not tolerable here: "partial loss is a degraded
-    /// **logged** cycle" is the stated justification for compiling a fixed key list into
-    /// the helper, and a review found that sentence true of nothing — `unreadableKeys` had
+    /// `LeaseLog` had no equivalent until #560 and its lines went unasserted, which was
+    /// tolerable while the log was commentary. It is not tolerable here: "partial loss is a
+    /// degraded **logged** cycle" is the stated justification for compiling a fixed key list
+    /// into the helper, and a review found that sentence true of nothing — `unreadableKeys` had
     /// no reader anywhere in `Sources/`. A claim that load-bearing needs a test that fails
     /// when it stops being true, and a test cannot read `os_log`.
     /// The level is passed through rather than discarded. An earlier version of this
@@ -69,7 +83,7 @@ struct SafetyLog: Sendable {
     /// claim no test could check, in the type whose own header says a load-bearing claim
     /// "needs a test that fails when it stops being true".
     init(recording sink: @escaping @Sendable (Level, String) -> Void) {
-        emit = sink
+        emit = LogText.EscapingSink(sink)
     }
 
     /// Some curated keys answered and some did not.

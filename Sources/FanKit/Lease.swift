@@ -8,8 +8,9 @@ import Foundation
 /// pinned low. Nothing in a settings-based design stops that. A lease does.
 ///
 /// A client acquires a lease with a TTL and must renew it on a heartbeat. If the lease
-/// expires for any reason — crash, `kill -9`, a hung UI, logout — the helper restores
-/// every fan to automatic and clears the Apple Silicon force key. "Persist across app
+/// expires for any reason — crash, `kill -9`, force quit, logout, a stalled renewal — the
+/// helper restores the fans it covered to automatic. A lease proves the holder's process
+/// is renewing, not that its UI responds (`docs/SAFETY.md` § 1). "Persist across app
 /// quit" is not an exception: it is a lease the helper renews itself, kept alive by the
 /// helper's own launchd job.
 public struct Lease: Sendable, Hashable, Codable {

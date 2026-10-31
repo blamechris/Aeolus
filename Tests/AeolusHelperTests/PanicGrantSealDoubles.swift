@@ -71,8 +71,8 @@ actor ScopeParkingPlane: AdmissionBlindPlane {
         if scope == parking {
             let signal = AsyncSignal()
             parked.append(signal)
-            if try await !signal.wait(atMost: ceiling) {
-                recordAbandonedPark(by: "ScopeParkingPlane", of: scope, after: ceiling)
+            if case .abandoned(let expiry) = try await signal.wait(atMost: ceiling) {
+                recordAbandonedPark(by: "ScopeParkingPlane", of: scope, after: expiry)
                 // The test is red already. Stop parking, so a later restore of this scope does
                 // not wait out a ceiling of its own, and let the other parks go.
                 await releaseAll()

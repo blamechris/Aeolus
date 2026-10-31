@@ -75,11 +75,11 @@ public struct ResolvedMenuBarReadout: Sendable, Hashable, Identifiable {
     public let label: String?
     public let kind: SensorReading.Kind
     public let reading: KeyedReading
-    /// Carried only for `.fan`-sourced readouts — a sensor has no control mode to
-    /// misreport. `nil` here is never itself a claim of "automatic"; a view rendering a
-    /// fan readout without this populated is a bug, not a safe default, which is why
-    /// `MenuBarReadout.resolve(fans:sensors:)` always fills it in for `.fan` sources.
-    public let fanControlState: FanControlState?
+    /// Carried only for `.fan`-sourced readouts that matched a fan — a sensor has no control
+    /// mode to misreport. `nil` here is never itself a claim of "automatic", and neither is
+    /// `.notTracked`: the fan's `FanPollingReading.control`, carried as it is, so the menu bar
+    /// renders exactly what the window does.
+    public let fanControl: FanControlSource?
 
     /// Mirrors `MenuBarReadout.id`: `key` alone is not unique, because a selection may
     /// legitimately include the same raw key once as `.fan` and once as `.sensor` — see
@@ -110,29 +110,14 @@ public struct ResolvedMenuBarReadout: Sendable, Hashable, Identifiable {
         label: String?,
         kind: SensorReading.Kind,
         reading: KeyedReading,
-        fanControlState: FanControlState? = nil
+        fanControl: FanControlSource? = nil
     ) {
         self.key = key
         self.source = source
         self.label = label
         self.kind = kind
         self.reading = reading
-        self.fanControlState = fanControlState
-    }
-}
-
-/// What is driving a fan, and whether the system has taken it back — mirrored from
-/// `FanPollingReading` so a menu bar readout can render reclamation honestly instead of
-/// silently presenting a fan as always-automatic. Always `.automatic`/`false` under
-/// `Monitor` today (see `FanPollingReading`'s own documentation for why), carried through
-/// unconditionally anyway so nothing has to change shape when a real answer exists.
-public struct FanControlState: Sendable, Hashable {
-    public let mode: FanControlMode
-    public let isReclaimedBySystem: Bool
-
-    public init(mode: FanControlMode, isReclaimedBySystem: Bool) {
-        self.mode = mode
-        self.isReclaimedBySystem = isReclaimedBySystem
+        self.fanControl = fanControl
     }
 }
 
@@ -153,24 +138,22 @@ extension MenuBarReadout {
                 return ResolvedMenuBarReadout(
                     key: key, source: source, label: nil, kind: .rpm,
                     reading: .unavailable(key: key, reason: "no fan reports this key right now"),
-                    fanControlState: nil)
+                    fanControl: nil)
             }
             return ResolvedMenuBarReadout(
                 key: key, source: source, label: fan.displayName, kind: .rpm,
-                reading: fan.actual,
-                fanControlState: FanControlState(
-                    mode: fan.mode, isReclaimedBySystem: fan.isReclaimedBySystem))
+                reading: fan.actual, fanControl: fan.control)
         case .sensor:
             guard let sensor = sensors.first(where: { $0.key == key }) else {
                 return ResolvedMenuBarReadout(
                     key: key, source: source, label: nil, kind: .unknown,
                     reading: .unavailable(
                         key: key, reason: "no sensor reports this key right now"),
-                    fanControlState: nil)
+                    fanControl: nil)
             }
             return ResolvedMenuBarReadout(
                 key: key, source: source, label: sensor.decoration?.label, kind: sensor.kind,
-                reading: sensor.sample, fanControlState: nil)
+                reading: sensor.sample, fanControl: nil)
         }
     }
 }

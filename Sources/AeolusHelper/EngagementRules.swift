@@ -6,6 +6,10 @@
 // `SMCFanControlPlane` from the E4 branch's B1 — decides by these, so the two cannot come to decide
 // differently. Above it, level 6 reads one rule, `EngagementRules.isEngagedMode`, a predicate on a
 // value the driver's refusal carried.
+//
+// **Apple's management is a set of raw values** (ADR 0014's P1′ amendment): the pre-state admits
+// what `FirmwareFanMode(rawByte:)` calls automatic, the engaged value stays outside that set, and
+// the turn that reads it back holds `F<n>Tg` at or above the fan's floor (`engagedTarget`).
 
 /// D3's decisions, as functions of what the firmware answered.
 ///
@@ -24,9 +28,16 @@ enum EngagementRules {
         case awaitYield
     }
 
-    /// Step 1: a fan whose raw mode is not `0` is not Aeolus's to take, and nothing is written.
+    /// Step 1: a fan whose raw mode the fold does not call automatic is not Aeolus's to take, and
+    /// nothing is written. Apple's management reads `0` or `3`
+    /// (`FirmwareFanMode.systemManagedRawModes`; ADR 0014's P1′ amendment), so a fan Apple has
+    /// stopped, this machine's rest state, is admitted, and `1` or any byte outside the set is
+    /// refused.
+    ///
+    /// The same fold the grant reads, `FirmwareFanMode(rawByte:)`, so a fan the grant called
+    /// automatic is never refused here as not automatic, and the reverse.
     static func requireAutomatic(rawMode: UInt8, fanAt index: Int) throws {
-        guard rawMode == 0 else {
+        guard FirmwareFanMode(rawByte: rawMode) == .automatic else {
             throw FanControlPlaneError.notAutomatic(index: index, rawMode: rawMode)
         }
     }
@@ -59,17 +70,60 @@ enum EngagementRules {
         }
     }
 
-    /// Raw `1`, the value an engagement writes (U4): what step 2 confirms it by, and what level 6
-    /// reads a fan whose hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
-    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == 1 }
+    /// Raw `1`, the value an engagement writes (U4) and the only one. It stays outside
+    /// `FirmwareFanMode.systemManagedRawModes`, so a read-back of it is the plane's own write and
+    /// never Apple's (ADR 0014's P1′ amendment).
+    static let engagedRawMode: UInt8 = 1
 
-    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read `0`
-    /// before the write (or an earlier step did, under the same epoch).
+    /// `engagedRawMode`: what step 2 confirms an engagement by, and what level 6 reads a fan whose
+    /// hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
+    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == engagedRawMode }
+
+    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read a value in
+    /// Apple's set before the write (or an earlier step did, under the same epoch), and Apple's set
+    /// never holds it.
     static func afterReadBack(rawMode: UInt8, fanAt index: Int) throws -> EngagementStep {
         guard isEngagedMode(rawMode) else {
             throw FanControlPlaneError.engagementNotConfirmed(index: index, rawMode: rawMode)
         }
         return .engaged
+    }
+
+    /// What the turn that read back `engagedRawMode` does with `F<n>Tg` before it answers
+    /// `.engaged` (ADR 0014's P1′ amendment, decision 4).
+    enum EngagedTarget: Sendable, Hashable {
+        /// At or above the floor: the turn answers `.engaged` and writes nothing more. Under load,
+        /// Apple's target is already there.
+        case holds
+        /// Below the floor — `0` at rest, where Apple's stopped state leaves it: the turn takes
+        /// `F<n>Tg`'s fresh key info, writes this, reads it back within
+        /// `ReclamationLimits.targetToleranceRPM`, and only then answers `.engaged`. Any other
+        /// outcome throws, and the driver undoes.
+        case raise(to: AuthorisedFanTarget)
+    }
+
+    /// The engaged turn's target rule, read the same turn as the read-back (P1′ amendment,
+    /// decision 4). Without it a fan engaged at rest sits in manual at a target of `0` until its
+    /// command's turn, and every stuck state from there is a stopped fan (`CLAUDE.md` rule 3).
+    ///
+    /// The floor is the permit's own, `fan.target(for: fan.envelope.lowestCommandableRPM)`: inside
+    /// the fan's commandable range, so never below `FanSafetyLimits.minimumManualRPM`, and never a
+    /// value the permit could not mint. A target at or above it is kept, never lowered.
+    ///
+    /// - Throws: `.readFailed` for a target that did not read, or that decoded to a value that is
+    ///   not finite. The turn has no floor to judge it against, so the driver undoes.
+    static func engagedTarget(
+        reading target: FanRPMReadback, of fan: CommandableFan
+    ) throws -> EngagedTarget {
+        let key = "F\(fan.index)Tg after the engaged read-back"
+        switch target {
+        case .unreadable(let reason):
+            throw FanControlPlaneError.readFailed(detail: "\(key): \(reason)")
+        case .rpm(let value):
+            let rpm = try FanControlPlaneValue.finite(value, describing: key).get()
+            let floor = fan.target(for: fan.envelope.lowestCommandableRPM)
+            return rpm >= floor.rpm ? .holds : .raise(to: floor)
+        }
     }
 
     /// Step 3's force-key write: accepted awaits the yield; anything else is thrown, an unanswered

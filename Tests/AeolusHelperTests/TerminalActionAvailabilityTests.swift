@@ -294,7 +294,8 @@ private actor ModeSwitchingProvider: SensorProvider {
         wrapped = fanProvider(fanCount: fanCount)
     }
 
-    /// What `F<index>Md` reads from now on, as a raw value: `0` automatic, non-zero manual.
+    /// What `F<index>Md` reads from now on, as a raw value: `0` or `3` automatic, Apple's set
+    /// (ADR 0014's P1′ amendment), and any other value manual.
     func setMode(_ raw: Double, ofFan index: Int) {
         rawModes["F\(index)Md"] = raw
     }

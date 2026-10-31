@@ -193,10 +193,19 @@ struct WriteVerbAllowlistTests {
     /// `ReclamationRegistrationRole`, the role level 6 tells § 5 through (ADR 0014's A6 PR-2
     /// amendment). The watchdog's method is its one witness, so it carries nothing the first
     /// entry does not.
+    ///
+    /// The third is D3's engaged-turn target rule (ADR 0014's P1′ amendment, decision 4):
+    /// `EngagementRules.engagedTarget(reading:of:)` judges the `F<n>Tg` the turn read, a
+    /// `FanRPMReadback`, against the permit's own floor. A readback is an RPM or the reason there
+    /// is none, so it names no fan and no bounds, and the rule writes nothing: what it returns is
+    /// the permit's own target at its floor, minted by `target(for:)`, or no write at all.
     private static let keyedCompanions: [String: Set<String>] = [
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"],
         "ReclamationRegistrationRole.swift: manualControlEngaged(_: CommandableFan, under: UUID)": [
             "UUID"
+        ],
+        "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)": [
+            "FanRPMReadback"
         ],
     ]
 
@@ -241,6 +250,10 @@ struct WriteVerbAllowlistTests {
     ///   engagement, and writes nothing: the permit goes only to § 3's registration, so the
     ///   emergency bridges every fan level 6 commands (ADR 0014's #410 refused-hand-back
     ///   amendment).
+    /// - `EngagementRules.engagedTarget(reading:of:)` is D3's engaged-turn target rule, a pure
+    ///   function the writing plane decides by (ADR 0014's P1′ amendment): it reads the permit's
+    ///   envelope for the floor and returns the permit's own target at it, or nothing. It writes
+    ///   nothing; the plane's turn does. Its companion is `keyedCompanions`' third entry.
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -265,6 +278,7 @@ struct WriteVerbAllowlistTests {
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
         "EngagementDriver.swift: reAdopted(_: CommandableFan)",
+        "EngagementRules.swift: engagedTarget(reading: FanRPMReadback, of: CommandableFan)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
@@ -792,8 +806,8 @@ struct WriteVerbAllowlistTests {
                 carriers.count == 1,
                 """
                 \(carriers.count) declarations carry the keyed exemption `\(key)`. It is for one \
-                registration verb; a second declaration with the same signature in that file \
-                would travel a `UUID` beside a permit under its exemption.
+                declaration; a second with the same signature in that file would travel its \
+                companion beside a permit under the exemption.
                 """)
         }
         #expect(

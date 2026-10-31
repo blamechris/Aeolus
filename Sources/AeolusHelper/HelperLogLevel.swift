@@ -2,13 +2,13 @@ import os
 
 // The vocabulary `HelperLog` writes in: its levels, the one mapping from a level to the unified
 // log's, and what § 7's machine-wide restore did. The lines themselves stay in `HelperLog.swift`
-// beside `emit(_:_:)`, the one private route that writes them.
+// beside `emit`, the one private route that writes them.
 
 extension HelperLog {
 
     /// How loud a line is.
     ///
-    /// Every line names one, and `emit(_:_:)` hands that one value both to the unified log, through
+    /// Every line names one, and `emit` hands that one value both to the unified log, through
     /// `osLogType(for:)`, and to a test's sink. So the level a test reads back is the level that
     /// was written, and the two cannot come to differ. Until the review of #349 the sink carried a
     /// level tag beside a separate `log.fault(...)`, and demoting the real call left every test

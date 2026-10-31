@@ -153,6 +153,35 @@ struct LeaseContractTests {
         #expect(await authority.leaseCount == 1)
     }
 
+    /// The holder's own connection is refused a second lease too, over a fan its first does not
+    /// cover (#516). ADR 0015 D5's *Identity* rests on it: a grant goes only into an **empty**
+    /// table, so a snapshot listing the app's lease was read after every earlier lease had been
+    /// removed. The app's driver re-acquires on its own connection, which is the case
+    /// `onlyOneLeaseAtATime` cannot reach: its two leases come from two connections, so a gate
+    /// that let a holder stack leases would still refuse its second client.
+    ///
+    /// **Mutation:** in `LeaseAuthority.acquireLease`, make the guard
+    /// `guard table.isEmpty || table.all.allSatisfy({ $0.connection == connection }) else {`.
+    /// Run: red here, on the refusal and on the count; `onlyOneLeaseAtATime` stays green.
+    @Test("The holder's own connection is refused a second lease over another fan")
+    func theHoldersOwnConnectionIsRefusedASecondLease() async throws {
+        let authority = LeaseFixture.authority()
+        let holder = ConnectionID()
+        let first = try await authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: holder)
+
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
+        ) {
+            _ = try await authority.acquireLease(
+                LeaseFixture.request(fans: [1]), from: holder)
+        }
+        #expect(
+            await authority.leaseCount == 1,
+            "the holder now has two leases, and a snapshot can list only one of them")
+        #expect(await authority.activeLease()?.id == first.id)
+    }
+
     /// And the slot frees up the moment the first lease lapses, without anyone asking. A
     /// lapsed lease that kept blocking new ones would turn a crashed client into a machine
     /// nobody can control until the helper restarts.

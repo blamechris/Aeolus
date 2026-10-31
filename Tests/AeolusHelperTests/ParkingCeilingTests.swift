@@ -20,7 +20,22 @@ import Testing
 /// issue is the expectation rather than a failure; the second is outside it, so an issue there
 /// fails the test. A restore that never comes back is not joined: `finishedBeforeCeiling` ends the
 /// wait at `outwaitCeiling` and records that, and the expectation after it fails. So a double that
-/// lost its ceiling fails here after ten seconds, naming itself, and does not hang the suite.
+/// lost its ceiling fails here after ten seconds of waiting, naming itself, and does not hang the
+/// suite. Time the whole test process spends stopped is not waiting
+/// ([#547](https://github.com/blamechris/Aeolus/issues/547)): a stall of more than ten seconds
+/// used to fail five of these, whose doubles had done nothing wrong. Nor is it for the ceilings
+/// themselves ([#549](https://github.com/blamechris/Aeolus/issues/549)): the two 30 s waits below
+/// are `wait(atMost:)` too, so a stall that landed between a timer's start and its read of
+/// the park's expiry is added to their deadline, up to the 50 s cap, and is not spent from it
+/// (`ParkStallToleranceTests`).
+///
+/// **Mutation:** in `wait(atMost:clock:)`, delete the timer's `signal()`, so that a park nobody
+/// releases never gives up. Run: red in six of the seven tests here. `aSignalledWaitReportsIt`
+/// parks too, but its park is released, so it passes. In five of the other six the wait comes back
+/// `nil` after `outwaitCeiling`, so `released == false` or `returned` fails, and the wait after the
+/// ceiling fails with it. The sixth, `aGivenUpWaitDoesNotCancelTheOthers`, awaits the park itself
+/// and not through `finishedBeforeCeiling`, so nothing ends its wait: it hangs to the suite's
+/// `.timeLimit`, and the issue is "Time limit was exceeded: 60.000 seconds".
 @Suite("A parking double gives up at its ceiling", .timeLimit(.minutes(1)))
 struct ParkingCeilingTests {
 
@@ -65,7 +80,7 @@ struct ParkingCeilingTests {
     @Test("A wait that is signalled in time reports it, and records nothing")
     func aSignalledWaitReportsIt() async throws {
         let signal = AsyncSignal()
-        let waiting = observing { try await signal.wait(atMost: .seconds(30)) }
+        let waiting = observing { try await signal.wait(atMost: .seconds(30)).wasSignalled }
         await signal.signal()
         let released = try await finishedBeforeCeiling("the signalled wait", waiting)
         #expect(released == true, "the wait gave up on a signal that was sent")
@@ -74,13 +89,13 @@ struct ParkingCeilingTests {
     @Test("A wait nobody signals gives up at its ceiling and leaves the signal open")
     func anUnsignalledWaitGivesUp() async throws {
         let signal = AsyncSignal()
-        let waiting = observing { try await signal.wait(atMost: Self.ceiling) }
+        let waiting = observing { try await signal.wait(atMost: Self.ceiling).wasSignalled }
         let released = try await finishedBeforeCeiling("the unsignalled wait", waiting)
         #expect(released == false, "the wait was not told it gave up")
 
         // Open: a second wait with a ceiling no test would sit through returns at once, and
         // says it was signalled, because the expiry signalled on its behalf.
-        let later = observing { try await signal.wait(atMost: .seconds(30)) }
+        let later = observing { try await signal.wait(atMost: .seconds(30)).wasSignalled }
         #expect(try await finishedBeforeCeiling("the wait after the ceiling", later) == true)
     }
 
@@ -89,7 +104,7 @@ struct ParkingCeilingTests {
         let signal = AsyncSignal()
         // Parked well inside the timed wait's ceiling, which is the longer of the two for it.
         let plain = observing { try await signal.wait() }
-        let released = try await signal.wait(atMost: .milliseconds(150))
+        let released = try await signal.wait(atMost: .milliseconds(150)).wasSignalled
         #expect(released == false)
         // `wait()`'s cancellation handler resumes every waiter with `CancellationError`, so a
         // wait that cancelled itself on expiry would have this one throw instead of return.

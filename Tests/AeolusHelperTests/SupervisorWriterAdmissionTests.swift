@@ -17,8 +17,12 @@ import Testing
 /// **When § 3 cycles.** In every drive but two, no supervisor runs and the clock is frozen, so § 3
 /// cycles only when a test calls its `cycle()` — before the path it is about — and a single
 /// `.thermalCycle` call in the path is a mechanism other than § 3 in § 3's lane. The two drives
-/// that call `bringUp()` — the signal teardown and the power observer — start the supervisors on
-/// the real clock, so § 3 does cycle during them, reading in its lane once a second. They
+/// that call `bringUp()` — the signal teardown and the power observer — start the supervisors,
+/// which tick on their own real clocks, so § 3 does cycle during them, reading in its lane once a
+/// second. The composition's clock in those two is a `ManualClock` nobody advances (#411):
+/// reconciliation's 5 s budget, the TTL and § 4's acknowledgement budget all run on it, and on the
+/// system clock a runner stall past one of them changes the drive — fan 0 unreconciled is refused
+/// its lease, and a budget that answers the sleep first ends the window before the keystone. They
 /// therefore look at the calls § 3 never makes (`callsSectionThreeNeverMakes(in:)`): every write,
 /// since its cycle at nominal temperatures issues none, and every envelope read, since nothing in
 /// `ThermalEmergency` reads one. A `.thermalCycle` restore, command, engagement, bridge or
@@ -286,7 +290,7 @@ struct SupervisorWriterAdmissionTests {
     /// bridge is no restore, and a restores-only filter would not see it.
     @Test("The teardown bring-up installs writes at supervisor")
     func theInstalledTeardownWritesAtSupervisor() async throws {
-        let machine = await Machine(stages: [Self.nominal], clock: SystemMonotonicClock())
+        let machine = await Machine(stages: [Self.nominal], clock: ManualClock())
         await machine.helper.bringUp()
         _ = try await machine.lease([0])
 
@@ -329,7 +333,7 @@ struct SupervisorWriterAdmissionTests {
     func theInstalledPowerObserverWritesAtSupervisor(afterAFiring: Bool) async throws {
         let observer = ScriptedPowerObserver()
         let machine = await Machine(
-            stages: Self.stages, clock: SystemMonotonicClock(), powerObserver: observer)
+            stages: Self.stages, clock: ManualClock(), powerObserver: observer)
         try await Self.prepare(machine, afterAFiring: afterAFiring)
         await machine.helper.bringUp()
         #expect(observer.isObserving, "bring-up installed no power observer")

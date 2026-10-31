@@ -10,8 +10,13 @@ import SwiftUI
 /// fan/sensor data to populate the sensor-selection and menu-bar-contents lists, and
 /// coupling it to either of those other two instances would tie three independently
 /// developed view trees together for a cost (one more 1 Hz poll while this window is
-/// open) that is small and already paid twice over elsewhere in this app.
+/// open) that is small and already paid twice over elsewhere in this app. It shares the
+/// app's one `HelperSnapshotSource` with the other two, so while the helper answers it adds
+/// no SMC reads and no second snapshot stream at all.
 struct PreferencesView: View {
+    /// The kind of window this view is the root of: not a control window.
+    static let window = AppWindow.settings
+
     @ObservedObject var preferencesController: PreferencesController
     @ObservedObject var launchAtLoginController: LaunchAtLoginController
     /// The live menu bar's own view model — passed in (not constructed here) so toggling
@@ -21,6 +26,7 @@ struct PreferencesView: View {
     @ObservedObject var menuBarViewModel: MenuBarViewModel
 
     @StateObject private var pollingViewModel: PollingViewModel
+    private let composition: AppComposition
 
     /// Reads `preferencesController.preferences.refreshInterval` once, at construction, to
     /// seed this window's own `PollingViewModel` — the same "seed once at `init`, not on
@@ -33,15 +39,18 @@ struct PreferencesView: View {
     init(
         preferencesController: PreferencesController,
         launchAtLoginController: LaunchAtLoginController,
-        menuBarViewModel: MenuBarViewModel
+        menuBarViewModel: MenuBarViewModel,
+        composition: AppComposition
     ) {
         self.preferencesController = preferencesController
         self.launchAtLoginController = launchAtLoginController
         self.menuBarViewModel = menuBarViewModel
+        self.composition = composition
         _pollingViewModel = StateObject(
             wrappedValue: PollingViewModel(
                 labelSource: CatalogSensorLabelSource.loadDefault(),
-                refreshInterval: preferencesController.preferences.refreshInterval))
+                refreshInterval: preferencesController.preferences.refreshInterval,
+                snapshots: composition.snapshots))
     }
 
     var body: some View {
@@ -61,6 +70,7 @@ struct PreferencesView: View {
         .frame(width: 460, height: 360)
         .onAppear { pollingViewModel.start() }
         .onDisappear { pollingViewModel.stop() }
+        .reportsPresence(as: Self.window, to: composition)
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in
@@ -126,9 +136,13 @@ struct PreferencesView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text("Takes effect the next time this window's data or the menu bar restarts.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(
+                "The helper's snapshots, and the window and menu bar showing them, follow this "
+                    + "at once. When Aeolus reads sensors itself, the main window changes pace "
+                    + "when it is next opened, and the menu bar when Aeolus next starts."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 }

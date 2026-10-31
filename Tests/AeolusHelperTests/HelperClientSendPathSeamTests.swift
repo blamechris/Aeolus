@@ -83,9 +83,10 @@ struct HelperClientSendPathSeamTests {
     /// small function is at least as natural as writing it inline.
     ///
     /// The downward half is **unrestricted**, and two functions in this target need saying so out
-    /// loud: `publish`, whose `for continuation in observers.values` is a fan-out over the health
-    /// stream's observers and not a retry of anything, and `InFlightMessages.abandonAll`, which
-    /// hands a discard's answer to every message already in flight (#413). Both are named in
+    /// loud: `publish`, whose `for observer in observers` in `HealthSignal.publish(_:)` is a
+    /// fan-out over the health stream's observers and not a retry of anything (#541), and
+    /// `InFlightMessages.abandonAll`, which hands a discard's answer to every message already in
+    /// flight (#413). Both are named in
     /// `sendPathFanOut` and exempted from the loop half alone — they stay in the population for
     /// the recursion and double-send halves, and the test requires each to be *in* the
     /// population, so the exemption cannot quietly become a no-op. A restriction to `async`
@@ -433,12 +434,14 @@ struct HelperClientSendPathSeamTests {
 
     /// The two functions on the path whose loop is a **fan-out** rather than a retry.
     ///
-    /// `publish`'s `for continuation in observers.values` yields one health value to every
-    /// observer of the stream; it retries nothing and sends nothing. It is on the path because
-    /// `liveConnection`, `performHandshake` and `discardConnection` all call it, which is the
-    /// price of closing the path downward — and paying that price out loud, for one named
-    /// function, is better than the `async`-only restriction that would have hidden it along with
-    /// a `resend` that loops.
+    /// `publish`'s `for observer in observers` yields one health value to every observer of the
+    /// stream; it retries nothing and sends nothing. It is on the path because `liveConnection`,
+    /// `performHandshake` and `discardConnection` all call `HelperClient.publish(_:)`, which calls
+    /// `HealthSignal.publish(_:)`, where the loop has been since #541. The scan reads functions by
+    /// name, so both are `publish` here and both are in the population. That is the price of
+    /// closing the path downward — and paying that price out loud, for one named function, is
+    /// better than the `async`-only restriction that would have hidden it along with a `resend`
+    /// that loops.
     ///
     /// `abandonAll`'s `for sent in abandoned` is the same shape, added by
     /// [#413](https://github.com/blamechris/Aeolus/issues/413): it hands one answer to every

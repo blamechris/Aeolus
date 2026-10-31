@@ -1,5 +1,6 @@
 import AeolusXPC
 import Foundation
+import SMCCore
 
 /// The answer to a message whose reply block is `(Data?, Error?) -> Void`.
 ///
@@ -87,14 +88,32 @@ extension AeolusXPCFault {
     /// `AeolusXPCFault` and passes through **unchanged** — which is the important half:
     /// this must never flatten a precise refusal into a generic one. Anything else came
     /// from a layer with its own vocabulary, in practice `SMCCore`, and becomes
-    /// `.helperFailed` carrying that layer's description.
+    /// `.helperFailed` carrying that layer's description: an `SMCError`'s readable text
+    /// (`SMCError.readableDescription(of:)`, #544), anything else's `String(describing:)`.
+    /// No handler passes a raw `SMCError` here today (#544's trace); this keeps one that
+    /// does from reaching a client as an enum dump.
     ///
     /// Quoting it is safe here and nowhere else in this vocabulary: the text is authored
     /// by the helper's own dependencies, not by a client, so there is no client-chosen
-    /// string steering a log line. `FaultText.displayable` still sanitises it at render.
+    /// string steering a log line. The helper's own refusal log prints only the fault's
+    /// `wireCode` (`HelperLog.refusedMessage`).
+    ///
+    /// Not every character of it is the helper's, though, and that is true today, not only
+    /// for a raw `SMCError` one day. `SMCKeyType.readableName` names a type the codec does not
+    /// know by decoding the four declared bytes as UTF-8, so the name can carry a line feed or
+    /// a bidirectional control. `SMCSensorProvider.undecodedReason` and
+    /// `SMCError.readableDescription` both name a type that way. `snapshot` reaches this arm
+    /// with one when `FNum` declares such a type: enumeration throws
+    /// `SMCFanEnumerationError.readFailed` with that text, and `String(describing:)` puts it
+    /// in the detail. So sanitising the detail at render is load-bearing, not a second guard.
+    /// `FaultText.displayable` does it behind `errorDescription`, which `fanctl` prints.
+    /// `HelperAuthoredText.sanitised` does it in the app. A new renderer of a `.helperFailed`
+    /// detail has to sanitise it too (#548). Both remove Cc, Cf, Zl and Zp
+    /// (`FaultText.isRemovedFromDisplay`, #553). The helper's own log lines escape that set
+    /// rather than removing it, because a log is evidence (`LogText.escaped`).
     ///
     /// **Bounded, not refused, and bounded here rather than at render.**
-    /// `String(describing:)` over an arbitrary `Error` has no ceiling by construction, and
+    /// A description of an arbitrary `Error` has no ceiling by construction, and
     /// this arm exists to catch errors nobody anticipated — including from layers E5 has yet
     /// to add. What it builds is embedded in `userInfo` by `asNSError()` and re-encoded by
     /// `NSXPCConnection`, so a ceiling that only applied when a label was drawn would apply
@@ -106,6 +125,7 @@ extension AeolusXPCFault {
     /// something did.
     static func crossing(_ error: Error) -> AeolusXPCFault {
         if let fault = error as? AeolusXPCFault { return fault }
-        return .helperFailed(detail: FaultDetailBounds.bounded(String(describing: error)))
+        return .helperFailed(
+            detail: FaultDetailBounds.bounded(SMCError.readableDescription(of: error)))
     }
 }

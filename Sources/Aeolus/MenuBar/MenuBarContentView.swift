@@ -4,21 +4,33 @@ import SwiftUI
 /// The menu bar item's dropdown: every selected readout in full, plus honest status text
 /// and a way to quit.
 ///
-/// No control affordance anywhere — like `#62`'s main window, this epic is read-only
-/// monitoring. Adding a slider or a "set speed" action here would cross into E8a/E10b's
-/// scope, not merely arrive early.
+/// No control affordance here. The app's one control, Auto and 50 / 75 / 100 % for all fans, is in
+/// the main window (`FanListView`, #153's PR 6b) and nowhere else: a lease taken from this panel
+/// would be released by no window event, because the panel is not a control window
+/// (`AppWindow.isControlWindow`). Adding a control here means revisiting that default first.
 struct MenuBarContentView: View {
+    /// The kind of window this view is the root of: the `MenuBarExtra(.window)` panel, which is not
+    /// a control window.
+    static let window = AppWindow.menuBarPanel
+
     @ObservedObject var viewModel: MenuBarViewModel
+
+    /// Told when the panel opens and closes, as `window`.
+    let composition: AppComposition
 
     /// `Preferences.temperatureUnit`. Defaults to `.celsius`, preserving this view's
     /// existing rendering for every call site that does not pass one explicitly.
     var temperatureUnit: TemperatureUnit = .celsius
 
+    private var thermalEmergencyBanner: ThermalEmergencyDisplay.Banner? {
+        ThermalEmergencyDisplay.banner(
+            for: viewModel.thermalEmergency, source: viewModel.controlSource)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if viewModel.isThermalEmergencyActive {
-                Label("Thermal emergency active", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+            if let banner = thermalEmergencyBanner {
+                thermalEmergencyLine(banner)
             }
 
             if viewModel.readouts.isEmpty {
@@ -30,6 +42,8 @@ struct MenuBarContentView: View {
             }
 
             Divider()
+
+            controlSourceLine(ControlSourceDisplay.text(for: viewModel.controlSource))
 
             statusText
                 .font(.caption)
@@ -43,6 +57,37 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(minWidth: 240)
+        .reportsPresence(as: Self.window, to: composition)
+    }
+
+    /// The fan pane's line, in the dropdown: whose report the fans are — with a listed lease's
+    /// holder, through the sanitiser — or why nothing is tracked.
+    private func controlSourceLine(_ text: ControlSourceDisplay.Text) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(text.headline)
+                .font(.caption.weight(.semibold))
+            if let detail = text.detail {
+                Text(detail)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    /// The same three answers the main window draws, in the dropdown's few words: an
+    /// emergency in red, unknown in grey, and nothing when the helper reports none.
+    @ViewBuilder
+    private func thermalEmergencyLine(_ banner: ThermalEmergencyDisplay.Banner) -> some View {
+        switch banner.severity {
+        case .emergency:
+            Label(banner.compactText, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        case .unknown:
+            Label(banner.compactText, systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// Shown when nothing is currently selected — either no fan/sensor has been chosen
@@ -80,6 +125,8 @@ struct MenuBarContentView: View {
             Text("Waiting for first reading\u{2026}")
         case .polling:
             Text("Refreshing\u{2026}")
+        case .waitingForHelper:
+            Text("Waiting for the helper\u{2026}")
         case .ready:
             if let lastUpdated = viewModel.lastUpdated {
                 Text("Updated \(Self.timeFormatter.string(from: lastUpdated))")
@@ -87,7 +134,7 @@ struct MenuBarContentView: View {
                 Text("Updated")
             }
         case .failed(let error):
-            Text("Last refresh failed: \(error.description)")
+            Text(PollingStatusDisplay.lastRefreshFailedLine(error))
         }
     }
 
@@ -120,7 +167,7 @@ private struct MenuBarReadoutRow: View {
 
             Spacer()
 
-            if let state = readout.fanControlState, state.isReclaimedBySystem {
+            if readout.fanControl?.reportsReclamation == true {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .help("System reclaimed control of this fan")

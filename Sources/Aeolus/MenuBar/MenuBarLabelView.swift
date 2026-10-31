@@ -35,7 +35,7 @@ struct MenuBarLabelView: View {
     private var labelText: String {
         guard !viewModel.readouts.isEmpty else {
             switch viewModel.phase {
-            case .notStarted, .polling:
+            case .notStarted, .polling, .waitingForHelper:
                 return "\u{2026}"  // ellipsis: still waiting on the first reading.
             case .ready:
                 return "no readouts"
@@ -48,18 +48,13 @@ struct MenuBarLabelView: View {
     }
 
     /// Honest about reclamation and thermal state rather than a fixed icon — see
-    /// `CLAUDE.md` rule 6: this must never look identical to the normal state while the
-    /// system has actually taken a fan back or declared an emergency. Both conditions are
-    /// hardcoded false/absent under `Monitor` today (see `PollingViewModel`'s
-    /// documentation), so this always resolves to `"fan"` in this build; the branches
-    /// exist so nothing has to change here once a real answer is possible.
+    /// `CLAUDE.md` rule 6 and `MenuBarIcon`, which decides it: this must never look identical
+    /// to the normal state while the helper reports any fan taken back or an emergency, or
+    /// while a build with a helper cannot say whether there is one.
     private var iconName: String {
-        if viewModel.isThermalEmergencyActive {
-            return "exclamationmark.triangle.fill"
-        }
-        if viewModel.readouts.contains(where: { $0.fanControlState?.isReclaimedBySystem == true }) {
-            return "exclamationmark.triangle"
-        }
-        return "fan"
+        MenuBarIcon.systemName(
+            thermalEmergency: viewModel.thermalEmergency,
+            controlSource: viewModel.controlSource,
+            anyFanReportedReclaimed: viewModel.isAnyFanReportedReclaimed)
     }
 }

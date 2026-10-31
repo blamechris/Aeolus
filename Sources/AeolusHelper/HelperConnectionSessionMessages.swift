@@ -103,6 +103,9 @@ extension HelperConnectionSession {
             // something the helper could have issued.
             let leaseID = try Self.leaseID(from: rawLeaseID)
             let settings = try AeolusXPCValidation.decodeFanSettings(from: payload)
+            // Before the authority, which is where anything that stores, logs or reads a
+            // curve's sensor keys lives (#566); nothing on this path above it looks at one.
+            try AeolusXPCValidation.validateSensorKeys(in: settings)
             try await authority.apply(settings, leaseID: leaseID, from: id)
             return .success
         } catch {

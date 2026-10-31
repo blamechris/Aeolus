@@ -374,6 +374,20 @@ private struct SMCConnectionKeyCountFallbackTests {
         #expect(SMCConnection.decodeKeyCountFallback(value: short) == nil)
         #expect(SMCConnection.decodeKeyCountFallback(value: long) == nil)
     }
+
+    /// The fallback is for an unknown generation only, and `byteOrder == nil` is how an
+    /// unknown generation reaches it: `read(_:)` sets it, as `SMCValue.byteOrder` documents. The
+    /// same captured bytes that decode to 3385 above are refused once an order is attached,
+    /// in either direction, so the guess can never stand in for a resolved decode.
+    @Test("A #KEY whose byte order was resolved is refused, even with the captured bytes")
+    func refusesAResolvedByteOrder() {
+        for order in [SMCByteOrder.bigEndian, .littleEndian] {
+            let value = SMCValue(
+                key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39],
+                byteOrder: order)
+            #expect(SMCConnection.decodeKeyCountFallback(value: value) == nil)
+        }
+    }
 }
 
 /// `KeyCountCrossCheck.matches` folding in `keyExistsPastDeclaredCount` is what makes the

@@ -1,8 +1,8 @@
 import AeolusXPCClient
 import Foundation
 
-/// Where a helper-talking `fanctl` command looks for the helper, who it will accept as one, and
-/// how long it waits.
+/// Where a helper-talking `fanctl` command looks for the helper, who it will accept as one, how
+/// long it waits, and how the client it waits through is made.
 ///
 /// **This exists so that `run()` is the thing under test.** It replaced a test-only
 /// `run(restoring:)` overload that every test called and nothing shipped, which left the
@@ -10,8 +10,8 @@ import Foundation
 /// with, and the teardown afterwards — covered by nothing. A `run()` rewritten to
 /// `try emit(accepted)` printed "the helper accepted the reset request" having contacted
 /// nothing, and the whole suite stayed green. The seam therefore sits **below** all of those:
-/// it carries only where to look, who may answer, and how long to wait, and each command's
-/// `run()` keeps everything else.
+/// it carries only where to look, who may answer, how long to wait and how the client is made,
+/// and each command's `run()` keeps everything else.
 ///
 /// It was `ResetCommand.HelperConnection` while `reset --all` was the only command that spoke
 /// to the helper. `status`, `set` and `auto` share it rather than each growing a copy, because
@@ -25,11 +25,38 @@ import Foundation
 /// the conformance. There is no flag that reaches it and there must never be one: a
 /// `--helper-endpoint` option would let anything on the machine tell `fanctl` which process to
 /// treat as the root daemon.
+///
+/// ## The fourth member, and why it is a maker rather than a clock
+///
+/// A deadline counted on the wall clock is one a stalled CI runner runs out for a command that
+/// did nothing wrong ([#583](https://github.com/blamechris/Aeolus/issues/583)): the suites that
+/// drive `run()` against an in-process helper wait 10 s, and a run that stood still for longer
+/// than that failed them together. The client can count its deadlines on any `Clock`, but only
+/// through an initialiser that is `internal` to `AeolusXPCClient`, which `fanctl` cannot name
+/// and which is not widened for the sake of a test. So what this carries is the **making** of
+/// the client, handed the other three members and the description, and the suite's maker
+/// supplies the clock from where the initialiser is visible to it.
+///
+/// It chooses nothing else. The maker is given where to look, who may answer, how long to wait
+/// and what to call itself, and builds a client from exactly those. `production` and the decoded
+/// value carry `shippingClient`, which can only be `HelperClient`'s public initialiser: this
+/// module cannot name the one that takes a clock, so the compiler, rather than a test, is what
+/// keeps the shipping binary on the wall clock with the deadlines it was given.
 struct HelperConnection: Decodable, Sendable {
+
+    /// How a client is made from the parts of a connection.
+    typealias ClientMaker =
+        @Sendable (
+            _ transport: HelperClientTransport,
+            _ pinning: any HelperConnectionPinning,
+            _ clientDescription: String,
+            _ deadlines: HelperClientDeadlines
+        ) -> HelperClient
 
     let transport: HelperClientTransport
     let pinning: any HelperConnectionPinning
     let deadlines: HelperClientDeadlines
+    let makeClient: ClientMaker
 
     /// What this client calls itself in the helper's log. One string for every command, so a
     /// `status` and a `set` from the same binary are recognisably the same tool.
@@ -43,14 +70,26 @@ struct HelperConnection: Decodable, Sendable {
         pinning: SignedHelperPinning(),
         deadlines: .default)
 
+    /// `HelperClient`'s public initialiser, which counts its deadlines on `ContinuousClock`. The
+    /// only maker a shipping binary carries.
+    static let shippingClient: ClientMaker = { transport, pinning, clientDescription, deadlines in
+        HelperClient(
+            transport: transport,
+            pinning: pinning,
+            clientDescription: clientDescription,
+            deadlines: deadlines)
+    }
+
     init(
         transport: HelperClientTransport,
         pinning: any HelperConnectionPinning,
-        deadlines: HelperClientDeadlines
+        deadlines: HelperClientDeadlines,
+        makeClient: @escaping ClientMaker = HelperConnection.shippingClient
     ) {
         self.transport = transport
         self.pinning = pinning
         self.deadlines = deadlines
+        self.makeClient = makeClient
     }
 
     init(from decoder: Decoder) throws {
@@ -62,11 +101,7 @@ struct HelperConnection: Decodable, Sendable {
     /// invalidation handler, and a reference left to die with the process would leave that
     /// teardown to whenever libxpc noticed the peer had gone.
     func client() -> HelperClient {
-        HelperClient(
-            transport: transport,
-            pinning: pinning,
-            clientDescription: Self.clientDescription,
-            deadlines: deadlines)
+        makeClient(transport, pinning, Self.clientDescription, deadlines)
     }
 }
 

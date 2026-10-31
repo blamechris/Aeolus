@@ -7,9 +7,10 @@ import Testing
 
 /// The client's deadlines, and the one of them that is derived rather than guessed.
 ///
-/// `.timeLimit` because the two slow-peer tests wait on a real round trip: a client whose
-/// deadline was deleted outright hangs rather than fails, and a suite that hangs is worse than
-/// one that goes red.
+/// `.timeLimit` because a client whose deadline was deleted outright hangs rather than fails, and
+/// a suite that hangs is worse than one that goes red. The two slow-peer tests count their
+/// deadlines on the harness's clock, which they move themselves, so a runner stall cannot run
+/// one out ([#421](https://github.com/blamechris/Aeolus/issues/421)).
 @Suite("The XPC client's deadlines", .timeLimit(.minutes(1)))
 struct HelperClientDeadlineTests {
 
@@ -154,23 +155,14 @@ struct HelperClientDeadlineTests {
     /// than only one that is tighter. `unhurried` keeps `>=`, because being generous is
     /// deliberate there.
     ///
-    /// **What it does not cover, and what now does.** Eleven constructions pass a deadline
-    /// explicitly, and this test reads none of them. A bound below the product's is legitimate at
-    /// a site where the expiry *is* the assertion — `aMessageNobodyAnswersHasItsOwnError`'s 250 ms
-    /// gated verb, `theHandshakeIsSentWithinItsOwnDeadline`'s 1 ns handshake,
-    /// `FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown`'s 2 s panic path — and that
-    /// is what those sites are for. What this comment used to enumerate beside them was five
-    /// terms that were *not*: handshake terms below the product's 15 s at all three of
-    /// `HelperClientTeardownTests`' short sites, and panic terms at half the product's 10 s, on
-    /// round trips those tests require to succeed or never send at all.
-    ///
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) closed that category and decided
-    /// the scan question it left open: `HelperClientDeadlineLiteralTests` holds every term of
-    /// every explicit construction under `Tests/` to the product's bound, or to a named licence
-    /// saying what asserts the tighter one. So the enumeration that lived here is not maintained
-    /// here any more — a list in a doc comment is what let the panic column survive the issue the
-    /// comment pointed at. This test is still cover for the *defaults* alone and must not be read
-    /// as more.
+    /// **What it does not cover, and what now does.** It reads no deadline a test passes
+    /// explicitly. A bound below the product's is legitimate where the expiry *is* the assertion
+    /// (`aMessageNobodyAnswersHasItsOwnError`'s 250 ms gated verb, `FanctlResetTests`' 2 s panic
+    /// path), and [#255](https://github.com/blamechris/Aeolus/issues/255) put the rest under a
+    /// scan: `HelperClientDeadlineLiteralTests` holds every term of every explicit construction
+    /// under `Tests/` to the product's bound, or to a named licence saying what asserts the
+    /// tighter one. A list in a doc comment is what let the panic column survive the issue the
+    /// comment pointed at, so none is kept here. This test is cover for the *defaults* alone.
     ///
     /// **It is also a relative check, deliberately, and that leaves a second route open.**
     /// Both sides move together if `HelperClientDeadlines` itself is tightened — a reachable
@@ -251,13 +243,13 @@ struct HelperClientDeadlineTests {
         }
     }
 
-    /// How long the peer is made to sit on a message in the two tests below.
+    /// How long the peer is made to sit on a message in the two tests below, as the harness's
+    /// clock counts it: the test moves the hands by this much while the message is held.
     ///
     /// Longer than the 750 ms this suite's harness used to allow, because a lag *shorter* than
-    /// that would leave both tests green under the exact constant #250 was about. Short enough
-    /// that it is a second of suite wall clock and not five. That floor is asserted by
-    /// `theConstructedPeerLagStillExceedsTheBoundBehind250`, once, rather than inside whichever
-    /// of the two tests happened to be written first.
+    /// that would leave both tests green under the exact constant #250 was about. That floor is
+    /// asserted by `theConstructedPeerLagStillExceedsTheBoundBehind250`, once, rather than inside
+    /// whichever of the two tests happened to be written first.
     private static let peerLag = Duration.seconds(1)
 
     /// The lag both slow-peer tests are built on is still longer than the bound #250 was about.
@@ -310,6 +302,12 @@ struct HelperClientDeadlineTests {
     /// negotiated, and only the answer waits. A contended runner is the same shape with the
     /// delay in libxpc instead, which is why one second of held reply stands in for it.
     ///
+    /// **The second is moved, not slept** (#421). It used to be a `Task.sleep` on the wall clock,
+    /// against a deadline that was also on the wall clock, so an 8 s stall of the test process ran
+    /// the 5 s deadline out for a client that had done nothing wrong. Now the deadline is counted
+    /// on `harness.clock`, and the test advances that by `peerLag` once the deadline has parked
+    /// on it: the deadline survives a second of clock or it does not, whatever the runner is doing.
+    ///
     /// **Mutations.**
     /// - Set `ClientListenerHarness.defaultDeadlines` to the 750 ms triple. Run: red, thrown
     ///   `helperNeverAnswered(after: 0.75 seconds)` — #250's own signature.
@@ -328,10 +326,11 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the handshake reached the helper and is being held") {
-            harness.arrivals == ["hello"]
-        }
-        try await Task.sleep(for: Self.peerLag)
+        try await waitUntil(
+            "the handshake is held at the helper and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { harness.arrivals == ["hello"] && harness.clock.sleepers == 1 }
+        harness.clock.advance(by: Self.peerLag)
         await releaseHandshake.signal()
 
         _ = try await snapshot.value
@@ -381,10 +380,11 @@ struct HelperClientDeadlineTests {
         let client = harness.client()
 
         let snapshot = Task { try await client.snapshot() }
-        try await waitUntil("the snapshot reached the helper and is parked in its authority") {
-            await authority.hasBeenAskedForSnapshot
-        }
-        try await Task.sleep(for: Self.peerLag)
+        try await waitUntil(
+            "the snapshot is parked in its authority and its deadline is running",
+            timeout: StallTolerantWait.deliveryBudget
+        ) { await authority.hasBeenAskedForSnapshot && harness.clock.sleepers == 1 }
+        harness.clock.advance(by: Self.peerLag)
         await releaseSnapshot.signal()
 
         _ = try await snapshot.value
