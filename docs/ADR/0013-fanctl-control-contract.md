@@ -153,14 +153,17 @@ claims more.
 - **Every ending and every loss releases the lease and checks the safe state.** The ordinary
   endings (`--for`, a signal, a parent that exited, a standard output that stopped draining) ran
   it from the first version. *Amended 2026-10-18, below:* so does **every outcome before
-  `started`** (an `apply` that was refused or got no answer, a lease that could no longer be
-  shown to be held, a confirming snapshot that failed or showed no hold, a keeper that could not
-  pace itself) and **every loss once the hold is under way** (a renewal refused, a snapshot that
-  does not list the lease, a fan reclaimed or without a held target at a heartbeat, a thermal
-  emergency). The first version skipped it for a loss and for a refused `apply`, on the
-  assumption that there was nothing to confirm a return to and that the check can take its whole
-  ten-second window against a thermal emergency that will not clear; both assumptions are
-  withdrawn.
+  `started` once `apply` has been sent** (an `apply` that was refused or got no answer, a lease
+  that could no longer be shown to be held, a confirming snapshot that failed or showed no hold,
+  a keeper that could not pace itself) and **every loss once the hold is under way** (a renewal
+  refused, a snapshot that does not list the lease, a fan reclaimed or without a held target at
+  a heartbeat, a thermal emergency). The first version skipped it for a loss and for a refused
+  `apply`, on the assumption that there was nothing to confirm a return to and that the check can
+  take its whole ten-second window against a thermal emergency that will not clear; both
+  assumptions are withdrawn. **The one outcome before `started` that is not checked** is a signal
+  that lands while `acquireLease` is in flight: the lease is released, no speed is sent, and the
+  run exits 1 (*carved out 2026-10-31*, #438; the residual is in the 2026-10-18 amendment's
+  point 2).
 - **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
   holder; for `set` the lease may be its own (the release did not take), and the message says
   whose it is.
@@ -286,9 +289,14 @@ a hold earlier or says less.
      bounded by `apply`'s own deadline. When `apply` returns, a pending signal ends the run
      **before `started`** (release, check, an ordinary ending with `endedBecause: signal`), so
      "Holding" is never said to a person who has already asked to stop; and if the run ends in
-     any other way, the signal stays in the report (`signal` is not null) and in the text.
+     any other way, the signal stays in the report (`signal` is not null) and in the text. The
+     text says the hold was not begun, not that it ended, and that the signal landed "while the
+     speed was being applied or confirmed": the pending signal is looked for once `apply` and the
+     confirming snapshot are both answered, so it may have landed during either (#438).
 
-2. **Every outcome before `started` is followed by a release and the safe-state check.**
+2. **Every outcome before `started` once `apply` has been sent is followed by a release and the
+   safe-state check.** (This point said "every outcome before `started`" until #438; the one it
+   never covered is carved out at its end.)
    - *The defect.* Every `AeolusXPCFault` from `apply` skipped the check, on the assumption that a
      refused `apply` had changed nothing. Level 6 can engage fan 0, fail on fan 1, have the undo
      refused and still answer only the original fault, and a release whose restore is refused is
@@ -330,8 +338,25 @@ a hold earlier or says less.
      confirmation is the check's own sentence, in the helper's voice. The original reason for
      skipping the check against a thermal emergency, that it would spend its ten-second window,
      does not hold: waiting costs the fans nothing, because § 3 is driving them either way, and
-     an honest 8 or 9 is worth ten seconds. During an emergency the text says that the helper's
-     thermal protection, not this run, is in control of the fans, and what the check saw.
+     an honest 8 or 9 is worth ten seconds. During an emergency the text says, in the helper's
+     voice, that the helper reports its thermal protection, not this run, in control of the fans
+     (its evidence is the emergency flag alone, and an emergency that clears inside the check's
+     window leaves every fan automatic, #438), and what the check saw.
+   - *Carved out: a signal while `acquireLease` is in flight* (#438, ruled 2026-10-31). A signal
+     that lands while the lease is on its way releases the lease when it comes back, sends no
+     speed, and exits 1 with "Nothing was sent to a fan" and `endedBecause: signal`, **without**
+     the safe-state check (`SetCommand.perform`; `docs/CLI.md`). The ruling keeps it so, on three
+     facts. Nothing was sent to a fan, so nothing this run did can have engaged one. The helper
+     read each covered fan afresh at the grant and refuses one in manual that Aeolus does not
+     hold (`LeaseAuthority.refuseIfForeignManualControl`), so the fan was automatic at the grant
+     as far as the helper could read it. And a fan whose handback the helper gives up on is
+     refused to the next grant with `restoreToAutomaticFailed` (`LeaseAuthority.acquireLease`), so
+     the next `set` gets exit 4 with the reason.
+     **The residual.** `LeaseAuthority.releaseLease` restores the covered fans whether or not an
+     `apply` was sent, and that restore can be refused. If it is, this run has already said
+     "Nothing was sent to a fan" and exited 1, which is true of this run and silent about the
+     helper's restore: the fan's `restoreToAutomaticFailed` is first reported by the next `fanctl
+     status`, `set` (exit 4) or `auto` (exit 9), never by this run's exit 9.
 
 3. **"Holding" needs the helper's evidence that the fan is held.**
    - *The defect.* `loss(in:)` checked the lease ID, a thermal emergency, missing fans and the
