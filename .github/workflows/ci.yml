@@ -29,10 +29,28 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Build and test
+  # `Build and test` is a check branch protection requires on main, by name. It used to be one
+  # job that built and ran the suite in Debug and then in Release under a single 20-minute
+  # timeout. On a slow runner the two together reached that timeout and the required check was
+  # cancelled with no test failing (#594: run 41160817920, attempt 1).
+  #
+  # It is now three jobs. `test-debug` and `test-release` run side by side, each under its own
+  # timeout, and everything the one job ran still runs in one of them. `build-and-test`, at the
+  # end of this block, keeps the required name and passes only if both halves succeeded, so the
+  # branch protection rule needs no edit. A job added here that must gate a merge has to be added
+  # to that job's `needs` and to its check; nothing else makes it required.
+  test-debug:
+    name: Test (debug)
     runs-on: macos-latest
-    timeout-minutes: 20
+    # 25 minutes, for two reasons.
+    #   - It is 3.1 times the slowest passing run of this job, 489 s (run 41186416078, job
+    #     124496136514). The four passing runs on #646 took 424 to 489 s.
+    #   - It must leave the pool-of-one step's own 10-minute limit room to fire first. When that
+    #     step wedged (scratch run 41186425390, job 124494167175) the job took 1092 s: 473 s of
+    #     earlier steps, then the 10 minutes and its shutdown. That was 108 s under the 20 minutes
+    #     this job started with, so earlier steps 108 s slower would have let the job's limit win;
+    #     under 25 minutes the margin is 408 s.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +91,135 @@ jobs:
       - name: Test
         run: swift test --skip-build
 
-      # Not redundant with the step above. Some behaviour is selected by `#if DEBUG` and is
+      # The whole suite on a cooperative pool of one (#593, docs/TESTING.md). The `Test` step runs
+      # it on the runner's three-thread pool, where a test that parks a pool thread on a release
+      # only the pool can deliver still finds a second thread and passes. On one thread it cannot,
+      # and the run wedges at 0% CPU instead of finishing; the step's time limit is what turns
+      # that wedge into a failure rather than a hang.
+      #
+      # That limit is 10 minutes, 4.8 times the slowest healthy run of the step, 124 s (103 to 124 s
+      # over runs 41185591861, 41186416078 twice and 41187988205). It has to fire before the job's
+      # own limit does: when the job's limit fires first the job is cancelled and the step's message
+      # is lost. See `timeout-minutes` on the job for the margin.
+      #
+      # It is one process, which is the point: `--build-system native` runs every test target in
+      # one, so the pool is one thread for the whole suite. That flag is deprecated and "will be
+      # removed in a future release". It is spelled out here rather than relied on as the default,
+      # so that the day it is removed this step fails loudly on an unknown option and does not
+      # quietly become something else. On Swift 6.3.3, this runner's, native is the default and
+      # this build is the one `Build` above made, so it costs a few seconds; on 6.4 it is a second
+      # full build. docs/TESTING.md says what stands in for the flag, and #654 tracks replacing it
+      # and re-measuring this job's headroom when it does.
+      #
+      # Only the test run below has the variable. A build has no reason to run on a pool of one.
+      - name: Build tests (native build system)
+        run: swift build --build-tests --build-system native
+
+      # This run leaves out two things and nothing else; the `Test` step still runs every suite:
+      #   - the suites that read the SMC. A hosted runner has none, so on CI they skip themselves
+      #     in the `Test` step as well. On a Mac16,5 they would read the real one, and a run about
+      #     thread counts has no business doing that (docs/TESTING.md gives this command for that
+      #     machine too);
+      #   - `theBudgetSurvivesARestoreThatBlocksItsThread`, the one test that cannot run on a pool
+      #     of one (docs/TESTING.md, "The bound").
+      #
+      # Each suite is named by its type, and the pattern is anchored at both ends: a `.` before the
+      # name and a `/` or the end of the ID after it. swift-testing's `--skip` is an unanchored
+      # regular expression matched against the whole test ID, `Module.Suite/test()/File.swift:l:c`,
+      # so a bare `SMCConnectionTests` matched the *file* of that name and removed every test in it,
+      # hardware or not: 43 tests that read no SMC, in two files (review of #646, run 41187988205).
+      # `HelperHardwareSightingTests` is an `extension HelperHardwareTests`, so its tests carry the
+      # name of the suite they extend and need no entry of their own. A suite that reads the SMC and
+      # is added later has to be named here and in docs/TESTING.md.
+      #
+      # `AEOLUS_EXPECT_POOL_OF_ONE` turns on CooperativePoolWidthTests, which fails if this run is
+      # wider than one thread. That is the canary: without it a toolchain that stopped honouring
+      # LIBDISPATCH_COOPERATIVE_POOL_STRICT would leave this step green and checking nothing. But a
+      # test that is turned off is skipped, not failed, and `swift test` exits 0 for a skip, so a
+      # step that lost the variable from its `env:` would run wide, skip the canary and stay green.
+      # So the step also requires the canary's own `passed` line in the output, which is the one
+      # thing a skip, a rename or a dropped variable cannot leave behind.
+      #
+      # The output goes through `tee`, so the job log shows how far a wedge got. `swift test`'s
+      # status is read from PIPESTATUS, not `tee`'s, and a nonzero one ends the step with that code
+      # before the canary is looked for. `shell: bash` and `set -o pipefail` are both spelled out:
+      # the default shell sets `-e` and not `pipefail`, and a pipe without it reports `tee`.
+      - name: Test on a cooperative pool of one
+        timeout-minutes: 10
+        shell: bash
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
+          AEOLUS_EXPECT_POOL_OF_ONE: "1"
+        run: |
+          set -euo pipefail
+          SKIPPED_SUITES=(
+              HelperHardwareTests
+              WatchdogHardwareTests
+              SMCSensorProviderHardwareTests
+              SMCSensorProviderMac165Tests
+              SMCConnectionHardwareTests
+              SMCConnectionMac165Tests
+              SMCFanEnumerationMac165Tests
+              KeyTableWalkMac165Tests
+              SMCKeyRealTableTests
+              SMCRoundTripHardwareTests
+              HardwareSmokeTests
+          )
+          SKIP_ARGS=()
+          for SUITE in "${SKIPPED_SUITES[@]}"; do
+              SKIP_ARGS+=(--skip "\\.${SUITE}(/|\$)")
+          done
+
+          LOG="${RUNNER_TEMP:-/tmp}/pool-of-one-test.log"
+          TEST_STATUS=0
+          swift test --skip-build --build-system native \
+            "${SKIP_ARGS[@]}" \
+            --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)' \
+            2>&1 | tee "${LOG}" || TEST_STATUS=${PIPESTATUS[0]}
+          if [ "${TEST_STATUS}" -ne 0 ]; then
+              echo "error: swift test exited ${TEST_STATUS}."
+              exit "${TEST_STATUS}"
+          fi
+
+          # The name is the display name in Tests/AeolusHelperTests/CooperativePoolWidthTests.swift,
+          # which is what swift-testing prints. The log is a file, not a pipe into `grep -q`, for
+          # the reason the probe step in `monitor-app` gives.
+          CANARY='Test "No two tasks hold a pool thread at once" passed'
+          if ! grep -qF -- "${CANARY}" "${LOG}"; then
+              echo "error: the pool-of-one canary did not run and pass, so nothing shows this run was on a pool of one."
+              echo "It is skipped unless AEOLUS_EXPECT_POOL_OF_ONE=1 reaches the test run, and swift test exits 0"
+              echo "for a skip. Check this step's env: block and the test's display name in"
+              echo "Tests/AeolusHelperTests/CooperativePoolWidthTests.swift."
+              exit 1
+          fi
+          echo "POOL-OF-ONE CANARY PASSED: ${CANARY}"
+
+  test-release:
+    name: Test (release)
+    runs-on: macos-latest
+    # 30 minutes. The slowest passing run of this job is 655 s (run 41186425390, job 124494167019;
+    # the others took 394 to 615 s), so the limit is 2.75 times that, not 3 times. The old single
+    # job's slowest run (41176350841, 1189 s of its 1200) projects to 796 s for this half, which is
+    # 2.3 times under the limit. It is a ceiling for a hang, not a target: #594 asked for 30%
+    # headroom and this leaves 64% on the measured figure and 56% on the projected one.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Not redundant with `Test` in the Debug job. Some behaviour is selected by `#if DEBUG` and is
       # therefore invisible to a Debug-only test run — notably
       # ClientRequirementVariant.forRunningProcess, where the failure being guarded is a
       # Release helper shipping the relaxed development client requirement. The test that
@@ -106,6 +252,44 @@ jobs:
       # and CI does not build them.
       - name: Build (release, without testability)
         run: swift build -c release
+
+  # The required check. It runs whatever happened to the halves (`always()`): a job that `needs`
+  # a failed job is otherwise skipped, and a skipped required check is reported as passing, which
+  # would let a red half merge. It passes only if each half finished exactly `success`; a
+  # failure, a cancellation (a timeout shows as one), a skip, or a result this step does not
+  # recognise, including an empty one from a `needs` entry that no longer names a job, all fail it.
+  #
+  # A run that a newer push cancels shows this check red on the superseded commit, not grey. That
+  # is the price of failing closed: if it were skipped when the run is cancelled, a skipped
+  # required check would pass.
+  #
+  # It runs on Linux because it only compares strings, and a macOS runner is the scarce one.
+  build-and-test:
+    name: Build and test
+    needs: [test-debug, test-release]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require both halves
+        env:
+          DEBUG_RESULT: ${{ needs.test-debug.result }}
+          RELEASE_RESULT: ${{ needs.test-release.result }}
+        run: |
+          set -euo pipefail
+          STATUS=0
+          require_success() {
+              if [ "$2" = "success" ]; then
+                  echo "$1: success"
+              else
+                  echo "error: $1 finished '$2', not 'success'."
+                  STATUS=1
+              fi
+          }
+          require_success "Test (debug)" "${DEBUG_RESULT}"
+          require_success "Test (release)" "${RELEASE_RESULT}"
+          exit "${STATUS}"
 
   monitor-app:
     name: Monitor app build
