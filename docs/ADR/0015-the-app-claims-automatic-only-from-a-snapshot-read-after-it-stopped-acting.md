@@ -1,7 +1,7 @@
 # ADR 0015 — The app claims Automatic only from a snapshot read after it stopped acting
 
-- **Status:** Accepted (2026-10-31)
-- **Date:** 2026-10-24
+- **Status:** Accepted (2026-10-30)
+- **Date:** 2026-10-24 (amended 2026-10-25, see D5)
 - **Deciders:** Project maintainer
 - **Supersedes:** —
 
@@ -76,9 +76,9 @@ state alone. Each new floor asks the source to read soon (`HelperSnapshotSource.
 ordinary pause is cut by the path a settled interval change takes, a request in flight is left
 alone and the pause after it skipped once, and a backoff and the interval's debounce are left as
 they were. So the user's own Auto reads selected within about one round trip, when no `apply` is
-unanswered, no request is in flight and the read connection is not backing off: while an `apply`
-is unanswered nothing is evidence until it answers, up to its deadline, a request in flight is
-answered before the next one goes out, and a backoff's pause runs out first.
+unanswered, no request is in flight and the read connection is not backing off. While an `apply`
+is unanswered, nothing is evidence until it answers, up to its deadline; a request in flight is
+answered before the next one goes out; and a backoff's pause runs out first.
 
 **D3 — Until D2 lands**, `released`, `lost` and `refused` never read Automatic, and `idle`
 requires no lease listed. This fails closed on any helper. *(Replaced by D2 in #498.)*
