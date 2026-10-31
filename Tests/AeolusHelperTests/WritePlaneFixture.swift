@@ -18,8 +18,10 @@ struct WritePlaneFixture {
     let plane: SMCFanControlPlane
     let lines = RecordedLog()
 
-    init(unlock: FirmwareSMC.Unlock = .naive) {
-        firmware = FirmwareSMC.mac16x5(unlock: unlock)
+    /// `Mac16,5` over `unlock`, with every fan in `stoppedByApple` in Apple's rest state: raw
+    /// `F<n>Md = 3`, target and actual 0 (`FirmwareSMC.stopByApple(fan:)`).
+    init(unlock: FirmwareSMC.Unlock = .naive, stoppedByApple: Set<Int> = []) {
+        firmware = FirmwareSMC.mac16x5(unlock: unlock, stoppedByApple: stoppedByApple)
         scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
         plane = SMCFanControlPlane(
             scheduler: scheduler, connection: firmware.recycler, channel: firmware,

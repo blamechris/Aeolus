@@ -166,7 +166,10 @@ extension FirmwareSMC {
     /// The interface generation is `.modern`: `IOProviderClass` `RTBuddyEndpointService`, observed
     /// on this machine ("Interface generation, detected from IORegistry provenance"). No key is
     /// absent, because no absent key's answer is recorded; a scenario that needs one scripts it.
-    static func mac16x5(unlock: Unlock = .naive) -> FirmwareSMC {
+    ///
+    /// Every fan in `stoppedByApple` starts in Apple's rest state instead (`stopByApple(fan:)`):
+    /// raw `F<n>Md = 3`, target and actual 0, as P1 recorded it on macOS 27.2.
+    static func mac16x5(unlock: Unlock = .naive, stoppedByApple: Set<Int> = []) -> FirmwareSMC {
         var keys: [SMCKey: Key] = [:]
         var registers: [SMCKey: [UInt8]] = [:]
         func declare(_ raw: String, _ type: SMCKeyType, _ attributes: UInt8, _ bytes: [UInt8]) {
@@ -186,7 +189,36 @@ extension FirmwareSMC {
         declare("F1Ac", .flt, 0x84, [0x38, 0x3E, 0xB6, 0x44])
         declare("Ftst", .ui8, 0xD0, [0x00])
         declare("FNum", .ui8, 0x80, [0x02])
+        for fan in stoppedByApple {
+            for (key, bytes) in restState(ofFan: fan) { registers[key] = bytes }
+        }
         return FirmwareSMC(keys: keys, registers: registers, generation: .modern, unlock: unlock)
+    }
+
+    /// Apple's controller has fan `index` stopped, as P1 recorded it on `Mac16,5` under macOS 27.2
+    /// (ADR 0014's P1′ amendment; `docs/SMC-RESEARCH.md`'s P1 section): raw `F<n>Md = 3`, `F<n>Tg`
+    /// 0 and `F<n>Ac` 0 — this machine's rest state, and the bytes of the scripted plane's
+    /// `FanCondition.stoppedByApple`. Set as the firmware sets them: no write is answered and
+    /// nothing is logged.
+    func stopByApple(fan index: Int) {
+        for (key, bytes) in Self.restState(ofFan: index) { setRegister(key, bytes) }
+    }
+
+    /// Apple's controller spinning fan `index` with its target at `rpm`: raw `F<n>Md = 0`, and
+    /// `F<n>Tg` and `F<n>Ac` at `rpm` (P1's sixteen-way plateau was 3455 and 3731). Set as
+    /// `stopByApple(fan:)` sets its bytes.
+    func spinByApple(fan index: Int, at rpm: Float) {
+        setRegister(smcKey("F\(index)Md"), [0x00])
+        setRegister(smcKey("F\(index)Tg"), Self.flt(rpm: rpm))
+        setRegister(smcKey("F\(index)Ac"), Self.flt(rpm: rpm))
+    }
+
+    /// Apple's rest state for fan `index`, as register bytes.
+    private static func restState(ofFan index: Int) -> [SMCKey: [UInt8]] {
+        [
+            smcKey("F\(index)Md"): [0x03], smcKey("F\(index)Tg"): flt(rpm: 0),
+            smcKey("F\(index)Ac"): flt(rpm: 0),
+        ]
     }
 
     /// The `flt` bytes a `.modern` register holds for `rpm`: an IEEE 754 single, least significant

@@ -29,15 +29,17 @@ struct ProductionWriteMachine: Sendable {
 
     /// A machine whose curated critical sensors read `celsius`, bound and prepared as bring-up
     /// binds and prepares it. With `readsHold`, every subset read holds its scheduler turn for
-    /// that long before the fake answers it (`TurnHoldingProvider`); writes are never held.
+    /// that long before the fake answers it (`TurnHoldingProvider`); writes are never held. Every
+    /// fan in `stoppedByApple` starts in Apple's rest state: raw `F<n>Md = 3`, target and actual 0.
     init(
-        unlock: FirmwareSMC.Unlock = .naive, celsius: Double = 44, readsHold: Duration? = nil
+        unlock: FirmwareSMC.Unlock = .naive, celsius: Double = 44, readsHold: Duration? = nil,
+        stoppedByApple: Set<Int> = []
     ) async {
         let journal = TeardownJournal()
         let lines = RecordedLog()
         let observer = RecordingSchedulerObserver()
         let clock = TestClock()
-        let firmware = FirmwareSMC.mac16x5(unlock: unlock)
+        let firmware = FirmwareSMC.mac16x5(unlock: unlock, stoppedByApple: stoppedByApple)
         await firmware.declareCriticalTemperatures(celsius)
         let provider: any SensorProvider =
             readsHold.map { TurnHoldingProvider(base: firmware.provider, holding: $0) }
