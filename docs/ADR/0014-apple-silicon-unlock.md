@@ -3446,13 +3446,13 @@ failed, so D3's rule brought the fold, the pre-state and the poll here before ru
   - `3` with a target above 0: **none**.
 
   Both fans changed mode in the same sample, every time.
-- **Apple orders its writes.** Across five transitions, mode `0` came 0.99–1.09 s before the
+- **Apple orders its writes.** Across five transitions, mode `0` came 1.00–1.09 s before the
   target left 0, and mode `3` came 0.99–1.07 s after the target reached 0.
 - **`Ftst` read `0` on every sample**, through both loads and both soaks. U14 holds.
 - **Demand.**
   - A twelve-way `yes` load held the targets at 1350/1458 for ten minutes.
   - A sixteen-way busy loop raised them to 3455/3731 within about 75 s.
-  - No soak rose above the load plateau.
+  - After 10-minute loads, no soak rose above the load plateau.
   - `F1Tg` ran 1.076–1.080 times `F0Tg`.
   - U13 holds.
 - **Census.** Every `AppleSMC` user client carried `IOUserClientCreator`, so U10 holds. Seven
@@ -3626,7 +3626,7 @@ Proposed.**
 | U10 | `ioreg` lists every `AppleSMC` user client with its creating process | Observed in P1: 10 clients before the exclusion and 7 after it, each with `IOUserClientCreator` | D9's census gate is dropped |
 | U11 | A power cycle returns raw `F<n>Md` to Apple's set and `Ftst` to `0` | `RECOVERY.md` step 7 asserts that the force key resets. That `F<n>Md` does not persist is `docs/SAFETY.md` row 7's unverified assumption, and ADR 0011's. P1, after a reboot: the fans ran at minimum reading `0`, then stopped and read `3`, about 5 minutes after the reboot | D8's recovery steps end in a loud fan and `RECOVERY.md` § 8. Run 1's target choice is what makes that acceptable |
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
-| U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak. Observed in P1: a peak of 3455/3731 under a 16-way load, against 5777; 1350/1458 under a 12-way load; no soak peak on 27.2 | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
+| U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak. Observed in P1: a peak of 3455/3731 under a 16-way load, against 5777; 1350/1458 under a 12-way load; no soak peak after 10-minute loads on 27.2 | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | U15 | A plane's step or command admission and its writes are one exclusive turn (D7), and `beginEngagement` precedes the entitlement. The order is what holds: a suspension between the two only makes the ticket older, which refuses more | D4 (the turn rule) and D7 | The ticket and the exit seal narrow the window instead of closing it |
 | U16 | Apple writes mode `0` before it raises `F<n>Tg` from 0, and mode `3` after the target reaches 0, so it never produces `3` with a target above 0 | P1's five transitions, about 1.0 s each way, both fans together, and none of the forbidden pair in 41,931 samples | Only the operator's gate and the run analysis use it. The quiescence rule is re-decided, and the fold is unchanged |
 | U17 | No writer other than Apple leaves a fan it holds at raw `0` or `3` | Unknown. Aeolus writes only `1`, and `0` on restore. A third-party hold is unrecorded by design (D9). The 2026-09 non-zero readings are confounded | The fold calls such a hold automatic, which is a rule-6 misattribution. The remedy is to corroborate with `F<n>Tg = 0`, in the fold and in the snapshot's read, decided at run 4 |
