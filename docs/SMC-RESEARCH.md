@@ -354,7 +354,7 @@ Two fans, `F0` and `F1`. Every fan key present on this machine:
 | `F0Ac` | `flt` | `57e2a744` | 1343.07 RPM actual |
 | `F1Ac` | `flt` | `383eb644` | 1457.94 RPM actual |
 | `F0Tg` / `F1Tg` | `flt` | — | 1350.00 / 1458.00 target |
-| `F0Md` / `F1Md` | `ui8` | `00` | mode — 0 = automatic |
+| `F0Md` / `F1Md` | `ui8` | `00` | mode — raw `0` = automatic. On 27.2, Apple's management also reads `3` when it has stopped the fans: see "Apple's own management reads `F<n>Md = 3` when it stops the fans", below |
 | `Ftst` | `ui8` | `00` | **present on `Mac16,5`** |
 
 **`Ftst` exists and is `ui8`.** The M3+ unlock key the community describes is really
@@ -400,6 +400,16 @@ belongs to E4, not yet attempted. The catalog reflects this honestly:
 > tests, #208) still resolve; read "reading `1`" as "decoding non-zero". The table and the
 > paragraph that made the stronger claim are corrected in place below, and the paragraph's
 > original wording is quoted there.
+
+> **Note, 2026-10-31 (P1, macOS 27.2).** The non-zero readings below, read at the time as a
+> third-party tool holding the fans, are not attributable to that tool. They are `FirmwareFanMode`'s
+> fold, not the raw byte (above), and Apple's own stopped state folds to non-zero: on 27.2, raw
+> `F<n>Md` reads `3` whenever Apple's management has the fans stopped. The fans stop at rest on
+> 26.6.2 too (2026-08-20), and no fan speed was recorded beside these readings. The 2026-09-13
+> reproduction below, and the "presumably" inference below that the tool holds the fans only while
+> it drives a curve, rest on the same kind of reading. Nothing here separates the tool's hold from
+> Apple's stopped state, and what a held fan reads remains unrecorded. See "Apple's own management
+> reads `F<n>Md = 3` when it stops the fans", below.
 
 **Date:** 2026-09-05. **Machine:** `Mac16,5`, macOS 26.6.2. **Method:**
 `HelperHardwareTests.everyFanModeIsReadableAtStart` (named
@@ -583,6 +593,67 @@ read the real count each assert only a broad sanity range.
   attended lid close, alongside the wake conditions of
   [#296](https://github.com/blamechris/Aeolus/issues/296). Until then each stands as a 26.6.2
   observation.
+
+### Apple's own management reads `F<n>Md = 3` when it stops the fans, and `0` when it spins them — P1, macOS 27.2
+
+**Date:** 2026-10-31, 01:07–02:34 UTC. **Machine:** `Mac16,5`, Apple M4 Max, **macOS 27.2
+(26B123)**, AC power. **Builds:** helper `main` `bfa1fe6` Full Release (no write plane); recorder
+`smc-sampler` from `main` `5b0d191`.
+
+**Method.** Read selectors only, with the owner present; nothing wrote to the SMC.
+- A third-party fan utility was quit and its background item switched off, then the machine was
+  rebooted (about 01:10Z). The browser was quit before the idle phase.
+- Three captures were taken of `F0Md`, `F1Md`, `Ftst`, `F0Tg`, `F1Tg`, `F0Ac` and `F1Ac`, each
+  recorded as a decoded scalar (a `ui8` decodes to its byte):
+  - before the exclusion: 60 samples at 2 Hz;
+  - quiescence after the reboot: 240 samples at 2 Hz;
+  - the main capture: 41,631 samples at 9.08 Hz over 4,586 s, with the 34 `TPD*`/`TRD*` die keys at
+    1 Hz.
+- No read failed.
+- Phases:
+  - idle, 01:43:15–01:53:15;
+  - load A, 01:53:15–02:03:17 (12 × `yes`), then its soak;
+  - load B, 02:19:52–02:29:54 (16 × `sh -c 'while :; do :; done'`), then its soak.
+- The raw captures are kept outside the repository.
+
+| | Observed |
+|---|---|
+| Raw `F<n>Md` | `0` or `3` only, in all 41,931 samples. No `1`, no other value |
+| Raw `Ftst` | `0` on every sample, through both loads and soaks |
+| `F0Md` against `F0Tg` (main capture; `F1` identical) | (3, target 0) 27,722, every one at actual 0; (0, target > 0) 13,872, of which 33 at actual 0, spinning up; (0, target 0) 37, of which 11 at actual > 0, spinning down; (3, target > 0) **0** |
+| Both fans | `F0Md` = `F1Md` in every sample. Every transition moves both fans in the same sample |
+| Order, five transitions | Mode `0` came 0.99–1.09 s before the target left 0 (2 of 2). Mode `3` came 0.99–1.07 s after the target reached 0 (3 of 3) |
+| Before the exclusion | 3/3, targets 0, 60 of 60 samples: the `3` was not left by the third-party tool |
+| After the reboot | Fans at 1350/1458 reading `0` until 01:15:37, then stopped, reading `3` |
+| Load A (12 × `yes`) | Fans started about 41 s into the load; targets held at 1350/1458 for the whole load; die 37 → 63 °C; fans stopped 3.6 min after the load ended |
+| Load B (16-way busy loop) | Mode `0` about 13 s into the load. The target rose in 28–47 RPM steps at about 1 Hz, reaching 3455/3731 about 75 s in; die about 63 °C. After the load the target began falling within about 1 s, 32 RPM a step: 1350 after about 57 s, then 0 after a further 111 s (2.8 min after the load), with mode `3` a second later |
+| Soak | No peak above the load plateau |
+| `F1Tg / F0Tg` | 1.076–1.080 whenever both were non-zero; never below 1 |
+| Peaks | Targets 3455/3731 and actuals 3546/3818 RPM, against `F<n>Mx` 5777 |
+| `AppleSMC` user clients | 10 before the exclusion, 7 after the reboot, each with `IOUserClientCreator`: the helper, five Apple system daemons, one third-party browser |
+
+Times are each sample's `wallClockUTC`. The P1 summary file and phase log put every transition
+about 1.05 s earlier; the intervals and the order agree in both.
+
+**Agrees, more narrowly than reported:** "`thermalmonitord` holds the fans in mode 3". `3` is
+Apple's own value here, but only while the fans are stopped. While Apple spins them, the mode reads
+`0` at every target recorded.
+
+**Disagrees with ADR 0014's U0** ("Apple's own management reads raw `F<n>Md = 0`"). Every earlier
+raw `0` on record (26.5.2, 27.0.1) was taken with the fans spinning, and this capture agrees with
+those. No one had read the stopped state raw before. U14, U13 and U10 hold.
+
+**The 2026-09-05 and 2026-09-13 non-zero readings are no longer attributable to the third-party
+tool.** - They are `FirmwareFanMode`'s fold, not the byte (#208). - Apple's own stopped state folds
+to non-zero. - The fans stop at rest on 26.6.2 too (2026-08-20). - No fan speed was recorded beside
+those readings.
+
+What a held fan reads remains unrecorded, and ADR 0014 D9 keeps it that way until run 4.
+
+**Disagrees with the 2026-08-20 record (26.6.2):** there is no soak overshoot on 27.2.
+
+**Not observed:** any value under a held fan; any write; `READ_KEYINFO`'s answer for an absent key;
+`F<n>Tg`'s attribute byte.
 
 ### The attribute byte — bit `0x80` is "readable", necessary but not sufficient
 
