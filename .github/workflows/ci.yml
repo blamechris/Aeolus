@@ -42,7 +42,7 @@ jobs:
   test-debug:
     name: Test (debug)
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +87,9 @@ jobs:
       # it on the runner's three-thread pool, where a test that parks a pool thread on a release
       # only the pool can deliver still finds a second thread and passes. On one thread it cannot,
       # and the run wedges at 0% CPU instead of finishing; the step's time limit is what turns
-      # that wedge into a failure rather than a hang, and it ends well inside the job's.
+      # that wedge into a failure rather than a hang. It is 10 minutes against a healthy run of
+      # two, and it has to fire before the job's own limit does, or the job is cancelled instead
+      # and the step's message is lost: a wedge measured at 1092 s on a slow runner, of 25 minutes.
       #
       # It is one process, which is the point: `--build-system native` runs every test target in
       # one, so the pool is one thread for the whole suite. That flag is deprecated and "will be
@@ -183,6 +185,10 @@ jobs:
   # would let a red half merge. It passes only if each half finished exactly `success`; a
   # failure, a cancellation (a timeout shows as one), a skip, or a result this step does not
   # recognise, including an empty one from a `needs` entry that no longer names a job, all fail it.
+  #
+  # A run that a newer push cancels shows this check red on the superseded commit, not grey. That
+  # is the price of failing closed: if it were skipped when the run is cancelled, a skipped
+  # required check would pass.
   #
   # It runs on Linux because it only compares strings, and a macOS runner is the scarce one.
   build-and-test:
