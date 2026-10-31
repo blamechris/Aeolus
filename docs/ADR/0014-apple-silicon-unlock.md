@@ -2740,6 +2740,10 @@ next re-apply runs the driver, which reads where the fan is instead of assuming 
   `WatchdogLimitsTests` holds.)*
 - ADR 0012's open take-back bound is settled the wrong way: if take-backs with writes can recur
   every § 3 cycle, a slot passes G and `examinationWait` must be re-derived from the longer slot;
+  *(Widened 2026-10-31, on #465's review: any of ADR 0012's open families shown to recur. The
+  refused-revocation family's slot is over G, at 10.01 s since ADR 0012's #332 amendment and
+  10.15 s on `e4/bring-up`, but three such slots and `stepWait` come to 31.44 s, inside
+  `examinationWait`. The take-back family's come to 33.16 s on the branch, outside it.)*
 - run 1 measures holds, hops or timer wakes longer than assumed;
 - an outwaited `.fault` is ever logged, which would argue for deferral;
 - E8a needs concurrent applies, or `apply` leaves the sequencer.
@@ -3658,44 +3662,81 @@ after the sync of `main` through #637).
   reimplemented: `step` and `holdFloor` take the `CommandableFan`, and its index is the fan
   written. Both are on the write-verb allowlist's permit list, with the ledger, the log and the
   `isolated` channel as their keyed companions.
-- **The turn bound is split.** `WatchdogLimits.engagedStepRoundTrips` is 8, the raising step;
-  `writeTurnRoundTrips` stays 5, § 3's bridge job and every other turn, so D_cycle is unchanged;
-  `readerTurnRoundTrips` is the larger, 8, and G's slot adds it.
-- **G, re-run at N = 12** (`scripts/gate-wait-model/engaged_step.py`; ADR 0012's 2026-10-18
-  amendment). Taking every queued reader at eight fails G: the modelled case is 848 round trips
-  (9.71 s), but four of the histories ADR 0012 counted under G pass it (874–892, 10.01–10.22 s).
-  So the queue counts **at most one long turn per fan with an engagement in progress** — one
-  engagement per fan at a time is enforced by the examination gate, and its steps are sequential —
-  and every other reader at five (`WatchdogLimits.readerTurns`). On `Mac16,5` (K = 34, F = 2):
-  - the queue is 64 + 34 + (8·2 + 5·7) + 64·6 = 533, against 527 before;
-  - window (a), a firing then latched cycles, settles at 827; window (b), quiet cycles, at 813;
-    so the modelled case is **827 round trips, 9.47 s**, and the slot with the eight-round-trip
-    turn 835, 9.56 s. G = 10 s holds to N = 12 and not at 13 (930, 10.65 s);
-  - the histories counted correctly are 793–837 (9.08–9.59 s), and the event model's worst 617
-    (7.07 s), all under G;
-  - **the open families move:** a take-back with writes every cycle is 925 (10.59 s), over G as
-    before, and a refused revocation recurring every latched cycle is 865–875 (9.91–10.02 s), whose
-    upper end the engaged step takes over G by 0.02 s. Both stay open, as ADR 0012 records them.
-  The second fallback — the floor in a turn of its own, with abort 10 — is not taken.
-- **Re-adoption.** Level 6's re-adoption of a kept fan (`LeaseEngagements.read`) runs no floor
-  rule. The state it can meet, raw `1` at target 0, arises when a floor hold throws and its undo is
-  refused. The re-adopted fan is commanded in the same step, at its clamped target, before the
-  step returns; `ProductionReAdoptionTests` holds that over the production plane. Between the
-  refused undo and the re-apply the fan is held stopped, as any kept fan is (#406): covered by § 3,
-  in whose registry the driver left it, and by the lease's teardown.
+- **The turn bound is split.** `WatchdogLimits.engagedStepRoundTrips` is 9: the step that reads back
+  `1`, whatever it writes and whatever the key-info cache holds. It raises in eight with `F<n>Tg`'s
+  key info cached and nine without, and holds in five and six. `writeTurnRoundTrips` stays 5,
+  § 3's bridge job and every other turn, so D_cycle is unchanged. `readerTurnRoundTrips` is the
+  larger, 9, and G's slot adds it. *D_cycle counts the turn in flight ahead of each of § 3's turns
+  at 64 read round trips, which covers the nine-round-trip turn only while each of its round trips
+  takes at most 64 × 11.453 / 9 = 81.4 ms (91.6 ms at eight). That is below the 86.98 ms
+  break-even of § 3's own writes, so between 81.4 and 86.98 ms the engaged step, not § 3's writes,
+  would be the binding term; moot below G's write break-even of about 20.5 ms (ADR 0012's
+  2026-10-31 amendment).*
+- **G, re-run at N = 12** (ADR 0012's 2026-10-31 amendment, which records it;
+  `scripts/gate-wait-model/engaged_step.py`). Every queued reader at the engaged step fails G: four
+  of the histories ADR 0012 counts closed pass it (874–892 round trips at eight). So the queue counts
+  **at most one engaged step per fan**, at nine, and every other reader at five
+  (`WatchdogLimits.readerTurns`). One engagement per fan at a time is enforced by the examination
+  gate, its steps are sequential, and only the step that reads back `1` is long. On `Mac16,5`
+  (K = 34, F = 2):
+  - the queue is 64 + 34 + (9·2 + 5·7) + 64·6 = 535, against 527 before;
+  - the modelled case is **829 round trips, 9.49 s**, and the slot with the nine-round-trip turn
+    838, 9.60 s. G = 10 s holds to N = 12 and not at 13 (932, 10.67 s);
+  - the closed histories are 795–839 (9.11–9.61 s), and the event model's worst 619 (7.09 s), all
+    under G;
+  - **the open families stay open.** A take-back with writes every cycle is 927 (10.62 s), over G as
+    before. A refused revocation every latched cycle is 867–877 (9.93–10.04 s), and its upper
+    member's wait passes G. That member's slot was already over G before the engaged step existed
+    (874, 10.01 s).
+- **Ruled on #465's review (2026-10-31): the second fallback is not taken.**
+  - **What the instruction meant.** "Fails", in the P1′ amendment's instruction to re-run G, means
+    ADR 0012's closed criteria: the modelled cases and the slot, the closed histories, and the event
+    model. It never meant the open families, one of which has been over G since ADR 0012's #332
+    amendment.
+  - **What passing G costs in the open history.** It ends nothing and writes nothing away from
+    automatic control. It logs the gate fault, and its hold is 31.44 s, inside `examinationWait`.
+  - **What the fallback would cost.** It would leave every fan engaged at rest in manual at a target
+    of 0 for up to a slot, which is the window decision 4 closed. In exchange it would take that
+    family's wait 0.09 s under G, and leave both families' slots over G.
+- **Re-adoption, and the state it can meet.** Level 6's re-adoption of a kept fan
+  (`LeaseEngagements.read`) runs no floor rule. The state it can meet is raw `1` at target 0, at
+  rest: a fan in manual control and stopped. Four routes reach that state, and the first three
+  leave the fan kept, for the re-apply to meet:
+  - a floor hold that throws — the floor refused, unanswered or not held, or the target unreadable
+    — with the driver's undo refused;
+  - the mode write accepted and its read-back lost, so the step throws before any floor hold, with
+    the undo refused;
+  - the mode write unanswered and landed, with the undo refused;
+  - ADR 0012's D ending the helper between the mode write and the raise, which no undo follows.
+
+  The re-adopted fan is commanded in the same step, at its clamped target, before the step
+  returns; `ProductionReAdoptionTests` holds that over the production plane, and
+  `ProductionEngagementAtRestTests` that the driver's own undo hands the fan back when it lands.
+  Between a refused undo and the re-apply the fan is held stopped. It is bounded by the re-apply,
+  § 5, the lease's teardown and its three attempts, § 3's bridge (the driver registers the fan with
+  § 3 before the undo, and it stays in that registry), § 4, § 6 and § 7; the fourth route by
+  reconciliation at the next start. Run 1 watches for it with aborts 7 and 10. A fan kept the same
+  way under load is not stopped: it holds Apple's last target (#406). `docs/SAFETY.md` § 2 names
+  this residual beside "0 RPM is not reachable".
 
 **What remains.** The real write body, `freshKeyInfo` and the forwarder meet the plane first at
 run 1. Write latency (U8) is measured from the per-write log lines, never by a test. Restore turns
 on machines with more than four fans exceed `writeTurnRoundTrips`. A fan whose `F<n>Tg` key info
-did not answer at preparation makes its first engaged turn one round trip longer: nine when it
-raises, one over `engagedStepRoundTrips`.
+has not answered before its engaged turn, at preparation or at any grant's control-state read,
+makes that turn one round trip longer: nine when it raises, which `engagedStepRoundTrips` counts.
+The preparation step's priming now saves that round trip and bounds nothing. G's modelled slot
+holds at N = 12 while a write round trip stays under about 20.5 ms (ADR 0012's 2026-10-31
+amendment), so run 1's per-write lines are read against that as well as U8's 50 ms.
 
 **Revisit if:**
 - a probe defines `Ftst`'s not-found answer;
-- the helper gains a call to `SMCConnection.invalidate()`, which voids the priming premise;
+- the helper gains a call to `SMCConnection.invalidate()`: every cold key info, which ADR 0012 keeps
+  in the margin as once per key per process, would recur;
 - a second caller of the channel's write is proposed;
-- an open family of ADR 0012's histories is shown to recur, since part of the refused-revocation
-  family is now over G.
+- `freshKeyInfo` stops replacing the cache entry: the floor's read-back would then be cold too, and
+  the turn ten;
+- an open family of ADR 0012's histories is shown to recur, or a worst write round trip above 20 ms
+  is measured (ADR 0012's 2026-10-31 amendment).
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
 
@@ -3996,19 +4037,23 @@ on every machine (rule 9), but the evidence is that machine's only; Intel and M1
 - *P1's twelve-way load.* It started the fans about 42 s in and held them at the minimum.
 
 **Cost.** An engaged step that raises the floor takes eight round trips: key info, pre-state, mode
-write, read-back, target read, target key info, target write, target read-back.
+write, read-back, target read, target key info, target write, target read-back. *(Nine when
+`F<n>Tg`'s key info is not cached, so `engagedStepRoundTrips` is 9: the b2 amendment, as settled by
+P1′, and ADR 0012's 2026-10-31 amendment.)*
 
 **Not built on `main`.** `WatchdogLimits` has `writeTurnRoundTrips` = 5,
 `readerTurnRoundTrips = max(modeReadKeys, writeTurnRoundTrips)` and no `engagedStepRoundTrips`;
 the real plane's turn bodies are #465's. Nothing on `main` can issue the eight-round-trip turn.
 *(On `e4/bring-up`, #465 issues it, and did each of the following; G's result is in the b2
 amendment, "Settled by P1′".)* #465 is to:
-- split the bound: `engagedStepRoundTrips` = 8, with `writeTurnRoundTrips` = 5 left as § 3's
-  bridge job, so § 3's cycle arithmetic is unchanged;
+- split the bound: `engagedStepRoundTrips` = 8 *(9, counting a cold target key info: ruled on
+  #465's review)*, with `writeTurnRoundTrips` = 5 left as § 3's bridge job, so § 3's cycle
+  arithmetic is unchanged;
 - take `readerTurnRoundTrips` as the larger of the two;
 - re-run ADR 0012's G at N = 12 before the plane's first production write. If it fails, count at
   most one long turn per fan with an engagement in progress; if that fails too, raise the floor
-  in a separate turn (see the alternatives).
+  in a separate turn (see the alternatives). *("Fails" means ADR 0012's closed criteria, never its
+  open families. Ruled on #465's review, 2026-10-31: see the b2 amendment's "Settled by P1′".)*
 
 **Revisit if:**
 - a raw `F<n>Md` outside `{0, 1, 3}` is recorded, or Apple produces `3` with a non-zero target;
@@ -4051,7 +4096,7 @@ amendment.
 | U16 | Apple writes mode `0` before it raises `F<n>Tg` from 0, and mode `3` after the target reaches 0, so it never produces `3` with a target above 0 | P1's five transitions, about 1.0 s each way, both fans together, and none of the forbidden pair in 41,931 samples | Only the operator's gate and the run analysis use it. The quiescence rule is re-decided, and the fold is unchanged |
 | U17 | No writer other than Apple leaves a fan it holds at raw `0` or `3` | Unknown. Aeolus writes only `1`, and `0` on restore. A third-party hold is unrecorded by design (D9). The 2026-09 non-zero readings are confounded | The fold calls such a hold automatic, which is a rule-6 misattribution, and every mechanism that confirms a handback reads it as handed back: § 3 forgets an owed handback, so the fan leaves § 3's coverage; the lease core lifts `.restoreToAutomaticFailed`; § 5 records `isReclaimedBySystem`; reconciliation never restores the fan at startup. Bounded by D9 through run 3, and by every machine-wide restore, which writes `0` without reading. A possible mitigation for one shape of it is to count `3` as Apple's only when `F<n>Tg` reads 0, in the fold and in the snapshot's read (see the alternatives). It does not cover a hold that reads `0`, or `3` at a target of 0. What would is open, and is decided at run 4 with what a held fan reads |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record and one ticket per fan index, and a ticket taken by one engagement clears the record and replaces the ticket of another of the same fan, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap, and one engagement's ticket could admit the other's first step: key the record and the ticket per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live. A step already past its first is caught by the restore's epoch; a first step superseded by that restore takes a fresh ticket in its retry, past the restore, so only the after-check catches it (#410's ticket-and-seal amendment). Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other |
+| — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record and one ticket per fan index, and a ticket taken by one engagement clears the record and replaces the ticket of another of the same fan, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap, and one engagement's ticket could admit the other's first step: key the record and the ticket per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live. A step already past its first is caught by the restore's epoch; a first step superseded by that restore takes a fresh ticket in its retry, past the restore, so only the after-check catches it (#410's ticket-and-seal amendment). Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other. *Since #465, G's queue also counts at most one engaged step per fan (ADR 0012's 2026-10-31 amendment). With every reader at the engaged step, four of ADR 0012's closed histories pass G.* |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app asks for a lease only on a user's click, and its lease driver never re-acquires after a loss (`LeaseDriver`, #153) | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |

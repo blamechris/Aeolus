@@ -27,11 +27,16 @@ struct FloorHoldTrace: Sendable {
     var outcome = "unfinished"
 }
 
-/// A forward write the turn refused by its own rule, before its write call: a target below the
-/// fan's floor, or a value that did not encode. Nothing was written. Every caller treats it as it
-/// treats a refused command — the bridge restores, level 6 hands back, § 5 restores — and a
-/// first step never throws it: before its first write call, a step's refusal is
-/// `.failedBeforeFirstWrite`.
+/// A forward write the turn refused by its own rule, before that write's call: a target below the
+/// fan's floor, or a value that did not encode. That write was not issued. Every caller treats it
+/// as it treats a refused command — the bridge restores, level 6 hands back, § 5 restores.
+///
+/// **A step can throw it after its mode write.** The engaged step's floor hold raises through
+/// `writeTarget`, the command turn's body, so either refusal of the floor is thrown by a step whose
+/// `F<n>Md = 1` was issued and may have landed (ADR 0014's P1′ amendment, decision 4). Only before
+/// a step's *first* write call is its refusal `.failedBeforeFirstWrite` instead. So this must never
+/// join `EngagementDriver.wroteNothing`: the driver would then skip the undo of a fan the step may
+/// have taken off automatic control, at Apple's target of 0.
 struct WriteTurnRefusal: Error, Sendable, Hashable, CustomStringConvertible {
     let key: SMCKey
     let detail: String

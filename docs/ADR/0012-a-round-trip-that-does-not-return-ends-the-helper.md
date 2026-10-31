@@ -1,7 +1,7 @@
 # ADR 0012 — A round trip that does not return ends the helper
 
 - **Status:** Accepted (2026-10-08) — D provisional pending [#296](https://github.com/blamechris/Aeolus/issues/296) conditions 3–4 and E4's write-selector measurement
-- **Date:** 2026-09-20 (amended 2026-10-08 and 2026-10-18, see the last two sections)
+- **Date:** 2026-09-20 (amended 2026-10-08, 2026-10-18 and 2026-10-31; see the amendments at the end)
 - **Deciders:** Project maintainer, on architect review
 - **Supersedes:** — (extends [ADR 0007](0007-safety-composition.md)'s helper-death recovery;
   answers [#293](https://github.com/blamechris/Aeolus/issues/293) and
@@ -326,7 +326,8 @@ pre-state, a fresh key info, the mode write, the force key's key info and its wr
 round trips (`WatchdogLimits.writeTurnRoundTrips`). A Y-write and a `commandTarget` take three;
 a restore takes one write per key and no read, three on `Mac16,5` for the machine-wide one.
 **Five is the longest turn only for a machine of up to four fans:** the machine-wide restore is
-fans + 1 writes, so a fifth fan makes it six and this term is re-run again. One
+fans + 1 writes, so a fifth fan makes it six and this term is re-run again. *(On `e4/bring-up`
+the longest turn is nine, the engaged step, per the 2026-10-31 amendment.)* One
 engagement in progress is one outstanding reader while it waits for a turn and none while it
 sleeps between steps, so writes enter N as readers with a longer turn, not as new readers.
 
@@ -722,6 +723,8 @@ cycle inside a D_cycle worth having (see the alternatives below).
   cycles of the read alone; (b) quiet cycles of the read plus a read-back of every fan — at most one
   cycle starting per interval plus § 3's read, solved as a fixed point. **9.40 s at N = 12** (821
   round trips), and the cases fit to N ≤ 12 (10.58 s at 13; they held to N ≤ 20 before).
+  *(On `e4/bring-up`, re-run for ADR 0014's engaged step at rest by the 2026-10-31 amendment below:
+  829 round trips, 9.49 s, still to N ≤ 12.)*
 - **The two windows are modelled cases, not a bound over every history § 3 produces.** Review
   found two histories they do not cover. Read-backs follow a firing once the latch releases, so a
   firing, its release and the read-backs after it can fall inside one window. And a latched cycle
@@ -737,7 +740,10 @@ cycle inside a D_cycle worth having (see the alternatives below).
   refusal appear to bound it, which is not proven; if one recurred every cycle the count would be
   **919 round trips, 10.53 s**, over G. The same open family includes latched cycles whose
   refused revocation recurs every cycle: **859–869 round trips, 9.84–9.95 s** (`starts2.py`),
-  under G but above the 817–831 of the histories counted as closed. **That costs more than a
+  under G but above the 817–831 of the histories counted as closed. *(Under G as a wait only. The
+  slot of its upper member, wait and turn, was 874 round trips, 10.01 s, over G. On `e4/bring-up`
+  the wait is 867–877 and that slot 886, 10.15 s; the 2026-10-31 amendment below bounds the
+  family's fully refused form and states what passing G costs in it.)* **That costs more than a
   `.fault`.** G is also the slot
   ADR 0014's examination gate counts its lawful hold in: in that history a slot is 10.58 s, the
   three slots of `lawfulHold` 31.75 s against the 30 s derived, and § 5's 32 s `examinationWait`
@@ -850,7 +856,8 @@ and actions cannot be coalesced; "the quota is the cost" does not apply, because
 from the quota; "a level somebody will use" is held by tripwires that keep the case to § 3's wiring.
 
 **Revisit if:** a second user of the lane is proposed, or the scheduler ever logs a lane overlap; D8
-or H6 measures a worst write round trip above 50 ms; a curated set lands for a machine with three or
+or H6 measures a worst write round trip above 50 ms *(about 20 ms, for G: the 2026-10-31
+amendment)*; a curated set lands for a machine with three or
 more fans, or with more than about 40 keys (G's wait at N = 12 passes 10 s at 40 keys on two fans);
 H1's conditions 3 and 4 raise the worst read; owed read-backs come to run on a latched or firing
 cycle; a mixed history — a firing, its release and its read-backs in one window, or take-backs with
@@ -1037,5 +1044,147 @@ holder of the handback of A1's class — the composition keeping a copy for a pa
 proposed, at which point the optional structural fix is to have § 3 build its own handback from
 what it is given, so the composition never holds one (not built: today the composition builds it
 once and holds it nowhere); or the overlap report ever fires.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary.
+
+## Amendment (2026-10-31, [#465](https://github.com/blamechris/Aeolus/pull/465)) — the engaged step at rest counts nine, once per fan, and an open family is ruled by its reach, not its figure
+
+**Status.** Accepted on architect review of #465, under ADR authority. It applies on `e4/bring-up`,
+where ADR 0014's P1′ engaged turn is built; `main` has no `engagedStepRoundTrips` until E4 merges.
+D, D_cycle, D_bringUp, G, the tick and the two-tick rule are unchanged. It re-runs G's lower side
+for the engaged step, and on the branch it supersedes the #332 amendment's figures for the modelled
+cases, the closed histories and the open families. Every figure here is printed, and the ones it
+leans on asserted, by [`scripts/gate-wait-model/engaged_step.py`](../../scripts/gate-wait-model/engaged_step.py).
+
+### Context
+
+ADR 0014's P1′ amendment (decision 4) raises a fan engaged at rest to its floor in the turn that
+reads back engaged. That turn is the longest a supervisor reader takes:
+- eight round trips with `F<n>Tg`'s key info cached: the mode key's fresh info, the pre-state, the
+  mode write, its read-back, the target's read, its fresh info, the floor's write and its read-back;
+- nine when the info is not cached. The preparation step takes it, and so does every grant's
+  control-state read, but each carries a failed read rather than throwing it, so the first engaged
+  turn can find the key cold. `freshKeyInfo` replaces the cache entry, so the floor's read-back is
+  never cold.
+
+ADR 0014 asked for G to be re-run at N = 12. If it failed, the queue was to count at most one long
+turn per fan with an engagement in progress. If that failed too, the floor was to be raised in a turn
+of its own.
+
+### Decision
+
+- **`WatchdogLimits.engagedStepRoundTrips` is 9.** It counts the step that reads back `1`, whatever
+  that step writes and whatever the cache holds. It raises in eight warm and nine cold, and holds in
+  five warm and six cold. `readerTurnRoundTrips` is 9, and G's slot adds it. `writeTurnRoundTrips`
+  stays 5, so D_cycle's allowance is unchanged: 632 round trips, 13.34 s. Each of § 3's lane turns
+  waits for at most one turn in flight, and that turn is counted at 64. That covers a
+  nine-round-trip turn only while each of its round trips takes at most 64 × 11.453 / 9 =
+  **81.4 ms**, down from 91.6 ms at eight, which is below D_cycle's 86.98 ms break-even for § 3's own writes: between 81.4
+  and 86.98 ms the engaged step in flight, not § 3's own writes, would be the binding term. It is
+  moot below the about 20.5 ms at which G's modelled slot already breaks (What remains).
+- **G's queue counts at most one engaged step per fan at nine, and every other reader at five**
+  (`WatchdogLimits.readerTurns`). Taking every reader at the engaged step fails four of the
+  histories this ADR counts closed: 874–892 round trips at eight. The one-per-fan count rests on ADR
+  0014's examination gate, which admits one engagement per fan at a time; an engagement's steps are
+  sequential, and only the step that reads back `1` is long. On `Mac16,5` (K = 34, F = 2) at N = 12:
+  - the queue is 64 + 34 + (9·2 + 5·7) + 64·6 = **535**, against 527;
+  - the modelled case is **829 round trips, 9.49 s**, and the slot **838, 9.60 s**;
+  - G holds to N = 12 and not at 13 (932, 10.67 s);
+  - the closed histories are 795–839 round trips (9.11–9.61 s), and the event model's worst is 619
+    (7.09 s), all under G.
+- **What a re-run of G must pass, stated once:**
+  - the modelled cases and the slot, which `WatchdogLimitsTests` pins;
+  - the histories this ADR counts closed;
+  - the event model.
+
+  The open families are counted and recorded at every change to a turn's length, and they do not
+  gate. One has been over G since the #332 amendment. ADR 0014's "if it fails" means these
+  criteria.
+- **The open families move.**
+  - A take-back with writes every cycle is **927 round trips, 10.62 s**. It is over G, as before.
+  - A refused revocation every latched cycle is **867–877, 9.93–10.04 s**. Its upper member, after a
+    firing and a take-back, now passes G as a wait.
+
+  That member's slot passed G before the engaged step existed: 869 + 5 = 874 round trips, 10.01 s.
+  The #332 amendment's "under G" described the wait alone.
+- **What the family needs to recur.** Each lease is revoked once, because `revokeEveryLease`
+  empties the table, and grants are refused while § 3 holds. A lease therefore reaches a latched
+  cycle only from a grant that passed the latch check before the firing. Two more rules bound it:
+  - a fan whose revocation is refused on every attempt lands in `restoreAbandoned`. The grant refuses
+    such a fan after its last suspension point, and only § 7's read-back lifts the refusal;
+  - so at most F fully refused revocations follow one firing. Counted at full cost, those histories
+    are 819–863 round trips, with slots of 828–872 (9.48–9.99 s), all under G.
+
+  The member over G needs five consecutive full-cost revocations after the firing and its take-back.
+  Beyond the first F, each needs the firmware to refuse a restore twice and accept it on the third
+  attempt, and each needs a separate grant that raced the latch. All of this was read from the code
+  at `390da86`; no test holds it.
+- **What passing G costs in that history.** Nothing ends the helper, and nothing writes away from
+  automatic control.
+  - The gate fault is logged, once per waiter.
+  - In ADR 0014's examination gate, three slots of 10.15 s plus `stepWait` are 31.44 s. That is
+    inside `examinationWait`'s 32 s, and it spends 0.44 s of the 1 s `examinationMargin`.
+  - An `apply`'s per-fan time, 51.74 s, stays inside `applyPerFan`'s 52 s.
+
+  The take-back family, open since the #332 amendment, is the one that can outlast § 5's wait:
+  33.16 s. *(Its `apply` per-fan time, 54.60 s, is past `applyPerFan` as well, as it was at the
+  #332 amendment's figures, 53.91 s.)*
+- **The floor is not moved to a turn of its own** (ADR 0014's second fallback). It would leave every
+  fan engaged at rest in manual at a target of 0 for up to a slot. That is the stopped-fan window the
+  P1′ amendment closed. In exchange it would move this family's wait 0.09 s under G, while leaving
+  its slot at 10.01 s and the take-back family at 10.58 s.
+
+### What remains
+
+- **Write round trips are unmeasured** (ADR 0014's U8). Every figure here takes a write at the
+  measured read maximum. G's modelled slot at N = 12 holds while a write round trip stays under
+  about **20.5 ms**: about 20.4 ms before the engaged step, by this amendment's extension of the
+  model with reads at 11.453 ms and the turn shapes of `SMCWriteTurns`. That is well below the 50 ms
+  of the #332 amendment's revisit list and D_cycle's 86.98 ms. D8's per-write log lines are compared
+  against it.
+- **Cold key info in any other read** stays where the #332 amendment put it: inside the margin, once
+  per key per process. A control-state read with three cold keys takes six round trips.
+- **The fully refused bound is read, not tested.** A test that a revocation refused on every attempt
+  leaves its fans refused at insertion, so that the next latched cycle's revocation issues no turn,
+  would close that form of the family.
+- **If an open family is shown to recur**, the structural remedy is in the lease core, not the
+  plane: a latch generation readable without a suspension, checked in the grant's straight-line
+  region, so that no grant that passed the latch check before a firing inserts a lease after it.
+  That would take both families' leases away. It is not built.
+
+### Tests, each with the mutation that must turn it red
+
+| Test | Mutation that must turn it red |
+|---|---|
+| `WatchdogLimitsTests.theGateBoundIsDerivedAndConstant`, `theGateBoundHoldsForEveryCuratedSet` (829; 9.49 s; N = 13 at 932, 10.67 s) | `readerTurns` with no engaged step (821). Every reader at the engaged step. The lane omitted (535). Window (a) without its firing. `engagedStepRoundTrips` at 8 |
+| `WatchdogLimitsTests.theGateBoundCoversAWholeTurn` (slot 838, 9.60 s) | `gateWaiterAlarm` at 9.5 s: the wait, 9.49 s, clears it and the slot does not. `readerTurnRoundTrips` without the engaged step |
+| `SMCWritePlaneTests+ForceKey`'s C26 row, with `F0Tg`'s key info failing at preparation: the engaged turn at rest is nine, equal to `engagedStepRoundTrips`, and under load six; warm, eight and five | `engagedStepRoundTrips` at 8. The target read twice in `holdFloor` (ten). `survey` taking no target key info (the warm rows become nine and six) |
+
+**Alternatives considered**
+- *Every reader at the engaged step.* Four closed histories pass G.
+- *The floor in a turn of its own, with abort 10* (ADR 0014's second fallback). It brings back the
+  stopped-fan window, and it closes neither family's slot (see the Decision).
+- *Raise G.* It is I8's constant, it lengthens `examinationWait` and `applyPerFan` and the client
+  deadline copied from them, and it would fit the bound to a history no one has shown can occur.
+- *Lower the design point to N = 11.* That trades a stated reach for a narrower one, and nothing
+  bounds N (#332).
+- *Keep eight, and make the step take the target's key info first and hand it to the write.* The
+  turn would then be eight whatever the cache holds, which is the B1 ruling's principle. But it
+  splits a body the command turn shares, in reviewed write-path code, to save 11 ms against 0.40 s
+  of margin.
+- *Refuse to engage a fan whose target key info is cold.* It turns a transient read into a lasting
+  refusal, and it needs either new state or a view of `SMCCore`'s cache.
+
+**Revisit if:**
+- a worst write round trip above 20 ms is measured (D8, W7, B6);
+- an open family is shown to recur: a lease reaching consecutive latched cycles, or a restore
+  refused and then accepted within one attempt budget, in any run;
+- the gate fault or § 5's outwaited `.fault` is logged at N ≤ 12;
+- a change lengthens the engaged turn;
+- `freshKeyInfo` stops replacing the cache entry, which makes the floor's read-back cold too and the
+  turn ten;
+- the engaged turn is restructured for another reason (take the key info first, and the bound
+  returns to eight);
+- a third open family appears, or one whose cost reaches past a fault line and § 5's margin.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary.
