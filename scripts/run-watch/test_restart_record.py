@@ -11,7 +11,12 @@ one place, so that the copy is the shipped script and not a rewrite of it.
 
 The one thing the stubs do not replace is the record-only poll loop, which is a shell loop and
 would run for ever. In the copy it is bounded to about 20 s (four rounds), so that a test that
-loses its PID (a mutant that reuses a directory, say) leaves a loop that ends by itself."""
+loses its PID (a mutant that reuses a directory, say) leaves a loop that ends by itself.
+
+The copy also defines `nohup` as a function that first writes down the first line of phases.log,
+at the moment each recorder is launched. A stub that looks at the file when it starts runs a few
+milliseconds after the script has moved on, and sees a `CTX end` written after it was launched;
+the function looks before the launch, so it cannot."""
 
 import contextlib
 import hashlib
@@ -38,6 +43,7 @@ exec sleep 25
 LOG_STUB = """#!/bin/sh
 D=$(ls -td "$STUB_CAP"/run1-*/ | head -n 1)
 echo "log $* | first line of phases.log: $(head -n 1 "${D}phases.log")" >> "$STUB_LOG"
+[ "$1" = show ] && exit 0
 exec sleep 25
 """
 PYTHON_STUB = """#!/bin/sh
@@ -60,6 +66,12 @@ exec sleep 25
 #: seconds. The shipped text is what test_it_pins_what_the_runbook_pins looks for.
 POLL_LOOP = ("while :; do date -u +%FT%TZ; sysctl -n vm.loadavg; notifyutil -g "
              "com.apple.system.thermalpressurelevel; sleep 5; done")
+#: Inserted after the script has chosen its directory: every launch notes what phases.log begins with.
+OBSERVE_LAUNCHES = (
+    'DIR="$CAPTURES/run1-$N"\n',
+    'DIR="$CAPTURES/run1-$N"\n'
+    'nohup() { printf "%s\\n" "$(head -n 1 "$DIR/phases.log" 2>/dev/null)" >> "$STUB_ORDER"; '
+    'command nohup "$@"; }\n')
 BOUNDED_POLL_LOOP = ("n=0; while [ $n -lt 4 ]; do date -u +%FT%TZ; sysctl -n vm.loadavg; notifyutil -g "
                      "com.apple.system.thermalpressurelevel; sleep 5; n=$((n + 1)); done")
 
@@ -147,7 +159,8 @@ class Staged(unittest.TestCase):
         write(self.logcmd, LOG_STUB)
         write(self.pgrep, PGREP_STUB)
         self.stub_log = os.path.join(self.root, "stub-calls.txt")
-        self.env = dict(os.environ, STUB_LOG=self.stub_log, STUB_CAP=self.cap)
+        self.launch_order = os.path.join(self.root, "launch-order.txt")
+        self.env = dict(os.environ, STUB_LOG=self.stub_log, STUB_CAP=self.cap, STUB_ORDER=self.launch_order)
         self.addCleanup(self.reap)
         self.script = self.copy_of_script()
 
@@ -160,7 +173,7 @@ class Staged(unittest.TestCase):
         for old, new in (('PYTHON="/opt/homebrew/bin/python3"', 'PYTHON="%s"' % self.python),
                          ('LOGCMD="/usr/bin/log"', 'LOGCMD="%s"' % self.logcmd),
                          ('PGREP="/usr/bin/pgrep"', 'PGREP="%s"' % self.pgrep),
-                         (POLL_LOOP, BOUNDED_POLL_LOOP)) + (
+                         (POLL_LOOP, BOUNDED_POLL_LOOP), OBSERVE_LAUNCHES) + (
                              (('PERL="/usr/bin/perl"', 'PERL="%s"' % perl),) if perl else ()):
             self.assertEqual(text.count(old), 1, old)
             text = text.replace(old, new)
@@ -248,6 +261,16 @@ class Restart(Staged):
         watcher = rw.Watcher(rw.MemoryOutput())
         watcher.on_ctx(rw.parse_ctx_line(lines[0]))
         self.assertTrue(watcher.ended)  # the new watcher starts in the teardown state
+
+    def test_ctx_end_is_the_first_line_of_phases_log_at_the_moment_of_each_launch(self):
+        # Observed by the copy's `nohup` before it launches, so no stub's start-up can hide a
+        # CTX end that was written after the launch.
+        self.restart()
+        with open(self.launch_order, encoding="utf-8") as handle:
+            seen = handle.read().splitlines()
+        self.assertEqual(len(seen), 6)  # the two samplers, the log stream, the poll loop, the watcher, its companion
+        for line in seen:
+            self.assertRegex(line, r"^\d{10}\.\d{3} CTX end$")
 
     def test_ctx_end_is_in_the_file_before_any_recorder_starts(self):
         self.restart()

@@ -841,13 +841,34 @@ class Load1d(Base):
         self.between(self.ctx("load-stop")[0].t - T0, 40.0, 40.2)
         self.assertEqual(self.code, rl.EXIT_OK)
 
-    def test_a_dead_record_does_not_start_the_load(self):
+    def test_samples_from_before_started_do_not_count_toward_the_dwell(self):
         # The sampler died at 15 s, after 12 s at the target, and `started` is read at 20 s. The
-        # run was long enough, but nothing is recording now: it is not evidence that the fan is
-        # still there.
+        # target is `started`'s to name, so nothing before it was a dwell on that target; and
+        # nothing is recording now.
         self.run_1d(target_from(T0 + 3, gaps=[(T0 + 15, T0 + 1000)]), sets=[(T0 + 20, started_line(T0 + 20))])
         self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
         self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+
+    def burst(self, arrives):
+        """Samples stamped 3 s to 14 s, held on the target, that reach the file all at once at
+        `arrives` seconds, with `started` read at 2 s and the sampler silent after them."""
+        lines = [(T0 + arrives, synth._line(synth.fan_record(
+            T0 + 3 + i / 10, i, dict(HELD, F0Tg=5777.0, F1Tg=0.0)))) for i in range(111)]
+        feeder = Feeder(self.dir, lambda t: None, sets=[(T0 + 2, started_line(T0 + 2))], late=lines)
+        self.drive("1d", clock=FakeClock(on_sleep=feeder), max_seconds=2)
+
+    def test_a_dwell_that_is_over_by_the_samples_stamps_but_is_read_late_does_not_start_the_load(self):
+        # the Mac slept, or the recorder's lines arrived in a burst: 11 s of samples held on the
+        # target, the last of them stamped 11 s before they are read. They say the fan was held;
+        # they do not say it is. A record that is not being written now is not evidence.
+        self.burst(arrives=25)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+        # the control: the same samples, read as they are written, start the load at once
+        self.fresh()
+        self.burst(arrives=14.5)
+        self.between(self.load_start(), 14.5, 14.7)
+        self.assertEqual(len(self.spawner.workers), 16)
 
     # ------------------------------------------------------------------ a held fan, and only that
 
@@ -981,7 +1002,8 @@ class Load1d(Base):
         unusable = (
             [], [{"index": 1, "commandedRPM": 4000}], [{"index": 0}], [{"index": 0, "commandedRPM": 0}],
             [{"index": 0, "commandedRPM": -5}], [{"index": 0, "commandedRPM": "5777"}],
-            [{"index": 0, "commandedRPM": True}], [{"index": True, "commandedRPM": 4000}], "none", None,
+            [{"index": 0, "commandedRPM": True}], [{"index": True, "commandedRPM": 4000}],
+            [{"index": False, "commandedRPM": 4000}], "none", None,
             ["not a fan"])
         for fans in unusable:
             with self.subTest(fans=fans):
