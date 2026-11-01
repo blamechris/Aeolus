@@ -1159,7 +1159,6 @@ def unit_sweep(work, mutations, python):
     return allok
 
 
-
 #: The load driver's and the record restart's guards, one edit each:
 #: (file, its tests, label, ((old text, new text), ...)). Every old text is found once in the file.
 TOOL_MUTANTS = [
@@ -1435,6 +1434,7 @@ def tools_sweep(mutations):
             shutil.rmtree(target, ignore_errors=True)
     print()
     return allok
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
