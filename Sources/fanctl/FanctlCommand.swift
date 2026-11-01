@@ -231,8 +231,8 @@ extension Fanctl {
                 It never retries and never takes the lease back: if the helper reports that \
                 control is lost (a renewal refused, the lease no longer listed, a fan reclaimed \
                 by the system or one the helper no longer reports as held, a thermal emergency) \
-                it releases and exits 6. The speed is a target; the fan's actual speed is what \
-                the helper reports.
+                it releases and exits 6, or 8 or 9 if the safe-state check finds the fans \
+                worse. The speed is a target; the fan's actual speed is what the helper reports.
 
                 --for is required, from 10s to 8h (whole seconds, minutes or hours: 30s, 10m, \
                 2h). There is no way to hold longer or without an end.

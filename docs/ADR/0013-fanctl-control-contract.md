@@ -140,8 +140,11 @@ D2's safe-state check. The reasoning and the output contract are
 
 **As built.** `set` is implemented against the simulated helper and **does not reach `main`
 before E5 (#7) and the owner-supervised E4 acceptance (#9), per #15**; nothing here has driven a
-fan. Today it exits 4 against every helper that has shipped, and that holds until the branch's
-write plane is built. The points below are where building it had to decide something the contract
+fan. `main`'s helper answers every lease with `writePathNotBuilt`, so `set` against it exits 4 and
+writes nothing. A helper built with the write plane **writes the fan**: since #465 the branch's
+daemon holds a write channel on macOS 14 or later, its plane answers `.built`, and `set` against it
+takes the lease, commands the speed and holds it (below macOS 14 it answers `writePathNotBuilt` as
+`main`'s does). The points below are where building it had to decide something the contract
 left open. Each is the direction that ends a hold earlier or reports less, never the one that
 claims more.
 
@@ -234,9 +237,11 @@ Two independent reviews of the carried `set` found that three things on `main` h
 it: [#414](https://github.com/blamechris/Aeolus/issues/414) let `apply` take up to 57 seconds for
 one fan and 109 for two; level 6 (`LeaseApplier`) can engage a fan and then answer with a fault; and
 [#426](https://github.com/blamechris/Aeolus/issues/426) states a fan's held target only when the
-same snapshot shows the fan held. None of it is reachable on hardware until the branch's write
-plane is built, and all of it is when it is. Three rulings follow, each in the direction that ends
-a hold earlier or says less.
+same snapshot shows the fan held. None of it was reachable on hardware while the branch's write
+plane was unbuilt, as it was when this amendment was written.
+[#465](https://github.com/blamechris/Aeolus/pull/465) has built it, so on the branch's helper
+(macOS 14 or later) all of it is. Three rulings follow, each in the direction that ends a hold
+earlier or says less.
 
 1. **The lease is renewed from the moment it is asked for, a lapse is control lost, and a lapse is
    not a refusal.**
@@ -390,8 +395,12 @@ a hold earlier or says less.
      register does not yet reflect on the next read would show as "not held", and `set` would end
      with exit 6: the safe direction, and a false negative that would be visible. The record the
      held target comes from is "a confirmation only once B1's command turn reads the target back"
-     (`HeldTargetReport`), which is not built. No write has been performed on hardware by this
-     branch, so this is **unobserved**.
+     (`HeldTargetReport`), and since #465 that turn does: `SMCWriteTurns.command` writes
+     `F<n>Tg`, reads it back in the same turn, and throws `targetNotConfirmed` outside
+     `ReclamationLimits.targetToleranceRPM` (`writeTarget`). That confirms the target register. It
+     does not confirm the mode register, which is what the paragraph above is about, and the
+     read-back says nothing about `F<n>Md` lagging it. No write has been performed on hardware by
+     this branch, so this is **unobserved**.
      If the owner-supervised E4 acceptance sees it, the remedy is a bounded wait in
      `SetCommand.establish` for a snapshot that shows every covered fan held (a window of two
      supervisor cycles plus the snapshot's age), ending as "the helper accepted the speed, but no

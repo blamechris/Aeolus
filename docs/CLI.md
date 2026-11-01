@@ -637,9 +637,13 @@ is up, a signal arrives or its parent exits, and then checks what the helper rep
 > **Held.** `set` is built and tested against a simulated helper. It does not reach `main`
 > before the safety subsystem (E5, [#7](https://github.com/blamechris/Aeolus/issues/7)) and the
 > owner-supervised E4 acceptance ([#9](https://github.com/blamechris/Aeolus/issues/9)), per
-> [#15](https://github.com/blamechris/Aeolus/issues/15). Nothing here has driven a fan. Today
-> `set` exits 4: the shipped helper answers every lease with `writePathNotBuilt`, and that holds
-> until the branch's write plane is built. The Intel and M1/M2 paths are `untested`.
+> [#15](https://github.com/blamechris/Aeolus/issues/15). Nothing here has driven a fan. **Against
+> `main`'s helper, `set` exits 4:** it answers every lease with `writePathNotBuilt`, and nothing is
+> written. **Against a helper built with the write plane, `set` writes the fan.** The E4 branch's
+> daemon holds a write channel on macOS 14 or later
+> ([#465](https://github.com/blamechris/Aeolus/pull/465)), its plane answers `.built`, and `set`
+> takes the lease, commands the speed and holds it. Below macOS 14 that helper answers
+> `writePathNotBuilt` as `main`'s does. The Intel and M1/M2 paths are `untested`.
 
 ```
 fanctl set 0 75% --for 30m            # fan 0 at 75% of its range for 30 minutes
@@ -793,7 +797,7 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
 | 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` answered with `invalidParameter` is also 2, after the lease was taken, released and checked, unless the check found something worse.) |
 | 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and the failure is `clientCannotVerifyHelper`, `helperUnreachable` or `helperSignatureRejected`: the lease was taken, and is released and checked. The exit is 3 only if the check then finds the safe state; it usually cannot read, and the exit is 8. |
 | 7 | Version mismatch. Nothing was acquired. |
-| 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was acquired or applied. (An `apply` answered with `boundsImplausible`, `thermalEmergencyActive`, `reclaimedBySystem` or `manualControlUnavailable` is also 4, or 5 for `leaseHeldByAnotherClient`, after the lease was taken, released and checked, unless the check found something worse.) |
+| 4, 5 | The helper refused the lease: manual control unavailable (`writePathNotBuilt`, from `main`'s helper, or from a helper built with the write plane below macOS 14), or another client holds it. Nothing was acquired or applied. (An `apply` answered with `boundsImplausible`, `thermalEmergencyActive`, `reclaimedBySystem` or `manualControlUnavailable` is also 4, or 5 for `leaseHeldByAnotherClient`, after the lease was taken, released and checked, unless the check found something worse.) |
 | 6 | Control was held and lost: a renewal failed, the helper does not list the lease, states no held target for a covered fan, reclaimed one, or set a thermal emergency. Released and checked, and 8 or 9 instead if the check found them: during the hold, or **before `started`**: a renewal that failed while `apply` was outstanding (whatever `apply` then said, including no answer), `apply` answering `leaseExpired`, `leaseUnknown` or `leaseNotHeldByThisConnection`, a snapshot after an accepted `apply` that could not be read or did not show every covered fan held, or the renewing timer failing. |
 | 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). Also the exit for a loss, an `apply` fault, an `apply` that got no answer, or a lapse, followed by that. |
 | 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. Also the exit for a loss, an `apply` fault, an `apply` that got no answer, or a lapse, that left a fan so. |

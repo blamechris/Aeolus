@@ -9,9 +9,14 @@ import Foundation
 /// The contract is [#317](https://github.com/blamechris/Aeolus/issues/317), decided on architect
 /// review, and [ADR 0013](../../docs/ADR/0013-fanctl-control-contract.md) D1. **This command does
 /// not reach `main` before E5 and the owner-supervised E4 acceptance** (#7, #9, #15): it is
-/// built and tested against a simulated helper, and nothing here has driven a fan. Today `set`
-/// exits 4 against every helper that has shipped, and that holds until the branch's write plane
-/// is built.
+/// built and tested against a simulated helper, and nothing here has driven a fan.
+///
+/// **What it does against a real helper depends on the helper's build.** `main`'s helper answers
+/// every lease with `writePathNotBuilt`, so `set` against it exits 4 and writes nothing. A helper
+/// built with the write plane (the E4 branch, since #465) **writes the fan**: its daemon holds a
+/// write channel on macOS 14 or later, the plane answers `.built`, and `set` against it takes the
+/// lease, commands the speed and holds it. Below macOS 14 that helper holds no channel and answers
+/// `writePathNotBuilt` as `main`'s does.
 ///
 /// ## The sequence
 ///
