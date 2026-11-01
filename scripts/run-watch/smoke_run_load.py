@@ -3,10 +3,11 @@
     python3 -I -m unittest discover -s . -p smoke_run_load.py   # from scripts/run-watch; on request
 
 It is not named `test_*`, so `python3 -I -m unittest` (the unit tests, and the dry run's sweep over
-them) never starts it. It starts the driver as an operator would, with its real worker command
-(`sh -c 'while :; do :; done'`) and `--max-seconds 2`, and checks that:
+them) never starts it. It starts the driver as an operator would, with its real worker command (perl's `alarm`, then
+`exec` of P1's `sh -c 'while :; do :; done'`) and `--max-seconds 2`, and checks that:
 
   * the workers are real, running, and the PIDs in busy-1b.pids;
+  * each is P1's loop once perl has exec'd it (`/bin/sh -c while :; do :; done`, in `ps`);
   * the driver ends them itself at its bound, and exits 0;
   * none of the recorded PIDs is left: not by `os.kill(pid, 0)`, and not in `pgrep -x sh`;
   * the CTX lines are in the file, and load.pid is gone.
@@ -60,6 +61,16 @@ class RealLoad(unittest.TestCase):
                     stdin=subprocess.DEVNULL, capture_output=True, check=False)
                 self.assertEqual(sorted(int(l.split()[0]) for l in ps.stdout.decode().splitlines()),
                                  sorted(pids))
+                commands = set()
+                for _ in range(100):  # perl execs within a few milliseconds
+                    ps = subprocess.run(
+                        ["/bin/ps", "-o", "command=", "-p", ",".join(map(str, pids))],
+                        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+                    commands = set(ps.stdout.decode().strip().splitlines())
+                    if commands == {"/bin/sh -c while :; do :; done"}:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(commands, {"/bin/sh -c while :; do :; done"})
                 self.assertEqual(driver.wait(timeout=15), 0)  # it stops itself at its bound
                 self.assertGreaterEqual(time.time() - started, 1.0)
             finally:

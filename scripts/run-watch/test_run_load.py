@@ -33,6 +33,18 @@ T0 = synth.T0  # an integer second, so a whole-second `at` is exact
 FAKE_ARGV = ("fake-worker", "--spin")
 
 
+#: The `started` line that docs/CLI.md (at 4c7b62a, `fanctl set --json`) prints as its example,
+#: verbatim: the real shape of the event the driver reads, not one made to suit it.
+DOCUMENTED_STARTED = (
+    "{\"at\":\"2026-10-07T23:24:57Z\",\"durationSeconds\":20,\"event\":\"started\",\"fans\":[{\"commandedRPM"
+    "\":4670,\"index\":0,\"observed\":{\"actualRPM\":{\"unavailableReason\":null,\"value\":1350},\"firmware"
+    "Name\":null,\"index\":0,\"isReclaimedBySystem\":false,\"manualControl\":{\"advice\":null,\"reason\":n"
+    "ull,\"state\":\"available\",\"summary\":null},\"maximumRPM\":{\"unavailableReason\":null,\"value\":577"
+    "7},\"minimumRPM\":{\"unavailableReason\":null,\"value\":1350},\"mode\":\"manualFixed\",\"targetRPM\":4"
+    "670},\"requested\":{\"unit\":\"percent\",\"value\":75}}],\"leaseID\":\"FEDA5A4F-912F-49CB-84B7-512889"
+    "10401A\",\"schema\":1}")
+
+
 def iso_seconds(t):
     """`fanctl set --json`'s `at`: UTC to the second."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
@@ -96,9 +108,10 @@ class FakeWorker:
         self.pid, self.returncode = pid, None
         self.ignores_term, self.immortal = ignores_term, immortal
         self.slow, self.dies_at = slow, None  # (clock, seconds): obedient, but not at once
-        self.terminated = self.killed = 0
+        self.terminated = self.killed = self.polls = 0
 
     def poll(self):
+        self.polls += 1
         if self.dies_at is not None and self.slow[0].mono() >= self.dies_at:
             self.returncode = -signal.SIGTERM
         return self.returncode
@@ -177,10 +190,17 @@ class Feeder:
                 handle.write(self.late.pop(0)[1] + "\n")
 
 
-def started_line(at):
-    """`fanctl set --json`'s started event, to the keys the driver reads and a few it does not."""
+_DEFAULT = object()
+
+
+def started_line(at, rpm=5777, fans=_DEFAULT):
+    """`fanctl set --json`'s started event, to the keys the driver reads and a few it does not.
+    `fans` replaces the whole fans value (docs/CLI.md: a list of `index`, `commandedRPM`,
+    `requested`, `observed`)."""
+    if fans is _DEFAULT:
+        fans = [{"commandedRPM": rpm, "index": 0, "requested": {"unit": "percent", "value": 100}}]
     return json.dumps({"at": iso_seconds(at), "durationSeconds": 120, "event": "started",
-                       "fans": [{"commandedRPM": 5777, "index": 0}], "leaseID": "x", "schema": 1},
+                       "fans": fans, "leaseID": "x", "schema": 1},
                       sort_keys=True, separators=(",", ":"))
 
 
@@ -189,14 +209,22 @@ def event_line(event, at):
                       sort_keys=True, separators=(",", ":"))
 
 
-def target_from(start, rpm=5777.0, f1_from=None, until=None, f1=1500.0, gaps=()):
-    """F0Tg reads `rpm` from `start` (to `until`); F1Tg reads `f1` from `f1_from`."""
+HELD = {"F0Md": 1, "Ftst": 1}  # a held fan: raw mode 1, the force key set (ADR 0014)
+AT_REST = {"F0Md": 3, "Ftst": 0}  # what a fan nobody manages reads on this Mac
+
+
+def target_from(start, rpm=5777.0, f1_from=None, until=None, f1=1500.0, gaps=(), held=HELD,
+                released=AT_REST):
+    """A fan held on `rpm` from `start` (to `until`): the mode and `Ftst` of `held`, F0Tg `rpm`.
+    Otherwise `released`'s. F1Tg reads `f1` from `f1_from`. Pass `held=AT_REST` for a target that
+    reads right and a mode that never does."""
 
     def values(t):
         if any(a <= t < b for a, b in gaps):
             return None
         on = t >= start and (until is None or t < until)
-        return {"F0Tg": rpm if on else 0.0, "F1Tg": f1 if f1_from is not None and t >= f1_from else 0.0}
+        return dict(held if on else released, F0Tg=rpm if on else 0.0,
+                    F1Tg=f1 if f1_from is not None and t >= f1_from else 0.0)
 
     return values
 
@@ -263,7 +291,7 @@ class Load1b(Base):
         self.drive("1b", max_seconds=1)
         self.assertEqual(len(self.spawner.workers), 16)
         self.assertEqual({argv for argv, _ in self.spawner.calls}, {FAKE_ARGV})
-        self.assertEqual(rl.WORKER_ARGV, ("/bin/sh", "-c", "while :; do :; done"))  # P1's load
+        self.assertEqual(rl.P1_LOOP, ("/bin/sh", "-c", "while :; do :; done"))  # P1's load
         self.drive("1b", max_seconds=1, workers=3)
         self.assertEqual(len(self.spawner.workers), 3)
 
@@ -404,6 +432,52 @@ class Load1b(Base):
         self.drive("1b", clock=FakeClock(on_sleep=on_sleep), max_seconds=1)
         self.assertEqual((self.spawner.workers[2].terminated, self.spawner.workers[2].killed), (0, 0))
         self.assertEqual({w.terminated for i, w in enumerate(self.spawner.workers) if i != 2}, {1})
+
+    def test_workers_killed_from_outside_end_the_driver_within_a_poll_and_say_load_stop(self):
+        # the runbook's T6 and L2: `kill $(cat busy-1b.pids)`. With nothing to run, the load has
+        # stopped; the old driver sat on to its 600 s bound and wrote load-stop then.
+        def on_sleep(clock):
+            if clock.since() >= 30:
+                for worker in self.spawner.workers:
+                    if worker.returncode is None:
+                        worker.returncode = -signal.SIGTERM
+
+        self.drive("1b", clock=FakeClock(on_sleep=on_sleep))
+        self.assertEqual(self.code, rl.EXIT_OK)
+        self.between(self.ctx("load-stop")[0].t - T0, 30.0, 30.2)
+        self.assertIn("every worker has exited (return codes -15): no load is left", self.log())
+        self.assertEqual({(w.terminated, w.killed) for w in self.spawner.workers}, {(0, 0)})
+        self.assertFalse(exists(self.dir, "load.pid"))
+
+    def test_some_workers_killed_from_outside_do_not_end_it_and_every_one_is_still_polled(self):
+        # worker 0 lives; worker 5 is killed at 30 s. The driver goes on to its bound, and the
+        # killed one is polled on every tick, which is what reaps it (a <defunct> is L3's failure).
+        seen = {}
+
+        def on_sleep(clock):
+            if 30 <= clock.since() < 30.05:
+                self.spawner.workers[5].returncode = -signal.SIGKILL
+                seen["at_kill"] = self.spawner.workers[5].polls
+            if 31 <= clock.since() < 31.05:
+                seen["a_second_later"] = self.spawner.workers[5].polls
+
+        self.drive("1b", clock=FakeClock(on_sleep=on_sleep), max_seconds=40)
+        self.between(self.clock.since(), 40.0, 40.3)
+        self.assertGreaterEqual(seen["a_second_later"] - seen["at_kill"], 15)
+        self.assertNotIn("every worker has exited", self.log())
+        self.assertTrue(self.phases()[-1].endswith("CTX load-stop"))
+
+    def test_a_driver_whose_workers_all_died_on_their_own_says_so_and_still_stops(self):
+        # a crashed worker command, say: nothing runs, and the record must not say it does
+        def on_sleep(clock):
+            if clock.since() >= 5:
+                for worker in self.spawner.workers:
+                    worker.returncode = 127
+
+        self.drive("1b", clock=FakeClock(on_sleep=on_sleep))
+        self.between(self.clock.since(), 5.0, 5.2)
+        self.assertIn("return codes 127", self.log())
+        self.assertEqual([c.kind for c in map(rw.parse_ctx_line, self.phases())], ["load-start", "load-stop"])
 
     def test_load_stop_is_not_written_while_a_worker_still_runs(self):
         self.drive("1b", FakeSpawner(immortal={2}), max_seconds=1)
@@ -546,7 +620,7 @@ class Load1d(Base):
     def run_1d(self, values, sets=(), prime=True, **cfg):
         feeder = Feeder(self.dir, values, sets)
         if prime:  # sixty seconds of history at the target: it is history, and must be ignored
-            feeder.prime(60, F0Tg=5777.0, F1Tg=0.0)
+            feeder.prime(60, F0Tg=5777.0, F1Tg=0.0, **HELD)
         clock = FakeClock(on_sleep=feeder)
         self.drive("1d", clock=clock, **cfg)
         return clock
@@ -579,7 +653,7 @@ class Load1d(Base):
         self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
         self.assertEqual((self.spawner.workers, self.phases()), ([], []))
         self.assertIn("NOT STARTED", self.log("1d"))
-        self.assertIn("F0Tg had not read 5777 for 10 s", self.log("1d"))
+        self.assertIn("fan 0 had not read as held (F0Md 1, F0Tg 5777) for 10 s", self.log("1d"))
 
     def test_a_dip_restarts_the_10_seconds(self):
         values = target_from(T0 + 3)
@@ -620,7 +694,7 @@ class Load1d(Base):
         # F0Tg is on its target from 22.0 s. The sample stamped 32.0 s, which would make the 10 s,
         # reaches the file at 32.05 s, 0.05 s after the window (`started` 2 s + 30 s) has closed:
         # the stamp is inside the window, the start would not be.
-        late = synth._line(synth.fan_record(T0 + 32.0, 1, {"F0Tg": 5777.0, "F1Tg": 0.0}))
+        late = synth._line(synth.fan_record(T0 + 32.0, 1, dict(HELD, F0Tg=5777.0, F1Tg=0.0)))
         feeder = Feeder(self.dir, target_from(T0 + 22, gaps=[(T0 + 31.95, T0 + 32.05)]),
                         sets=[(T0 + 2, started_line(T0 + 2))], late=[(T0 + 32.05, late)])
         self.drive("1d", clock=FakeClock(on_sleep=feeder), max_seconds=2)
@@ -687,7 +761,7 @@ class Load1d(Base):
                         event_line("holding", T0 + 1) + "\n" for _ in range(8)))
 
         feeder = Feeder(self.dir, target_from(T0 + 3))
-        feeder.prime(60, F0Tg=5777.0)
+        feeder.prime(60, F0Tg=5777.0, **HELD)
         self.drive("1d", clock=FakeClock(on_sleep=lambda c: (feeder(c), rewrite(c))), max_seconds=2)
         self.between(self.load_start(), 13.0, 13.2)
 
@@ -726,7 +800,7 @@ class Load1d(Base):
         # A sample with F1Tg above 0, stamped 12.5 s, is appended to the file only after the load
         # has started (a recorder's delay). It is not evidence about the load, which began at
         # 13 s: nothing leaves 0, and the bound ends the load.
-        late = synth._line(synth.fan_record(T0 + 12.5, 1, {"F0Tg": 5777.0, "F1Tg": 1500.0}))
+        late = synth._line(synth.fan_record(T0 + 12.5, 1, dict(HELD, F0Tg=5777.0, F1Tg=1500.0)))
         feeder = Feeder(self.dir, target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2))],
                         late=[(T0 + 14, late)])
         self.drive("1d", clock=FakeClock(on_sleep=feeder))
@@ -755,6 +829,18 @@ class Load1d(Base):
         self.drive("1d", clock=FakeClock(on_sleep=lambda c: (feeder(c), on_sleep(c))))
         self.between(self.ctx("load-stop")[0].t - T0, 40.0, 40.3)
 
+    def test_workers_killed_from_outside_end_a_1d_load_within_a_poll(self):
+        def on_sleep(clock):
+            if clock.since() >= 40:
+                for worker in self.spawner.workers:
+                    if worker.returncode is None:
+                        worker.returncode = -signal.SIGTERM
+
+        feeder = Feeder(self.dir, target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2))])
+        self.drive("1d", clock=FakeClock(on_sleep=lambda c: (feeder(c), on_sleep(c))))
+        self.between(self.ctx("load-stop")[0].t - T0, 40.0, 40.2)
+        self.assertEqual(self.code, rl.EXIT_OK)
+
     def test_a_dead_record_does_not_start_the_load(self):
         # The sampler died at 15 s, after 12 s at the target, and `started` is read at 20 s. The
         # run was long enough, but nothing is recording now: it is not evidence that the fan is
@@ -762,6 +848,185 @@ class Load1d(Base):
         self.run_1d(target_from(T0 + 3, gaps=[(T0 + 15, T0 + 1000)]), sets=[(T0 + 20, started_line(T0 + 20))])
         self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
         self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+
+    # ------------------------------------------------------------------ a held fan, and only that
+
+    def test_a_hold_released_before_t_l_does_not_get_a_load(self):
+        # Reviewer A's scenario, on a realistic held state: `started` at 2 s, fan 0 held on its
+        # target (mode 1) from 3 s, the owner's reset at 6 s after an alert. `set` prints `failed`,
+        # the mode returns to Apple's, and Apple has not yet rewritten the target (the ADR leaves
+        # open whether it rewrites an unchanged one). At 13 s the old driver started sixteen
+        # loops on a fan that had been released.
+        def values(t):
+            s = t - T0
+            if s < 3:
+                return dict(AT_REST, F0Tg=0.0, F1Tg=0.0)
+            if s < 6:
+                return dict(HELD, F0Tg=5777.0, F1Tg=0.0)
+            return {"F0Md": 0, "Ftst": 0, "F0Tg": 5777.0, "F1Tg": 0.0}
+
+        self.run_1d(values, sets=[(T0 + 2, started_line(T0 + 2)), (T0 + 6.2, event_line("failed", T0 + 6))],
+                    max_seconds=2)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+        self.assertFalse(exists(self.dir, "busy-1d.pids"))
+        self.assertLess(self.clock.since(), 7.0)  # it said so at once, and did not wait out the window
+
+    def test_a_failed_or_ended_set_after_started_means_no_load_even_if_the_fan_still_reads_held(self):
+        # the mode and target are read back a moment after the release: only the event says it
+        for event in ("failed", "ended"):
+            with self.subTest(event=event):
+                self.fresh()
+                self.run_1d(target_from(T0 + 3),
+                            sets=[(T0 + 2, started_line(T0 + 2)), (T0 + 6.2, event_line(event, T0 + 6))],
+                            max_seconds=2)
+                self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+                self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+                self.assertIn("`set` ended (%s) 4.0 s after `started`, before the load started" % event,
+                              self.log("1d"))
+
+    def test_a_target_that_stays_after_the_mode_leaves_1_is_not_a_hold(self):
+        # no event in the file yet, but the mode says the hold is gone: the dwell starts again
+        values = target_from(T0 + 3, released=dict(F0Md=0, Ftst=0), until=T0 + 6)
+        self.run_1d(lambda t: dict(values(t), F0Tg=5777.0) if t >= T0 + 3 else values(t),
+                    sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+        self.assertIn("fan 0 had not read as held", self.log("1d"))
+
+    def test_a_target_on_its_number_with_a_mode_that_never_reads_1_never_starts_the_load(self):
+        for mode in (3, 0, 2):
+            with self.subTest(mode=mode):
+                self.fresh()
+                self.run_1d(target_from(T0 + 3, held=dict(F0Md=mode, Ftst=0)),
+                            sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+                self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+                self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+
+    def test_one_sample_off_mode_1_restarts_the_10_seconds(self):
+        # the target never leaves 5,777; the mode reads 3 for 0.2 s at 8 s
+        values = target_from(T0 + 3)
+        blip = lambda t: dict(values(t), F0Md=3) if 8.0 <= t - T0 < 8.2 else values(t)
+        self.run_1d(blip, sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+        self.between(self.load_start(), 18.2, 18.4)  # 10 s after 8.2 s
+
+    def test_a_sample_with_no_mode_reading_is_not_held(self):
+        # a reading that did not come back (the sampler's own "unavailable") says nothing about the
+        # fan; it is not mode 1
+        values = target_from(T0 + 3)
+        blank = lambda t: dict(values(t), F0Md=None) if 8.0 <= t - T0 < 8.2 else values(t)
+        self.run_1d(blank, sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+        self.between(self.load_start(), 18.2, 18.4)
+
+    def test_a_failed_set_after_the_load_started_stops_the_load(self):
+        for event in ("failed", "ended"):
+            with self.subTest(event=event):
+                self.fresh()
+                self.run_1d(target_from(T0 + 3),
+                            sets=[(T0 + 2, started_line(T0 + 2)), (T0 + 20, event_line(event, T0 + 20))])
+                self.assertEqual(self.code, rl.EXIT_OK)
+                stop = self.ctx("load-stop")[0].t - T0
+                self.between(stop, 20.0, 20.2)  # at once, not at the 80 s bound (93 s)
+                self.assertIn("`set` ended (%s)" % event, self.log("1d"))
+                self.assertIn("the hold is over, stopping", self.log("1d"))
+                self.assertTrue(all(w.terminated for w in self.spawner.workers))
+                self.assertFalse(exists(self.dir, "load.pid"))
+
+    def test_a_holding_event_or_an_old_failed_one_does_not_stop_the_load(self):
+        with open(os.path.join(self.dir, "set-1d.ndjson"), "w", encoding="utf-8") as handle:
+            handle.write(event_line("failed", T0 - 90) + "\n")  # an earlier attempt's
+        self.run_1d(target_from(T0 + 3),
+                    sets=[(T0 + 2, started_line(T0 + 2)), (T0 + 20, event_line("holding", T0 + 20))])
+        self.between(self.ctx("load-stop")[0].t - T0 - self.load_start(), 80.0, 80.3)
+        self.assertIn("reached its bound of 80 s", self.log("1d"))
+
+    # ------------------------------------------------------------------ the driver's inputs
+
+    def test_a_started_dated_in_the_future_does_not_stretch_the_window(self):
+        # `at` says +200, the file got it at +2: the window runs from the earlier, to +32. A dwell
+        # that completes at +40 is too late; one that completes at +30.5 is not.
+        self.run_1d(target_from(T0 + 30), sets=[(T0 + 2, started_line(T0 + 200))], max_seconds=2)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+        self.between(self.clock.since(), 32.0, 32.3)
+        self.assertIn("its `at` says", self.log("1d"))
+        self.fresh()
+        self.run_1d(target_from(T0 + 20.5), sets=[(T0 + 2, started_line(T0 + 200))], max_seconds=2)
+        self.between(self.load_start(), 30.5, 30.7)
+
+    def test_a_started_whose_at_is_the_file_time_is_taken_as_it_is(self):
+        self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+        self.assertNotIn("its `at` says", self.log("1d"))
+        self.assertIn("started at %.3f: the load must start by %.3f" % (T0 + 2, T0 + 32), self.log("1d"))
+
+    def test_the_target_is_the_one_started_commanded_and_the_log_says_where_it_came_from(self):
+        # `started` commands 4,000: the dwell waits for 4,000, whatever --target-rpm says
+        self.run_1d(target_from(T0 + 3, rpm=4000.0), sets=[(T0 + 2, started_line(T0 + 2, rpm=4000))],
+                    max_seconds=2)
+        self.between(self.load_start(), 13.0, 13.2)
+        self.assertIn("target 4000 RPM, from `started` (fans[0].commandedRPM); --target-rpm says 5777 "
+                      "and differs: `started`'s is used", self.log("1d"))
+        # the converse: --target-rpm's number on the fan is not the target when `started` says 4,000
+        self.fresh()
+        self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2, rpm=4000))], max_seconds=2)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual(self.spawner.workers, [])
+        # agreement is logged as agreement
+        self.fresh()
+        self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
+        self.assertIn("target 5777 RPM, from `started` (fans[0].commandedRPM); --target-rpm agrees",
+                      self.log("1d"))
+
+    def test_a_started_with_no_usable_target_falls_back_to_the_flag_and_says_so(self):
+        unusable = (
+            [], [{"index": 1, "commandedRPM": 4000}], [{"index": 0}], [{"index": 0, "commandedRPM": 0}],
+            [{"index": 0, "commandedRPM": -5}], [{"index": 0, "commandedRPM": "5777"}],
+            [{"index": 0, "commandedRPM": True}], [{"index": True, "commandedRPM": 4000}], "none", None,
+            ["not a fan"])
+        for fans in unusable:
+            with self.subTest(fans=fans):
+                self.fresh()
+                self.run_1d(target_from(T0 + 3), max_seconds=2,
+                            sets=[(T0 + 2, started_line(T0 + 2, fans=fans))])
+                self.between(self.load_start(), 13.0, 13.2)
+                self.assertIn("target 5777 RPM, from --target-rpm: `started` carries no usable "
+                              "fans[0].commandedRPM", self.log("1d"))
+        self.fresh()  # no fans key at all
+        self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, event_line("started", T0 + 2))], max_seconds=2)
+        self.assertIn("from --target-rpm", self.log("1d"))
+        self.between(self.load_start(), 13.0, 13.2)
+        # JSON's NaN and Infinity are not numbers of RPM either
+        for text in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(text=text):
+                self.fresh()
+                line = ('{"at":"%s","event":"started","fans":[{"commandedRPM":%s,"index":0}]}'
+                        % (iso_seconds(T0 + 2), text))
+                self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, line)], max_seconds=2)
+                self.assertIn("from --target-rpm", self.log("1d"))
+                self.between(self.load_start(), 13.0, 13.2)
+
+    def test_the_target_flag_is_used_when_it_is_the_only_target(self):
+        self.run_1d(target_from(T0 + 3, rpm=3455.0), target_rpm=3455.0, max_seconds=2,
+                    sets=[(T0 + 2, started_line(T0 + 2, fans=[]))])
+        self.between(self.load_start(), 13.0, 13.2)
+
+    def test_every_numeric_flag_is_finite_and_in_range_or_the_driver_refuses_with_exit_2(self):
+        bad = (("--target-rpm", ("nan", "inf", "-inf", "0", "-5", "499", "12001", "1e9")),
+               ("--arm-timeout", ("nan", "inf", "-inf", "0", "-1", "0.5", "3601", "1e9")),
+               ("--max-seconds", ("nan", "inf", "-inf", "0", "-1", "601")))
+        for flag, values in bad:
+            for value in values:
+                with self.subTest(flag=flag, value=value):
+                    self.fresh()
+                    with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                        rl.main(["--mode", "1b", "--dir", self.dir, flag, value], worker_argv=FAKE_ARGV,
+                                install_signals=False)
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertEqual(os.listdir(self.dir), [])  # nothing written, nothing forked
+        for kwargs in ({"target_rpm": 500}, {"target_rpm": 12000}, {"arm_timeout": 1},
+                       {"arm_timeout": 3600}, {"max_seconds": 0.5}):
+            with self.subTest(ok=kwargs):
+                rl.make_config("1d", self.dir, **kwargs)
 
     def test_the_pid_files_and_the_log_are_per_step(self):
         self.run_1d(target_from(T0 + 3), sets=[(T0 + 2, started_line(T0 + 2))], max_seconds=2)
@@ -774,10 +1039,16 @@ class RealProcesses(Base):
     """The driver as the real process an operator starts, with `/bin/sleep` for the workers (it
     uses no CPU): its signal handlers, its children, and the bystander it must not touch."""
 
-    def start(self, workers=3, mode="1b"):
-        argv = ["--mode", mode, "--dir", self.dir, "--workers", str(workers)]
-        code = ("import sys; sys.path.insert(0, %r); import run_load; "
-                "sys.exit(run_load.main(%r, worker_argv=('/bin/sleep', '60')))" % (HERE, argv))
+    def start(self, workers=3, mode="1b", extra=(), bounded=False, margin=None):
+        """The driver as a real process, its workers `/bin/sleep 60`. With `bounded` they are
+        `sleep` under the driver's own alarm wrapper (`margin` seconds past the bound, in place of
+        the shipped 10); without it they are bare `sleep`."""
+        argv = ["--mode", mode, "--dir", self.dir, "--workers", str(workers)] + list(extra)
+        seam = "worker_loop=('/bin/sleep', '60')" if bounded else "worker_argv=('/bin/sleep', '60')"
+        code = ("import sys; sys.path.insert(0, %r); import run_load; %s"
+                "sys.exit(run_load.main(%r, %s))" % (
+                    HERE, "run_load.ALARM_MARGIN_SECONDS = %d; " % margin if margin is not None else "",
+                    argv, seam))
         self.driver_proc = subprocess.Popen(
             [sys.executable, "-I", "-c", code], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
@@ -809,6 +1080,63 @@ class RealProcesses(Base):
             return False
         return True
 
+    def ps_listing(self, pids):
+        """The owner's L3, as the runbook gives it: nothing listed means nothing is left."""
+        result = subprocess.run(
+            ["/bin/ps", "-o", "pid=,stat=,command=", "-p", ",".join(str(p) for p in pids)],
+            stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        return result.stdout.decode().strip()
+
+    def wait_for(self, predicate, seconds):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
+
+    def test_workers_killed_by_pid_end_the_driver_leave_no_zombie_and_say_load_stop(self):
+        # the runbook's T6, L2 by PID: `kill $(cat busy-1b.pids)`. The driver's bound is 600 s.
+        pids = self.start()
+        killed_at = time.time()
+        for pid in pids:
+            os.kill(pid, signal.SIGTERM)
+        phases = os.path.join(self.dir, "phases.log")
+        stopped = lambda: os.path.exists(phases) and "CTX load-stop" in read(phases)
+        self.assertTrue(self.wait_for(stopped, 10), "no CTX load-stop within 10 s of the kill")
+        self.assertLess(time.time() - killed_at, 5.0)  # one poll and a bit, not the bound
+        self.assertEqual(self.ps_listing(pids), "")  # L3 passes: no worker, and no <defunct> either
+        self.assertEqual(self.driver_proc.wait(timeout=10), 0)
+        self.assertFalse(exists(self.dir, "load.pid"))
+        self.assertIn("every worker has exited", read(os.path.join(self.dir, "load-1b.log")))
+
+    def test_a_killed_workers_zombie_is_reaped_while_the_driver_is_still_running(self):
+        pids = self.start(workers=3)
+        os.kill(pids[2], signal.SIGKILL)  # one of three: the driver goes on
+        time.sleep(0.6)
+        self.assertEqual(self.ps_listing([pids[2]]), "")  # not <defunct>
+        self.assertTrue(self.alive(pids[0]) and self.alive(pids[1]))
+        self.assertIsNone(self.driver_proc.poll())
+
+    def test_workers_of_a_sigkilled_driver_end_by_their_own_alarm(self):
+        # Nothing can trap SIGKILL, so the driver cannot stop its workers then. Each worker has an
+        # alarm of the bound (2 s, rounded up) plus a margin (here 1 s, not the shipped 10), and
+        # that survives the exec. Nobody but the alarm ends them.
+        pids = self.start(workers=3, extra=["--max-seconds", "2"], bounded=True, margin=1)
+        started = time.time()
+        self.driver_proc.kill()
+        self.driver_proc.wait()
+        time.sleep(0.5)
+        self.assertTrue(all(self.alive(p) for p in pids), "a worker died with the driver")
+        self.assertTrue(self.wait_for(lambda: not any(self.alive(p) for p in pids), 12),
+                        "a worker outlived its alarm: %s" % self.ps_listing(pids))
+        self.assertGreaterEqual(time.time() - started, 2.0)  # at N = 3 s, not before the bound
+        listed = subprocess.run(["/usr/bin/pgrep", "-x", "sleep"], stdin=subprocess.DEVNULL,
+                                capture_output=True, check=False).stdout.decode().split()
+        self.assertEqual(set(map(str, pids)) & set(listed), set())  # pgrep says none is left
+        self.assertEqual(self.ps_listing(pids), "")
+        self.assertTrue(exists(self.dir, "load.pid"))  # the driver could not tidy: the alarm did
+
     def test_each_signal_stops_the_workers_writes_load_stop_and_leaves_a_bystander_alone(self):
         for name in ("SIGTERM", "SIGINT", "SIGHUP"):
             with self.subTest(signal=name):
@@ -831,6 +1159,312 @@ class RealProcesses(Base):
                     bystander.kill()
                     bystander.wait()
                     self.reap()
+
+
+class WorkerCommand(Base):
+    """Each worker bounds itself: P1's loop under a perl `alarm`."""
+
+    PROGRAM = re.compile(r'alarm (\d+); exec ((?:"[^"]*"(?:, )?)+)')
+
+    def argv(self, mode, **cfg):
+        return rl.Driver(rl.make_config(mode, self.dir, **cfg), clock=FakeClock(), spawn=FakeSpawner()).worker_argv
+
+    def test_the_default_worker_is_perl_with_an_alarm_past_the_bound_and_p1s_loop_unchanged(self):
+        for mode, cfg, alarm in (("1b", {}, 610), ("1d", {}, 90), ("1b", {"max_seconds": 5}, 15),
+                                 ("1d", {"max_seconds": 2.5}, 13), ("1b", {"max_seconds": 600}, 610)):
+            with self.subTest(mode=mode, **cfg):
+                argv = self.argv(mode, **cfg)
+                self.assertEqual(argv[:2], ("/usr/bin/perl", "-e"))
+                self.assertEqual(len(argv), 3)
+                found = self.PROGRAM.fullmatch(argv[2])
+                self.assertIsNotNone(found, argv[2])
+                self.assertEqual(int(found.group(1)), alarm)  # the bound, rounded up, plus 10 s
+                # what perl exec's is P1's loop, word for word
+                self.assertEqual(tuple(re.findall(r'"([^"]*)"', found.group(2))),
+                                 ("/bin/sh", "-c", "while :; do :; done"))
+                self.assertEqual(rl.P1_LOOP, ("/bin/sh", "-c", "while :; do :; done"))
+
+    def test_perl_reads_the_program_and_runs_the_loop_it_names(self):
+        # -c compiles and does not run: the shipped program, with P1's loop, is valid perl
+        argv = self.argv("1b")
+        result = subprocess.run([argv[0], "-c", argv[1], argv[2]], stdin=subprocess.DEVNULL,
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # and the same wrapper really execs what it is given (a harmless command, not the loop)
+        wrapped = rl.worker_argv_for(5, loop=("/bin/echo", "ran", "it"))
+        ran = subprocess.run(wrapped, stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        self.assertEqual((ran.returncode, ran.stdout), (0, b"ran it\n"))
+
+    def test_a_loop_perl_would_read_as_more_than_text_is_refused(self):
+        for bad in ('echo "x"', "echo $HOME", "a@b", "back\\slash", "two\nlines"):
+            with self.subTest(argument=bad):
+                with self.assertRaises(ValueError):
+                    rl.worker_argv_for(10, loop=("/bin/sh", "-c", bad))
+
+    def test_the_driver_starts_its_workers_with_that_command(self):
+        self.spawner = FakeSpawner()
+        driver = rl.Driver(rl.make_config("1b", self.dir, max_seconds=1), None, FakeClock(), self.spawner)
+        driver.run()
+        self.assertEqual({argv for argv, _ in self.spawner.calls}, {rl.worker_argv_for(1)})
+        self.assertEqual(len(self.spawner.calls), 16)
+
+
+class PidFile(Base):
+    """load.pid is claimed with O_CREAT|O_EXCL and replaced only if its process is dead."""
+
+    def pid_file(self, text):
+        with open(os.path.join(self.dir, "load.pid"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def test_a_pid_file_that_names_no_process_is_not_replaced(self):
+        # the loser of a race reads the winner's file in the instant before it is written; the
+        # old driver took that for a dead driver's and removed it
+        for text in ("", "\n", "not a pid\n", "pid 1\n"):
+            with self.subTest(text=text):
+                self.fresh()
+                self.pid_file(text)
+                self.assertEqual(self.drive("1b", max_seconds=1), rl.EXIT_REFUSED)
+                self.assertEqual(read(os.path.join(self.dir, "load.pid")), text)
+                self.assertEqual((self.spawner.workers, self.phases()), ([], []))
+                self.assertIn("names no process", "".join(self.echoed))
+
+    def test_a_pid_file_that_is_being_written_is_waited_for_and_then_respected(self):
+        # empty when the driver looks, the other driver's PID (a live one) a moment later
+        def on_sleep(clock):
+            self.pid_file("%d\n" % os.getpid())
+
+        self.pid_file("")
+        self.assertEqual(self.drive("1b", clock=FakeClock(on_sleep=on_sleep), max_seconds=1), rl.EXIT_REFUSED)
+        self.assertEqual(read(os.path.join(self.dir, "load.pid")).split(), [str(os.getpid())])
+        self.assertIn("names a running process", "".join(self.echoed))
+        self.assertLess(self.clock.since(), 0.2)  # it did not wait out the second
+
+    def test_a_pid_file_that_stays_empty_is_waited_for_a_second_and_no_more(self):
+        self.pid_file("")
+        self.assertEqual(self.drive("1b", max_seconds=1), rl.EXIT_REFUSED)
+        self.between(self.clock.since(), 1.0, 1.1)
+
+    def test_a_pid_the_driver_may_not_signal_is_a_live_one(self):
+        # pid 1 is launchd: a user cannot signal it, and EPERM means it is there
+        self.assertTrue(rl.Driver.alive(1))
+        with mock.patch.object(os, "kill", side_effect=PermissionError):
+            self.assertTrue(rl.Driver.alive(4242))
+        with mock.patch.object(os, "kill", side_effect=ProcessLookupError):
+            self.assertFalse(rl.Driver.alive(4242))
+        self.pid_file("1\n")
+        self.assertEqual(self.drive("1b", max_seconds=1), rl.EXIT_REFUSED)
+        self.assertIn("names a running process (pid 1)", "".join(self.echoed))
+        self.assertEqual(read(os.path.join(self.dir, "load.pid")).split(), ["1"])
+
+
+class Follows(unittest.TestCase):
+    """Follow reads what a file gains, and starts again from the top of one that was replaced or
+    truncated (a `tee` that starts again)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = os.path.join(directory.name, "f.ndjson")
+        self.follow = rl.Follow(self.path)
+        self.addCleanup(self.follow.close)
+
+    def put(self, text, path=None, mode="w"):
+        with open(path or self.path, mode, encoding="utf-8") as handle:
+            handle.write(text)
+
+    def test_it_reads_only_what_is_new_and_whole_lines(self):
+        self.put("a\nb\npartial")
+        self.assertEqual(self.follow.read_new(), [b"a", b"b"])
+        self.assertEqual(self.follow.read_new(), [])
+        self.put(" line\nc\n", mode="a")
+        self.assertEqual(self.follow.read_new(), [b"partial line", b"c"])
+
+    def test_a_replaced_file_is_read_from_its_start(self):
+        self.put("a\nb\nc\n")
+        self.assertEqual(self.follow.read_new(), [b"a", b"b", b"c"])
+        replacement = self.path + ".new"
+        self.put("w\nx\ny\nz\n", replacement)  # longer than what was read: only the inode differs
+        os.replace(replacement, self.path)
+        self.assertEqual(self.follow.read_new(), [b"w", b"x", b"y", b"z"])
+
+    def test_a_truncated_file_is_read_from_its_start(self):
+        self.put("aaaa\nbbbb\ncccc\n")
+        self.assertEqual(self.follow.read_new(), [b"aaaa", b"bbbb", b"cccc"])
+        with open(self.path, "r+b") as handle:  # the same file, emptied and written again, shorter
+            handle.truncate(0)
+            handle.write(b"x\ny\n")
+        self.assertEqual(self.follow.read_new(), [b"x", b"y"])
+
+    def test_a_file_read_from_its_end_ignores_what_was_there_and_not_what_comes_after_a_rewrite(self):
+        self.put("old1\nold2\n")
+        follow = rl.Follow(self.path, from_end=True)
+        self.addCleanup(follow.close)
+        self.assertEqual(follow.read_new(), [])
+        self.put("new\n", mode="a")
+        self.assertEqual(follow.read_new(), [b"new"])
+        with open(self.path, "r+b") as handle:
+            handle.truncate(0)
+            handle.write(b"again\n")
+        self.assertEqual(follow.read_new(), [b"again"])  # after a rewrite it is all new
+
+
+@unittest.skipUnless(os.path.exists(rl.PERL), "perl is not here")
+class StubbornWorkers(Base):
+    """Real workers that ignore SIGTERM: SIGKILL has to be sent, and waited for, before the driver
+    can say that none is left. A worker that dies on the instant is a fake; this one is not."""
+
+    def test_workers_that_ignore_sigterm_are_killed_and_reaped_before_load_stop(self):
+        ready = os.path.join(self.dir, "ready")
+        program = ('$SIG{TERM} = "IGNORE"; open F, ">>", "%s" or die; print F "x"; close F; '
+                   'sleep 60 while 1;' % ready)
+
+        class AfterTheWorkersAreUp(rl.Clock):
+            """The first wait of the load is real: until every worker has set its handler."""
+            up = False
+
+            def sleep(self, seconds):
+                if not self.up:
+                    deadline = time.time() + 15
+                    while time.time() < deadline and not (
+                            os.path.exists(ready) and os.path.getsize(ready) >= 16):
+                        time.sleep(0.02)
+                    self.up = True
+                time.sleep(seconds)
+
+        config = rl.make_config("1b", self.dir, workers=16, max_seconds=1)
+        driver = rl.Driver(config, (rl.PERL, "-e", program), AfterTheWorkersAreUp(), subprocess.Popen,
+                           echo=lambda text: None)
+
+        def reap():
+            path = os.path.join(self.dir, "busy-1b.pids")
+            for pid in read(path).split() if os.path.exists(path) else []:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(int(pid), signal.SIGKILL)
+
+        self.addCleanup(reap)
+        with mock.patch.object(rl, "STOP_GRACE_SECONDS", 0.4):
+            code = driver.run()
+        pids = [int(p) for p in read(os.path.join(self.dir, "busy-1b.pids")).split()]
+        self.assertEqual(len(pids), 16)
+        log = read(os.path.join(self.dir, "load-1b.log"))
+        self.assertEqual(log.count("ignored SIGTERM: SIGKILL"), 16)  # the SIGKILL path really ran
+        self.assertNotIn("STILL RUNNING", log)
+        self.assertEqual(code, rl.EXIT_OK)
+        self.assertEqual([c.kind for c in map(rw.parse_ctx_line, read(
+            os.path.join(self.dir, "phases.log")).splitlines())], ["load-start", "load-stop"])
+        self.assertFalse([p for p in pids if RealProcesses.alive(p)])
+
+
+class CheckSet(Base):
+    """`--check-set FILE`: what 1d would make of a `set --json` file, read-only."""
+
+    def check(self, *lines, extra=(), name="set-1a.ndjson"):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("".join(line + "\n" for line in lines))
+        return self.run_check(path, *extra)
+
+    @staticmethod
+    def run_check(path, *extra):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rl.main(["--check-set", path] + list(extra))
+        return code, out.getvalue()
+
+    def test_the_documented_started_line_is_read_and_its_target_and_source_are_printed(self):
+        code, out = self.check(DOCUMENTED_STARTED)
+        self.assertEqual(code, 0)
+        self.assertIn("started at 2026-10-07T23:24:57Z (epoch 1791415497.000)", out)
+        self.assertIn("fan 0 target 4670 RPM, source: started.fans[0].commandedRPM", out)
+        self.assertIn("--target-rpm is 5777 and differs; 1d uses `started`'s", out)
+        # the parser sees the same thing
+        event = rl.parse_set_event(DOCUMENTED_STARTED)
+        self.assertEqual((event.event, event.target), ("started", 4670.0))
+
+    def test_a_whole_hold_is_read_and_its_end_is_named(self):
+        code, out = self.check(started_line(T0), event_line("holding", T0 + 5), event_line("ended", T0 + 20))
+        self.assertEqual(code, 0)
+        self.assertIn("then ended at %s" % iso_seconds(T0 + 20), out)
+        self.assertIn("fan 0 target 5777 RPM, source: started.fans[0].commandedRPM", out)
+        self.assertNotIn("differs", out)
+
+    def test_a_started_with_no_target_says_it_would_use_the_flag(self):
+        code, out = self.check(event_line("started", T0), extra=["--target-rpm", "3455"])
+        self.assertEqual(code, 0)  # a usable `started`: 1d can run from it
+        self.assertIn("fan 0 target 3455 RPM, source: --target-rpm (`started` carries no usable "
+                      "fans[0].commandedRPM", out)
+
+    def test_no_usable_started_is_exit_3_and_says_why(self):
+        for label, lines in (
+                ("empty", []), ("only junk", ["not json", "{", "[1]"]),
+                ("only failed", [event_line("failed", T0)]),
+                ("started without a time", ['{"event":"started","fans":[]}']),
+                ("a started that is not a string", ['{"at":"%s","event":7}' % iso_seconds(T0)]),
+                ("a time that is not UTC", ['{"at":"2026-10-07 23:24:57","event":"started"}'])):
+            with self.subTest(label):
+                code, out = self.check(*lines)
+                self.assertEqual(code, 3, out)
+                self.assertIn("no `started` event", out)
+        code, out = self.run_check(os.path.join(self.dir, "nowhere.ndjson"))
+        self.assertEqual(code, 3)
+        self.assertIn("cannot read", out)
+
+    def test_the_first_started_is_the_one_read(self):
+        code, out = self.check(started_line(T0, rpm=4000), started_line(T0 + 50, rpm=5000))
+        self.assertIn("fan 0 target 4000 RPM", out)
+
+    def test_it_forks_nothing_and_writes_nothing(self):
+        path = os.path.join(self.dir, "set-1a.ndjson")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(started_line(T0) + "\n")
+        os.chmod(path, 0o444)
+        os.chmod(self.dir, 0o555)  # read-only: any file it tried to make would fail
+        self.addCleanup(os.chmod, self.dir, 0o755)
+        before = sorted(os.listdir(self.dir)), os.stat(path).st_mtime_ns
+        forbidden = []
+        real_open = builtins.open
+
+        def guarded_open(file, mode="r", *args, **kwargs):
+            if any(flag in mode for flag in "wax+"):
+                forbidden.append(("open", file, mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        def refuse(name):
+            def called(*args, **kwargs):
+                forbidden.append((name, args))
+                raise AssertionError("--check-set called %s" % name)
+            return called
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(rl, "open", guarded_open, create=True))
+            for owner, name in ((subprocess, "Popen"), (subprocess, "run"), (os, "fork"), (os, "system"),
+                                (os, "kill"), (os, "unlink"), (os, "mkdir")):
+                if hasattr(owner, name):
+                    stack.enter_context(mock.patch.object(owner, name, refuse(name)))
+            code, out = self.run_check(path)
+        self.assertEqual((code, forbidden), (0, []))
+        self.assertEqual((sorted(os.listdir(self.dir)), os.stat(path).st_mtime_ns), before)
+
+    def test_it_takes_no_other_flag_and_checks_its_own(self):
+        path = os.path.join(self.dir, "set-1a.ndjson")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(started_line(T0) + "\n")
+        for extra in (["--mode", "1d"], ["--dir", self.dir], ["--workers", "4"], ["--max-seconds", "5"],
+                      ["--arm-timeout", "20"], ["--fans", path], ["--phases", path], ["--set-json", path],
+                      ["--target-rpm", "nan"], ["--target-rpm", "0"]):
+            with self.subTest(extra=extra):
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                    self.run_check(path, *extra)
+                self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(os.listdir(self.dir), ["set-1a.ndjson"])
+
+    def test_without_it_a_mode_and_a_directory_are_required(self):
+        for argv in ([], ["--mode", "1b"], ["--dir", self.dir]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                    rl.main(argv, worker_argv=FAKE_ARGV, install_signals=False)
+                self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(os.listdir(self.dir), [])
 
 
 @unittest.skipUnless(captures_dir(), "P1's captures are not on this machine")
@@ -870,14 +1504,26 @@ class AgainstP1(Base):
         samples = [(rl.parse_fan_sample(l), l) for l in self.lines if l.startswith("{") and '"kind":"sample"' in l]
         return samples[first:first + count]
 
-    def replay_real(self, samples, started_at, **cfg):
+    @staticmethod
+    def as_held(line):
+        """A real line with fan 0's mode read as 1, which is what a held fan reads. P1 never held
+        a fan (Apple ran both), so that one value is substituted; every key, type and stamp
+        around it is the real one."""
+        record = json.loads(line)
+        for reading in record["readings"]:
+            if reading["key"] == "F0Md":
+                reading["value"] = 1
+        return json.dumps(record, sort_keys=True, separators=(",", ":"))
+
+    def replay_real(self, samples, started_at, held=True, rpm=5777, **cfg):
         """The 1d driver over real lines, appended to the file as the fake clock passes their
-        stamps."""
+        stamps. With `held` each line's F0Md is read as 1 (see `as_held`); without it the lines
+        are P1's own, in which Apple, not a hold, has fan 0 at its target."""
         fans = os.path.join(self.dir, "fans-10hz.ndjson")
         open(fans, "w").close()
-        queue = list(samples)
+        queue = [(s, self.as_held(l) if held else l) for s, l in samples]
         with open(os.path.join(self.dir, "set-1d.ndjson"), "w", encoding="utf-8") as handle:
-            handle.write(started_line(started_at) + "\n")
+            handle.write(started_line(started_at, rpm) + "\n")
 
         def feed(clock):
             due = []
@@ -899,9 +1545,20 @@ class AgainstP1(Base):
         window = samples[max(0, first - 50):first + 400]
         run_start = next(s.t for s, _ in window if s.v["F0Tg"] == 3455.0)
         expected = next(s.t for s, _ in window if s.v["F0Tg"] == 3455.0 and s.t - run_start >= 10.0)
-        self.replay_real(window, started_at=window[0][0].t, target_rpm=3455.0, max_seconds=1)
+        self.replay_real(window, started_at=window[0][0].t, rpm=3455, max_seconds=1)
         t_l = self.ctx("load-start")[0].t
         self.between(t_l, expected, expected + 0.35)
+
+    def test_p1s_real_plateau_under_apples_control_is_not_a_hold(self):
+        # The same 3455 RPM plateau, as P1 recorded it: Apple's controller, fan 0 in mode 0. A
+        # target on its number is not a hold. This is the shape 1d's driver must not start on.
+        samples = [(rl.parse_fan_sample(l), l) for l in self.lines if l.startswith("{") and '"kind":"sample"' in l]
+        first = next(i for i, (s, _) in enumerate(samples) if s.v["F0Tg"] == 3455.0)
+        window = samples[max(0, first - 50):first + 400]
+        self.assertEqual({s.v["F0Md"] for s, _ in window if s.v["F0Tg"] == 3455.0}, {0.0})
+        self.replay_real(window, started_at=window[0][0].t, held=False, rpm=3455, max_seconds=1)
+        self.assertEqual(self.code, rl.EXIT_NOT_STARTED)
+        self.assertEqual((self.spawner.workers, self.phases()), ([], []))
 
     def test_f1tg_leaving_0_is_found_in_p1s_real_lines_where_an_independent_scan_finds_it(self):
         # load B started at 02:19:52Z and fan 1's target left 0 14.1 s later
