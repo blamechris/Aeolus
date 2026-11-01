@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
 
+
 def blank_function(source, name):
     """`source` with the body of the one function called `name` replaced by `return`."""
     tree = ast.parse(source)
@@ -78,7 +79,7 @@ class Sweep:
         if os.path.isdir(fixtures) and not os.path.isdir(os.path.join(target, "fixtures")):
             shutil.copytree(fixtures, os.path.join(target, "fixtures"))
         for name in sorted(os.listdir(HERE)):
-            if name.endswith(".sh"):
+            if name.endswith(".sh") or name == "README.md":  # a test reads the README
                 shutil.copy(os.path.join(HERE, name), os.path.join(target, name))
             if not name.endswith(".py") or name in ("mutate.py", "dryrun.py"):
                 continue

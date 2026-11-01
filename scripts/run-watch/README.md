@@ -121,6 +121,41 @@ Any abort called ends the session's forward writes (item 7).
 Every 5 s a `STATUS` line records the step, the hold, the seven fan values, the hottest, the
 thresholds in force, the time since engage and since t_L, the pressure level, and any alert states.
 
+## Derived-gate notes (`GATE` lines)
+
+The runbook's gates that are a matter of arithmetic are evaluated here, once, so that nobody does
+them by hand (the fixes' section C, critic S5): **"at rest"**, **T0**, **1b's engaged condition**
+and the **30-minute at-rest clock**. They are **advice, never spoken**: a `GATE` line is not an
+alert, is not counted as a note or a warning, sets no `ALERT` file, and a bug in one is an `ERROR`
+line and nothing said. A gate's line is written when its state changes, so **the newest line for
+a gate is its present state**; the `STATUS` line every 5 s says the watcher is alive.
+
+Every line is `<time> GATE <name>=<value> <key>=<value> ...`, with no other text, so that
+`grep` and `awk` can read it. The runbook greps for the name:
+
+```sh
+grep ' GATE at-rest=' ~/aeolus-captures/run1/watch.log | tail -n 1
+grep ' GATE t0='      ~/aeolus-captures/run1/watch.log | tail -n 1
+grep ' GATE engaged=' ~/aeolus-captures/run1/watch.log | tail -n 1
+grep ' GATE rest-clock=' ~/aeolus-captures/run1/watch.log | tail -n 1
+```
+
+| Line | Means |
+|---|---|
+| `at-rest=YES held=61.2s hottest=36.40 limit=38.88 t0=35.88` | Both fans read raw `3` with a target of `0`, and `Ftst` reads `0`, for at least 60 s (item 8: a span of 59.5 s counts, as the fans' stamps are 0.1 s apart), and the hottest curated is at most T0 + 3 C. The fan samples are the newest, and the package sample is under 3 s older |
+| `at-rest=NO why=<w> held=.. hottest=.. limit=.. t0=.. F0Md=.. F1Md=.. Ftst=.. F0Tg=.. F1Tg=..` | Not at rest. `<w>` is the first clause that fails, in this order: `stale` (no fan sample for 2 s), `step-open` (a `CTX` step is open, or a hold is active: it is an entry gate), `fans` (a sample is not at rest: the five values are on the line), `short` (at rest, but under 60 s), `t0` (no T0 yet), `package` (the package record is behind the fans' by 3 s), `warm` (the hottest is over the limit). A mode of `0` is Apple's, but it is not rest |
+| `t0=35.88 n=118 span=119.9s ok=YES limit=50 state=provisional window=<from>/<to>` | The median of the hottest curated over the newest complete quiescence window: 120 s (a span of 119.5 s) in which `Ftst` is `0`, both modes are in `{0, 3}`, and no fan reads `3` with a target above `0` (D9, the runbook's `quiescence.jq`), with at least 100 package samples. `ok=YES` is T0 below 50 C. A gap of over 2 s in the fan record ends a window. It **follows the machine, and is written once a minute, until the first `CTX armed` or `CTX step=` line**; then it is **frozen** (`state=frozen by=CTX_armed`, written once) and the run keeps it. Quote the frozen line |
+| `t0=unavailable n=90 need=100 window=<from>/<to>` | A complete window with too few package samples. `t0=unavailable freeze-at=CTX_armed`: `armed` came before any window; T0 freezes at the first one |
+| `engaged=rising held=4.1s thr=1650 F0Tg=1700 F0Mn=1350` | 1b's engaged condition has begun: `F0Tg` is at least `F0Mn` + 300 RPM (`F0Mn` is the one the package file reports, 1,350 until read). `YES` at 30 s; `NO` when it falls below; `stale` when the fan record has stopped. Nothing is written until it first rises. On P1's sixteen-way load it says `YES` 56 s in, the ADR's figure |
+| `rest-clock=START limit=1800s from=CTX_armed` | The 30-minute clock for the at-rest gate to hold starts at `CTX armed` (the entry to 1a), and at each `CTX step=none` that closes a step other than 1b's (`from=CTX_step=none_after_step_1a`; 1b's load goes on under 1b', so its cool-down is 1b''s) |
+| `rest-clock=TICKING elapsed=120s left=1680s at-rest=NO why=<w>` | Once a minute while the gate has not held, with the clause that fails |
+| `rest-clock=MET elapsed=114s limit=1800s` | The at-rest gate held in time. The clock stops |
+| `rest-clock=EXPIRED elapsed=1800s limit=1800s action=no-forward-writes` | It did not hold in 30 minutes: the session writes nothing forward (item 8) |
+| `rest-clock=ABANDONED elapsed=412s was=ticking step=1a` | A step opened while the clock was still ticking, or after it had expired: the step ran on a gate that never held |
+
+These are `Mac16,5` figures like the rest, and the gates read the files the rules read. A replay
+writes the same lines (stamped by the capture), which is how they are tested against P1.
+
 ## Stopping it
 
 Everything is stopped **by PID**, at the end, **after the reinstall of the `main` helper**, and

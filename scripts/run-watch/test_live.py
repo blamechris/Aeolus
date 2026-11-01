@@ -377,6 +377,30 @@ class LiveLoop(unittest.TestCase):
             self.assertEqual(kinds, {"package"})
             self.assertGreater(len(events), 50)  # the package file is there to be sorted against
 
+    def test_the_gate_notes_are_in_the_log_and_never_said(self):
+        run = idle(200, hottest=40.0).add_ctx(5, "armed")
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 190)
+        log = read(os.path.join(directory, "watch.log"))
+        for name in ("at-rest=YES", "t0=40.00", "rest-clock=MET"):
+            self.assertIn(" GATE " + name, log)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+        self.assertEqual(system.sounds(), [])
+        self.assertFalse(os.path.exists(os.path.join(directory, "ALERT")))
+
+    def test_a_gate_that_raises_is_logged_once_and_never_said(self):
+        # A bug in advice must not be heard as 'watcher error' in a hold, where it would send the
+        # operator to reset for a note he was never to act on. The rules after it still run.
+        run = idle(80).patch_hottest(30, 31, 90.0)
+        with mock.patch.object(rw.Watcher, "check_gate_rest", side_effect=ValueError("always")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)  # not one per sample
+        self.assertIn("ValueError: always", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
             with self.assertRaises(ValueError):

@@ -72,6 +72,23 @@ R11_TEMPERATURE = 50.0
 FAN_STALE_SECONDS = 2.0  # rule 12
 PACKAGE_STALE_SECONDS = 5.0
 
+# Derived gates (the run-1 amendment, items 8 and 12; the fixes' section C, critic S5). The facts
+# the runbook reads are evaluated here, once, instead of by hand. They are logged as GATE lines
+# and never spoken.
+GATE_REST_SECONDS = 60.0  # "at rest" must have held this long ...
+GATE_REST_MARGIN = 3.0  # ... with the hottest curated at most T0 + this
+GATE_QUIESCENCE_SECONDS = 120.0  # D9's quiescence window; T0 is the median over it
+GATE_SPAN_TOLERANCE = 0.5  # a window of L s is complete at a span of L - 0.5 s (10 Hz stamps)
+GATE_MAX_GAP = FAN_STALE_SECONDS  # a gap in the fan record this long ends a run: nobody saw it
+GATE_PACKAGE_FRESH = 3.0  # the package sample a gate reads is under this much older than the fans'
+GATE_T0_LIMIT = 50.0  # T0 must be below this
+GATE_T0_MIN_SAMPLES = 100  # package samples in T0's window
+GATE_ENGAGED_ABOVE_F0MN = 300.0  # 1b's engaged condition: F0Tg at least F0Mn + this ...
+GATE_ENGAGED_SECONDS = 30.0  # ... for this long
+GATE_CLOCK_SECONDS = 1800.0  # the at-rest clock: 30 minutes
+GATE_EVERY_SECONDS = 60.0  # a provisional T0 and a ticking clock are logged this often
+GATE_FAN_KEYS = ("F0Md", "F1Md", "Ftst", "F0Tg", "F1Tg")
+
 REPEAT_SECONDS = 15.0  # an alert state repeats aloud this often while it holds
 LATCH_SECONDS = 120.0  # an event alert (a log line, a changed value) holds this long
 STATUS_SECONDS = 5.0
@@ -475,6 +492,23 @@ class Watcher:
         self.r4_pending = []
         self.r10_since = None
         self.r11 = None
+        # derived gates: logged, never spoken
+        self.gate_keys = {}  # per gate, the state its last line described
+        self.quiet_since = None  # first sample of the fans' newest run of D9 quiescence
+        self.rest_since = None  # ... of their newest run of "at rest"
+        self.engaged_since = None  # ... of their newest run of F0Tg >= F0Mn + 300
+        self.pkg_log = deque()  # (t, hottest) over the last 130 s: T0's window
+        self.t0 = None
+        self.t0_n = 0
+        self.t0_window = None
+        self.t0_dirty = False  # a package sample has arrived since T0 was last worked out
+        self.t0_frozen = False
+        self.t0_frozen_by = None
+        self.t0_freeze_pending = None  # why T0 freezes at the first window after it, if it must
+        self.rest_yes = False
+        self.clock_start = None  # the at-rest clock: when it started (event time) ...
+        self.clock_why = None  # ... and why
+        self.clock_state = None  # None, "ticking", "met" or "expired"
 
     # ---------------------------------------------------------------- bookkeeping
 
@@ -594,6 +628,7 @@ class Watcher:
         self._trim(self.fan_hist, sample.t)
         self.ended_sources.discard("fans")  # a sampler that has started again is no longer over
         guard = self._guard
+        self._gate_guard(self.check_gate_runs, sample)
         guard(self._track_restore)
         guard(self._track_r11_release, sample)
         guard(self.check_r2_automatic, sample)
@@ -759,6 +794,10 @@ class Watcher:
             self.hottest = p.hottest
             self.pkg_hist.append((p.t, p.hottest))
             self._trim(self.pkg_hist, p.t, key=lambda item: item[0])
+            self.pkg_log.append((p.t, p.hottest))
+            self._trim(
+                self.pkg_log, p.t, key=lambda item: item[0], span=GATE_QUIESCENCE_SECONDS + 10.0)
+            self.t0_dirty = True
         mn = p.f.get("F0Mn")
         if mn is not None and mn > 0:
             self.f0mn = mn
@@ -949,7 +988,9 @@ class Watcher:
     def on_ctx(self, c):
         self._bump(c.t)
         kind = c.kind
+        closing = self.step  # the step a `step=none` closes, for the at-rest clock
         self._guard(self.check_x_bad_context, c)
+        self._gate_guard(self.track_gate_ctx, c, closing)
         if kind == "armed":
             self.armed, self.armed_t = True, c.t
             self.armed_pids = frozenset([c.pid]) if c.pid else self.last_pgrep
@@ -1086,6 +1127,10 @@ class Watcher:
         guard(self.check_r8_restore)
         guard(self.check_r11_time)
         guard(self.check_r12_blind)
+        self._gate_guard(self.check_gate_t0)
+        self._gate_guard(self.check_gate_rest)
+        self._gate_guard(self.check_gate_engaged)
+        self._gate_guard(self.check_gate_clock)
         guard(self._pump_speech)
         if self.next_status is not None and self.now >= self.next_status:
             self.next_status = self.now + STATUS_SECONDS
@@ -1139,12 +1184,234 @@ class Watcher:
             "r12-logstream", title, self.logstream_alive is False,
             "the log stream's process is gone")
 
+    # ---------------------------------------------------------------- derived gates (GATE lines)
+    #
+    # Advice, not rules. A gate states a fact the runbook needs (is the machine at rest, what was
+    # T0, has 1b engaged, how long has the cool-down run) so that nobody works it out by hand. Its
+    # line is written when its state changes, is neither an alert nor a note nor a warning, and is
+    # never spoken. The newest `GATE <name>=` line is the gate's present state.
+
+    def _gate_guard(self, check, *args):
+        """Run one gate check. A gate is advice, so a bug in one is written to watch.log as an
+        ERROR line, once per kind, and is not an alert: 'watcher error' said aloud in a hold would
+        send the operator to reset for a note he was never meant to act on."""
+        if not self.guard:
+            check(*args)
+            return
+        try:
+            check(*args)
+        except Exception as error:  # noqa: BLE001  advice must not stop the rules after it
+            key = ("gate", getattr(check, "__name__", "a gate"), type(error).__name__, str(error)[:200])
+            count = self.error_counts[key] = self.error_counts.get(key, 0) + 1
+            if count % 1000 == 1:  # the first occurrence, and every thousandth after it
+                trace = " | ".join(traceback.format_exc().strip().splitlines()[-4:])
+                self.out.line(
+                    self._stamp(), "ERROR",
+                    "gate check %s raised: %s (occurrence %d); the gate notes are advice and "
+                    "nothing was said" % (key[1], trace, count))
+
+    def gate(self, name, state, text):
+        """One GATE line, if `state` is not what the gate's last line described."""
+        if name in self.gate_keys and self.gate_keys[name] == state:
+            return False
+        self.gate_keys[name] = state
+        self.out.line(self._stamp(), "GATE", text)
+        return True
+
+    @staticmethod
+    def _run(since, holds, gap, t):
+        """The start of a run of samples that satisfy a predicate, after the sample at `t`."""
+        if not holds:
+            return None
+        return t if since is None or gap else since
+
+    def check_gate_runs(self, s):
+        """The newest unbroken stretch of fan samples that satisfy each gate's predicate. A sample
+        that breaks it, or a gap in the record longer than 2 s, ends it: a stretch nobody
+        recorded is not evidence of rest."""
+        v = s.v
+        gap = self.fan_prev is not None and s.t - self.fan_prev.t > GATE_MAX_GAP
+        have = all(key in v for key in GATE_FAN_KEYS)
+        quiet = have and v["Ftst"] == 0 and all(
+            v["F%dMd" % n] in SAFE_MODES and not (v["F%dMd" % n] == 3 and v["F%dTg" % n] > 0)
+            for n in (0, 1))
+        rest = have and v["Ftst"] == 0 and all(
+            v["F%dMd" % n] == 3 and v["F%dTg" % n] == 0 for n in (0, 1))
+        engaged = "F0Tg" in v and v["F0Tg"] >= self.f0mn + GATE_ENGAGED_ABOVE_F0MN
+        self.quiet_since = self._run(self.quiet_since, quiet, gap, s.t)
+        self.rest_since = self._run(self.rest_since, rest, gap, s.t)
+        self.engaged_since = self._run(self.engaged_since, engaged, gap, s.t)
+
+    def check_gate_t0(self):
+        """T0: the median of the hottest curated key over the newest complete quiescence window
+        (D9: 120 s with Ftst 0, both modes in Apple's set, and no fan reading 3 with a target
+        above 0). It follows that window until the first `CTX armed` or step line, and is frozen
+        then: the baseline of the run is the one in force when the first write was prepared."""
+        if self.t0_frozen or not self.t0_dirty:
+            return
+        since, end = self.quiet_since, self.fan_last_t
+        if since is None or end is None or end - since < (
+                GATE_QUIESCENCE_SECONDS - GATE_SPAN_TOLERANCE):
+            return  # no complete window yet: T0 stays what it was
+        if self.pkg_last_t is None or end - self.pkg_last_t >= GATE_PACKAGE_FRESH:
+            return  # the package record has not caught up with the window
+        self.t0_dirty = False
+        start = max(since, end - GATE_QUIESCENCE_SECONDS)
+        values = sorted(h for t, h in self.pkg_log if start <= t <= end)
+        n = len(values)
+        if n < GATE_T0_MIN_SAMPLES:
+            self.gate(
+                "t0", ("short", n), "t0=unavailable n=%d need=%d window=%s/%s" % (
+                    n, GATE_T0_MIN_SAMPLES, format_time(start), format_time(end)))
+            return
+        mid = n // 2
+        self.t0 = values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0
+        self.t0_n, self.t0_window = n, (start, end)
+        if self.t0_freeze_pending is not None:
+            self._freeze_t0(self.t0_freeze_pending)
+        else:
+            self._report_t0()
+
+    def _report_t0(self):
+        start, end = self.t0_window
+        state = "frozen" if self.t0_frozen else "provisional"
+        # A provisional T0 follows the machine, so it is written once a minute; a frozen one once.
+        key = (state, self.t0) if self.t0_frozen else (state, int(self.now // GATE_EVERY_SECONDS))
+        self.gate(
+            "t0", key, "t0=%.2f n=%d span=%.1fs ok=%s limit=%g state=%s%s window=%s/%s" % (
+                self.t0, self.t0_n, end - start, "YES" if self.t0 < GATE_T0_LIMIT else "NO",
+                GATE_T0_LIMIT, state,
+                " by=%s" % self.t0_frozen_by.replace(" ", "_") if self.t0_frozen else "",
+                format_time(start), format_time(end)))
+
+    def _freeze_t0(self, why):
+        """Freeze T0 at `why` (the first `CTX armed` or step line), now if there is one, else at
+        the first complete window after it."""
+        if self.t0_frozen:
+            return
+        if self.t0 is None:
+            self.t0_freeze_pending = why
+            self.gate(
+                "t0-pending", why, "t0=unavailable freeze-at=%s" % why.replace(" ", "_"))
+            return
+        self.t0_frozen, self.t0_frozen_by, self.t0_freeze_pending = True, why, None
+        self._report_t0()
+
+    def check_gate_rest(self):
+        """'At rest' (item 8): both fans raw 3 with a target of 0, and Ftst 0, for 60 s, and the
+        hottest curated at most T0 + 3 C. It is an entry gate, so an open step is not at rest."""
+        s = self.fan
+        if s is None:
+            return
+        held = 0.0 if self.rest_since is None else self.fan_last_t - self.rest_since
+        limit = None if self.t0 is None else self.t0 + GATE_REST_MARGIN
+        if self.now - self.fan_last_t > FAN_STALE_SECONDS:
+            why = "stale"
+        elif self.step is not None or self.hold_active:
+            why = "step-open"
+        elif self.rest_since is None:
+            why = "fans"
+        elif held < GATE_REST_SECONDS - GATE_SPAN_TOLERANCE:
+            why = "short"
+        elif self.t0 is None:
+            why = "t0"
+        elif self.hottest is None or self.pkg_last_t is None or (
+                self.fan_last_t - self.pkg_last_t >= GATE_PACKAGE_FRESH):
+            why = "package"
+        elif self.hottest > limit:
+            why = "warm"
+        else:
+            why = None
+        self.rest_yes = why is None
+        facts = "held=%.1fs hottest=%s limit=%s t0=%s" % (
+            held, "?" if self.hottest is None else "%.2f" % self.hottest,
+            "?" if limit is None else "%.2f" % limit, "?" if self.t0 is None else "%.2f" % self.t0)
+        if why is None:
+            self.gate("at-rest", why, "at-rest=YES %s" % facts)
+        else:
+            self.gate("at-rest", why, "at-rest=NO why=%s %s %s" % (
+                why, facts, " ".join("%s=%g" % (k, s.v[k]) for k in GATE_FAN_KEYS if k in s.v)))
+
+    def check_gate_engaged(self):
+        """1b's engaged condition (item 8): F0Tg at least F0Mn + 300 RPM (1,650 on this Mac) for
+        30 s. Nothing is written until it first rises."""
+        if self.fan is None:
+            return
+        threshold = self.f0mn + GATE_ENGAGED_ABOVE_F0MN
+        held = 0.0 if self.engaged_since is None else self.fan_last_t - self.engaged_since
+        if self.now - self.fan_last_t > FAN_STALE_SECONDS:
+            state = "stale"
+        elif self.engaged_since is None:
+            state = "NO"
+        else:
+            state = "YES" if held >= GATE_ENGAGED_SECONDS else "rising"
+        if state == "NO" and "engaged" not in self.gate_keys:
+            return
+        self.gate(
+            "engaged", state, "engaged=%s held=%.1fs thr=%g F0Tg=%s F0Mn=%g" % (
+                state, held, threshold, "%g" % self.fan.v["F0Tg"] if "F0Tg" in self.fan.v else "?",
+                self.f0mn))
+
+    def track_gate_ctx(self, c, closing):
+        """The CTX lines the gates depend on. The at-rest clock starts at `armed` (the entry to
+        1a) and at the end of each step but 1b's, whose load 1b' continues under (the cool-down
+        after the others). T0 freezes at the first `armed` or step line."""
+        if c.kind == "armed":
+            self._freeze_t0("CTX armed")
+            self._start_clock(c.t, "CTX armed")
+        elif c.kind == "step":
+            if c.step in (None, "none"):
+                if closing is not None and closing != "1b":
+                    self._start_clock(c.t, "CTX step=none after step %s" % closing)
+            else:
+                self._freeze_t0("CTX step=%s" % c.step)
+                self._end_clock(c.step)
+
+    def _start_clock(self, t, why):
+        self.clock_start, self.clock_why, self.clock_state = t, why, "ticking"
+        self.gate(
+            "rest-clock", ("start", t), "rest-clock=START limit=%gs from=%s" % (
+                GATE_CLOCK_SECONDS, why.replace(" ", "_")))
+
+    def _end_clock(self, step):
+        """A step opened: the entry was used, or skipped. A clock that was still ticking, or had
+        expired, is written down as abandoned, because the step ran on a gate that never held."""
+        if self.clock_state in ("ticking", "expired"):
+            self.gate(
+                "rest-clock", ("abandoned", self.clock_start),
+                "rest-clock=ABANDONED elapsed=%.0fs was=%s step=%s" % (
+                    self.now - self.clock_start, self.clock_state, step))
+        self.clock_start, self.clock_why, self.clock_state = None, None, None
+
+    def check_gate_clock(self):
+        """The at-rest clock: 30 minutes from the end of a step (or `armed`) for the at-rest gate
+        to hold. If it does not, the session writes nothing forward (item 8)."""
+        if self.clock_state != "ticking":
+            return
+        elapsed = self.now - self.clock_start
+        if self.rest_yes:
+            self.clock_state = "met"
+            self.gate(
+                "rest-clock", ("met", self.clock_start),
+                "rest-clock=MET elapsed=%.0fs limit=%gs" % (elapsed, GATE_CLOCK_SECONDS))
+        elif elapsed >= GATE_CLOCK_SECONDS:
+            self.clock_state = "expired"
+            self.gate(
+                "rest-clock", ("expired", self.clock_start),
+                "rest-clock=EXPIRED elapsed=%.0fs limit=%gs action=no-forward-writes" % (
+                    elapsed, GATE_CLOCK_SECONDS))
+        elif elapsed >= GATE_EVERY_SECONDS:  # the START line covers the first minute
+            self.gate(
+                "rest-clock", ("ticking", self.clock_start, int(elapsed // GATE_EVERY_SECONDS)),
+                "rest-clock=TICKING elapsed=%.0fs left=%.0fs at-rest=NO why=%s" % (
+                    elapsed, GATE_CLOCK_SECONDS - elapsed, self.gate_keys.get("at-rest")))
+
     # ---------------------------------------------------------------- shared tracking
 
     @staticmethod
-    def _trim(history, t, key=None):
+    def _trim(history, t, key=None, span=HISTORY_SECONDS):
         key = key or (lambda item: item.t)
-        while history and t - key(history[0]) > HISTORY_SECONDS:
+        while history and t - key(history[0]) > span:
             history.popleft()
 
     def _f1_reads_zero(self):

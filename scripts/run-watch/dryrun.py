@@ -932,6 +932,93 @@ UNIT_ONLY = [
     ("S5: `Could not undo` read anywhere in the line", (
         "text", 'msg.startswith("Could not undo the engagement of fan ")',
         '"Could not undo the engagement" in msg')),
+    # The derived-gate notes: one mutant for each guard and each constant
+    ("gate: a gate line is an alert", (
+        "text", 'self.out.line(self._stamp(), "GATE", text)',
+        'self.event("gate-" + name, "GATE", text)')),
+    ("gate: a gate that raises on every sample writes a traceback at every one", (
+        "text", "if count % 1000 == 1:  # the first occurrence", "if True:  # the first occurrence")),
+    ("gate: a gate that raises is heard as a watcher error", (
+        "replace", "_gate_guard", "def _gate_guard(self, check, *args):\n    self._guard(check, *args)\n")),
+    ("gate quiet: Ftst is not a clause", (
+        "text", 'quiet = have and v["Ftst"] == 0 and all(', "quiet = have and all(")),
+    ("gate quiet: a mode outside Apple's set is not a clause", (
+        "text", 'v["F%dMd" % n] in SAFE_MODES and not (v["F%dMd" % n] == 3 and v["F%dTg" % n] > 0)',
+        'not (v["F%dMd" % n] == 3 and v["F%dTg" % n] > 0)')),
+    ("gate quiet: a fan reading 3 with a target is not a clause", (
+        "text", ' and not (v["F%dMd" % n] == 3 and v["F%dTg" % n] > 0)', "")),
+    ("gate quiet: a key that did not read ok does not break the run", (
+        "text", "have = all(key in v for key in GATE_FAN_KEYS)", "have = True")),
+    ("gate rest: Ftst is not a clause", (
+        "text", 'rest = have and v["Ftst"] == 0 and all(', "rest = have and all(")),
+    ("gate rest: a mode of 0 is rest as well as 3", (
+        "text", 'v["F%dMd" % n] == 3 and v["F%dTg" % n] == 0 for n in (0, 1))',
+        'v["F%dMd" % n] in SAFE_MODES and v["F%dTg" % n] == 0 for n in (0, 1))')),
+    ("gate rest: a target above 0 is not a clause", (
+        "text", 'v["F%dMd" % n] == 3 and v["F%dTg" % n] == 0 for n in (0, 1))',
+        'v["F%dMd" % n] == 3 for n in (0, 1))')),
+    ("gate runs: a gap in the fan record does not end a run", (
+        "text", "gap = self.fan_prev is not None and s.t - self.fan_prev.t > GATE_MAX_GAP",
+        "gap = False")),
+    ("gate T0: a window is complete at any span", (
+        "text", "GATE_QUIESCENCE_SECONDS - GATE_SPAN_TOLERANCE):", "0.0):")),
+    ("gate T0: the package record need not have caught up", (
+        "text", "if self.pkg_last_t is None or end - self.pkg_last_t >= GATE_PACKAGE_FRESH:",
+        "if False:")),
+    ("gate T0: a window with 1 package sample is enough", (
+        "text", "GATE_T0_MIN_SAMPLES = 100", "GATE_T0_MIN_SAMPLES = 1")),
+    ("gate T0: the upper middle value, not the mean of the two", (
+        "text", "values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0", "values[mid]")),
+    ("gate T0: the mean, not the median", (
+        "text", "values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0", "sum(values) / n")),
+    ("gate T0: ok below 50.2, not 50", (
+        "text", "GATE_T0_LIMIT = 50.0", "GATE_T0_LIMIT = 50.2")),
+    ("gate T0: not frozen by CTX armed", (
+        "text", 'self._freeze_t0("CTX armed")', "pass")),
+    ("gate T0: not frozen by a step line", (
+        "text", 'self._freeze_t0("CTX step=%s" % c.step)', "pass")),
+    ("gate T0: armed before any window freezes nothing", (
+        "text", "            self.t0_freeze_pending = why\n", "            pass\n")),
+    ("gate rest: an open step is at rest", (
+        "text", "elif self.step is not None or self.hold_active:", "elif self.hold_active:")),
+    ("gate rest: a hold with no step open is at rest", (
+        "text", "elif self.step is not None or self.hold_active:", "elif self.step is not None:")),
+    ("gate rest: 30 s are enough", (
+        "text", "GATE_REST_SECONDS = 60.0", "GATE_REST_SECONDS = 30.0")),
+    ("gate rest: T0 + 4, not T0 + 3", (
+        "text", "GATE_REST_MARGIN = 3.0", "GATE_REST_MARGIN = 4.0")),
+    ("gate rest: at T0 + 3 is too warm", (
+        "text", "elif self.hottest > limit:", "elif self.hottest >= limit:")),
+    ("gate rest: a package record behind the fans' does not matter", (
+        "text", "self.fan_last_t - self.pkg_last_t >= GATE_PACKAGE_FRESH):", "False):")),
+    ("gate rest: a stale fan record is at rest", (
+        "text", '        if self.now - self.fan_last_t > FAN_STALE_SECONDS:\n            why = "stale"',
+        '        if False:\n            why = "stale"')),
+    ("gate engaged: the threshold is 1,650, not F0Mn + 300", (
+        "text", 'engaged = "F0Tg" in v and v["F0Tg"] >= self.f0mn + GATE_ENGAGED_ABOVE_F0MN',
+        'engaged = "F0Tg" in v and v["F0Tg"] >= 1650.0')),
+    ("gate engaged: F0Mn + 200", (
+        "text", "GATE_ENGAGED_ABOVE_F0MN = 300.0", "GATE_ENGAGED_ABOVE_F0MN = 200.0")),
+    ("gate engaged: strictly above the threshold", (
+        "text", 'v["F0Tg"] >= self.f0mn + GATE_ENGAGED_ABOVE_F0MN', 'v["F0Tg"] > self.f0mn + GATE_ENGAGED_ABOVE_F0MN')),
+    ("gate engaged: 20 s, not 30", (
+        "text", "GATE_ENGAGED_SECONDS = 30.0", "GATE_ENGAGED_SECONDS = 20.0")),
+    ("gate engaged: a stale fan record is still engaged", (
+        "text", '        if self.now - self.fan_last_t > FAN_STALE_SECONDS:\n            state = "stale"',
+        '        if False:\n            state = "stale"')),
+    ("gate clock: the end of every step starts it, 1b's too", (
+        "text", 'if closing is not None and closing != "1b":', "if closing is not None:")),
+    ("gate clock: CTX armed does not start it", (
+        "text", '            self._start_clock(c.t, "CTX armed")', "            pass")),
+    ("gate clock: 25 minutes, not 30", (
+        "text", "GATE_CLOCK_SECONDS = 1800.0", "GATE_CLOCK_SECONDS = 1500.0")),
+    ("gate clock: the gate holding does not meet it", (
+        "text", "        if self.rest_yes:\n            self.clock_state = \"met\"",
+        "        if False:\n            self.clock_state = \"met\"")),
+    ("gate clock: a step that opens early abandons nothing", (
+        "text", 'if self.clock_state in ("ticking", "expired"):', "if False:")),
+    ("gate clock: it ticks from the first second", (
+        "text", "elif elapsed >= GATE_EVERY_SECONDS:", "elif True:")),
 ]
 
 
@@ -1016,7 +1103,9 @@ def d4(p1, work, watcher, mutations):
 #: Functions the unit sweep empties besides BLANKED's (each has its own unit tests, no injection).
 ALSO_BLANKED = (
     "check_r4_escalate", "check_r4_verdict", "_track_restore", "_track_r11_release", "_judge_pending",
-    "_resolve_b", "_pump_speech")
+    "_resolve_b", "_pump_speech",
+    "check_gate_runs", "check_gate_t0", "check_gate_rest", "check_gate_engaged", "check_gate_clock",
+    "track_gate_ctx", "gate")
 
 
 def check_mutations(watcher):
@@ -1065,6 +1154,7 @@ def unit_sweep(work, mutations, python):
                 "red" if ok else "STILL GREEN"))
     print()
     return allok
+
 
 
 def main():
