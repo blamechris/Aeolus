@@ -213,7 +213,7 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
     /// - Parameters:
     ///   - goal: Where the curve or the user asked the fan to be. Clamped into the fan's
     ///     envelope before anything is written, so § 2 binds this exactly as it binds a
-    ///     safety actor's write.
+    ///     safety actor's write, and raised to the fan's 50 % point when below it (#670).
     ///   - fan: The permit, carrying the index and the gated envelope from one read.
     ///   - elapsed: Time since this fan's last commanded target. Ignored on the first write
     ///     to a fan, which goes straight to the clamped goal: there is no previous target
@@ -233,7 +233,7 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
             stepped = goal
         }
 
-        let commanded = try await plane.commandTarget(fan.target(for: stepped))
+        let commanded = try await plane.commandTarget(fan.clientTarget(for: stepped))
         lastCommandedRPM[fan.index] = commanded.rpm
         return commanded
     }
@@ -246,8 +246,10 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
     /// reply still says applied, which is `CLAUDE.md` rule 6. § 8 shapes the steps a control loop
     /// takes (E8a's loop, which will call `command(towards:of:since:)`), not a client's setpoint.
     ///
-    /// Still clamped: `goal` goes through `CommandableFan.target(for:)`, so § 2's bounds and the
-    /// 0 RPM floor bind it exactly as they bind every other write.
+    /// Still clamped: `goal` goes through `CommandableFan.clientTarget(for:)`, so § 2's bounds and
+    /// the 0 RPM floor bind it exactly as they bind every other write, and a goal below the fan's
+    /// 50 % point is written at that point (#670). The returned target is the raised one, which is
+    /// what § 5 records and the snapshot reports (`CLAUDE.md` rule 6).
     ///
     /// - Returns: the target the plane put on the wire, which is what the caller reports and what
     ///   the next `command(towards:of:since:)` ramps from.
@@ -255,7 +257,7 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
     ///   where it was, as `command(towards:of:since:)` does.
     @discardableResult
     func hold(_ goal: Double, of fan: CommandableFan) async throws -> CommandedTarget {
-        let commanded = try await plane.commandTarget(fan.target(for: goal))
+        let commanded = try await plane.commandTarget(fan.clientTarget(for: goal))
         lastCommandedRPM[fan.index] = commanded.rpm
         return commanded
     }

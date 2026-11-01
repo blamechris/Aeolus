@@ -72,6 +72,30 @@ struct CommandableFan: Sendable, Hashable {
     }
 }
 
+// MARK: - The 50 % point (#670)
+
+/// An extension rather than the struct's body, so the struct holds its permit's storage and mint
+/// alone: `WriteAuthorisationTests` scans that body for anything that could be storage.
+extension CommandableFan {
+
+    /// The 50 % point: the midpoint of `[F<n>Mn, F<n>Mx]` as this permit's read declared them
+    /// (#670). No client target is written below it until run 2 records holds below Apple's
+    /// demand (ADR 0014's minimal-run amendment, item 6 (b)).
+    var clientFloorRPM: Double {
+        (envelope.declaredMinimumRPM + envelope.declaredMaximumRPM) / 2
+    }
+
+    /// A client's speed, clamped as `target(for:)` clamps it and then raised to `clientFloorRPM`
+    /// when it lands below: rule 4's mechanism, narrowing the range and never widening it, and the
+    /// raise goes through the same clamp, so there is still one. Judged after the clamp, so a NaN,
+    /// which the clamp floors, is raised too. Level 6's writer is the one caller (#670).
+    func clientTarget(for requestedRPM: Double) -> AuthorisedFanTarget {
+        let clamped = target(for: requestedRPM)
+        guard clamped.rpm < clientFloorRPM else { return clamped }
+        return target(for: clientFloorRPM)
+    }
+}
+
 /// A speed that may be written, bound to the fan whose read supplied the bounds it was
 /// clamped into.
 ///
