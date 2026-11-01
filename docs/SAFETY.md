@@ -385,16 +385,25 @@ document, not an omission.
 Every target speed is clamped to **`[max(F0Mn, 100), F0Mx]`**, using bounds read from the
 firmware at runtime.
 
-**No client target below the 50 % point, until run 2**
+**No client target below the client floor, until run 2**
 ([#670](https://github.com/blamechris/Aeolus/issues/670); ADR 0014's minimal-run amendment, item 7
-(b)). Level 6's writer clamps a client's target as every write is clamped, and then raises one below
-the midpoint of `[F<n>Mn, F<n>Mx]` to that midpoint, through the same clamp
-(`CommandableFan.clientTarget(for:)`): rule 4's mechanism, narrowing the range. On `Mac16,5` the
-point is 3,563.5 RPM, against P1's highest recorded demand of 3,455 on fan 0, so while § 3, § 4, § 6
-and reconciliation have no hardware row a hold fails loud rather than hot. Safety actors' writes and
-the engaged turn's floor write are unchanged, and the snapshot reports the target the helper holds,
-so a client shows the raised value. Run 2 lowers the point on its own record. *Tested by:*
-`GovernedFanWriterHoldTests`, `GovernedFanWriterTests` and `ClientFloorCompositionTests`.
+(b), as re-ruled on 2026-11-01). Level 6's writer clamps a client's target as every write is clamped,
+and then raises one below the client floor, 65 % of the way from `F<n>Mn` to `F<n>Mx`, to the floor,
+through the same clamp (`CommandableFan.clientTarget(for:)`): rule 4's mechanism, narrowing the range.
+On `Mac16,5` the floor is 4,227.55 RPM. P1's load B recorded Apple's targets at 3,455 RPM on fan 0
+and 3,731 on fan 1; the floor began at the midpoint, 3,563.5, which fan 1's demand exceeds, and was
+raised to the smallest 5 % point that keeps the higher of the two under 90 % of the floor, abort 9's
+margin for Apple's demand overtaking a hold. While § 3, § 4, § 6 and reconciliation have no hardware
+row, that is what makes a hold that nothing ends fail loud rather than hot, **for the loads
+recorded**: P1 was CPU-only, so a recorded load, GPU included, that drives either fan's target above
+90 % of the floor revisits it ([#677](https://github.com/blamechris/Aeolus/issues/677)). The app's
+50 % preset, 3,564 on `Mac16,5`, is below the floor and is held at it, and the snapshot reports the
+target the helper holds, so the app and `fanctl` show the raised value; 75 %, 100 % and Auto are
+unchanged. Safety actors' writes and the engaged turn's floor write are unchanged, and § 5 re-asserts
+a stored target only under the bounds it was admitted under (§ 5). Run 2 lowers the floor on its own
+record. *Tested by:* `GovernedFanWriterHoldTests`, `GovernedFanWriterTests`,
+`ClientFloorTargetTests`, `ClientFloorCompositionTests`, `FanctlSetEveryFanTests` and
+`AllFansClientFloorTests`.
 
 - **The firmware's bounds win.** A configuration file may narrow the usable range; it may
   never widen it, and it is never trusted over what the hardware reports.
@@ -1279,6 +1288,15 @@ after which it falls back and reports. Reclamation during a thermal emergency me
 competent authority — one that can also throttle the SoC, which Aeolus never can — reached
 the same destination first. Aeolus does not fight the system for the fans while any
 temperature is above ceiling.
+
+**A re-assert under bounds that moved writes nothing.** The re-assert reads a fresh envelope, and
+since PR #676 compares its `F<n>Mn` and `F<n>Mx`, by exact value, with the bounds of the permit the
+fan's target was admitted under. When they differ it writes neither the mode nor the target, logs at
+`.fault`, and gives the fan up as it does when no envelope can be read: the fan handed back and its
+lease ended. Re-clamping the stored target into the new bounds, or raising it to their client floor
+(§ 2), would write a target the lease was never given. Bounds have never been seen to move on this
+machine; a move is a read to fix (ADR 0014's minimal-run amendment, item 7's re-ruling). *Tested by:*
+`ReclamationBoundsChangeTests`.
 
 **That rule is asked before the write path, and again after the writes land — with one
 supervisor SMC turn still inside that window** —

@@ -330,7 +330,7 @@ examples are the shapes the end-to-end suites
 `FanctlSetTests.swift`) produce against the real helper session with a simulated fan authority. Replace them with captured output when someone
 records a run.
 
-### Every fan, and no target below the 50 % point (#670)
+### Every fan, and no target below the client floor (#670)
 
 Until a hardware run shows that a fan left on automatic control beside a held one is still managed
 (ADR 0014's U7, run 1d), the helper grants manual control of every fan together or of none. A lease
@@ -339,15 +339,16 @@ below, whose message says to ask for every fan at once; an `apply` must set ever
 covers, or it is refused before anything is read. `fanctl set all` is the all-fans form, and
 `fanctl set <n>` on a machine with more than one fan is that refusal.
 
-Until run 2, the helper also holds no client target below a fan's 50 % point, the midpoint of
-`[F<n>Mn, F<n>Mx]`: 3,563.5 RPM on `Mac16,5`. A lower request is held at the point, and the
-helper's snapshot reports the target it holds, so `fanctl status` shows the raised value, and so
-does `fanctl set`'s start line: `set all 20% --for 30m` says `Holding fan 0 at 3563.50 RPM target
-(the helper's, not the 2235 RPM that 20% asked for; firmware 1350–5777 RPM)`, never "at 20%". Its
-`--json` events already carried both, `commandedRPM` (sent) beside `observed.targetRPM` (held). The
-app's 50 % preset is 3,564 RPM on that machine and passes unchanged. `status` and `auto` take no
-lease and are unaffected; `auto` reads `leaseMustCoverEveryFan` as silent, since no snapshot
-carries it.
+Until run 2, the helper also holds no client target below a fan's client floor, 65 % of the way
+from `F<n>Mn` to `F<n>Mx`: 4,227.55 RPM on `Mac16,5` (`docs/SAFETY.md` § 2 says why 65 %). A lower
+request is held at the floor, and the helper's snapshot reports the target it holds, so `fanctl
+status` shows the raised value, and so does `fanctl set`'s start line: `set all 50% --for 30m`
+says `Holding fan 0 at 4227.55 RPM target (the helper's, not the 3564 RPM that 50% asked for;
+firmware 1350–5777 RPM)`, never "at 50%". Its `--json` events already carried both,
+`commandedRPM` (sent) beside `observed.targetRPM` (held). 50 % is below the floor on that machine,
+in `set` and in the app's preset alike; 75 % (4,670) and 100 % are above it and are held as asked.
+`status` and `auto` take no lease and are unaffected; `auto` reads `leaseMustCoverEveryFan` as
+silent, since no snapshot carries it.
 
 ### Exit codes
 
@@ -672,9 +673,9 @@ fanctl set 1 100% --for 10s --json    # newline-delimited JSON events
 ```
 
 Until run 1d, a helper that enumerates more than one fan refuses the one-fan forms
-(`leaseMustCoverEveryFan`, exit 4), and until run 2 it holds a speed below a fan's 50 % point at
-the point, so `3000rpm` is held at 3563.5 on `Mac16,5`: see
-[Every fan, and no target below the 50 % point](#every-fan-and-no-target-below-the-50--point-670).
+(`leaseMustCoverEveryFan`, exit 4), and until run 2 it holds a speed below a fan's client floor
+at the floor, so `3000rpm` is held at 4227.55 on `Mac16,5`: see
+[Every fan, and no target below the client floor](#every-fan-and-no-target-below-the-client-floor-670).
 
 **The grammar.** Anything malformed is a usage error, **64**, before any connection. What is
 well formed and does not fit this machine is **2**.
@@ -841,8 +842,8 @@ The hold ended: SIGINT was received. The helper accepted the release of lease 53
 ```
 
 That is a one-fan machine's run; on one with more fans it is `set all`, with a line for each. A
-speed the helper raised to the 50 % point names the helper's target first (#670):
-`Holding fan 0 at 3563.50 RPM target (the helper's, not the 2235 RPM that 20% asked for; firmware
+speed the helper raised to the client floor names the helper's target first (#670):
+`Holding fan 0 at 4227.55 RPM target (the helper's, not the 2235 RPM that 20% asked for; firmware
 1350–5777 RPM) for 30m under lease …`.
 
 With `all`, each fan gets a line, the last of which carries the way out. No outcome other than 0

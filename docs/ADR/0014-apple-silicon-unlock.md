@@ -4490,8 +4490,11 @@ what run 1's steps showed, and is the maintainer's to word. Intel and M1/M2 stay
    The helper, on every machine:
    - (a) grants a lease only over every enumerated fan, and never keeps some of a lease's fans while
      handing others back, until U7 is recorded as observed holding;
-   - (b) clamps every client target up to the midpoint of `[F<n>Mn, F<n>Mx]`, until run 2 records holds
-     below demand.
+   - (b) clamps every client target up to 65 % of the way from `F<n>Mn` to `F<n>Mx`, until run 2 records
+     holds below demand. *(Raised from the midpoint on 2026-11-01, when this amendment's Revisit trigger
+     fired: P1's load B drove fan 1's target to 3,731 RPM, above the midpoint, 3,563.5. 65 % is the
+     smallest 5 % point that keeps that demand under 90 % of the floor, abort 9's margin: 4,227.6 RPM on
+     `Mac16,5`. The app's 50 % preset therefore holds the floor, and says so.)*
 
    This replaces D1's "the merge waits for the checklist". For E4 it also relaxes ADR 0007's gate, that
    every E5 checklist row executes on hardware before the epic merges: the rows runs 2–4 own still
@@ -4510,7 +4513,8 @@ what run 1's steps showed, and is the maintainer's to word. Intel and M1/M2 stay
 - *Clients only.* Rule 7.
 
 **Revisit if:** U7 is recorded as observed holding (lift (a)); run 2 passes (lower (b)); A's second fan is
-refused; the session ends anywhere but End A; a recorded load drives Apple's demand above the 50 % point.
+refused; the session ends anywhere but End A; a recorded load, GPU included, drives Apple's target on
+either fan above 90 % of (b)'s floor.
 
 **`AeolusXPCVersion`:** this amendment crosses nothing. The PR that builds (a) adds a refusal reason, bumps
 the version, and says so. (b) clamps, and adds nothing to the wire. **Status stays Proposed.**

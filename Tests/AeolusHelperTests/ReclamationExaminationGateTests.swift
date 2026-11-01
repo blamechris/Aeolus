@@ -70,7 +70,7 @@ struct ReclamationExaminationGateTests {
         await hops.parkNextAnswer()
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(await yieldUntil("the lease check to park") { await hops.isParked })
-        let step = observing { try await standIn.step(to: 4_000, of: permit, under: lease) }
+        let step = observing { try await standIn.step(to: 5_000, of: permit, under: lease) }
         #expect(
             await yieldUntil("the step to wait for the gate") {
                 machine.gate.waiting(onFan: 0) == 1
@@ -79,13 +79,13 @@ struct ReclamationExaminationGateTests {
 
         await hops.release()
         try await finished("the examination", sweep)
-        #expect(try await finished("the step", step)??.rpm == 4_000)
+        #expect(try await finished("the step", step)??.rpm == 5_000)
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
 
         try await finished("the next cycle", observing { await machine.watchdog.cycle() })
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [4_000], "§ 5 wrote over the step")
+        #expect(await machine.commandedRPMs == [5_000], "§ 5 wrote over the step")
         #expect(machine.gate.isIdle)
     }
 
@@ -107,7 +107,7 @@ struct ReclamationExaminationGateTests {
         let permit = try standIn.permit()
 
         let pass = try #require(await standIn.enter())
-        let written = try await standIn.write(4_000, of: permit)
+        let written = try await standIn.write(5_000, of: permit)
         let afterTheWrite = await machine.attempts.count
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(
@@ -127,8 +127,8 @@ struct ReclamationExaminationGateTests {
             await machine.attempts.dropFirst(afterTheWrite).contains(.readControlState(fan: 0)),
             "the examination never read the fan, so nothing here was judged")
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [4_000], "§ 5 re-asserted the old target")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.commandedRPMs == [5_000], "§ 5 re-asserted the old target")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(machine.gate.isIdle)
     }
 
@@ -152,12 +152,12 @@ struct ReclamationExaminationGateTests {
             await yieldUntil("the examination to wait for the gate") {
                 machine.gate.waiting(onFan: 0) == 1
             })
-        await standIn.report(try await standIn.write(4_000, of: permit), under: lease)
+        await standIn.report(try await standIn.write(5_000, of: permit), under: lease)
         standIn.leave(pass)
         try await finished("the examination", sweep)
 
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [4_000])
+        #expect(await machine.commandedRPMs == [5_000])
         #expect(machine.gate.isIdle)
     }
 

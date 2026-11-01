@@ -42,7 +42,7 @@ struct LeaseApplierReceiptTests {
             try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
         let afterTheRefusal = await machine.attempts.count
-        try await levelSix.apply(fixed((0, 4_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_500)), under: lease)
 
         #expect(await writes.didFire)
         #expect(
@@ -53,7 +53,7 @@ struct LeaseApplierReceiptTests {
                 .engageManualControl(fan: 0)),
             "the next apply did not engage the fan again")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_500)
     }
 
     /// **`.notHeld` on a fan this `apply` engaged.** § 5 is told fan 0 was released while its

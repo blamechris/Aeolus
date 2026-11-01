@@ -55,20 +55,20 @@ struct LeaseApplierTests {
                     fanIndex: 0,
                     control: .curve(
                         FanCurve(
-                            points: [.init(temperatureCelsius: 40, rpm: 4_000)],
+                            points: [.init(temperatureCelsius: 40, rpm: 4_500)],
                             source: SensorGroup(sensorKeys: ["Tp01"]))))
             ],
             detail: LeaseApplyRules.Detail.curve),
         Refusal(
             description: "a fan the lease does not cover",
-            settings: fixed((0, 4_000), (1, 4_000), (2, 4_000)),
+            settings: fixed((0, 4_500), (1, 4_500), (2, 4_500)),
             detail: LeaseApplyRules.Detail.uncovered),
         Refusal(
             description: "a fan named twice",
-            settings: fixed((0, 4_000), (0, 4_400)), detail: LeaseApplyRules.Detail.duplicate),
+            settings: fixed((0, 4_500), (0, 4_400)), detail: LeaseApplyRules.Detail.duplicate),
         Refusal(
             description: "a covered fan named by no setting",
-            settings: fixed((0, 4_000)), detail: LeaseApplyRules.Detail.missing),
+            settings: fixed((0, 4_500)), detail: LeaseApplyRules.Detail.missing),
     ]
 
     /// **Item 0.** Each is refused with `invalidParameter(name: "settings")` and its fixed detail,
@@ -140,20 +140,20 @@ struct LeaseApplierTests {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
         let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
-        await writes.misreport(commandedRPM: 4_001)
+        await writes.misreport(commandedRPM: 4_501)
 
-        try await machine.levelSix(writingThrough: writes).apply(fixed((0, 4_000)), under: lease)
+        try await machine.levelSix(writingThrough: writes).apply(fixed((0, 4_500)), under: lease)
 
         #expect(
             await machine.watchdog.lastCommanded(ofFan: 0)
-                == CommandedTarget(fanIndex: 0, rpm: 4_001))
+                == CommandedTarget(fanIndex: 0, rpm: 4_501))
     }
 
-    /// **Item 3, after the write and never before.** Fan 0 is held at 2,000 under the lease, and a
-    /// re-apply to 3,000 is refused by the firmware: § 5 still records 2,000, which the fan holds.
+    /// **Item 3, after the write and never before.** Fan 0 is held at 4,500 under the lease, and a
+    /// re-apply to 5,000 is refused by the firmware: § 5 still records 4,500, which the fan holds.
     ///
     /// **Mutation:** in `LeaseApplier.step`, send the report built from the request before the
-    /// write and none after it. Run: red, 3,000 recorded for a write that never landed.
+    /// write and none after it. Run: red, 5,000 recorded for a write that never landed.
     @Test("A write that throws is never reported")
     func aWriteThatThrowsIsNeverReported() async throws {
         let machine = ReclamationMachine(
@@ -161,7 +161,7 @@ struct LeaseApplierTests {
             fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
         let levelSix = machine.levelSix()
-        try await levelSix.apply(fixed((0, 4_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_500)), under: lease)
         await machine.plane.advance()
 
         await #expect(
@@ -169,7 +169,7 @@ struct LeaseApplierTests {
         ) {
             try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_500)
         #expect(
             await machine.watchdog.fansUnderManualControl == [0], "a fan engaged before was undone")
     }
@@ -298,7 +298,7 @@ struct LeaseApplierTests {
         }
 
         let connection = ConnectionID()
-        for settings in [fixed((0, 4_400)), [], fixed((0, 4_400), (0, 4_000))] {
+        for settings in [fixed((0, 4_400)), [], fixed((0, 4_400), (0, 4_500))] {
             let lease = UUID()
             let throughTheAuthority = await LeaseApplierAnswerTests.answer {
                 try await helper.authority.apply(settings, leaseID: lease, from: connection)

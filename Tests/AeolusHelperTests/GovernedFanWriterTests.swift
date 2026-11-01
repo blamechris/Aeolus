@@ -41,32 +41,32 @@ struct GovernedFanWriterTests {
     }
 
     /// The one that matters: **every subsequent write is capped.** Replace `stepped` with
-    /// `goal` in `command(towards:of:since:)` and this goes red. Above the 50 % point, 3,563.5 on
-    /// these bounds, so the floor #670 adds moves none of it.
+    /// `goal` in `command(towards:of:since:)` and this goes red. Above the client floor, 4,227.55
+    /// on these bounds, so the floor #670 adds moves none of it.
     @Test("Every write after the first is capped at the ramp rate")
     func subsequentWritesAreRateLimited() async throws {
         let plane = machine()
         let writer = GovernedFanWriter(plane: plane)
-        _ = try await writer.command(towards: 4_000, of: try fan(0), since: .seconds(1))
+        _ = try await writer.command(towards: 5_000, of: try fan(0), since: .seconds(1))
 
         let stepped = try await writer.command(
             towards: 5_777, of: try fan(0), since: .seconds(1))
 
-        #expect(stepped.rpm == 4_200, "4000 + 200 RPM/s × 1 s")
-        #expect(await writer.lastCommanded(ofFan: 0) == 4_200)
+        #expect(stepped.rpm == 5_200, "5000 + 200 RPM/s × 1 s")
+        #expect(await writer.lastCommanded(ofFan: 0) == 5_200)
     }
 
     /// The § 8 arithmetic, at the writer rather than at the pure governor: a control loop
-    /// takes twelve one-second writes to climb from this machine's 50 % point to its maximum,
-    /// and took 23 to cross the whole span before #670 put the floor at that point. This is the
-    /// cost ADR 0007 refuses to impose on § 3 — see
+    /// takes eight one-second writes to climb from this machine's client floor to its maximum,
+    /// and took 23 to cross the whole span before #670 put a floor under it. This is the cost
+    /// ADR 0007 refuses to impose on § 3 — see
     /// `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` for the other end.
-    @Test("A governed ramp from the 50 % point takes 12 writes, one per second")
+    @Test("A governed ramp from the client floor takes 8 writes, one per second")
     func aFullScaleGovernedRampIsAStaircase() async throws {
         let plane = machine()
         let writer = GovernedFanWriter(plane: plane)
         _ = try await writer.command(towards: 1_350, of: try fan(0), since: .seconds(1))
-        #expect(await writer.lastCommanded(ofFan: 0) == 3_563.5, "the floor is the 50 % point")
+        #expect(await writer.lastCommanded(ofFan: 0) == 4_227.55, "the floor is the client floor")
 
         var writes = 1
         while try await writer.lastCommanded(ofFan: 0) != 5_777, writes < 1_000 {
@@ -74,28 +74,28 @@ struct GovernedFanWriterTests {
             writes += 1
         }
 
-        #expect(writes == 13, "one write to arrive at the 50 % point, then 12 to climb")
-        #expect(await plane.attempts.count == 13)
+        #expect(writes == 9, "one write to arrive at the client floor, then 8 to climb")
+        #expect(await plane.attempts.count == 9)
     }
 
     /// (b) of #670 binds the control loop's step as it binds a fixed setting: a goal below the
-    /// 50 % point, first write or ramped, is written at that point.
+    /// client floor, first write or ramped, is written at the floor.
     ///
     /// **Mutation:** in `command(towards:of:since:)`, write `fan.target(for: stepped)`. Run: red,
-    /// 1,350 written first and 3,400 written below the point.
-    @Test("A governed step below the 50 % point is written at it")
+    /// 1,350 written first and 4,100 written below the floor.
+    @Test("A governed step below the client floor is written at it")
     func aGovernedStepIsRaisedToTheFloor() async throws {
         let plane = machine()
         let writer = GovernedFanWriter(plane: plane)
 
         let first = try await writer.command(towards: 1_350, of: try fan(0), since: .seconds(1))
-        _ = try await writer.command(towards: 3_800, of: try fan(1), since: .seconds(1))
+        _ = try await writer.command(towards: 4_500, of: try fan(1), since: .seconds(1))
         let ramped = try await writer.command(towards: 0, of: try fan(1), since: .seconds(1))
 
-        #expect(first.rpm == 3_563.5)
-        #expect(ramped.rpm == 3_600, "3,800 less one second's 200 RPM, above the point")
+        #expect(first.rpm == 4_227.55)
+        #expect(ramped.rpm == 4_300, "4,500 less one second's 200 RPM, above the floor")
         let below = try await writer.command(towards: 0, of: try fan(1), since: .seconds(1))
-        #expect(below.rpm == 3_563.5, "3,400 is below the point, so the point is written")
+        #expect(below.rpm == 4_227.55, "4,100 is below the floor, so the floor is written")
     }
 
     /// Ramp state is per fan. Sharing one counter across fans would let a step for fan 1 be
@@ -107,7 +107,7 @@ struct GovernedFanWriterTests {
     @Test("Ramp state is remembered per fan, not globally")
     func rampStateIsPerFan() async throws {
         let writer = GovernedFanWriter(plane: machine())
-        _ = try await writer.command(towards: 4_000, of: try fan(0), since: .seconds(1))
+        _ = try await writer.command(towards: 4_400, of: try fan(0), since: .seconds(1))
         _ = try await writer.command(towards: 5_000, of: try fan(1), since: .seconds(1))
 
         let zero = try await writer.command(
@@ -115,9 +115,9 @@ struct GovernedFanWriterTests {
         let one = try await writer.command(
             towards: 5_777, of: try fan(1), since: .seconds(1))
 
-        #expect(zero.rpm == 4_200, "fan 0 ramps from its own 4000, not from fan 1's 5000")
+        #expect(zero.rpm == 4_600, "fan 0 ramps from its own 4400, not from fan 1's 5000")
         #expect(one.rpm == 5_200, "fan 1 ramps from its own 5000")
-        #expect(await writer.lastCommanded(ofFan: 0) == 4_200)
+        #expect(await writer.lastCommanded(ofFan: 0) == 4_600)
         #expect(await writer.lastCommanded(ofFan: 1) == 5_200)
     }
 
@@ -148,14 +148,14 @@ struct GovernedFanWriterTests {
                 ScriptedControlPlane.Stage(writes: .refused(reason: "firmware said no")),
             ])
         let writer = GovernedFanWriter(plane: plane)
-        _ = try await writer.command(towards: 4_000, of: try fan(0), since: .seconds(1))
+        _ = try await writer.command(towards: 5_000, of: try fan(0), since: .seconds(1))
         await plane.advance()
 
         await #expect(throws: FanControlPlaneError.self) {
             _ = try await writer.command(towards: 5_777, of: try fan(0), since: .seconds(1))
         }
 
-        #expect(await writer.lastCommanded(ofFan: 0) == 4_000)
+        #expect(await writer.lastCommanded(ofFan: 0) == 5_000)
     }
 
     /// § 2 still binds a governed write. The governor produces a *goal*, never a target: a
@@ -181,7 +181,7 @@ struct GovernedFanWriterTests {
         for _ in 0..<50 {
             let step = try await writer.command(
                 towards: 0, of: try fan(0), since: .seconds(1))
-            #expect(step.rpm >= 3_563.5, "the 50 % point is the floor (#670), and it is not 0")
+            #expect(step.rpm >= 4_227.55, "the client floor holds (#670), and it is not 0")
         }
     }
 }

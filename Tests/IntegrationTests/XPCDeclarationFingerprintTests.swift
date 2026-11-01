@@ -92,7 +92,7 @@ struct XPCDeclarationFingerprintTests {
 
     /// The shape v2 declares: v1's, unchanged (#670). v2 changes what two messages mean —
     /// `acquireLease` refuses a request narrower than every fan, and `apply` holds a target below
-    /// a fan's 50 % point at that point — and no declaration, so its entry is v1's signatures.
+    /// a fan's client floor at the floor — and no declaration, so its entry is v1's signatures.
     private static let v2Signatures: Set<String> = v1Signatures
 
     /// The record for the version the contract currently advertises.

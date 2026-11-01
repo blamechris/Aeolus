@@ -306,7 +306,7 @@ struct SMCReadSchedulerTests {
         // baseline — #127's acceptance criteria ask for exactly that. A legitimate bump to 2
         // is therefore expected to turn this red: the reader should confirm the protocol
         // really did change and move the number, not reach for the scheduler. #670 did: the
-        // every-fan lease and the 50 % point change what `acquireLease` and `apply` mean.
+        // every-fan lease and the client floor change what `acquireLease` and `apply` mean.
         #expect(AeolusXPCVersion.current == 2)
     }
 }

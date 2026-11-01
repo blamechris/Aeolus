@@ -34,7 +34,7 @@ enum SetMessages {
     ///
     /// **The target named is the one the helper holds**, from `snapshot`, the snapshot that
     /// confirmed the hold. The helper may hold a fan above the speed that was sent: until run 2
-    /// it raises any client target below a fan's 50 % point to that point (#670). The line then
+    /// it raises any client target below a fan's client floor to the floor (#670). The line then
     /// leads with the helper's target and names the one asked for as not held, so it never
     /// reports a target nothing is honouring (`CLAUDE.md` rule 6). `started` follows a snapshot
     /// in which every covered fan carries a held target (`SetCommand.loss`), so a fan without one

@@ -110,18 +110,18 @@ struct ReclamationReassertViewTests {
         let lease = try await Self.lease(machine)
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
-            await Self.reapply(machine, under: lease, permit: permit, rpm: 4_000)
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 5_000)
         }
 
         await machine.watchdog.cycle()
 
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
         #expect(
-            await machine.commandedRPMs.last == 4_000,
+            await machine.commandedRPMs.last == 5_000,
             "the re-assert commanded its stale target over the re-apply")
-        #expect(try await Self.firmwareTarget(machine) == 4_000)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
-        #expect(await machine.commandedRPMs == [4_000], "the re-assert wrote at all")
+        #expect(try await Self.firmwareTarget(machine) == 5_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
+        #expect(await machine.commandedRPMs == [5_000], "the re-assert wrote at all")
         #expect(await machine.restorer.causes.isEmpty, "a lease was ended")
         #expect(
             machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1,
@@ -136,7 +136,7 @@ struct ReclamationReassertViewTests {
         #expect(
             await machine.ledger.isReclaimed(fanAt: 0) == false,
             "the readable cycle that read the re-apply held left the mark")
-        #expect(await machine.commandedRPMs == [4_000], "a held target was re-asserted")
+        #expect(await machine.commandedRPMs == [5_000], "a held target was re-asserted")
     }
 
     /// **B, the mode half.** The fan reads automatic: the system took it. The client re-engages
@@ -156,7 +156,7 @@ struct ReclamationReassertViewTests {
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
             await Self.reapply(
-                machine, under: lease, permit: permit, rpm: 4_000, engaging: true)
+                machine, under: lease, permit: permit, rpm: 5_000, engaging: true)
         }
 
         await machine.watchdog.cycle()
@@ -167,8 +167,8 @@ struct ReclamationReassertViewTests {
             "a failed re-engage was reported for a fan its own lease had re-engaged")
         let engages = await machine.attempts.filter { $0 == .engageManualControl(fan: 0) }
         #expect(engages.count == 1, "§ 5 tried to engage the fan a second time")
-        #expect(await machine.commandedRPMs == [4_000])
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.commandedRPMs == [5_000])
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1)
     }
 
@@ -187,16 +187,16 @@ struct ReclamationReassertViewTests {
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
             await Self.reapply(
-                machine, under: lease, permit: permit, rpm: 4_000, registering: false)
+                machine, under: lease, permit: permit, rpm: 5_000, registering: false)
         }
 
         await machine.watchdog.cycle()
 
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(await machine.commandedRPMs == [4_000, 4_000], "the stale target was re-asserted")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.commandedRPMs == [5_000, 5_000], "the stale target was re-asserted")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 4000 RPM, attempt 1 of").count == 1)
+            machine.safetyLog.lines(containing: "re-asserted 5000 RPM, attempt 1 of").count == 1)
     }
 
     /// **D, the record.** A re-apply lands while § 5's own command write is in flight, so the
@@ -215,19 +215,19 @@ struct ReclamationReassertViewTests {
         let lease = try await Self.lease(machine)
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
-            await Self.reapply(machine, under: lease, permit: permit, rpm: 4_000)
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 5_000)
         }
 
         await machine.watchdog.cycle()
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
 
         await machine.watchdog.cycle()
 
         #expect(
-            await machine.commandedRPMs == [4_400, 4_000],
+            await machine.commandedRPMs == [4_400, 5_000],
             "the next cycle re-asserted the stale target over the client's")
-        #expect(try await Self.firmwareTarget(machine) == 4_000)
+        #expect(try await Self.firmwareTarget(machine) == 5_000)
     }
 
     /// **E, the budget.** The firmware discards every target write. A re-apply during the first
@@ -247,7 +247,7 @@ struct ReclamationReassertViewTests {
         let lease = try await Self.lease(machine)
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
-            await Self.reapply(machine, under: lease, permit: permit, rpm: 4_000)
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 5_000)
         }
 
         for _ in 0..<ReclamationLimits.reassertAttemptBudget {
@@ -282,13 +282,13 @@ struct ReclamationReassertViewTests {
         let lease = try await Self.lease(machine)
         let permit = try Self.permit(machine)
         await sensing.interfere { [machine] in
-            await Self.reapply(machine, under: lease, permit: permit, rpm: 4_000)
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 5_000)
         }
 
         await machine.watchdog.cycle()
 
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(await machine.commandedRPMs == [4_000], "§ 5 commanded after the re-apply")
+        #expect(await machine.commandedRPMs == [5_000], "§ 5 commanded after the re-apply")
         #expect(await machine.didRestore(fan: 0) == false, "§ 5 handed back its own lease's fan")
         #expect(machine.safetyLog.lines(containing: Self.leftBeforeCommanding).count == 1)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
@@ -313,14 +313,14 @@ struct ReclamationReassertViewTests {
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(await yieldUntil("the lease answer to park") { await hops.isParked })
 
-        await Self.reapply(machine, under: lease, permit: permit, rpm: 4_000, engaging: true)
+        await Self.reapply(machine, under: lease, permit: permit, rpm: 5_000, engaging: true)
         await hops.release()
         try await finished("the examination", sweep)
 
         #expect(
             machine.safetyLog.lines(containing: Self.failedReengage).isEmpty,
             "a failed re-engage was reported for a fan its own lease had re-engaged")
-        #expect(await machine.commandedRPMs == [4_000])
+        #expect(await machine.commandedRPMs == [5_000])
         #expect(machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1)
     }
 }

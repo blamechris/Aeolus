@@ -318,10 +318,10 @@ struct SetMessagesTests {
 
 extension SetMessagesTests {
 
-    /// The helper holds no client target below a fan's 50 % point until run 2 (#670): 20% of
-    /// `Mac16,5`'s range is 2235 RPM, and the helper holds 3563.5. The start line leads with the
+    /// The helper holds no client target below a fan's client floor until run 2 (#670): 20% of
+    /// `Mac16,5`'s range is 2235 RPM, and the helper holds 4227.55. The start line leads with the
     /// helper's target and names the speed asked for as not held; it never says "fan 0 at 20%" or
-    /// "2235 RPM target" over a fan held at 3563.5 (`CLAUDE.md` rule 6).
+    /// "2235 RPM target" over a fan held at 4227.55 (`CLAUDE.md` rule 6).
     ///
     /// **Mutation:** in `SetMessages.startLines`, make `if let held, held != plan.commandedRPM`
     /// read `if let held, false, held != plan.commandedRPM`, so the line names the speed sent
@@ -331,16 +331,16 @@ extension SetMessagesTests {
         let hold = Shared.hold(
             [try Shared.plan(0, .percent(20)), try Shared.plan(1, .rpm(2000))], seconds: 60)
         let lines = SetMessages.startLines(
-            hold, snapshot: Self.confirming(hold, held: [0: 3_563.5, 1: 3_563.5]))
+            hold, snapshot: Self.confirming(hold, held: [0: 4_227.55, 1: 4_227.55]))
         try #require(lines.count == 2)
         #expect(
             lines[0].hasPrefix(
-                "Holding fan 0 at 3563.50 RPM target (the helper's, not the 2235 RPM that 20% "
+                "Holding fan 0 at 4227.55 RPM target (the helper's, not the 2235 RPM that 20% "
                     + "asked for; firmware 1350–5777 RPM) for 1m under lease "),
             "\(lines[0])")
         #expect(
             lines[1].hasPrefix(
-                "Holding fan 1 at 3563.50 RPM target (the helper's, not the 2000 RPM asked for; "
+                "Holding fan 1 at 4227.55 RPM target (the helper's, not the 2000 RPM asked for; "
                     + "firmware 1350–5777 RPM) for 1m under lease "),
             "\(lines[1])")
         #expect(!lines.joined().contains("2235 RPM target"))

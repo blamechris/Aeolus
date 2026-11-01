@@ -72,23 +72,28 @@ struct CommandableFan: Sendable, Hashable {
     }
 }
 
-// MARK: - The 50 % point (#670)
+// MARK: - The client floor (#670)
 
 /// An extension rather than the struct's body, so the struct holds its permit's storage and mint
 /// alone: `WriteAuthorisationTests` scans that body for anything that could be storage.
 extension CommandableFan {
 
-    /// The 50 % point: the midpoint of `[F<n>Mn, F<n>Mx]` as this permit's read declared them
-    /// (#670). No client target is written below it until run 2 records holds below Apple's
-    /// demand (ADR 0014's minimal-run amendment, item 7 (b)).
+    /// The client floor: 65 % of the way from `F<n>Mn` to `F<n>Mx`, as this permit's read declared
+    /// them (#670). No client target is written below it until run 2 records holds below Apple's
+    /// demand (ADR 0014's minimal-run amendment, item 7 (b)). Raised from the midpoint on
+    /// 2026-11-01: P1's load B drove fan 1's target to 3,731 RPM, above the midpoint, and 65 % is
+    /// the smallest 5 % point that keeps that demand under 90 % of the floor, abort 9's margin.
+    /// 4,227.55 RPM on `Mac16,5`'s 1,350 to 5,777.
     var clientFloorRPM: Double {
-        (envelope.declaredMinimumRPM + envelope.declaredMaximumRPM) / 2
+        envelope.declaredMinimumRPM
+            + 0.65 * (envelope.declaredMaximumRPM - envelope.declaredMinimumRPM)
     }
 
     /// A client's speed, clamped as `target(for:)` clamps it and then raised to `clientFloorRPM`
     /// when it lands below: rule 4's mechanism, narrowing the range and never widening it, and the
     /// raise goes through the same clamp, so there is still one. Judged after the clamp, so a NaN,
-    /// which the clamp floors, is raised too. Level 6's writer is the one caller (#670).
+    /// which the clamp floors, is raised too (`ClientFloorTargetTests`). Level 6's writer is the
+    /// one caller (#670).
     func clientTarget(for requestedRPM: Double) -> AuthorisedFanTarget {
         let clamped = target(for: requestedRPM)
         guard clamped.rpm < clientFloorRPM else { return clamped }
