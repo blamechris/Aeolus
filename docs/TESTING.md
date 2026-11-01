@@ -17,6 +17,12 @@ build system ran each target in its own process and printed nine `Test run with`
 one-process run is `--build-system native`, which that toolchain prints a deprecation warning for
 ("will be removed in a future release"). When it goes, the one-process run needs another route.
 
+CI runs the suite in two jobs that run side by side (`.github/workflows/ci.yml`). `Test (debug)`
+runs it built Debug, on the runner's three-thread pool, and then again on a pool of one, as
+described under "Running the whole suite on a pool of one". `Test (release)` runs it built
+Release. `Build and test`, the check branch protection requires, is a third job that passes only
+if both succeeded.
+
 A suite's `.timeLimit` cancels a test's task. It cannot end a thread parked in a
 `DispatchSemaphore.wait()`, so a blocked pool thread outlives the limit, and a process whose pool
 is all blocked runs nothing that would release them. It sits at 0% CPU until something outside
@@ -64,6 +70,7 @@ was read. What is *not* here suspends, which gives its thread back: `AsyncSignal
 | `SMCRoundTripMonitorTests` (five synchronous tests: the bracket, the sequence, the lock, the clearing, the suspending clock) | the test's own pool thread, in `signalled(_:within:)` / `observeInFlight` / `ParkedRoundTrip.waitUntilParked`, up to 10 s (3 s for a read) | a dedicated `Thread` signals the semaphore |
 | `SMCRoundTripMonitorTests.anAgeIsNeverNegativeUnderContention` | the test's own pool thread, reading the monitor in a loop, then a `DispatchSemaphore` | a writer `Thread` ends the loop and signals; the wait is 10 s |
 | `ThreadBlockingCeilingTests.threadBlockingRestorePlaneGivesUp` | the pool thread running a blocked restore, for the 1 s ceiling it is given | that ceiling |
+| `CooperativePoolWidthTests.noTwoTasksHoldAThreadAtOnce` (only when `AEOLUS_EXPECT_POOL_OF_ONE=1`) | the pool threads of six tasks, each in `Thread.sleep` for 0.1 s | their own sleeps |
 | `SliceCountedWaitTests` (four) | the test's own pool thread, in `Thread.sleep` (at most 0.3 s) and semaphore waits | their own timeouts; one is signalled by a `Thread` after 0.1 s |
 | `IntegrationTests` signed-fixture tests (`AdHocSignedFixtures.codesign`) | the test's own pool thread, in `Process.waitUntilExit()` on `/usr/bin/codesign` | `codesign` exiting |
 
@@ -98,23 +105,74 @@ row in the first table is a decision to make in review, with the bound redone.
 
 ## Running the whole suite on a pool of one
 
+CI runs this as the `Test on a cooperative pool of one` step of the `Test (debug)` job, under a
+10-minute step limit, so a run that wedges fails the job instead of hanging it. Locally:
+
 ```bash
 swift build --build-tests --build-system native
-LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 gtimeout -k 30 1200 swift test --skip-build --build-system native \
-  --skip HelperHardwareTests --skip HelperHardwareSightingTests --skip WatchdogHardwareTests \
-  --skip SMCSensorProviderTests --skip SMCConnectionTests --skip HardwareSmokeTests \
-  --skip theBudgetSurvivesARestoreThatBlocksItsThread
+
+SKIP_ARGS=()
+for SUITE in HelperHardwareTests WatchdogHardwareTests \
+    SMCSensorProviderHardwareTests SMCSensorProviderMac165Tests \
+    SMCConnectionHardwareTests SMCConnectionMac165Tests \
+    SMCFanEnumerationMac165Tests KeyTableWalkMac165Tests SMCKeyRealTableTests \
+    SMCRoundTripHardwareTests HardwareSmokeTests; do
+  SKIP_ARGS+=(--skip "\\.${SUITE}(/|\$)")
+done
+
+AEOLUS_EXPECT_POOL_OF_ONE=1 LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 gtimeout -k 30 1200 \
+  swift test --skip-build --build-system native "${SKIP_ARGS[@]}" \
+  --skip '/theBudgetSurvivesARestoreThatBlocksItsThread\(\)'
 ```
 
-`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` makes the cooperative pool one thread wide. The hardware
-suites are skipped because they need an SMC and a quiet machine. The last `--skip` is the only
-test that cannot run on a pool of one, for the reason in "The bound". The run should complete in
-about a minute with no failure. Anything that wedges it, or needs a second thread to pass, is a
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` makes the cooperative pool one thread wide. The skipped
+suites are the ones that read the real SMC: eleven names for twelve suites, because
+`HardwareSmokeTests` exists in both `AeolusUITests` and `fanctlTests`. On a hosted runner, which has
+no SMC, every one of them skips itself in the plain `Test` step too; that step counts them as
+skipped, and this one never starts them. On a Mac16,5 all but `WatchdogHardwareTests` (which also
+wants `AEOLUS_WATCHDOG_SOAK_SECONDS`) would run, and a run about thread counts should not read the
+SMC, so the command names all of them. `HelperHardwareSightingTests` needs no entry: it is an
+extension of `HelperHardwareTests`, and its tests carry that suite's name. The last `--skip` is the
+only test that cannot run on a pool of one, for the reason in "The bound". The run should complete
+in about a minute with no failure. Anything that wedges it, or needs a second thread to pass, is a
 new row for the first table, or a bug in the test.
+
+Each suite is named by its type and anchored, a `.` before the name and a `/` or the end of the ID
+after it, because `--skip` is an unanchored regular expression matched against the whole test ID,
+`Module.Suite/test()/File.swift:line:column`. The file's name is in what it matches. A bare
+`--skip SMCConnectionTests` removes every test in `SMCConnectionTests.swift`, hardware or not; named
+that way, this step once ran 43 tests that read no SMC fewer than it should (review of #646). To
+check that a change to the list removed what it should: `swift test list` counts every test, the
+listed suites' tests come off that, and one more for
+`theBudgetSurvivesARestoreThatBlocksItsThread`. On 2026-10-31 that was 3531 listed, 40 in these
+suites and 1, so the run's `Test run with` line read 3490 tests.
+
+`AEOLUS_EXPECT_POOL_OF_ONE=1` turns on `CooperativePoolWidthTests`, the step's positive control:
+it fails if the run is wider than one thread. A pool-of-one run is green whenever nothing wedges,
+and nothing wedges on a pool of three either, so without it a toolchain that stopped honouring
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT` would leave the step green and checking nothing. Run it
+without the libdispatch variable to see it fail.
+
+The test is skipped, not failed, when `AEOLUS_EXPECT_POOL_OF_ONE` is missing, and `swift test`
+exits 0 for a skip. A CI step that lost the variable from its `env:` block would therefore run on
+the runner's three threads, skip the canary and stay green. So the step also requires the canary's
+own line in its output, `Test "No two tasks hold a pool thread at once" passed`, and fails without
+it; and it ends with `swift test`'s own exit status, which a `| tee` would otherwise replace. The
+line is the test's display name, so renaming the test means renaming it in `ci.yml` too.
 
 `--build-system native` is deprecated on this toolchain (Apple Swift 6.4 prints "has been
 deprecated and will be removed in a future release"), and it is what makes this one process:
 without it, `swift test` on that toolchain runs each target in its own process, which is not the
-run CI does, and a pool of one then applies to each target separately.
+run CI does, and a pool of one then applies to each target separately. CI spells the flag out
+rather than relying on it as a default, so when SwiftPM removes it the step fails on an unknown
+option and does not quietly become a different run. Replacing it is tracked in #654.
 
-`timeout` does not exist on macOS; `gtimeout` is from `brew install coreutils`.
+Without the flag, on Apple Swift 6.4, the same command runs nine processes, each on a pool of one
+(the variable is inherited), and passes: 64 s, against 55 s for the one-process run, on the
+development machine. A scratch test that parks the pool's only thread on a release the pool has
+to deliver wedged under both build systems there, so the per-target run still catches the first
+table's shape. What it cannot do is put two targets' tests in one pool.
+
+`timeout` does not exist on macOS; `gtimeout` is from `brew install coreutils`. It ends
+`swift test` but not always its child: after a wedge, `swiftpm-testing-helper` can survive at 0%
+CPU with launchd as its parent. Find it with `ps` and kill it by its PID.

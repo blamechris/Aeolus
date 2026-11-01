@@ -291,8 +291,9 @@ shape moved recently (a `crossCheck` envelope, and `--key` to scope one row).
   `declaredKeyCount` itself (never visited by the ordinary walk), catching a `#KEY` that
   under-declares the real key table. See `KeyCountCrossCheck` and
   `SMCConnection.verifyKeyCountCrossCheck()`. `walkedCount` counts every index the firmware
-  answered with a key code, including a nonzero one `SMCKey` refuses while there are at most
-  eight of those (#623); such an index still has its own `entries[]` row, with the error.
+  answered with a key code, including a nonzero one `SMCKey` refuses, while the walk found at
+  least one key and there are at most eight of those (#623); `KeyTableWalk.walkedCount` states
+  the rule. Such an index still has its own `entries[]` row, with the error.
 - **`entries[]`** — one row per walked index, `DumpEntry`. Unlike `list`/`sensors`'
   hand-written `Encodable` conformances, `DumpEntry` uses the compiler-synthesised one:
   a `nil` field (e.g. `error` on a fully successful row) is **omitted from the JSON

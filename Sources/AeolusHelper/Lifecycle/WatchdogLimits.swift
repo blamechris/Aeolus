@@ -76,11 +76,10 @@ enum WatchdogLimits {
     ///   step, four of the histories counted correctly passed G already at eight (874–892,
     ///   10.01–10.22 s), which is why the queue counts the long turn once per fan. (G held to
     ///   N = 20 before the lane, when § 3's turns were in the FIFO.) **The snapshot priority's
-    ///   waiter is not
-    ///   derived:** it waits behind the other snapshot clients' turns as well (64 round trips
-    ///   each), so enough concurrent snapshot clients can outlast G with a queue that is full and
-    ///   moving. **A lane waiter waits for one turn in flight**, and one past G is a turn that was
-    ///   not given back.
+    ///   waiter is not derived:** it waits behind the other snapshot clients' turns as well (64
+    ///   round trips each), so enough concurrent snapshot clients can outlast G with a queue that
+    ///   is full and moving. **A lane waiter waits for one turn in flight**, and one past G is a
+    ///   turn that was not given back.
     /// - *Below* D_cycle less the supervisor's interval and two ticks, 12 s: the fault has to be
     ///   in the log before the cycle trigger ends the helper, or it explains nothing.
     ///
@@ -164,10 +163,10 @@ enum WatchdogLimits {
     /// is left after it (ADR 0014 D5). No read.
     static let fanRestoreRoundTrips = 2
 
-    /// The longest turn any outstanding supervisor reader takes: a mode read, a write turn, or the
-    /// engaged step at rest — the larger of the bounds, as ADR 0014's P1′ amendment asks. It is
-    /// the longest single turn, and so the turn G's slot adds to the wait
-    /// (`WatchdogLimitsTests.theGateBoundCoversAWholeTurn`).
+    /// The longest turn, by round trips, that any outstanding supervisor reader takes: a mode
+    /// read, a write turn, or the engaged step at rest — the larger of the bounds, as ADR 0014's
+    /// P1′ amendment asks. It is the longest single turn by round trips, and so the turn G's slot
+    /// adds to the wait (`WatchdogLimitsTests.theGateBoundCoversAWholeTurn`).
     static let readerTurnRoundTrips = max(modeReadKeys, writeTurnRoundTrips, engagedStepRoundTrips)
 
     /// The longest turn an outstanding supervisor reader takes **other than an engaged step**: a
@@ -223,13 +222,15 @@ enum WatchdogLimits {
     /// D_cycle silently becomes the per-round-trip bound.
     ///
     /// The turn in flight ahead of each of § 3's turns is taken as a 64-key read slice at the
-    /// measured worst read: the longest any turn occupies the connection while the longest write
-    /// turn, the engaged step's nine round trips, stays under it, which it does up to about
-    /// 81.4 ms a round trip (64 × 11.453 / 9; 91.6 ms at eight). That is below the 86.98 ms
-    /// break-even of § 3's own writes, so between 81.4 and 86.98 ms the engaged step in flight,
-    /// not § 3's own writes, would be the binding term (ADR 0012's 2026-10-31 amendment). Both are
-    /// far above the about 20.5 ms at which G's modelled slot breaks, which makes the difference
-    /// moot below it (`scripts/gate-wait-model/engaged_step.py`).
+    /// measured worst read, 733.0 ms: the longest any turn occupies the connection. The longest
+    /// write turn by round trips, the engaged step, stays under it by this bound's own model,
+    /// § 3's reads at that read and its writes at W: the cold raise (seven reads, two writes) fits
+    /// while 80.2 ms + 2W is at most 733.0 ms, up to W of about 326 ms. That is far above the
+    /// 86.98 ms break-even of § 3's own writes, so they bind first (ADR 0012's 2026-10-31
+    /// amendment), and both are far above the about 20.5 ms at which G's modelled slot breaks
+    /// (`scripts/gate-wait-model/engaged_step.py`). The 81.4 ms of 64 × 11.453 / 9 takes all nine
+    /// round trips at one latency, which is another model: D_cycle itself breaks at about 14.1 ms
+    /// there.
     static func requiredCycleBound(
         criticalReadKeys: Int, fans: Int, worstWriteRoundTrip: Duration = measuredWorstRoundTrip
     ) -> Duration {

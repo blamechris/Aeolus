@@ -1,0 +1,690 @@
+"""The live loop, driven by a fake clock and a fake system, and the watcher's confinement.
+
+Nothing here starts a real process or says anything aloud. `FakeSystem` stands in for
+`_spawn` and applies the same allow-list, so a command the watcher has no business running
+fails the test whichever code path asked for it."""
+
+import contextlib
+import functools
+import hashlib
+import io
+import os
+import shutil
+import subprocess
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+import run_watch as rw
+import synth
+from support import idle, replay
+
+
+class FakeChild:
+    def poll(self):
+        return 0
+
+
+class FakeSystem:
+    """The commands the watcher may start, answered from fields a test sets."""
+
+    def __init__(self):
+        self.calls = []
+        self.pids = [100]
+        self.pressure = 0
+        self.therm = "Note: No thermal warning level has been recorded\n"
+
+    def __call__(self, argv, capture=False, timeout=None):
+        argv = tuple(argv)
+        assert rw._allowed(argv), "the watcher asked to start %r" % (argv,)
+        self.calls.append(argv)
+        if not capture:
+            return FakeChild()
+        if argv == rw.COMMANDS["pgrep"]:
+            body, code = ("".join("%d\n" % p for p in self.pids), 0 if self.pids else 1)
+        elif argv == rw.COMMANDS["notifyutil"]:
+            body, code = ("com.apple.system.thermalpressurelevel %d\n" % self.pressure, 0)
+        else:
+            body, code = (self.therm, 0)
+        return types.SimpleNamespace(returncode=code, stdout=body.encode())
+
+    def spoken(self):
+        return [c[1] for c in self.calls if c[0] == rw.SAY]
+
+    def sounds(self):
+        return [c for c in self.calls if c[0] == rw.AFPLAY]
+
+
+class Clock:
+    """Wall time that only moves when the loop sleeps, and a feeder that appends the lines of a
+    synthetic run to the files as their stamps fall due, as the recorders would."""
+
+    def __init__(self, directory, run, start, end, on_sleep=None):
+        self.t, self.end, self.stop, self.on_sleep = start, end, {"flag": False}, on_sleep
+        self.paths = {
+            "fans": os.path.join(directory, "fans-10hz.ndjson"),
+            "package": os.path.join(directory, "package-1hz.ndjson"),
+            "helper_log": os.path.join(directory, "helper-log.ndjson"),
+            "phases": os.path.join(directory, "phases.log")}
+        self.queue = {k: [] for k in self.paths}
+        for r in run.fans:
+            self.queue["fans"].append((synth.parse_stamp(r["wallClockUTC"]), synth._line(r)))
+        for r in run.packages:
+            self.queue["package"].append((synth.parse_stamp(r["wallClockUTC"]), synth._line(r)))
+        for r in run.log:
+            self.queue["helper_log"].append((rw.parse_log_timestamp(r["timestamp"]), synth._line(r)))
+        for line in run.ctx:
+            self.queue["phases"].append((rw.parse_ctx_line(line).t, line))
+        for which, seconds in run.stops.items():  # a sampler's own last line
+            at = run.t0 + seconds
+            self.queue["fans" if which == "fans" else "package"].append(
+                (at, synth._line(synth.stop_record(0))))
+        for key, path in self.paths.items():
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("")
+        self.feed()
+
+    def feed(self):
+        for key, items in self.queue.items():
+            due = [line for t, line in items if t <= self.t]
+            self.queue[key] = [(t, line) for t, line in items if t > self.t]
+            if due:
+                with open(self.paths[key], "a", encoding="utf-8") as handle:
+                    handle.write("".join(line + "\n" for line in due))
+
+    def wall(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+        self.feed()
+        if self.on_sleep:
+            self.on_sleep(self.t)
+        if self.t >= self.end:
+            self.stop["flag"] = True
+
+
+_DIRECTORIES = []
+
+
+def tearDownModule():
+    for directory in _DIRECTORIES:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def read(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def live(run, start, end, mute=False, system=None, logstream_pid=True, on_sleep=None):
+    """Run the live loop over `run` from `start` to `end`; returns (watcher, system, dir)."""
+    system = system or FakeSystem()
+    directory = tempfile.mkdtemp(prefix="run-watch-live-")
+    _DIRECTORIES.append(directory)
+    clock = Clock(directory, run, start, end, on_sleep)
+    if logstream_pid:
+        with open(os.path.join(directory, "logstream.pid"), "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % os.getpid())
+    args = types.SimpleNamespace(
+        dir=directory, out=directory, fans=None, package=None, helper_log=None, phases=None,
+        logstream_pid=None, mute=mute)
+    watcher = rw.run_live(args, spawn=system, stop=clock.stop, wall=clock.wall, sleep=clock.sleep)
+    return watcher, system, directory
+
+
+def hashes(directory, names):
+    result = {}
+    for name in names:
+        with open(os.path.join(directory, name), "rb") as handle:
+            result[name] = hashlib.sha256(handle.read()).hexdigest()
+    return result
+
+
+class LiveLoop(unittest.TestCase):
+    INPUTS = ("fans-10hz.ndjson", "package-1hz.ndjson", "helper-log.ndjson", "phases.log")
+
+    def test_a_quiet_minute_raises_nothing_and_writes_only_its_own_files(self):
+        run = idle(60)
+        t0 = synth.T0
+        watcher, system, directory = live(run, t0 + 5, t0 + 45)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+        self.assertEqual(sorted(os.listdir(directory)), sorted(
+            list(self.INPUTS) + ["logstream.pid", "watch.log", "watch.hb"]))
+        self.assertAlmostEqual(
+            float(read(os.path.join(directory, "watch.hb"))), t0 + 45, delta=1.5)
+
+    def test_the_polls_run_at_their_rates(self):
+        _, system, _ = live(idle(70), synth.T0 + 5, synth.T0 + 45)
+        count = lambda spec: sum(1 for c in system.calls if c == rw.COMMANDS[spec])
+        self.assertAlmostEqual(count("pgrep"), 40, delta=2)
+        self.assertAlmostEqual(count("notifyutil"), 40, delta=2)
+        self.assertAlmostEqual(count("pmset"), 8, delta=1)
+
+    def test_an_alert_is_said_and_repeats(self):
+        run = idle(80).patch_hottest(20, 21, 90.0)
+        t0 = synth.T0
+        watcher, system, directory = live(run, t0 + 5, t0 + 70)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        # the reading is gone a second later, so the state clears and does not repeat
+        self.assertEqual(system.spoken(), ["abort 1"])
+        self.assertEqual(system.sounds(), [(rw.AFPLAY, rw.ALERT_SOUND)])
+        alert_file = read(os.path.join(directory, "ALERT"))
+        self.assertIn("ABORT 1: hottest curated 90.0 C", alert_file)
+
+    def test_a_state_that_holds_is_repeated_every_fifteen_seconds(self):
+        run = idle(120).patch_hottest(20, 100, 90.0)
+        t0 = synth.T0
+        watcher, system, _ = live(run, t0 + 5, t0 + 70)
+        self.assertEqual(system.spoken(), ["abort 1"] * 4)  # 20, 35, 50, 65 s
+
+    def test_mute_logs_and_says_nothing(self):
+        run = idle(80).patch_hottest(20, 100, 90.0)
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 40, mute=True)
+        self.assertEqual(len(watcher.raised), 1)
+        self.assertEqual([c for c in system.calls if c[0] in (rw.SAY, rw.AFPLAY)], [])
+        self.assertIn("MUTED", read(os.path.join(directory, "watch.log")))
+
+    def test_a_missing_logstream_pid_is_blind(self):
+        watcher, system, _ = live(idle(60), synth.T0 + 5, synth.T0 + 20, logstream_pid=False)
+        self.assertEqual([r.title for r in watcher.raised][:1], ["BLIND — NO GO"])
+        self.assertEqual(system.spoken()[:1], ["blind. no go"])
+
+    def test_the_helper_restarting_after_armed(self):
+        run = idle(80).add_ctx(10, "armed")
+
+        def on_sleep(now):
+            if now >= synth.T0 + 30:
+                system.pids = [101]
+
+        system = FakeSystem()
+        watcher, _, _ = live(run, synth.T0 + 5, synth.T0 + 40, system=system, on_sleep=on_sleep)
+        self.assertEqual([r.title for r in watcher.raised], ["HELPER RESTARTED"])
+        self.assertEqual(system.spoken(), ["helper restarted"])
+
+    def test_pressure_from_the_os(self):
+        system = FakeSystem()
+
+        def on_sleep(now):
+            system.pressure = 2 if now >= synth.T0 + 20 else 0
+
+        watcher, _, _ = live(idle(80), synth.T0 + 5, synth.T0 + 30, system=system, on_sleep=on_sleep)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 6"])
+
+    def test_a_rule_that_raises_is_heard_once_and_the_loop_goes_on(self):
+        run = idle(80).patch_hottest(30, 31, 90.0)
+        original = rw.Watcher.check_r1_absolute
+
+        def broken(self, hottest):
+            if hottest == 42.0:
+                raise ValueError("a value this rule did not expect")
+            return original(self, hottest)
+
+        with mock.patch.object(rw.Watcher, "check_r1_absolute", broken):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        titles = [r.title for r in watcher.raised]
+        self.assertEqual(titles.count("WATCHER ERROR"), 1)
+        self.assertIn("ValueError", watcher.raised[0].detail)
+        # the loop kept reading: the other rules still ran to the end
+        self.assertGreater(watcher.fan_samples, 300)
+        # It is one alert, raised once; like any held state it is repeated aloud every 15 s from
+        # the moment the watcher goes live (5 s into this run): at 5, 20 and 35.
+        self.assertEqual(system.spoken().count("watcher error"), 3)
+        self.assertIn(" ERROR ", read(os.path.join(directory, "watch.log")))
+
+    def test_one_rule_that_always_raises_does_not_silence_the_others(self):
+        # Each case breaks one check for good and puts a violation in front of a check that comes
+        # after it in the same event. The raising check is heard (once), and the later one still
+        # fires: before, the raise ended the whole event's dispatch.
+        cases = (
+            ("check_r2_automatic", "a fan sample", "ABORT 3",
+             lambda: idle(80).patch_fan(30, 30.1, F1Md=1)),
+            ("check_r1_absolute", "a package sample", "ABORT 1",
+             lambda: idle(80).add_ctx(5, "load-start step=1b").patch_hottest(30, 31, 74.1)),
+            ("check_x_fault", "a log line", "ABORT 4 — RESET",
+             lambda: idle(80).add_log(30, "Could not undo the engagement of fan 0: refused.", "Fault")),
+        )
+        for name, event, expected, build in cases:
+            with self.subTest(broken=name, event=event):
+                with mock.patch.object(rw.Watcher, name, side_effect=ValueError("always")):
+                    watcher, system, directory = live(build(), synth.T0 + 5, synth.T0 + 45)
+                found = [r.title for r in watcher.raised]
+                self.assertIn(expected, found)
+                self.assertEqual(found.count("WATCHER ERROR"), 1)
+                self.assertTrue(any("watcher error" in phrase for phrase in system.spoken()))
+
+    def test_a_check_that_raises_on_every_sample_writes_one_traceback_not_hundreds(self):
+        # 400 fan samples reach the broken check in this run; the operator is tailing watch.log
+        with mock.patch.object(rw.Watcher, "check_r2_automatic", side_effect=ValueError("always")):
+            watcher, _, directory = live(idle(80), synth.T0 + 5, synth.T0 + 45)
+        self.assertGreater(watcher.fan_samples, 300)
+        self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR "), 1)
+
+    def test_a_samplers_stop_line_after_ctx_end_ends_its_source_in_the_live_loop_too(self):
+        # the teardown: CTX end, then the fan sampler is stopped at 20 s with its own stop line,
+        # while the package sampler runs on
+        run = idle(60).add_ctx(10, "end").drop(20, 60, "fans")
+        watcher, system, directory = live(
+            run.copy().add_stop("fans", 20.0), synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+        self.assertIn("fans file: its sampler wrote its stop line after CTX end", read(
+            os.path.join(directory, "watch.log")))
+        # without the stop line the same gap is blind
+        watcher, _, _ = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+
+    def test_a_stop_line_in_a_hold_is_abort_12_and_is_said(self):
+        # The sampler is stopped during a hold that is never restored. The stop line must not
+        # stand rule 12 down: before, the hold ran blind for about 280 s, until ABORT 8.
+        for which, latest in (("fans", 32.3), ("package", 34.4)):
+            with self.subTest(source=which):
+                run = idle(80).hold(go=10, restore=None, target=3000)
+                run.drop(30, 80, which).add_stop(which, 30.0)
+                watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+                self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+                self.assertLessEqual(watcher.raised[0].t - synth.T0, latest)
+                self.assertEqual(set(system.spoken()), {"abort 12"})
+                self.assertIn("stop line during a hold", read(os.path.join(directory, "watch.log")))
+
+    def test_a_stop_line_before_ctx_end_with_no_hold_is_blind_no_go_and_is_said(self):
+        for which, latest in (("fans", 32.3), ("package", 34.4)):
+            with self.subTest(source=which):
+                run = idle(80).drop(30, 80, which).add_stop(which, 30.0)
+                watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+                self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+                self.assertLessEqual(watcher.raised[0].t - synth.T0, latest)
+                self.assertEqual(set(system.spoken()), {"blind. no go"})
+                self.assertIn("stop line before CTX end", read(os.path.join(directory, "watch.log")))
+
+    def test_a_stop_line_in_a_hold_after_ctx_end_is_still_abort_12_and_is_said(self):
+        run = idle(80).hold(go=10, restore=None, target=3000).add_ctx(8, "end")
+        run.drop(30, 80, "fans").add_stop("fans", 30.0)
+        watcher, system, _ = live(run, synth.T0 + 5, synth.T0 + 50)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+        self.assertEqual(set(system.spoken()), {"abort 12"})
+
+    def test_a_stop_line_the_watcher_starts_after_is_read_from_the_history(self):
+        # a watcher (re)started at 45 s, after the teardown's stop line was written at 20 s
+        run = idle(60).add_ctx(10, "end").drop(20, 60, "fans").add_stop("fans", 20.0)
+        watcher, system, _ = live(run, synth.T0 + 45, synth.T0 + 55)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+
+    def test_a_hold_after_the_teardown_stop_line_is_abort_12_and_is_said(self):
+        # #652's review S1, scenario B, in the live loop: the stop line after CTX end is honoured,
+        # then a hold engages at 30 s and is never restored.
+        run = idle(80).add_ctx(5, "end").drop(20, 80, "fans").add_stop("fans", 20.0)
+        run.hold(go=30, restore=None, target=3000)
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+        self.assertTrue(30.0 <= watcher.raised[0].t - synth.T0 <= 30.5, watcher.raised[0].t)
+        self.assertEqual(set(system.spoken()), {"abort 12"})
+        self.assertIn("fans file: its sampler wrote its stop line after CTX end", read(
+            os.path.join(directory, "watch.log")))
+
+    def run_over(self, directory, start, end):
+        """The live loop over files a test wrote itself, on a clock that moves when it sleeps."""
+        with open(os.path.join(directory, "logstream.pid"), "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % os.getpid())
+        args = types.SimpleNamespace(
+            dir=directory, out=directory, fans=None, package=None, helper_log=None, phases=None,
+            logstream_pid=None, mute=False)
+        state = {"t": start, "flag": False}
+
+        def sleep(seconds):
+            state["t"] += seconds
+            state["flag"] = state["t"] >= end
+
+        return rw.run_live(
+            args, spawn=FakeSystem(), stop=state, wall=lambda: state["t"], sleep=sleep)
+
+    def interrupted_sampler_files(self, directory):
+        """A fan sampler interrupted before its first tick: a start line and a stop line, and
+        no sample between them. The package file is an ordinary one."""
+        run = idle(60)
+        lines = {
+            "fans-10hz.ndjson": [synth._line(synth.start_record(synth.FAN_KEYS, 0.1)),
+                                 synth._line(synth.stop_record(0))],
+            "package-1hz.ndjson": run.package_lines(), "helper-log.ndjson": [], "phases.log": []}
+        for name, body in lines.items():
+            with open(os.path.join(directory, name), "w", encoding="utf-8") as handle:
+                handle.write("".join(line + "\n" for line in body))
+
+    def test_a_fan_file_with_only_a_start_and_a_stop_line_does_not_kill_the_live_loop(self):
+        # #652's review N-b. A stop line is dated by the sample before it, and here there is none.
+        # Read as a stop it would raise KeyError out of the loop and the watcher would die; read
+        # as what it is, the file simply has no samples, and the record is blind.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            watcher = self.run_over(directory, synth.T0 + 5, synth.T0 + 30)
+            self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+            self.assertEqual(watcher.error_counts, {})
+            self.assertEqual(watcher.fan_samples, 0)
+            self.assertIn(" watcher stopped", read(os.path.join(directory, "watch.log")))
+
+    def test_a_replay_of_a_fan_file_with_no_sample_before_its_stop_line_reads_no_stop(self):
+        # #652's review N-b, the replay's own guard: a stop line with no sample before it has no
+        # date, and must not become an event that cannot be sorted against the others.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            paths = {
+                "fans": os.path.join(directory, "fans-10hz.ndjson"),
+                "package": os.path.join(directory, "package-1hz.ndjson")}
+            events = rw.load_events(paths)
+            kinds = {e[3] for e in events}
+            self.assertEqual(kinds, {"package"})
+            self.assertGreater(len(events), 50)  # the package file is there to be sorted against
+
+    def test_the_gate_notes_are_in_the_log_and_never_said(self):
+        run = idle(200, hottest=40.0).add_ctx(125, "armed")
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 190)
+        log = read(os.path.join(directory, "watch.log"))
+        for name in ("at-rest=YES", "t0=40.00", "rest-clock=MET"):
+            self.assertIn(" GATE " + name, log)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+        self.assertEqual(system.sounds(), [])
+        self.assertFalse(os.path.exists(os.path.join(directory, "ALERT")))
+
+    def test_a_gate_that_raises_is_logged_once_and_never_said(self):
+        # A bug in advice must not be heard as 'watcher error' in a hold, where it would send the
+        # operator to reset for a note he was never to act on. The rules after it still run.
+        run = idle(80).patch_hottest(30, 31, 90.0)
+        with mock.patch.object(rw.Watcher, "check_gate_rest", side_effect=ValueError("always")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)  # not one per sample
+        self.assertIn("ValueError: always", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_fan_that_raises_does_not_take_the_fan_rules_with_it(self):
+        # check_gate_runs runs first in on_fan. Raised unguarded, it would skip ABORT 3 for the
+        # sample whose `Ftst` changed with no `Wrote`, and be heard as 'watcher error'.
+        run = idle(60, hottest=40.0).patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 3"})  # `Ftst` changed, and changed back
+        self.assertEqual(set(system.spoken()), {"abort 3"})
+        self.assertNotIn("watcher error", system.spoken())
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_ctx_that_raises_does_not_take_the_ctx_line_with_it(self):
+        # track_gate_ctx runs first in on_ctx. Raised unguarded, `load-start` would never open the
+        # load window, and 75 C in it would not be ABORT 1: the operator would hear 'watcher error'.
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        with mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        self.assertTrue(watcher.load_window)
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+
+    def test_both_gate_checks_raising_at_once_is_still_only_a_log_line(self):
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        run.patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("one")), \
+                mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("two")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 1", "ABORT 3"})
+        self.assertEqual(set(system.spoken()), {"abort 1", "abort 3"})
+        self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR gate check "), 2)
+
+    def flaky(self, name, start, end):
+        """The shipped gate check `name`, except that it raises from `start` to `end` seconds."""
+        original = getattr(rw.Watcher, name)
+
+        @functools.wraps(original)
+        def check(watcher, *args):
+            if synth.T0 + start <= watcher.now < synth.T0 + end:
+                raise ValueError("flaky")
+            return original(watcher, *args)
+
+        return mock.patch.object(rw.Watcher, name, check)
+
+    @staticmethod
+    def gates_at(directory, seconds):
+        """The `gates[...]` of the first STATUS line at or after `seconds` into the run."""
+        for line in read(os.path.join(directory, "watch.log")).splitlines():
+            if " STATUS " in line:
+                stamp = rw.parse_iso_utc(line.split(" ", 1)[0])
+                if stamp - synth.T0 >= seconds:
+                    inner = line.split("gates[", 1)[1].split("]", 1)[0]
+                    return dict(token.split("=", 1) for token in inner.split())
+        raise AssertionError("no STATUS line after %s s" % seconds)
+
+    def test_the_status_line_says_error_for_a_gate_whose_last_evaluation_raised(self):
+        # at-rest said YES at 120 s. From 150 s its check raises: the last GATE line is still YES,
+        # and the STATUS line must not repeat it. When the check recovers, so does the line.
+        run = idle(260, hottest=40.0).add_ctx(125, "armed")
+        with self.flaky("check_gate_rest", 150, 200):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 250)
+        before, during, after = (self.gates_at(directory, t) for t in (140, 160, 220))
+        self.assertEqual((before["at-rest"], before["1d-entry"]), ("YES", "YES"))
+        self.assertEqual((during["at-rest"], during["1d-entry"], during["rest-clock"]),
+                         ("ERROR", "ERROR", "ERROR"))
+        self.assertEqual((during["t0"], during["engaged"]), ("40.00(frozen)", "NO"))  # not theirs
+        self.assertEqual((after["at-rest"], after["1d-entry"]), ("YES", "YES"))
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])  # and nothing is said, as for any gate
+
+    def test_each_gate_check_marks_the_gates_it_feeds(self):
+        feeds = {
+            "check_gate_runs": {"at-rest", "t0", "engaged", "1d-entry"},
+            "check_gate_t0": {"at-rest", "t0", "1d-entry"},
+            "check_gate_rest": {"at-rest", "rest-clock", "1d-entry"},
+            "check_gate_1d_entry": {"rest-clock", "1d-entry"},
+            "check_gate_engaged": {"engaged"},
+            "check_gate_clock": {"rest-clock"}}
+        for name, errored in feeds.items():
+            with self.subTest(check=name):
+                run = idle(100, hottest=40.0)
+                with self.flaky(name, 20, 1000):
+                    _, _, directory = live(run, synth.T0 + 5, synth.T0 + 90)
+                gates = self.gates_at(directory, 60)
+                self.assertEqual({g for g, v in gates.items() if v == "ERROR"}, errored)
+
+    def test_a_replay_of_a_gate_that_raises_is_not_swallowed_and_nothing_is_marked(self):
+        with self.flaky("check_gate_rest", 5, 1000), self.assertRaises(ValueError):
+            replay(idle(30))
+
+    def test_a_replay_does_not_swallow_a_bug(self):
+        with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                replay(idle(10))
+
+    def test_pgrep_failing_is_not_the_helper_vanishing(self):
+        system = FakeSystem()
+        original = system.__call__
+
+        def broken(argv, capture=False, timeout=None):
+            if tuple(argv) == rw.COMMANDS["pgrep"]:
+                raise OSError("no pgrep")
+            return original(argv, capture, timeout)
+
+        run = idle(60).add_ctx(10, "armed pid=100")
+        watcher, _, _ = live(run, synth.T0 + 5, synth.T0 + 30, system=broken)
+        self.assertEqual(watcher.raised, [])
+
+    def test_history_in_the_files_is_caught_up_before_the_loop_starts(self):
+        # The watcher is started 100 s into a hold, as after a restart of the watcher.
+        run = idle(200).hold(go=10, restore=150, target=3000)
+        watcher, system, _ = live(run, synth.T0 + 100, synth.T0 + 110)
+        self.assertTrue(watcher.hold_active)
+        self.assertEqual(watcher.step, "1a")
+        self.assertEqual(watcher.raised, [])
+        self.assertAlmostEqual(watcher.engage_t, synth.T0 + 10.03, delta=0.01)
+
+    def test_catch_up_reads_each_file_to_its_end_not_one_chunk_of_it(self):
+        # A watcher started late reads history in one go. With a chunk of 2 KB the history is
+        # many chunks long; if only the first were read, the rest would arrive after the watcher
+        # went live and be said aloud as though it were new.
+        run = idle(120).patch_hottest(10, 11, 90.0)
+        with mock.patch.object(rw.Tail, "CHUNK", 2048):
+            watcher, system, _ = live(run, synth.T0 + 100, synth.T0 + 105)
+        self.assertGreater(watcher.fan_samples, 1000)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])  # found in the history
+        self.assertEqual(system.spoken(), [])  # ... and, being over, not said
+
+    def test_a_hold_with_no_restore_is_abort_8_even_for_a_watcher_started_late(self):
+        run = idle(400).hold(go=10, restore=390, target=3000)
+        watcher, system, _ = live(run, synth.T0 + 200, synth.T0 + 330)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 8"])
+
+
+class TailTests(unittest.TestCase):
+    def test_whole_lines_only_and_a_file_that_appears_later(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f")
+            tail = rw.Tail(path)
+            self.addCleanup(tail.close)
+            self.assertEqual(tail.read_new(), [])
+            with open(path, "wb") as h:
+                h.write(b"one\ntw")
+            self.assertEqual(tail.read_new(), [b"one"])
+            with open(path, "ab") as h:
+                h.write(b"o\nthree\n")
+            self.assertEqual(tail.read_new(), [b"two", b"three"])
+            self.assertEqual(tail.read_new(), [])
+
+    def test_a_truncated_or_replaced_file_is_read_again_from_its_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f")
+            with open(path, "wb") as h:
+                h.write(b"aaaa\nbbbb\n")
+            tail = rw.Tail(path)
+            self.addCleanup(tail.close)
+            self.assertEqual(len(tail.read_new()), 2)
+            with open(path, "wb") as h:
+                h.write(b"c\n")
+            self.assertEqual(tail.read_new(), [b"c"])
+            os.rename(path, path + ".old")
+            with open(path, "wb") as h:
+                h.write(b"dd\nee\nff\n")
+            self.assertEqual(tail.read_new(), [b"dd", b"ee", b"ff"])
+
+
+class Confinement(unittest.TestCase):
+    def test_the_spawner_refuses_everything_off_the_list(self):
+        for argv in (
+                ("/usr/bin/sudo", "true"), ("sudo", "-v"), ("/bin/kill", "1"), ("kill", "-9", "1"),
+                ("/bin/launchctl", "list"), ("/usr/bin/fanctl", "reset", "--all"),
+                ("/Applications/Aeolus.app/Contents/MacOS/fanctl", "status"),
+                ("/usr/bin/pgrep", "-x", "Finder"), ("/usr/bin/pgrep", "AeolusHelper"),
+                ("/usr/bin/pmset", "sleepnow"), ("/usr/bin/pmset", "-g", "log"),
+                ("/usr/bin/afplay", "/tmp/other.aiff"), ("/usr/bin/say",),
+                ("/usr/bin/say", "-v", "Bad", "x"), ("/usr/bin/say", "hi; rm -rf /"),
+                ("/usr/bin/say", "-x"), ("say", "hi"), ("/usr/bin/notifyutil", "-p", "x")):
+            with self.assertRaises(PermissionError, msg=str(argv)):
+                rw._spawn(argv)
+
+    def test_the_spawner_accepts_exactly_the_listed_commands(self):
+        for argv in (
+                ("/usr/bin/pgrep", "-x", "AeolusHelper"),
+                ("/usr/bin/notifyutil", "-g", "com.apple.system.thermalpressurelevel"),
+                ("/usr/bin/pmset", "-g", "therm"), ("/usr/bin/afplay", rw.ALERT_SOUND),
+                ("/usr/bin/say", "abort 4. verify")):
+            self.assertTrue(rw._allowed(argv), argv)
+
+    def test_whatever_a_whole_run_does_goes_through_the_list_and_into_its_own_files(self):
+        """Patch every way the process could start a program or change a file. Run a replay and
+        a live loop with the real spawner. Nothing off the list may be asked for."""
+        asked, opened, forbidden = [], [], []
+
+        def fake_run(argv, **kwargs):
+            asked.append(tuple(argv))
+            return subprocess.CompletedProcess(argv, 0, b"x 0\n", b"")
+
+        class FakePopen:
+            def __init__(self, argv, **kwargs):
+                asked.append(tuple(argv))
+
+            def poll(self):
+                return 0
+
+        real_open = open
+
+        def recording_open(path, mode="r", *args, **kwargs):
+            if any(flag in mode for flag in "wax+"):
+                opened.append((os.path.abspath(str(path)), mode))
+            return real_open(path, mode, *args, **kwargs)
+
+        def forbid(name):
+            def refuse(*args, **kwargs):
+                forbidden.append(name)
+                raise AssertionError("the watcher called %s" % name)
+            return refuse
+
+        run = idle(60).patch_hottest(20, 100, 90.0)
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            clock = Clock(d, run, synth.T0 + 5, synth.T0 + 40)
+            with open(os.path.join(d, "logstream.pid"), "w", encoding="utf-8") as h:
+                h.write("%d\n" % os.getpid())
+            args = types.SimpleNamespace(
+                dir=d, out=out, fans=None, package=None, helper_log=None, phases=None,
+                logstream_pid=None, mute=False, replay_polls=None)
+            inputs = ("fans-10hz.ndjson", "package-1hz.ndjson", "helper-log.ndjson", "phases.log")
+            patches = [
+                mock.patch.object(subprocess, "run", fake_run),
+                mock.patch.object(subprocess, "Popen", FakePopen),
+                mock.patch.object(rw, "open", recording_open, create=True)]
+            for name in ("system", "kill", "killpg", "popen", "remove", "unlink", "rename",
+                         "replace", "rmdir", "mkdir", "chmod", "execv", "execvp", "fork",
+                         "posix_spawn", "symlink", "link", "truncate", "utime"):
+                if hasattr(os, name):
+                    patches.append(mock.patch.object(os, name, forbid("os." + name)))
+            with contextlib_exit(patches):
+                rw.run_live(args, stop=clock.stop, wall=clock.wall, sleep=clock.sleep)
+                before = hashes(d, inputs)  # the feeder's last write is in; the replay adds none
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rw.run_replay(args)
+            after = hashes(d, inputs)
+        self.assertEqual(before, after)
+        self.assertEqual(forbidden, [])
+        for argv in asked:
+            self.assertTrue(rw._allowed(argv), argv)
+        self.assertTrue(any(a[0] == rw.SAY for a in asked))
+        self.assertTrue(any(a == rw.COMMANDS["pgrep"] for a in asked))
+        self.assertEqual({os.path.basename(p) for p, _ in opened}, set(rw.OWN_FILES))
+        self.assertTrue(all(
+            os.path.dirname(p) in (os.path.abspath(out), os.path.realpath(out)) for p, _ in opened))
+
+    def test_a_replay_refuses_to_write_into_the_capture_directory(self):
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()):
+            for argv in (["--replay", "--dir", d], ["--replay", "--dir", d, "--out", d]):
+                with self.assertRaises(SystemExit):
+                    rw.main(argv)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_replay_polls_are_for_replays(self):
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                rw.main(["--dir", d, "--replay-polls", os.path.join(d, "x")])
+
+
+class contextlib_exit:
+    """Enter several patches and leave them all."""
+
+    def __init__(self, patches):
+        self.patches = patches
+
+    def __enter__(self):
+        for p in self.patches:
+            p.start()
+
+    def __exit__(self, *exc):
+        for p in reversed(self.patches):
+            p.stop()
+
+
+if __name__ == "__main__":
+    unittest.main()

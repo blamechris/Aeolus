@@ -80,7 +80,8 @@ struct RefusedKeyCode: Sendable, Equatable {
     let code: FourCharCode
 }
 
-/// One walk over `0..<declaredCount`, tallied for the `#KEY` cross-check.
+/// One walk over `0..<declaredCount`, tallied for the `#KEY` cross-check, and for whether the
+/// keys it found could be a key table at all (`keySetIsPlausible`, #628).
 ///
 /// Shared by `SMCConnection.walkKeyTable(declaredCount:keyAt:)` and
 /// `SMCSensorProvider.readAll(declaredCount:keyAt:)`, which walk on either side of the actor:
@@ -90,6 +91,9 @@ struct KeyTableWalk: Sendable {
     let declaredCount: Int
     /// Indices that resolved to a key.
     private(set) var keyCount = 0
+    /// Every distinct key the walk resolved: what `readAll(declaredCount:keyAt:)` records as
+    /// the discovered key set. `keyCount` counts a key each time it is found, and this once.
+    private(set) var keys: Set<SMCKey> = []
     /// Indices whose code `SMCKey` refused, all of them.
     private(set) var refusedCodeCount = 0
     /// The first `maximumListedRefusedCodes` refused codes, for the log line. The rest are
@@ -101,9 +105,13 @@ struct KeyTableWalk: Sendable {
     ///
     /// A refused code is walked on the reading that the firmware holds a key this project's
     /// alphabet cannot name (#623). That reading is credible for a few. A misread of the
-    /// reply's key field can refuse every index. A field read one byte off takes its last byte
-    /// from the next field, the version; if that byte is zero, which nobody here has checked,
-    /// every code ends in zero and `SMCKey` refuses it. Counting those would let a walk that
+    /// reply's key field can refuse every index. Read one byte forward on this little-endian
+    /// host, the field keeps each key's first three characters and takes reply byte 4, the
+    /// version, as its first: `TC0P` reads as `"\0TC0"`. Byte 4 was zero in all 3,514
+    /// `READ_INDEX` replies on `Mac16,5` (macOS 27.2, #628), so there every such code holds a
+    /// zero byte and `SMCKey` refuses it. Read one byte back, the field keeps the last three
+    /// characters and takes its last from the byte before, refused when that byte is zero, as
+    /// `MisreadIndexTables.shifted` models it. Counting those would let a walk that
     /// resolved no key at all match `#KEY` and complete discovery with an empty key set. Every
     /// named read would then report its key absent, and a Mac with fans would be reported as
     /// having none (the #627 review). Past the cap the walk does what it did before #623: the
@@ -123,14 +131,16 @@ struct KeyTableWalk: Sendable {
     /// that refuses eight codes or fewer. On `Mac16,5` the firmware answers past its table with
     /// result byte `0xB8`, which is `.unanswered`. Either way the refused-code line is logged.
     ///
-    /// **What no count can see.** A misread whose codes stay printable resolves every index to
-    /// a key, only the wrong one: a field read onto a printable neighbouring byte, or read in
-    /// reverse byte order. The walk counts keys, so it matches, as it does on `main`. Only a
-    /// check of *which* keys were found can catch that; that is #628.
+    /// **What the index-count cross-check cannot see.** A misread whose codes stay printable
+    /// resolves every index to a key, only the wrong one: a field read onto a printable
+    /// neighbouring byte, or with its bytes reordered. The cross-check counts indices, so it
+    /// matches. Checks of *which* keys were found do see both, and `keySetIsPlausible` holds
+    /// them (#628): a one-byte misread repeats keys, and a reordered field moves `#KEY`.
     static let maximumWalkedRefusedCodes = 8
 
     init(declaredCount: Int) {
         self.declaredCount = declaredCount
+        keys.reserveCapacity(declaredCount)
     }
 
     /// Whether this walk's refused codes count as walked: the walk found at least one key, and
@@ -155,6 +165,75 @@ struct KeyTableWalk: Sendable {
         keyCount + (refusedCodesAreWalked ? refusedCodeCount : 0)
     }
 
+    /// Whether the keys this walk resolved could be an SMC key table, whatever their count: at
+    /// least one, none twice, and not `#KEY`'s bytes in another order where `#KEY` should be.
+    /// `SMCSensorProvider.readAll(declaredCount:keyAt:)` completes discovery only when this
+    /// holds and the cross-check matches.
+    ///
+    /// **Why the count is not enough.** The cross-check compares the indices the walk resolved
+    /// with `#KEY`, so a misread that turns each code into another printable one matches it.
+    /// Discovery would then complete on a set holding none of the machine's real keys, every
+    /// named read would report its key absent, and a Mac with fans would be reported as having
+    /// none (rule 6). Against the shapes measured on `Mac16,5`'s 3,514 keys (#627's review,
+    /// #628):
+    ///
+    /// - **A one-byte misread repeats keys.** With a printable byte where the field lost one,
+    ///   a read one byte forward leaves 1,048 distinct codes, and one byte back 3,216.
+    ///   `duplicateKeyCount` sees both, and a walk that finds one key at every index, as one
+    ///   whose index never reached the firmware would.
+    /// - **A reordered field moves `#KEY`.** Byte-reversed, the codes stay 3,514 distinct, so
+    ///   no key repeats, but `#KEY` reads as `YEK#`. Every reordering of the four bytes turns
+    ///   `#KEY` into one of `reorderedKeyCountKeys`; `holdsReorderedKeyCountKey` sees it.
+    /// - **A walk that finds no key has read no table.** `#KEY` declaring 0, with nothing
+    ///   answered past it, walks nothing and matches. `keyCount()` read `#KEY` by name before
+    ///   the walk, so the firmware holds at least one key.
+    ///
+    /// **`#KEY` is evidence here, not a requirement.** It is index 0 of `Mac16,5`'s table, whose
+    /// codes ascend from it. Whether Intel, M1 or M2 tables list it is not known: this project
+    /// has read none, and the Asahi Linux SMC documentation calls `#KEY` the number of keys
+    /// without saying where the index table puts it. Requiring it would refuse discovery for
+    /// ever on a table that does not list it. A table without `#KEY` passes here, unless it
+    /// holds `#KEY`'s bytes in another order instead. So a reordered field on a table that
+    /// does not list `#KEY` goes unseen.
+    ///
+    /// **Which way a wrong rejection fails.** As when the cross-check fails: discovery does not
+    /// complete, so each absent key costs a round trip and reads as a failed read, not absent.
+    /// That is never a key reported absent that the firmware holds.
+    var keySetIsPlausible: Bool {
+        keyCount > 0 && duplicateKeyCount == 0 && !holdsReorderedKeyCountKey
+    }
+
+    /// How many of the keys this walk resolved repeat one it had already resolved. A key table
+    /// lists each key once; `Mac16,5`'s 3,514 are 3,514 distinct.
+    var duplicateKeyCount: Int {
+        keyCount - keys.count
+    }
+
+    /// Whether the walk resolved one of `reorderedKeyCountKeys`, and not `#KEY` itself.
+    var holdsReorderedKeyCountKey: Bool {
+        !keys.contains(SMCKey.keyCount) && !keys.isDisjoint(with: Self.reorderedKeyCountKeys)
+    }
+
+    /// `#KEY`'s four bytes in each of their 23 other orders: what `#KEY` reads as through a key
+    /// field whose bytes are reordered, whichever the reordering. `YEK#` is the byte-reversed one.
+    static let reorderedKeyCountKeys: Set<SMCKey> = {
+        let code = SMCKey.keyCount.fourCharCode
+        let bytes = [24, 16, 8, 0].map { FourCharCode(UInt8(truncatingIfNeeded: code >> $0)) }
+        var reordered: Set<SMCKey> = []
+        for first in 0..<4 {
+            for second in 0..<4 where second != first {
+                for third in 0..<4 where third != first && third != second {
+                    let order = [first, second, third, 6 - first - second - third]
+                    let candidate = order.reduce(FourCharCode(0)) { $0 << 8 | bytes[$1] }
+                    if candidate != code, let key = SMCKey(fourCharCode: candidate) {
+                        reordered.insert(key)
+                    }
+                }
+            }
+        }
+        return reordered
+    }()
+
     /// Records `entry`, found at `index`, and returns its key if it has one. A refused code
     /// returns `nil`, so a caller has nothing to put in a reading or a discovered key set.
     /// Whether it counts as walked is decided in `walkedCount`, once the whole walk is known.
@@ -162,6 +241,7 @@ struct KeyTableWalk: Sendable {
         switch entry {
         case .key(let key):
             keyCount += 1
+            keys.insert(key)
             return key
         case .refused(let code):
             refusedCodeCount += 1
@@ -177,9 +257,10 @@ struct KeyTableWalk: Sendable {
     /// Ends the walk with `probe`, the entry at index `declaredCount`, logs what it found, and
     /// returns the cross-check.
     ///
-    /// Two lines, never one. The cross-check fault blames ADR 0003's byte order and says
-    /// nothing when the counts agree; the refused-code line says what the table held that
-    /// `SMCKey` cannot represent, and appears whether the counts agree or not.
+    /// Three lines, never one, each on its own condition. The cross-check fault blames ADR
+    /// 0003's byte order and says nothing when the counts agree; the refused-code line says
+    /// what the table held that `SMCKey` cannot represent, whether the counts agree or not; the
+    /// key-set fault says the keys found are no key table, which agreeing counts cannot show.
     func finish(probe: KeyTableEntry) -> KeyCountCrossCheck {
         let result = KeyCountCrossCheck(
             declaredCount: declaredCount, walkedCount: walkedCount,
@@ -188,7 +269,35 @@ struct KeyTableWalk: Sendable {
         if let message = refusedCodesMessage() {
             Self.logger.error("\(message, privacy: .public)")
         }
+        if let message = implausibleKeySetMessage() {
+            Self.logger.fault("\(message, privacy: .public)")
+        }
         return result
+    }
+
+    /// The line `finish(probe:)` logs when `keySetIsPlausible` is false, or `nil`. Counts and
+    /// fixed text only, so nothing a misread table holds reaches the line.
+    func implausibleKeySetMessage() -> String? {
+        guard !keySetIsPlausible else { return nil }
+        var findings: [String] = []
+        if keyCount == 0 {
+            findings.append("it resolved no key")
+        }
+        if duplicateKeyCount > 0 {
+            findings.append(
+                "\(duplicateKeyCount) of its \(keyCount) keys repeat one already walked, "
+                    + "leaving \(keys.count) distinct")
+        }
+        if holdsReorderedKeyCountKey {
+            findings.append("it holds #KEY's four bytes in another order, and not #KEY")
+        }
+        return """
+            #KEY walk: the keys a walk of \(declaredCount) index-table entries resolved are no \
+            SMC key table: \(findings.joined(separator: "; ")). READ_INDEX's reply is likelier \
+            misread than the table real. Discovery does not complete on a walk that finds this, \
+            so no key is reported absent on its strength (#628). This line is not the ADR 0003 \
+            byte-order cross-check.
+            """
     }
 
     private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "SMCConnection")
