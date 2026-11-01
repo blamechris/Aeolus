@@ -6,7 +6,7 @@ import Foundation
 /// The safe-state check: "does the helper report every fan cleared and nothing leased?"
 ///
 /// **One implementation, for every command that asks for the safe state and then looks.**
-/// `fanctl auto` ends on it, and `fanctl set` will end on it after releasing its lease. Two
+/// `fanctl auto` ends on it, and `fanctl set` ends on it after releasing its lease. Two
 /// copies would be two definitions of "confirmed", and the day they disagreed one command would
 /// report the fans fine that the other reported pinned.
 ///
@@ -153,16 +153,35 @@ enum SafeState {
 ///
 /// `ContinuousClock.Instant`, as the helper's own `MonotonicClock` is: the wait is measured on
 /// a clock that counts time asleep and cannot be stepped, never on wall time.
+///
+/// ## Two ways to wait
+///
+/// - **`sleep`** is time passing with nothing else in flight: the hold's heartbeat, the
+///   safe-state poll. A suite's clock moves by exactly as much as it is asked to sleep.
+/// - **`waitOnHelper`** is time passing while a request is **already with the helper** and
+///   will answer when it answers: the renewals made while `apply` is outstanding. In production
+///   it is `sleep`, because there time passes whatever the helper is doing. A suite's clock only
+///   moves when told to, and the request's length is real time it cannot see: a wait that
+///   elapsed by itself would put ten seconds on that clock for an `apply` that took a
+///   millisecond. So the suite's version waits for the test to say how long the helper takes.
 struct SettleClock: Decodable, Sendable {
     let now: @Sendable () -> ContinuousClock.Instant
     let sleep: @Sendable (Duration) async throws -> Void
+    let waitOnHelper: @Sendable (Duration) async throws -> Void
 
+    /// - Parameters:
+    ///   - now: The monotonic instant.
+    ///   - sleep: Time passing with nothing else in flight.
+    ///   - waitOnHelper: Time passing while a request is with the helper: `sleep` unless a suite
+    ///     says otherwise.
     init(
         now: @escaping @Sendable () -> ContinuousClock.Instant,
-        sleep: @escaping @Sendable (Duration) async throws -> Void
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        waitOnHelper: (@Sendable (Duration) async throws -> Void)? = nil
     ) {
         self.now = now
         self.sleep = sleep
+        self.waitOnHelper = waitOnHelper ?? sleep
     }
 
     init(from decoder: Decoder) throws {

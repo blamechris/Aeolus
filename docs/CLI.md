@@ -8,8 +8,8 @@ no privileges. This is the durable reference for what they print, in both human 
 specific `--json` invocations directly into an issue body, and this is where that shape
 is defined and kept stable.
 
-`status` and `auto` talk to the helper instead; they and the exit codes every helper command
-shares are in [Commands that talk to the helper](#commands-that-talk-to-the-helper).
+`status`, `set` and `auto` talk to the helper instead; they and the exit codes every helper
+command shares are in [Commands that talk to the helper](#commands-that-talk-to-the-helper).
 
 Every example below is real output, captured by actually running the command — not
 hand-written. Where a shape genuinely changed recently (`sensors --json` gained
@@ -307,7 +307,7 @@ shape moved recently (a `crossCheck` envelope, and `--key` to scope one row).
 
 ## Commands that talk to the helper
 
-`status` and `auto` need the helper installed, approved in System Settings, and willing to
+`status`, `set` and `auto` need the helper installed, approved in System Settings, and willing to
 accept this binary's signature. A `fanctl` built with `swift build` carries no Team ID and is refused at
 both ends by design (ADR 0005), so it cannot reach an installed helper; the read commands
 above need none of this and keep working.
@@ -326,8 +326,8 @@ copy never reaches the helper at all: it carries no Team ID, so it refuses to co
 **The examples in this section are not captured from an installed helper.** The 2026-10-09 check
 above reached one, but its output was summarised in that issue and not recorded verbatim here. The
 examples are the shapes the end-to-end suites
-(`Tests/AeolusHelperTests/FanctlStatusTests.swift`, `FanctlAutoTests.swift`) produce against the
-real helper session with a simulated fan authority. Replace them with captured output when someone
+(`Tests/AeolusHelperTests/FanctlStatusTests.swift`, `FanctlAutoTests.swift`,
+`FanctlSetTests.swift`) produce against the real helper session with a simulated fan authority. Replace them with captured output when someone
 records a run.
 
 ### Exit codes
@@ -341,11 +341,11 @@ this table stops listing every code.
 |---|---|---|
 | 0 | `success` | Done, and what was reported was observed. |
 | 1 | `failure` | Anything not named below: an answer this build cannot read, a request whose outcome is unknown because no answer arrived, an unanticipated error. |
-| 2 | `requestDoesNotFit` | The request does not fit this machine: no such fan, a speed outside the fan's firmware range, a percentage for a fan whose range is unusable. |
+| 2 | `requestDoesNotFit` | The request does not fit this machine: no such fan, a speed outside the fan's firmware range, a speed for a fan whose range is unusable (a percentage and an rpm alike). What is malformed on every machine is 64, not this. |
 | 3 | `helperNotReachable` | Helper not installed, not approved, refused this binary's signature, or answered with a signature this binary refuses. These cannot be told apart from the client side. |
 | 4 | `manualControlRefused` | The helper refused manual control of a fan it can see — the message carries the reason and its advice. |
 | 5 | `heldByAnotherClient` | Another client holds the manual-control lease. There is one lease at a time. |
-| 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
+| 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease could no longer be shown to be held (including while the speed was still being applied, and in the snapshot after it), the system reclaimed a fan, the helper stopped stating a held target for a fan, or a thermal emergency took over. |
 | 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
 | 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
 | 9 | `cannotReturnToAutomatic` | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, **whatever mode the fan reads** (an unreadable mode is reported as automatic). Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. *2026-10-10:* on a plane that can write, the request includes the machine-wide restore ([ADR 0014](ADR/0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351). |
@@ -627,6 +627,301 @@ and `fans` are from the last snapshot the helper returned, captured at `captured
   handshake alone) prints the plain `{ "schema", "failure" }` document shown above instead,
   which has no `fans` and no `restoreRequested`; the failure message says whether the request was
   sent.
+
+### `fanctl set <fan|all> <N%|Nrpm> --for <duration>`
+
+A bounded hold for the life of the process. It takes the manual-control lease, sets the speed,
+renews the lease every ten seconds from the moment it asks for it, and releases it when the time
+is up, a signal arrives or its parent exits, and then checks what the helper reports the way
+`auto` does.
+
+> **Held.** `set` is built and tested against a simulated helper. It does not reach `main`
+> before the safety subsystem (E5, [#7](https://github.com/blamechris/Aeolus/issues/7)) and the
+> owner-supervised E4 acceptance ([#9](https://github.com/blamechris/Aeolus/issues/9)), per
+> [#15](https://github.com/blamechris/Aeolus/issues/15). Nothing here has driven a fan. **Against
+> `main`'s helper, `set` exits 4:** it answers every lease with `writePathNotBuilt`, and nothing is
+> written. **Against a helper built with the write plane, `set` writes the fan.** The E4 branch's
+> daemon holds a write channel on macOS 14 or later
+> ([#465](https://github.com/blamechris/Aeolus/pull/465)), its plane answers `.built`, and `set`
+> takes the lease, commands the speed and holds it. Below macOS 14 that helper answers
+> `writePathNotBuilt` as `main`'s does. The Intel and M1/M2 paths are `untested`.
+
+```
+fanctl set 0 75% --for 30m            # fan 0 at 75% of its range for 30 minutes
+fanctl set all 3000rpm --for 2h       # every fan at 3000 RPM; refuses if any fan cannot
+fanctl set 1 100% --for 10s --json    # newline-delimited JSON events
+```
+
+**The grammar.** Anything malformed is a usage error, **64**, before any connection. What is
+well formed and does not fit this machine is **2**.
+
+| Input | Accepted | Refused with 64 |
+|---|---|---|
+| fan | `all`, or a non-negative integer (`0`, `1`) | `ALL`, `-1`, `1.5`, `fan0`, `0,1` |
+| speed | `<int>%` from 0 to 100, or `<int>rpm` (suffix in any case: `1350rpm`, `1350RPM`) | a bare number (`75`), `101%`, a sign, a decimal point, an exponent, a space, `nan%`, `inf%`, a digit from another script, a number too large for an integer |
+| `--for` | `<int>s`, `<int>m` or `<int>h`, from `10s` to `8h` | no `--for` at all, `9s`, `9h`, `30` (no unit), `1h30m`, `30M` |
+
+ASCII digits only, so `nan`, `inf`, `+5` and `٣٠` cannot be a speed or a duration. There is **no
+`--persist` flag**, and nothing like one: the flag is absent, not refused. `--for` is required on
+every `set`, because a terminal cannot be told from an automated caller (chroxy, `ssh -t`, tmux
+and expect all allocate a PTY). A hold at a terminal is `--for 2h`, and Ctrl-C still ends it
+early. The bounds are one heartbeat at the bottom (a shorter hold only churns the fan's mode
+register) and eight hours at the top (a longer one is persistence, which ADR 0007 refuses in v1).
+
+**What a percentage means.** A position in the **commandable** range, not in `[0, max]`:
+`rpm = lowest + p/100 × (highest − lowest)`, rounded to a whole RPM, where `lowest` is
+`max(F0Mn, 100)` (the floor that keeps a fan off zero, `FanSafetyLimits.minimumManualRPM`) and
+`highest` is `F0Mx`. On `Mac16,5` (1350 to 5777 RPM): 0% is 1350, 50% is 3564, 75% is 4670,
+100% is 5777. The mapping is `FanControlEnvelope.target(forPercent:)` in `FanKit`, once, so the
+app's slider and a remote caller cannot round it differently. On Intel and M1/M2 the mapping
+rests on the documented `F0Mn`/`F0Mx` only.
+
+**The gate, and what is refused (exit 2).** Everything is decided from the helper's own snapshot
+before anything is acquired:
+
+- A fan whose `FanState.controlEnvelope` is not `.success` gets **no speed in either unit**: a
+  bound that was not read, or one `FanBoundsImplausibility` refuses (a declared maximum of 1e14
+  would make 75% about 7.5e13 RPM, and the helper would grant the lease anyway,
+  [#270](https://github.com/blamechris/Aeolus/issues/270)). The message is
+  `FanBoundsImplausibility`'s own description.
+- An rpm outside `[lowest, highest]` — `0rpm` included — is refused, **never clamped** on the
+  client. The helper still clamps (CLAUDE.md rule 7); that is its control, not this command's
+  courtesy.
+- A fan the helper does not report.
+- `all` is **all or nothing**: each fan is judged against its own envelope, and one that cannot
+  be set refuses the whole command with nothing acquired.
+
+```
+handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s, not self-renewing,
+  held by "fanctl <version> (pid N)") → apply, with renewLease every 10 s from the clock read
+  until apply is answered → a snapshot in which every covered fan carries the helper's held
+  target → started
+  every 10 s, on the same schedule: renewLease, then snapshot → holding
+  ends: --for elapsed │ SIGINT/SIGTERM/SIGHUP │ the parent exited │ stdout not draining
+  then: releaseLease → the safe-state check (the one `auto` ends on) → ended
+  or, on any loss the helper reports once holding: releaseLease → the safe-state check → failed,
+  exit 6 or worse
+  or, on any outcome before started (apply refused, or no answer, or control no longer shown
+  held, a snapshot that failed or showed no hold): releaseLease → the safe-state check → failed
+```
+
+- **The lease is renewed from the moment it is asked for.** The helper's thirty seconds start at
+  the grant, and an `apply` may take 57 seconds for one fan and 109 for two. The first renewal is
+  due ten seconds after the instant read **before `acquireLease` is sent**, and renewals are sent
+  while `apply` and the confirming snapshot are outstanding. When they are answered the hold's
+  loop takes the same schedule over: there is one, and no renewal is sent after the release.
+  A renewal that fails is final (it is never retried), and is reported once `apply` has been
+  answered, and **it takes precedence**: whatever `apply` then said, the diagnosis is control
+  lost and the text states both facts. (A renewal that times out makes the client give up the
+  connection, and the `apply` in flight is then answered `connectionAbandoned`; read alone, that
+  would be "no answer" and the renewal would never be mentioned.)
+- **Control starts when `apply` is accepted and the helper shows the fans held.** "Holding" is
+  said when the snapshot after `apply` lists this lease **and** every covered fan carries the
+  helper's held target (`observed.targetRPM`, `null` unless the same snapshot shows the fan in
+  manual under the live lease, with no reclamation and no thermal override). That snapshot is
+  read after `apply` was answered and cannot predate the engagement (ADR 0013, 2026-10-18), so
+  the first one decides.
+- **Control that could no longer be shown to be held is control lost before the hold began,
+  never a refusal.** A renewal failed while `apply` worked; `apply` answered `leaseExpired`,
+  `leaseUnknown` or `leaseNotHeldByThisConnection`; or `apply` was accepted and the snapshot
+  after it could not be read, did not show every covered fan with the helper's held target, or
+  the keeper's timer failed. The message opens "Control was lost before the hold began: control
+  of lease … could no longer be shown to be held", states what was seen, in order, and never
+  says the helper refused or did not accept the speed, and never that the lease **ended**:
+  nobody saw an end. `endedBecause` is `controlLost`. The lease is released and the safe-state
+  check **looks**: the exit is 6, or 9 or 8 if the check found something worse, and the closing
+  text states that check's verdict and says "nothing is held" only if the check confirmed it.
+  The text does not repeat the helper's or the client's own descriptions of `leaseExpired`, a
+  restarted helper, or a connection given up, which claim what became of the fans ("have
+  returned to automatic control") or advise asking again; nothing observed that, so the text says
+  what was seen ("The helper answered that the manual-control lease had expired.").
+- **A signal that lands while `apply` is outstanding** is remembered and cannot cut `apply`
+  short (that would release the lease under an `apply` that is working); it takes effect when
+  `apply` returns, bounded by `apply`'s own deadline (57 s for one fan, 109 s for two). It ends
+  the run **before `started`**, so "Holding" is never printed to a person who has already asked
+  to stop: released, checked, an ordinary ending with `endedBecause: signal` and exit 0, 8 or 9,
+  whose text opens "The hold was not begun", not "The hold ended". The signal is looked for once
+  `apply` and the snapshot confirming it are both answered, so it may have landed during either,
+  and the text says "while the speed was being applied or confirmed". If the run ends some other
+  way, the signal is still in the closing event (`signal`) and in the text.
+- **An `apply` the helper answered with a fault is followed by a release and the safe-state
+  check, whatever the fault.** Level 6 can engage a fan, fail on the next, have the undo refused
+  and answer only the original fault, so a refusal is not taken to mean no fan was touched. The
+  exit is the check's verdict where that is worse (9, then 8) and otherwise the code the fault
+  classifies to (4 for a bounds refusal or a thermal emergency, 2 for an invalid parameter, …).
+  "Did not accept the speed" is said, and `endedBecause` is `refused`, **only if the check found
+  every fan automatic and no lease**; otherwise the text says the answer does not settle what
+  happened to the fans, and `endedBecause` is `controlLost`.
+- **An `apply` that got no answer is not a refusal.** The helper may have applied the speed, so
+  the message says it got no answer and may have been applied, never "did not accept". The lease
+  is released (best effort), the safe-state check **looks**, and the exit follows the same rule
+  as a fault's: the check's verdict where that is worse (9, then 8), and otherwise the code the
+  failure classifies to (1 for a restart, a lost reply, an abandoned connection or no answer
+  within the deadline; non-zero always). It is reported as `endedBecause: controlLost`, with the
+  check's verdict in the message and `snapshotFollowsRelease` in the closing event.
+- **A signal that lands while `acquireLease` is in flight** stops the speed being sent: after the
+  lease comes back and before `apply`, a pending signal releases the lease, sends nothing to a
+  fan, and ends with exit 1, `endedBecause: signal`.
+- **The deadline is on the monotonic clock**, never compared with `Lease.expiresAt`, which is
+  the helper's display estimate. A step in the wall clock cannot lengthen or shorten a hold, and
+  no event carries a wall-clock end time.
+- **Ending.** A signal ends the sleep and nothing else: the release that follows is not
+  cancelled, and a signal during the release or the check is ignored. `getppid()` is compared with
+  its starting value at every heartbeat. Then the lease is released and the safe-state check
+  runs: 0, 8 or 9, exactly as for `auto`. A standard output that is not draining ends the hold
+  too (see **A write may park; the hold never waits on it**, below).
+- **Exit 6 on any loss the helper reports**, after a release **and the safe-state check** (exit 8 or
+  9 instead if the check found them, and "nothing is held" is never said on the release's word: only
+  the check's own sentence confirms the fans, and during a thermal emergency the text says the
+  helper reports its thermal protection, not `set`, in control of them): a renewal that errored
+  (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on a
+  fan the lease covers, `thermalEmergencyActive`, or **a covered fan the snapshot states no held
+  target for**. It never retries and **never re-acquires**: a helper that restarts mid-hold sends
+  exactly one `acquireLease` and ends in 6. A covered fan the snapshot no longer reports at all is a
+  loss too (not in the contract's list; the safe direction). The held target is the evidence that a
+  fan is held, at the confirming snapshot and at every heartbeat: a fan the firmware took back
+  before the reclamation watchdog marked it reads `automatic` with no target beside a lease the
+  helper still lists, and that ends the hold. **The mode alone is not a loss either way**: the
+  helper reports an unread mode as automatic
+  ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads `automatic` beside
+  a lease the helper lists and a held target is still held, and one that reads manual with no target
+  is not.
+- **SIGKILL and SIGSTOP** are beyond any of this: the 30-second lease expires on its own, a
+  stopped process finds its lease gone on resume and ends in 6, and sleep drops the lease (SAFETY.md
+  § 4). Whether the system reclaims a fan routinely and briefly on M3 and newer is **unobserved**;
+  if it does, holds end early, which is the safe direction.
+- **An orphan whose shell survives** (under tmux, say) is bounded only by `--for`, at most 8 hours.
+
+| Code | When, for `set` |
+|---|---|
+| 0 | The hold ended in an ordinary way and the helper reports every fan automatic and no lease after the release. |
+| 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` answered with `invalidParameter` is also 2, after the lease was taken, released and checked, unless the check found something worse.) |
+| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and the failure is `clientCannotVerifyHelper`, `helperUnreachable` or `helperSignatureRejected`: the lease was taken, and is released and checked. The exit is 3 only if the check then finds the safe state; it usually cannot read, and the exit is 8. |
+| 7 | Version mismatch. Nothing was acquired. |
+| 4, 5 | The helper refused the lease: manual control unavailable (`writePathNotBuilt`, from `main`'s helper, or from a helper built with the write plane below macOS 14), or another client holds it. Nothing was acquired or applied. (An `apply` answered with `boundsImplausible`, `thermalEmergencyActive`, `reclaimedBySystem` or `manualControlUnavailable` is also 4, or 5 for `leaseHeldByAnotherClient`, after the lease was taken, released and checked, unless the check found something worse.) |
+| 6 | Control was held and lost: a renewal failed, the helper does not list the lease, states no held target for a covered fan, reclaimed one, or set a thermal emergency. Released and checked, and 8 or 9 instead if the check found them: during the hold, or **before `started`**: a renewal that failed while `apply` was outstanding (whatever `apply` then said, including no answer), `apply` answering `leaseExpired`, `leaseUnknown` or `leaseNotHeldByThisConnection`, a snapshot after an accepted `apply` that could not be read or did not show every covered fan held, or the renewing timer failing. |
+| 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). Also the exit for a loss, an `apply` fault, an `apply` that got no answer, or a lapse, followed by that. |
+| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. Also the exit for a loss, an `apply` fault, an `apply` that got no answer, or a lapse, that left a fan so. |
+| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, and 8 or 9 instead if the check found them; but 6 if a renewal had failed while it was outstanding), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed once the hold is under way (released and checked, and 8 or 9 instead if the check found them; before `started` it is 6, above). |
+| 64 | Malformed command line (above). |
+
+**Text.** At the start, one line per fan and the lease; then nothing on standard output while
+holding; then one closing line saying why it ended and what the helper reports. The speed is a
+**target**: the fan's own speed is what the helper reports (`fanctl status`).
+
+```
+$ fanctl set 0 75% --for 30m
+Holding fan 0 at 75% (4670 RPM target; firmware 1350–5777 RPM) for 30m under lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. Ctrl-C returns it to automatic sooner.
+The hold ended: SIGINT was received. The helper accepted the release of lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. The helper now reports every fan automatic and no manual-control lease, in a snapshot it captured at 2026-10-07T23:24:57Z.
+```
+
+With `all`, each fan gets a line, the last of which carries the way out. No outcome other than 0
+says "the helper now reports" — a failure prints its diagnosis on standard error and nothing
+claims the fans are back.
+
+```
+$ fanctl set 0 6000rpm --for 30s; echo $?
+Fan 0: 6000rpm is outside the speeds this fan can be set to, 1350 to 5777 RPM (the firmware's range, above the floor that keeps a fan off zero).
+Nothing was acquired and nothing was sent to a fan.
+2
+```
+
+### `fanctl set --json`
+
+Newline-delimited JSON: one compact object per line, in this order and no other. Every line has
+`schema` (the same version as `status`'s), `event` and `at` (the time the line was written). Every
+key a shape defines is always present, `null` for "not present".
+
+| Event | When |
+|---|---|
+| `started` | Once, after `apply` was accepted and a snapshot listed the lease with the helper's held target for every covered fan (`observed.targetRPM` is not `null`). Never implies a fan reached its speed. |
+| `holding` | After every successful heartbeat: the liveness signal, and the line a consumer that is not draining is found out by. |
+| `ended` | Exactly one closing event for exit 0, on standard output or, when that cannot take it whole, standard error. |
+| `failed` | Exactly one closing event for every other exit — including one that never held anything — on the same terms. |
+
+```json
+{"at":"2026-10-07T23:24:57Z","durationSeconds":20,"event":"started","fans":[{"commandedRPM":4670,"index":0,"observed":{"actualRPM":{"unavailableReason":null,"value":1350},"firmwareName":null,"index":0,"isReclaimedBySystem":false,"manualControl":{"advice":null,"reason":null,"state":"available","summary":null},"maximumRPM":{"unavailableReason":null,"value":5777},"minimumRPM":{"unavailableReason":null,"value":1350},"mode":"manualFixed","targetRPM":4670},"requested":{"unit":"percent","value":75}}],"leaseID":"FEDA5A4F-912F-49CB-84B7-51288910401A","schema":1}
+{"at":"2026-10-07T23:24:57Z","event":"holding","fans":[ ... ],"leaseID":"FEDA5A4F-912F-49CB-84B7-51288910401A","remainingSeconds":10,"schema":1}
+{"at":"2026-10-07T23:24:57Z","capturedAt":"2026-10-07T23:24:57Z","endedBecause":"durationElapsed","event":"ended","failure":null,"fans":[ ... ],"leaseID":"FEDA5A4F-912F-49CB-84B7-51288910401A","listedLeaseID":null,"releaseAccepted":true,"schema":1,"signal":null,"snapshotFollowsRelease":true}
+```
+
+- **`started` and `holding`** — `leaseID`; `fans[]`, one per fan the hold covers, each
+  `{ index, requested: { unit: "percent" | "rpm", value }, commandedRPM, observed }`. `requested`
+  is what was typed; **`commandedRPM` is the target that was sent**; `observed` is the helper's own
+  report of the fan at that snapshot, in the shape `status --json` defines for `fans[]` (`actualRPM`
+  is the speed, `targetRPM` the helper's target, `mode`, `isReclaimedBySystem`, `manualControl`).
+  `started` adds `durationSeconds` (what was asked for); `holding` adds `remainingSeconds`, whole
+  seconds counting down. **No event carries a wall-clock end time.**
+- **The closing event** — `ended` and `failed` share these, and `failed` is the existing failure
+  event (`schema`, `event`, `at`, `failure: { exitCode, kind, message }`) extended additively; the
+  shared keys are `null` wherever there is nothing to say.
+  - `leaseID` — the lease this run took, or `null` if it never took one.
+  - `endedBecause` — `durationElapsed`, `signal`, `parentExited`, `outputClosed`, `controlLost` or
+    `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease), and when
+    the hold's own timer failed (1, or 8 or 9 where the check found worse), which is neither an
+    ending anyone asked for nor a loss the helper reported.
+    `refused` is a "no" to the request: exit 2, 4 or 5 before a hold, or an `apply` the helper
+    answered with a fault **and the safe-state check that followed found every fan automatic and
+    no lease**. An `apply` fault followed by anything else, an `apply` that got no answer, and
+    control that could no longer be shown to be held before the hold began (a renewal that failed
+    while `apply` worked, an `apply` answered that the lease was gone, a confirming snapshot that
+    failed or showed no hold, a keeper that could not pace itself) are `controlLost`: nobody saw
+    the lease end. A signal is `signal` when it arrived before the lease, while the lease was in
+    flight, or while `apply` and its confirming snapshot were outstanding and they then showed the
+    fans held: the last is an ordinary ending before `started` (0, 8 or 9), whose text says the
+    hold was not begun.
+  - `signal` — `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`, and also when
+    a signal landed while `apply` was outstanding and the run then ended some other way.
+  - `releaseAccepted` — whether the helper accepted the request to release the lease; `null` if
+    none was made. `false` is not "the lease is still there", only that no acceptance was heard.
+  - `capturedAt`, `snapshotFollowsRelease`, `listedLeaseID`, `fans` — the last snapshot the helper
+    returned: when it was captured, whether it was read after the release, the lease it listed
+    (whoever holds it), and the covered fans as in `started`. After an ordinary ending these are
+    the safe-state check's, so `fans[].observed.mode` is what the helper reports after the release.
+    **`snapshotFollowsRelease: false` means they describe the helper while the lease was still
+    held**, because the check read nothing afterwards; the text then says the state is unknown
+    and does not describe the lease or the fans at all.
+  - `failure` — `null` for `ended`.
+
+**A write may park; the hold never waits on it.** A process that holds a lease must keep
+renewing it and must be able to stop, and a `write(2)` to a pipe can park for as long as the
+kernel makes it: a reader that stopped reading, a terminal under flow control (Ctrl-S), another
+process racing for the room on a shared pipe, a system at its pipe-memory ceiling. Nothing that
+can be checked before a write promises it will not park (`poll` calls a pipe writable at
+`PIPE_BUF` bytes free, which a `--json` line of 560 to 1,127 bytes is longer than; calls a full
+pipe writable at the memory ceiling; and says nothing of a terminal under XOFF), so `set` does
+not write. It hands each line to a **writer thread of its own**, one per stream, which may park in
+`write(2)` for as long as the kernel makes it. Handing a line over never blocks, and nothing the
+hold does waits on a write. Four consequences:
+
+- **A consumer that is not draining is judged by the writer's progress, not by `poll`.** If the
+  oldest line handed to standard output is not completely written 2 seconds after it was handed
+  over, or the write failed (the reader is gone), the hold releases and ends with
+  `endedBecause: outputClosed`, well inside the 10-second heartbeat. A stop request (a signal, the
+  parent exiting, `--for` elapsing) never waits on the writer, and is the reason the hold ends
+  whenever there is one.
+- **Output cannot delay the release or the check.** The lease is released and the safe state
+  checked first; only then is the closing event handed over.
+- **The closing event reaches exactly one stream, whole.** If standard output is idle within one
+  second of the ending (every line handed to it has been written, so it is at a line boundary),
+  the event is its last line. Otherwise (a line is parked on it, perhaps half-written; or it has
+  failed) the **same line** is written to standard error, and a diagnosis in words for a failed
+  ending is always on standard error. If standard error does not take it within one second
+  either, it is dropped and the process exits; the exit code still tells. A script should take
+  the closing event from standard output or, failing that, standard error.
+- **Process exit abandons a parked writer thread.** The bytes it had already written stay in the
+  pipe, so standard output can end with the front of a line it was parked on and no newline: an
+  incomplete final line, never a complete one that does not parse, and never one with the closing
+  event glued to it. In text, the closing sentence follows the same rule.
+
+**`status` and `auto` write to the end.** Their output is delivered whole to a reader that is
+merely slow, however little room the pipe has; a reader that has *gone* (EPIPE) neither crashes
+the command nor changes its exit code. Any other write failure (a closed descriptor, a full disk)
+is said on standard error and also leaves the exit code alone. On an inherited **non-blocking**
+descriptor (a child of a Node process, whose pipes are), a full pipe is `EAGAIN` and not a wait:
+the write waits for room with `poll` and retries, and never changes the flag, which belongs to
+the open file description every process sharing the descriptor shares. `reset --all` does not use
+this writer.
 
 ---
 
