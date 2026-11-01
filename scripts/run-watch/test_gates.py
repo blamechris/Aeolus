@@ -142,15 +142,82 @@ class T0Gate(unittest.TestCase):
         self.assertEqual(w.t0, 40.0)
         self.assertEqual(fields(gate_lines(w, "t0")[-1][1])["by"], "CTX_step=1a")
 
-    def test_armed_before_any_window_freezes_it_at_the_first_one(self):
-        run = idle(330, hottest=40.0).add_ctx(50, "armed").patch_hottest(140, 330, 46.0)
+    def test_armed_before_any_window_freezes_it_as_unavailable_and_at_rest_never_says_yes(self):
+        # A baseline taken after the run began is not a pre-run baseline: with no complete window
+        # when it freezes, T0 is unavailable for the whole run, and "at rest" fails closed.
+        run = idle(400, hottest=40.0).add_ctx(50, "armed").patch_hottest(140, 400, 46.0)
         w = replay(run)
         lines = gate_lines(w, "t0")
-        self.assertEqual(fields(lines[0][1])["t0"], "unavailable")
-        self.assertEqual(fields(lines[0][1])["freeze-at"], "CTX_armed")
-        self.assertEqual(fields(lines[-1][1])["state"], "frozen")
-        self.assertTrue(119.3 <= lines[-1][0] <= 119.8, lines[-1][0])
+        self.assertEqual(len(lines), 1)  # nothing follows it: no later window changes it
+        self.assertTrue(49.9 <= lines[0][0] <= 50.1, lines)
+        f = fields(lines[0][1])
+        self.assertEqual((f["t0"], f["ok"], f["state"], f["by"], f["why"]),
+                         ("unavailable", "NO", "frozen", "CTX_armed", "window"))
+        self.assertEqual((f["n"], f["need"], f["limit"]), ("0", "100", "50"))
+        self.assertIsNone(w.t0)
+        self.assertTrue(w.t0_frozen)
+        self.assertNotIn("YES", [s for _, s in at_rest(w)])  # 350 s at rest, and never YES
+        self.assertEqual(at_rest(w)[-1][1], "t0")
+
+    def test_a_t0_freeze_line_freezes_it_and_armed_later_changes_nothing(self):
+        # The runbook writes `t0-freeze` at PR-9, after the quiescence window and before the
+        # install; `armed` comes much later. Heat after the freeze (the install) is not in T0.
+        run = idle(400, hottest=40.0).add_ctx(125, "t0-freeze").patch_hottest(140, 400, 47.0)
+        run.add_ctx(300, "armed")
+        w = replay(run)
+        lines = gate_lines(w, "t0")
         self.assertEqual(w.t0, 40.0)
+        self.assertEqual(fields(lines[-1][1])["state"], "frozen")
+        self.assertEqual(fields(lines[-1][1])["by"], "CTX_t0-freeze")
+        self.assertTrue(124.9 <= lines[-1][0] <= 125.1, lines[-1][0])
+        self.assertEqual([fields(x)["state"] for _, x in lines].count("frozen"), 1)  # `armed` said nothing
+        # the control: frozen at `armed` alone it is the heat of the install's window
+        late = replay(idle(400, hottest=40.0).patch_hottest(140, 400, 47.0).add_ctx(300, "armed"))
+        self.assertGreater(late.t0, 46.0)
+
+    def test_t0_freezes_at_whichever_of_t0_freeze_and_armed_comes_first(self):
+        first_armed = replay(idle(300, hottest=40.0).add_ctx(130, "armed").add_ctx(150, "t0-freeze"))
+        self.assertEqual(fields(gate_lines(first_armed, "t0")[-1][1])["by"], "CTX_armed")
+        first_freeze = replay(idle(300, hottest=40.0).add_ctx(130, "t0-freeze").add_ctx(150, "armed"))
+        self.assertEqual(fields(gate_lines(first_freeze, "t0")[-1][1])["by"], "CTX_t0-freeze")
+        for w in (first_armed, first_freeze):
+            self.assertEqual([fields(x)["state"] for _, x in gate_lines(w, "t0")].count("frozen"), 1)
+
+    def test_t0_freeze_before_any_complete_window_is_unavailable_and_stays_so(self):
+        w = replay(idle(400, hottest=40.0).add_ctx(60, "t0-freeze").add_ctx(300, "armed"))
+        lines = gate_lines(w, "t0")
+        self.assertEqual(len(lines), 1)
+        f = fields(lines[0][1])
+        self.assertEqual((f["t0"], f["ok"], f["by"]), ("unavailable", "NO", "CTX_t0-freeze"))
+        self.assertEqual(at_rest(w)[-1][1], "t0")
+
+    def test_a_window_broken_just_before_the_freeze_leaves_no_t0_not_the_provisional_one(self):
+        # T0 was provisional (40.00) from 119.7 s; at 125 s a fan reads a mode outside Apple's set
+        # and the quiet run starts again. At 130 s no complete window exists, so none is frozen.
+        run = idle(300, hottest=40.0).patch_fan(125, 125.2, F0Md=2).add_ctx(130, "t0-freeze")
+        w = replay(run)
+        provisional = [x for _, x in gate_lines(w, "t0") if fields(x)["state"] == "provisional"]
+        self.assertTrue(provisional)  # it had one
+        last = fields(gate_lines(w, "t0")[-1][1])
+        self.assertEqual((last["t0"], last["why"], last["by"]), ("unavailable", "window", "CTX_t0-freeze"))
+        self.assertIsNone(w.t0)
+
+    def test_a_package_record_that_is_behind_at_the_freeze_gives_none(self):
+        w = replay(idle(300, hottest=40.0).drop(100, 300, "package").add_ctx(130, "t0-freeze"))
+        f = fields(gate_lines(w, "t0")[-1][1])
+        self.assertEqual((f["t0"], f["why"]), ("unavailable", "package"))
+
+    def test_too_few_package_samples_at_the_freeze_gives_none(self):
+        w = replay(idle(300, hottest=40.0).drop(10, 60, "package").add_ctx(130, "t0-freeze"))
+        f = fields(gate_lines(w, "t0")[-1][1])
+        self.assertEqual((f["t0"], f["why"]), ("unavailable", "short"))
+        self.assertLess(int(f["n"]), 100)
+
+    def test_the_t0_freeze_line_is_not_an_unknown_ctx_line(self):
+        w = replay(idle(200, hottest=40.0).add_ctx(125, "t0-freeze"))
+        self.assertEqual(w.counts, {"NOTE": 0, "WARN": 0})
+        self.assertEqual(w.raised, [])
+        self.assertIn("CTX t0-freeze", [text for _, level, text in w.memory.lines if level == "INFO"])
 
 
 class AtRestGate(unittest.TestCase):
@@ -260,20 +327,23 @@ class RestClock(unittest.TestCase):
         return [(t, fields(x)) for t, x in gate_lines(w, "rest-clock")]
 
     def test_armed_starts_it_and_the_gate_holding_meets_it(self):
-        w = replay(idle(200, hottest=40.0).add_ctx(5, "armed"))
+        # a fan reads mode 0 from 120 s to 150 s: not at rest until 60 s after it
+        w = replay(idle(300, hottest=40.0).patch_fan(120, 150, F0Md=0).add_ctx(125, "armed"))
         lines = self.clock(w)
         self.assertEqual([f["rest-clock"] for _, f in lines[:1]], ["START"])
         self.assertEqual((lines[0][1]["limit"], lines[0][1]["from"]), ("1800s", "CTX_armed"))
+        self.assertTrue(124.9 <= lines[0][0] <= 125.1, lines)
         self.assertEqual([f["rest-clock"] for _, f in lines], ["START", "TICKING", "MET"])
-        self.assertTrue(119.3 <= lines[-1][0] <= 119.8, lines)
-        self.assertIn(lines[-1][1]["elapsed"], ("114s", "115s"))
+        self.assertTrue(209.4 <= lines[-1][0] <= 210.6, lines)  # 60 s after the mode came back
+        self.assertIn(lines[-1][1]["elapsed"], ("85s", "84s", "86s"))
 
     def test_it_ticks_once_a_minute_and_names_why_the_gate_does_not_hold(self):
-        # T0 freezes at 40 C (100 of its 120 samples), and the machine is at 48 C after that
-        w = replay(idle(400, hottest=40.0).add_ctx(5, "armed").patch_hottest(100, 400, 48.0))
+        # T0 freezes at 40 C (110 of its 120 samples), and the machine is at 48 C from 120 s
+        w = replay(idle(400, hottest=40.0).add_ctx(130, "armed").patch_hottest(120, 400, 48.0))
         ticks = [f for _, f in self.clock(w) if f["rest-clock"] == "TICKING"]
         self.assertEqual([f["elapsed"] for f in ticks[:3]], ["60s", "120s", "180s"])
-        self.assertEqual([f["why"] for f in ticks[:3]], ["t0", "warm", "warm"])
+        self.assertEqual([f["why"] for f in ticks[:3]], ["warm", "warm", "warm"])
+        self.assertEqual([f["at-rest"] for f in ticks[:3]], ["NO", "NO", "NO"])
         self.assertEqual(ticks[0]["left"], "1740s")
 
     def test_it_expires_at_30_minutes_and_says_to_write_nothing(self):
@@ -307,20 +377,190 @@ class RestClock(unittest.TestCase):
         self.assertEqual((abandoned[0]["was"], abandoned[0]["step"]), ("ticking", "1a"))
 
     def test_a_step_that_opens_after_the_gate_held_leaves_nothing_to_say(self):
-        run = idle(300, hottest=40.0).add_ctx(5, "armed").add_ctx(200, "step=1a target=3564 GO")
+        run = idle(300, hottest=40.0).add_ctx(125, "armed").add_ctx(200, "step=1a target=3564 GO")
         names = [f["rest-clock"] for _, f in self.clock(replay(run))]
         self.assertNotIn("ABANDONED", names)
 
     def test_met_stops_the_clock_so_it_cannot_expire_later(self):
-        run = idle(2000, hottest=40.0).add_ctx(5, "armed")
+        run = idle(2000, hottest=40.0).add_ctx(125, "armed")
         names = [f["rest-clock"] for _, f in self.clock(replay(run))]
         self.assertEqual(names.count("MET"), 1)
         self.assertNotIn("EXPIRED", names)
 
 
+def entry_lines(watcher):
+    """The 1d-entry gate's states in order: (seconds, 'YES' or the reason it says NO)."""
+    return [(t, f["1d-entry"] if f["1d-entry"] == "YES" else f["why"])
+            for t, text in gate_lines(watcher, "1d-entry") for f in [fields(text)]]
+
+
+class EntryGate1d(unittest.TestCase):
+    """1d's entry (item 12): 'at rest', and the hottest curated at most 41 C. T0 is 39 C here, so
+    'at rest' allows up to 42 C and the 41 C line is the one that decides."""
+
+    def test_at_rest_and_41_or_cooler_is_yes_and_above_41_is_not(self):
+        run = idle(400, hottest=39.0).patch_hottest(200, 230, 41.0).patch_hottest(230, 260, 41.1)
+        states = entry_lines(replay(run))
+        self.assertEqual([s for _, s in states], ["at-rest", "YES", "warm", "YES"])
+        self.assertTrue(119.3 <= states[1][0] <= 119.8, states)  # the moment 'at rest' holds
+        self.assertTrue(229.9 <= states[2][0] <= 230.1 and 259.9 <= states[3][0] <= 260.1, states)
+        yes = gate_lines(replay(run), "1d-entry")[1][1]
+        self.assertEqual(fields(yes)["hottest"], "39.00")
+        self.assertEqual((fields(yes)["limit"], fields(yes)["at-rest"]), ("41", "YES"))
+        self.assertEqual(fields(yes)["key"], "TPD0")  # the raw SMC key, beside the figure
+        warm = gate_lines(replay(run), "1d-entry")[2][1]
+        self.assertEqual((fields(warm)["hottest"], fields(warm)["why"]), ("41.10", "warm"))
+
+    def test_at_rest_is_needed_as_well_as_cool(self):
+        # cool (39 C) but a step is open: not at rest, so not 1d's entry, and the line says why
+        run = idle(300, hottest=39.0).add_ctx(150, "step=1a target=3000 GO").add_ctx(160, "step=none")
+        w = replay(run)
+        states = entry_lines(w)
+        self.assertEqual([s for _, s in states][-3:], ["YES", "at-rest", "YES"])
+        step_open = [x for _, x in gate_lines(w, "1d-entry") if fields(x).get("at-rest-why")][-1]
+        self.assertEqual(fields(step_open)["at-rest-why"], "step-open")
+        self.assertEqual(fields(step_open)["hottest"], "39.00")
+
+    def test_too_warm_for_at_rest_is_at_rest_first(self):
+        # 43 C is above 41 and above T0 + 3 (42): at rest says warm, and so does the entry's reason
+        w = replay(idle(300, hottest=39.0).add_ctx(130, "armed").patch_hottest(200, 300, 43.0))
+        text = gate_lines(w, "1d-entry")[-1][1]
+        self.assertEqual((fields(text)["why"], fields(text)["at-rest-why"]), ("at-rest", "warm"))
+
+    def test_it_says_nothing_new_while_nothing_changes(self):
+        self.assertEqual(len(gate_lines(replay(idle(900, hottest=39.0)), "1d-entry")), 2)
+
+
+class ClockAfter1c(unittest.TestCase):
+    """The clock that runs after the `step=none` closing 1c is met by 1d's entry, so 1d's wait for
+    41 C is inside the 30 minutes (gap decision 41-wait)."""
+
+    def clock(self, w):
+        return [(t, fields(x)) for t, x in gate_lines(w, "rest-clock")]
+
+    def run_through_1c(self, seconds, warm_until=None, warm=41.5):
+        """T0 39 C ('at rest' to 42 C), 1c from 200 s to 230 s, then `warm` C until `warm_until`."""
+        run = idle(seconds, hottest=39.0).add_ctx(125, "armed")
+        run.add_ctx(200, "step=1c target=3564 GO").add_ctx(230, "step=none")
+        run.patch_hottest(225, warm_until or seconds, warm)
+        return run
+
+    def test_after_1c_the_clock_waits_for_1d_s_entry_not_only_for_at_rest(self):
+        # 41.5 C is at rest (limit 42) and over 41: the same heat after 1a would meet the clock
+        w = replay(self.run_through_1c(560, warm_until=500))
+        lines = self.clock(w)
+        start = [(t, f) for t, f in lines if f["rest-clock"] == "START"][-1]
+        self.assertEqual(start[1]["from"], "CTX_step=none_after_step_1c")
+        self.assertEqual(start[1]["for"], "1d-entry")
+        ticks = [f for t, f in lines if f["rest-clock"] == "TICKING" and t > 229]
+        self.assertTrue(ticks)
+        self.assertEqual({f["1d-entry"] for f in ticks}, {"NO"})
+        self.assertEqual({f["why"] for f in ticks}, {"warm"})
+        met = [(t, f) for t, f in lines if f["rest-clock"] == "MET" and t > 229]
+        self.assertEqual(len(met), 1)
+        self.assertTrue(499.9 <= met[0][0] <= 500.6, met)  # when it cooled to 41, not when at rest held
+        self.assertEqual(met[0][1]["for"], "1d-entry")
+        self.assertIn(met[0][1]["elapsed"], ("270s", "271s"))
+
+    def test_the_clock_after_1a_is_met_by_at_rest_alone(self):
+        run = idle(600, hottest=39.0).add_ctx(125, "armed")
+        run.add_ctx(200, "step=1a target=3564 GO").add_ctx(230, "step=none").patch_hottest(225, 600, 41.5)
+        lines = self.clock(replay(run))
+        after_1a = [f for t, f in lines if t > 229]
+        self.assertEqual([f["rest-clock"] for f in after_1a], ["START", "MET"])
+        self.assertNotIn("for", after_1a[0])
+
+    def test_it_expires_if_1d_s_entry_never_holds_inside_the_30_minutes(self):
+        w = replay(self.run_through_1c(2100))
+        expired = [(t, f) for t, f in self.clock(w) if f["rest-clock"] == "EXPIRED"]
+        self.assertEqual(len(expired), 1)
+        self.assertTrue(2029.5 <= expired[0][0] <= 2031.0, expired)  # 230 s + 1800 s
+        self.assertEqual((expired[0][1]["action"], expired[0][1]["for"]), ("no-forward-writes", "1d-entry"))
+
+    def test_a_gate_lost_after_met_does_not_start_the_clock_again(self):
+        run = idle(700, hottest=39.0).add_ctx(125, "armed")
+        run.add_ctx(200, "step=1c target=3564 GO").add_ctx(230, "step=none")
+        run.patch_hottest(400, 700, 41.5)  # met at 230 (39 C), then too warm for 1d for good
+        w = replay(run)
+        names = [f["rest-clock"] for t, f in self.clock(w) if t > 229]
+        self.assertEqual(names, ["START", "MET"])  # no TICKING, no EXPIRED after it
+        self.assertEqual(entry_lines(w)[-1][1], "warm")  # the gate itself says what holds now
+
+
+class ClockStopsAtCtxEnd(unittest.TestCase):
+    def test_a_ticking_clock_stops_at_ctx_end_and_never_expires(self):
+        w = replay(idle(2000, hottest=40.0).add_ctx(130, "armed").patch_hottest(120, 2000, 48.0)
+                   .add_ctx(400, "end"))
+        lines = [(t, fields(x)) for t, x in gate_lines(w, "rest-clock")]
+        names = [f["rest-clock"] for _, f in lines]
+        self.assertEqual(names[-1], "STOPPED")
+        self.assertNotIn("EXPIRED", names)
+        stopped = lines[-1]
+        self.assertTrue(399.9 <= stopped[0] <= 400.1, stopped)
+        self.assertEqual((stopped[1]["was"], stopped[1]["by"], stopped[1]["elapsed"]), ("ticking", "CTX_end", "270s"))
+
+    def test_a_clock_that_had_met_or_expired_says_nothing_at_ctx_end(self):
+        met = replay(idle(300, hottest=40.0).add_ctx(125, "armed").add_ctx(200, "end"))
+        self.assertNotIn("STOPPED", [fields(x)["rest-clock"] for _, x in gate_lines(met, "rest-clock")])
+        expired = replay(idle(2000, hottest=40.0).add_ctx(130, "armed").patch_hottest(120, 2000, 48.0)
+                         .add_ctx(1990, "end"))
+        names = [fields(x)["rest-clock"] for _, x in gate_lines(expired, "rest-clock")]
+        self.assertEqual(names.count("EXPIRED"), 1)
+        self.assertNotIn("STOPPED", names)
+
+    def test_no_clock_starts_after_ctx_end(self):
+        run = idle(600, hottest=40.0).add_ctx(125, "armed").add_ctx(300, "end")
+        run.add_ctx(310, "step=1d target=5777 GO").add_ctx(340, "step=none")
+        run.patch_hottest(330, 600, 48.0)
+        starts = [fields(x) for _, x in gate_lines(replay(run), "rest-clock") if fields(x)["rest-clock"] == "START"]
+        self.assertEqual(len(starts), 1)  # armed's
+
+
+def status_gates(watcher):
+    """The STATUS lines' `gates[...]` as (seconds, {gate: value}) pairs."""
+    found = []
+    for t, level, text in watcher.memory.lines:
+        if level == "STATUS":
+            inner = text.split("gates[", 1)[1].split("]", 1)[0]
+            found.append((t - synth.T0, dict(token.split("=", 1) for token in inner.split())))
+    return found
+
+
+class StatusCarriesTheGates(unittest.TestCase):
+    def test_every_status_line_has_all_five_gates_in_the_same_order(self):
+        for t, gates in status_gates(replay(idle(200, hottest=40.0).add_ctx(125, "armed"))):
+            self.assertEqual(list(gates), ["at-rest", "t0", "engaged", "rest-clock", "1d-entry"], t)
+
+    def test_the_values_follow_the_run(self):
+        w = replay(idle(400, hottest=40.0).add_ctx(125, "armed").patch_fan(
+            200, 260, F0Tg=1700.0, F0Ac=1700.0))
+        by_time = {round(t): g for t, g in status_gates(w)}
+        early = by_time[10]
+        self.assertEqual((early["at-rest"], early["t0"], early["rest-clock"], early["1d-entry"]),
+                         ("NO:short", "none", "-", "NO:at-rest"))
+        provisional = by_time[120]
+        self.assertEqual((provisional["at-rest"], provisional["t0"], provisional["1d-entry"]),
+                         ("YES", "40.00(provisional)", "YES"))
+        frozen = by_time[130]
+        self.assertEqual((frozen["t0"], frozen["rest-clock"]), ("40.00(frozen)", "met"))
+        self.assertEqual(by_time[205]["engaged"], "rising")
+        self.assertEqual(by_time[235]["engaged"], "YES")
+        self.assertEqual(by_time[265]["engaged"], "NO")
+
+    def test_it_says_what_the_gate_lines_do_not_repeat(self):
+        # 'at rest' lost for a reason: the STATUS line names it every 5 s, the GATE line once
+        w = replay(idle(300, hottest=40.0).add_ctx(125, "armed").patch_hottest(200, 300, 47.0))
+        warm = [g for t, g in status_gates(w) if t > 250][0]
+        self.assertEqual((warm["at-rest"], warm["1d-entry"]), ("NO:warm", "NO:at-rest"))
+
+    def test_a_frozen_unavailable_t0_is_shown_as_such(self):
+        w = replay(idle(200, hottest=40.0).add_ctx(30, "armed"))
+        self.assertEqual({g["t0"] for t, g in status_gates(w) if t > 40}, {"none(frozen)"})
+
+
 class GatesAreAdvice(unittest.TestCase):
     def scenarios(self):
-        yield idle(200, hottest=40.0).add_ctx(5, "armed")
+        yield idle(200, hottest=40.0).add_ctx(125, "armed")
         yield idle(120, hottest=40.0).patch_fan(10, 100, F0Tg=1700.0, F0Ac=1700.0)
         yield idle(300, hottest=40.0).add_ctx(125, "armed").add_ctx(200, "step=1a target=3000 GO")
 
@@ -334,7 +574,7 @@ class GatesAreAdvice(unittest.TestCase):
             self.assertEqual(w.memory.alerts, [])
 
     def test_a_gate_line_is_a_name_and_key_value_tokens_and_nothing_else(self):
-        names = {"at-rest", "t0", "engaged", "rest-clock"}
+        names = {"at-rest", "t0", "engaged", "rest-clock", "1d-entry"}
         seen = set()
         for run in list(self.scenarios()) + [
                 idle(170).drop(10, 40, "package"), idle(330).add_ctx(50, "armed"),
@@ -348,11 +588,11 @@ class GatesAreAdvice(unittest.TestCase):
                 seen.add(tokens[0].split("=")[0])
         self.assertEqual(seen, names)
 
-    def test_the_readme_documents_the_four_gate_lines(self):
+    def test_the_readme_documents_the_gate_lines(self):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, "README.md"), encoding="utf-8") as handle:
             text = handle.read()
-        for prefix in ("GATE at-rest=", "GATE t0=", "GATE engaged=", "GATE rest-clock="):
+        for prefix in ("GATE at-rest=", "GATE t0=", "GATE engaged=", "GATE rest-clock=", "GATE 1d-entry="):
             self.assertTrue(prefix in text, "the README does not document %r" % prefix)
 
     def test_a_replay_of_a_gate_that_raises_is_not_swallowed(self):

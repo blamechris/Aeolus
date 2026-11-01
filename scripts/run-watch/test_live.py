@@ -5,6 +5,7 @@ Nothing here starts a real process or says anything aloud. `FakeSystem` stands i
 fails the test whichever code path asked for it."""
 
 import contextlib
+import functools
 import hashlib
 import io
 import os
@@ -378,7 +379,7 @@ class LiveLoop(unittest.TestCase):
             self.assertGreater(len(events), 50)  # the package file is there to be sorted against
 
     def test_the_gate_notes_are_in_the_log_and_never_said(self):
-        run = idle(200, hottest=40.0).add_ctx(5, "armed")
+        run = idle(200, hottest=40.0).add_ctx(125, "armed")
         watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 190)
         log = read(os.path.join(directory, "watch.log"))
         for name in ("at-rest=YES", "t0=40.00", "rest-clock=MET"):
@@ -400,6 +401,101 @@ class LiveLoop(unittest.TestCase):
         self.assertEqual(log.count(" ERROR gate check "), 1)  # not one per sample
         self.assertIn("ValueError: always", log)
         self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_fan_that_raises_does_not_take_the_fan_rules_with_it(self):
+        # check_gate_runs runs first in on_fan. Raised unguarded, it would skip ABORT 3 for the
+        # sample whose `Ftst` changed with no `Wrote`, and be heard as 'watcher error'.
+        run = idle(60, hottest=40.0).patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 3"})  # `Ftst` changed, and changed back
+        self.assertEqual(set(system.spoken()), {"abort 3"})
+        self.assertNotIn("watcher error", system.spoken())
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_ctx_that_raises_does_not_take_the_ctx_line_with_it(self):
+        # track_gate_ctx runs first in on_ctx. Raised unguarded, `load-start` would never open the
+        # load window, and 75 C in it would not be ABORT 1: the operator would hear 'watcher error'.
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        with mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        self.assertTrue(watcher.load_window)
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+
+    def test_both_gate_checks_raising_at_once_is_still_only_a_log_line(self):
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        run.patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("one")), \
+                mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("two")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 1", "ABORT 3"})
+        self.assertEqual(set(system.spoken()), {"abort 1", "abort 3"})
+        self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR gate check "), 2)
+
+    def flaky(self, name, start, end):
+        """The shipped gate check `name`, except that it raises from `start` to `end` seconds."""
+        original = getattr(rw.Watcher, name)
+
+        @functools.wraps(original)
+        def check(watcher, *args):
+            if synth.T0 + start <= watcher.now < synth.T0 + end:
+                raise ValueError("flaky")
+            return original(watcher, *args)
+
+        return mock.patch.object(rw.Watcher, name, check)
+
+    @staticmethod
+    def gates_at(directory, seconds):
+        """The `gates[...]` of the first STATUS line at or after `seconds` into the run."""
+        for line in read(os.path.join(directory, "watch.log")).splitlines():
+            if " STATUS " in line:
+                stamp = rw.parse_iso_utc(line.split(" ", 1)[0])
+                if stamp - synth.T0 >= seconds:
+                    inner = line.split("gates[", 1)[1].split("]", 1)[0]
+                    return dict(token.split("=", 1) for token in inner.split())
+        raise AssertionError("no STATUS line after %s s" % seconds)
+
+    def test_the_status_line_says_error_for_a_gate_whose_last_evaluation_raised(self):
+        # at-rest said YES at 120 s. From 150 s its check raises: the last GATE line is still YES,
+        # and the STATUS line must not repeat it. When the check recovers, so does the line.
+        run = idle(260, hottest=40.0).add_ctx(125, "armed")
+        with self.flaky("check_gate_rest", 150, 200):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 250)
+        before, during, after = (self.gates_at(directory, t) for t in (140, 160, 220))
+        self.assertEqual((before["at-rest"], before["1d-entry"]), ("YES", "YES"))
+        self.assertEqual((during["at-rest"], during["1d-entry"], during["rest-clock"]),
+                         ("ERROR", "ERROR", "ERROR"))
+        self.assertEqual((during["t0"], during["engaged"]), ("40.00(frozen)", "NO"))  # not theirs
+        self.assertEqual((after["at-rest"], after["1d-entry"]), ("YES", "YES"))
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])  # and nothing is said, as for any gate
+
+    def test_each_gate_check_marks_the_gates_it_feeds(self):
+        feeds = {
+            "check_gate_runs": {"at-rest", "t0", "engaged", "1d-entry"},
+            "check_gate_t0": {"at-rest", "t0", "1d-entry"},
+            "check_gate_rest": {"at-rest", "rest-clock", "1d-entry"},
+            "check_gate_1d_entry": {"rest-clock", "1d-entry"},
+            "check_gate_engaged": {"engaged"},
+            "check_gate_clock": {"rest-clock"}}
+        for name, errored in feeds.items():
+            with self.subTest(check=name):
+                run = idle(100, hottest=40.0)
+                with self.flaky(name, 20, 1000):
+                    _, _, directory = live(run, synth.T0 + 5, synth.T0 + 90)
+                gates = self.gates_at(directory, 60)
+                self.assertEqual({g for g, v in gates.items() if v == "ERROR"}, errored)
+
+    def test_a_replay_of_a_gate_that_raises_is_not_swallowed_and_nothing_is_marked(self):
+        with self.flaky("check_gate_rest", 5, 1000), self.assertRaises(ValueError):
+            replay(idle(30))
 
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):

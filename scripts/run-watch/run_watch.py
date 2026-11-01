@@ -86,6 +86,7 @@ GATE_T0_MIN_SAMPLES = 100  # package samples in T0's window
 GATE_ENGAGED_ABOVE_F0MN = 300.0  # 1b's engaged condition: F0Tg at least F0Mn + this ...
 GATE_ENGAGED_SECONDS = 30.0  # ... for this long
 GATE_CLOCK_SECONDS = 1800.0  # the at-rest clock: 30 minutes
+GATE_1D_ENTRY_MAX = 41.0  # 1d's entry (item 12): "at rest", and the hottest curated at most this
 GATE_EVERY_SECONDS = 60.0  # a provisional T0 and a ticking clock are logged this often
 GATE_FAN_KEYS = ("F0Md", "F1Md", "Ftst", "F0Tg", "F1Tg")
 
@@ -139,7 +140,7 @@ def _spawn(argv, capture=False, timeout=None):
 # --------------------------------------------------------------------------------------------
 
 FanSample = namedtuple("FanSample", "t v")
-PackageSample = namedtuple("PackageSample", "t hottest f")
+PackageSample = namedtuple("PackageSample", "t hottest f key", defaults=(None,))
 LogLine = namedtuple("LogLine", "t level msg foreign")
 CtxLine = namedtuple("CtxLine", "t kind step target pid raw bad_target", defaults=(None,))
 MISSING_TARGET = "(no target= field)"  # the bad_target of a step line that has no target at all
@@ -264,8 +265,9 @@ def is_stop_line(raw):
 
 
 def parse_package_line(raw):
-    """A `sample` line of the package file. `hottest` is the highest temperature key that read;
-    `f` holds the F<n> keys (F0Mn is the one used)."""
+    """A `sample` line of the package file. `hottest` is the highest temperature key that read, and
+    `key` is that key's SMC name (the first, on a tie); `f` holds the F<n> keys (F0Mn is the one
+    used)."""
     record = _record(raw)
     if record is None or record.get("kind") != "sample":
         return None
@@ -273,17 +275,18 @@ def parse_package_line(raw):
     readings = record.get("readings")
     if t is None or not isinstance(readings, list):
         return None
-    hottest, fans = None, {}
+    hottest, hottest_key, fans = None, None, {}
     for reading in readings:
         key = reading.get("key") if isinstance(reading, dict) else None
         number = _number(reading)
         if number is None or not isinstance(key, str):
             continue
         if _TEMPERATURE_KEY.match(key):
-            hottest = number if hottest is None else max(hottest, number)
+            if hottest is None or number > hottest:
+                hottest, hottest_key = number, key
         elif key.startswith("F"):
             fans[key] = number
-    return PackageSample(t, hottest, fans)
+    return PackageSample(t, hottest, fans, hottest_key)
 
 
 def parse_log_line(raw):
@@ -451,6 +454,7 @@ class Watcher:
         self.fan_samples = 0
         # package
         self.hottest = None
+        self.hottest_key = None  # the SMC key that read it
         self.pkg_last_t = None
         self.pkg_hist = deque()
         self.f0mn = DEFAULT_F0MN
@@ -504,11 +508,15 @@ class Watcher:
         self.t0_dirty = False  # a package sample has arrived since T0 was last worked out
         self.t0_frozen = False
         self.t0_frozen_by = None
-        self.t0_freeze_pending = None  # why T0 freezes at the first window after it, if it must
         self.rest_yes = False
+        self.engaged_state = None
+        self.entry_1d = False  # 1d's entry holds: at rest, and the hottest curated at most 41 C
         self.clock_start = None  # the at-rest clock: when it started (event time) ...
         self.clock_why = None  # ... and why
-        self.clock_state = None  # None, "ticking", "met" or "expired"
+        self.clock_gate = None  # ... and which gate it waits for: "at-rest", or "1d-entry"
+        self.clock_state = None  # None, "ticking", "met", "expired" or "stopped"
+        self.clock_over = False  # CTX end has come: no clock starts after it
+        self.gate_failed = {}  # per gate check, whether its last evaluation raised
 
     # ---------------------------------------------------------------- bookkeeping
 
@@ -791,7 +799,7 @@ class Watcher:
         self.package_samples += 1
         self.ended_sources.discard("package")
         if p.hottest is not None:
-            self.hottest = p.hottest
+            self.hottest, self.hottest_key = p.hottest, p.key
             self.pkg_hist.append((p.t, p.hottest))
             self._trim(self.pkg_hist, p.t, key=lambda item: item[0])
             self.pkg_log.append((p.t, p.hottest))
@@ -1023,6 +1031,8 @@ class Watcher:
                 self.level("r11-time", "ABORT 11 TIME", False)
                 self.level("r11-temperature", "ABORT 11 TEMPERATURE", False)
             self.info("CTX load-stop")
+        elif kind == "t0-freeze":
+            self.info("CTX t0-freeze")  # the gates' track_gate_ctx has frozen T0 (or already had)
         elif kind == "test-alert":
             self.event("test-alert", "TEST ALERT", "CTX test-alert: this is only a test", latch=0)
         elif kind == "end":
@@ -1129,6 +1139,7 @@ class Watcher:
         guard(self.check_r12_blind)
         self._gate_guard(self.check_gate_t0)
         self._gate_guard(self.check_gate_rest)
+        self._gate_guard(self.check_gate_1d_entry)
         self._gate_guard(self.check_gate_engaged)
         self._gate_guard(self.check_gate_clock)
         guard(self._pump_speech)
@@ -1194,14 +1205,19 @@ class Watcher:
     def _gate_guard(self, check, *args):
         """Run one gate check. A gate is advice, so a bug in one is written to watch.log as an
         ERROR line, once per kind, and is not an alert: 'watcher error' said aloud in a hold would
-        send the operator to reset for a note he was never meant to act on."""
+        send the operator to reset for a note he was never meant to act on. The STATUS line says
+        `ERROR` for every gate that check feeds for as long as its last evaluation raised: the
+        last GATE line is not the gate's present state if the check that writes it has stopped."""
         if not self.guard:
             check(*args)
             return
+        name = getattr(check, "__name__", "a gate")
         try:
             check(*args)
+            self.gate_failed[name] = False
         except Exception as error:  # noqa: BLE001  advice must not stop the rules after it
-            key = ("gate", getattr(check, "__name__", "a gate"), type(error).__name__, str(error)[:200])
+            self.gate_failed[name] = True
+            key = ("gate", name, type(error).__name__, str(error)[:200])
             count = self.error_counts[key] = self.error_counts.get(key, 0) + 1
             if count % 1000 == 1:  # the first occurrence, and every thousandth after it
                 trace = " | ".join(traceback.format_exc().strip().splitlines()[-4:])
@@ -1242,35 +1258,45 @@ class Watcher:
         self.rest_since = self._run(self.rest_since, rest, gap, s.t)
         self.engaged_since = self._run(self.engaged_since, engaged, gap, s.t)
 
-    def check_gate_t0(self):
-        """T0: the median of the hottest curated key over the newest complete quiescence window
-        (D9: 120 s with Ftst 0, both modes in Apple's set, and no fan reading 3 with a target
-        above 0). It follows that window until the first `CTX armed` or step line, and is frozen
-        then: the baseline of the run is the one in force when the first write was prepared."""
-        if self.t0_frozen or not self.t0_dirty:
-            return
+    def _t0_window(self):
+        """The newest complete quiescence window, as (start, end, the package record's hottest
+        over it, sorted), or None and why not: `window` (no 120 s of quiet ends at the newest fan
+        sample) or `package` (the package record has not caught up with it)."""
         since, end = self.quiet_since, self.fan_last_t
         if since is None or end is None or end - since < (
                 GATE_QUIESCENCE_SECONDS - GATE_SPAN_TOLERANCE):
-            return  # no complete window yet: T0 stays what it was
+            return None, "window"
         if self.pkg_last_t is None or end - self.pkg_last_t >= GATE_PACKAGE_FRESH:
-            return  # the package record has not caught up with the window
-        self.t0_dirty = False
+            return None, "package"
         start = max(since, end - GATE_QUIESCENCE_SECONDS)
-        values = sorted(h for t, h in self.pkg_log if start <= t <= end)
+        return (start, end, sorted(h for t, h in self.pkg_log if start <= t <= end)), None
+
+    def _set_t0(self, window):
+        start, end, values = window
         n = len(values)
-        if n < GATE_T0_MIN_SAMPLES:
-            self.gate(
-                "t0", ("short", n), "t0=unavailable n=%d need=%d window=%s/%s" % (
-                    n, GATE_T0_MIN_SAMPLES, format_time(start), format_time(end)))
-            return
         mid = n // 2
         self.t0 = values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0
         self.t0_n, self.t0_window = n, (start, end)
-        if self.t0_freeze_pending is not None:
-            self._freeze_t0(self.t0_freeze_pending)
-        else:
-            self._report_t0()
+
+    def check_gate_t0(self):
+        """T0: the median of the hottest curated key over the newest complete quiescence window
+        (D9: 120 s with Ftst 0, both modes in Apple's set, and no fan reading 3 with a target
+        above 0). Until it is frozen it follows that window, as a provisional figure; it is frozen
+        by the first `CTX t0-freeze` or `CTX armed` (see `_freeze_t0`)."""
+        if self.t0_frozen or not self.t0_dirty:
+            return
+        window, _ = self._t0_window()
+        if window is None:
+            return  # no complete window yet: T0 stays what it was
+        self.t0_dirty = False
+        n = len(window[2])
+        if n < GATE_T0_MIN_SAMPLES:
+            self.gate(
+                "t0", ("short", n), "t0=unavailable n=%d need=%d window=%s/%s" % (
+                    n, GATE_T0_MIN_SAMPLES, format_time(window[0]), format_time(window[1])))
+            return
+        self._set_t0(window)
+        self._report_t0()
 
     def _report_t0(self):
         start, end = self.t0_window
@@ -1285,17 +1311,32 @@ class Watcher:
                 format_time(start), format_time(end)))
 
     def _freeze_t0(self, why):
-        """Freeze T0 at `why` (the first `CTX armed` or step line), now if there is one, else at
-        the first complete window after it."""
+        """Freeze T0 at `why`: the first `CTX t0-freeze` or `CTX armed`, whichever comes first (a
+        step line is the backstop). The runbook writes `t0-freeze` at PR-9, right after the
+        quiescence window it has just checked and before the install, so T0 is that window's
+        median and not one taken after the build was installed. It is worked out now, from the
+        window that ends at the newest sample, not taken from the last provisional figure.
+
+        If no complete window exists now (or the package record is behind it, or has too few
+        samples), T0 is frozen as unavailable: `ok=NO`, and "at rest" stays NO for the rest of the
+        run, because a baseline nobody measured is not one. It does not wait for a later window,
+        which would be a baseline taken after the run began."""
         if self.t0_frozen:
             return
-        if self.t0 is None:
-            self.t0_freeze_pending = why
-            self.gate(
-                "t0-pending", why, "t0=unavailable freeze-at=%s" % why.replace(" ", "_"))
+        window, reason = self._t0_window()
+        n = 0 if window is None else len(window[2])
+        if window is not None and n < GATE_T0_MIN_SAMPLES:
+            window, reason = None, "short"
+        self.t0_frozen, self.t0_frozen_by = True, why
+        if window is not None:
+            self._set_t0(window)
+            self._report_t0()
             return
-        self.t0_frozen, self.t0_frozen_by, self.t0_freeze_pending = True, why, None
-        self._report_t0()
+        self.t0, self.t0_n, self.t0_window = None, n, None  # a provisional figure goes with it
+        self.gate(
+            "t0", ("frozen", None),
+            "t0=unavailable ok=NO limit=%g state=frozen by=%s why=%s n=%d need=%d" % (
+                GATE_T0_LIMIT, why.replace(" ", "_"), reason, n, GATE_T0_MIN_SAMPLES))
 
     def check_gate_rest(self):
         """'At rest' (item 8): both fans raw 3 with a target of 0, and Ftst 0, for 60 s, and the
@@ -1332,6 +1373,31 @@ class Watcher:
             self.gate("at-rest", why, "at-rest=NO why=%s %s %s" % (
                 why, facts, " ".join("%s=%g" % (k, s.v[k]) for k in GATE_FAN_KEYS if k in s.v)))
 
+    def check_gate_1d_entry(self):
+        """1d's entry (item 12): 'at rest', and the hottest curated at most 41 C. Above 41 C, 1d
+        waits for a cooler session; the 30-minute clock that follows 1c ends only when this holds
+        (gap decision 41-wait). It is an entry gate like 'at rest', and is logged when it changes."""
+        if self.fan is None:
+            return
+        if not self.rest_yes:
+            why = "at-rest"
+        elif self.hottest is None:
+            why = "package"
+        elif self.hottest > GATE_1D_ENTRY_MAX:
+            why = "warm"
+        else:
+            why = None
+        self.entry_1d = why is None
+        facts = "hottest=%s key=%s limit=%g" % (
+            "?" if self.hottest is None else "%.2f" % self.hottest, self.hottest_key or "?",
+            GATE_1D_ENTRY_MAX)
+        if why is None:
+            self.gate("1d-entry", why, "1d-entry=YES at-rest=YES %s" % facts)
+        else:
+            self.gate("1d-entry", why, "1d-entry=NO why=%s%s %s" % (
+                why, " at-rest-why=%s" % self.gate_keys.get("at-rest") if why == "at-rest" else "",
+                facts))
+
     def check_gate_engaged(self):
         """1b's engaged condition (item 8): F0Tg at least F0Mn + 300 RPM (1,650 on this Mac) for
         30 s. Nothing is written until it first rises."""
@@ -1345,6 +1411,7 @@ class Watcher:
             state = "NO"
         else:
             state = "YES" if held >= GATE_ENGAGED_SECONDS else "rising"
+        self.engaged_state = state
         if state == "NO" and "engaged" not in self.gate_keys:
             return
         self.gate(
@@ -1355,23 +1422,50 @@ class Watcher:
     def track_gate_ctx(self, c, closing):
         """The CTX lines the gates depend on. The at-rest clock starts at `armed` (the entry to
         1a) and at the end of each step but 1b's, whose load 1b' continues under (the cool-down
-        after the others). T0 freezes at the first `armed` or step line."""
-        if c.kind == "armed":
+        after the others); the one after 1c waits for 1d's entry, not only for 'at rest', and the
+        clock stops for good at `CTX end`. T0 freezes at the first `CTX t0-freeze` or `CTX armed`
+        (a step line is the backstop)."""
+        if c.kind == "t0-freeze":
+            self._freeze_t0("CTX t0-freeze")
+        elif c.kind == "armed":
             self._freeze_t0("CTX armed")
             self._start_clock(c.t, "CTX armed")
+        elif c.kind == "end":
+            self._stop_clock("CTX end")
         elif c.kind == "step":
             if c.step in (None, "none"):
                 if closing is not None and closing != "1b":
-                    self._start_clock(c.t, "CTX step=none after step %s" % closing)
+                    self._start_clock(
+                        c.t, "CTX step=none after step %s" % closing,
+                        "1d-entry" if closing == "1c" else "at-rest")
             else:
                 self._freeze_t0("CTX step=%s" % c.step)
                 self._end_clock(c.step)
 
-    def _start_clock(self, t, why):
+    def _for(self):
+        """The suffix of a rest-clock line when the clock waits for 1d's entry, not for 'at rest'."""
+        return "" if self.clock_gate == "at-rest" else " for=%s" % self.clock_gate
+
+    def _start_clock(self, t, why, gate="at-rest"):
+        if self.clock_over:
+            return  # CTX end has come: the run is over, and nothing is waiting for a gate
         self.clock_start, self.clock_why, self.clock_state = t, why, "ticking"
+        self.clock_gate = gate
         self.gate(
-            "rest-clock", ("start", t), "rest-clock=START limit=%gs from=%s" % (
-                GATE_CLOCK_SECONDS, why.replace(" ", "_")))
+            "rest-clock", ("start", t), "rest-clock=START limit=%gs from=%s%s" % (
+                GATE_CLOCK_SECONDS, why.replace(" ", "_"), self._for()))
+
+    def _stop_clock(self, why):
+        """CTX end: the run's steps are over and so is the wait for a gate. A clock that is still
+        ticking would otherwise go on to EXPIRED during item 10's table, a note about a gate nobody
+        is waiting for. A clock that has met or expired has said its piece."""
+        self.clock_over = True
+        if self.clock_state == "ticking":
+            self.gate(
+                "rest-clock", ("stopped", self.clock_start),
+                "rest-clock=STOPPED elapsed=%.0fs was=ticking by=%s%s" % (
+                    self.now - self.clock_start, why.replace(" ", "_"), self._for()))
+            self.clock_state = "stopped"
 
     def _end_clock(self, step):
         """A step opened: the entry was used, or skipped. A clock that was still ticking, or had
@@ -1379,32 +1473,36 @@ class Watcher:
         if self.clock_state in ("ticking", "expired"):
             self.gate(
                 "rest-clock", ("abandoned", self.clock_start),
-                "rest-clock=ABANDONED elapsed=%.0fs was=%s step=%s" % (
-                    self.now - self.clock_start, self.clock_state, step))
+                "rest-clock=ABANDONED elapsed=%.0fs was=%s step=%s%s" % (
+                    self.now - self.clock_start, self.clock_state, step, self._for()))
         self.clock_start, self.clock_why, self.clock_state = None, None, None
 
     def check_gate_clock(self):
         """The at-rest clock: 30 minutes from the end of a step (or `armed`) for the at-rest gate
-        to hold. If it does not, the session writes nothing forward (item 8)."""
+        to hold; after 1c, for 1d's entry (at rest, and 41 C or less) to. If it does not, the
+        session writes nothing forward (item 8). MET is a fact about the past: the gate held in
+        time. The clock does not start again if the gate is lost after that."""
         if self.clock_state != "ticking":
             return
         elapsed = self.now - self.clock_start
-        if self.rest_yes:
+        waiting_for = self.entry_1d if self.clock_gate == "1d-entry" else self.rest_yes
+        if waiting_for:
             self.clock_state = "met"
             self.gate(
                 "rest-clock", ("met", self.clock_start),
-                "rest-clock=MET elapsed=%.0fs limit=%gs" % (elapsed, GATE_CLOCK_SECONDS))
+                "rest-clock=MET elapsed=%.0fs limit=%gs%s" % (elapsed, GATE_CLOCK_SECONDS, self._for()))
         elif elapsed >= GATE_CLOCK_SECONDS:
             self.clock_state = "expired"
             self.gate(
                 "rest-clock", ("expired", self.clock_start),
-                "rest-clock=EXPIRED elapsed=%.0fs limit=%gs action=no-forward-writes" % (
-                    elapsed, GATE_CLOCK_SECONDS))
+                "rest-clock=EXPIRED elapsed=%.0fs limit=%gs action=no-forward-writes%s" % (
+                    elapsed, GATE_CLOCK_SECONDS, self._for()))
         elif elapsed >= GATE_EVERY_SECONDS:  # the START line covers the first minute
             self.gate(
                 "rest-clock", ("ticking", self.clock_start, int(elapsed // GATE_EVERY_SECONDS)),
-                "rest-clock=TICKING elapsed=%.0fs left=%.0fs at-rest=NO why=%s" % (
-                    elapsed, GATE_CLOCK_SECONDS - elapsed, self.gate_keys.get("at-rest")))
+                "rest-clock=TICKING elapsed=%.0fs left=%.0fs %s=NO why=%s" % (
+                    elapsed, GATE_CLOCK_SECONDS - elapsed, self.clock_gate,
+                    self.gate_keys.get(self.clock_gate)))
 
     # ---------------------------------------------------------------- shared tracking
 
@@ -1490,6 +1588,40 @@ class Watcher:
     def _status(self):
         self.out.line(self.now, "STATUS", self.status_text())
 
+    # What each STATUS gate value is made of: if any of these checks last raised, the value is
+    # ERROR and not the last good figure.
+    GATE_INPUTS = {
+        "at-rest": ("check_gate_runs", "track_gate_ctx", "check_gate_t0", "check_gate_rest"),
+        "t0": ("check_gate_runs", "track_gate_ctx", "check_gate_t0"),
+        "engaged": ("check_gate_runs", "check_gate_engaged"),
+        "rest-clock": ("track_gate_ctx", "check_gate_rest", "check_gate_1d_entry", "check_gate_clock"),
+        "1d-entry": ("check_gate_runs", "track_gate_ctx", "check_gate_t0", "check_gate_rest",
+                     "check_gate_1d_entry")}
+
+    def gate_states(self):
+        """The gates' present state, as the STATUS line says it: `name=value`, in the order of
+        GATE_INPUTS. The GATE lines are written on change, so the newest one is stale if the check
+        behind it has since stopped working; this is evaluated every time, and says ERROR then."""
+        if self.fan is None:
+            at_rest = engaged = entry = "-"
+        else:
+            at_rest = "YES" if self.rest_yes else "NO:%s" % self.gate_keys.get("at-rest", "?")
+            engaged = self.engaged_state or "-"
+            entry = "YES" if self.entry_1d else "NO:%s" % self.gate_keys.get("1d-entry", "?")
+        if self.t0 is None:
+            t0 = "none(frozen)" if self.t0_frozen else "none"
+        else:
+            t0 = "%.2f(%s)" % (self.t0, "frozen" if self.t0_frozen else "provisional")
+        values = {
+            "at-rest": at_rest, "t0": t0, "engaged": engaged,
+            "rest-clock": "%s%s" % (
+                self.clock_state or "-",
+                "" if self.clock_state is None or self.clock_gate == "at-rest" else "(1d-entry)"),
+            "1d-entry": entry}
+        return " ".join(
+            "%s=%s" % (name, "ERROR" if any(self.gate_failed.get(c) for c in checks) else values[name])
+            for name, checks in self.GATE_INPUTS.items())
+
     def status_text(self):
         f = self.fan.v if self.fan is not None else {}
 
@@ -1507,11 +1639,12 @@ class Watcher:
             thresholds.append("r11(%.0f/%.0fs)" % (self.now - self.r11["t_L"], R11_TIME_SECONDS))
         engaged = "-" if self.engage_t is None else "%.0fs" % (self.now - self.engage_t)
         load = "-" if self.t_L is None or not self.load_active else "%.0fs" % (self.now - self.t_L)
-        return "step=%s hold=%s %s hottest=%s thr[%s] since_engage=%s since_tL=%s pressure=%s alerts=[%s]%s" % (
+        return ("step=%s hold=%s %s hottest=%s thr[%s] since_engage=%s since_tL=%s pressure=%s "
+                "gates[%s] alerts=[%s]%s") % (
             self.step or "none", "ACTIVE" if self.hold_active else "no",
             " ".join(show(k) for k in ("F0Md", "F1Md", "Ftst", "F0Tg", "F1Tg", "F0Ac", "F1Ac")),
             "?" if self.hottest is None else "%.1f" % self.hottest, " ".join(thresholds),
-            engaged, load, "?" if self.pressure is None else self.pressure,
+            engaged, load, "?" if self.pressure is None else self.pressure, self.gate_states(),
             ",".join(self.active_alerts()), " MUTED" if self.muted else "")
 
 
