@@ -4283,10 +4283,11 @@ says otherwise. Intel and M1/M2 stay `untested`.
     `e4-verify-running.sh`. A reinstall whose `e4-verify-running.sh` check fails counts as a
     failed check. The check is read 10 s after each step below: after the helper's
     first log line for a reinstall, after the wake for a sleep, and after the record restarts for
-    a power cycle (item 13). It passes when `Ftst` reads `0` and both modes read in Apple's set,
-    and it alone decides. When the session's last post-hold check passed, the state was in
-    Apple's set, and the branch helper's exit restore writes only zeros, so a refused exit restore
-    cannot have moved it out. Either way, the check reads what is there.
+    a power cycle (item 13). It passes when `Ftst` reads `0`, both modes read in Apple's set and,
+    for a reinstall, its verify passed, and it alone decides. When the session's last post-hold
+    check passed, the state was in Apple's set, and the branch helper's exit restore writes only
+    zeros, so a refused exit restore cannot have moved it out. Either way, the check reads what is
+    there.
 
     The table takes only the ladder's sleep and power cycle. With the branch build installed, the
     sleep's § 4 handback issues the machine-wide restore that `fanctl reset --all` would, and
