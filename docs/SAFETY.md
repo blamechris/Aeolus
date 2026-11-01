@@ -186,21 +186,37 @@ the helper takes the maintainer's lease shape, and holds it on its own side (`CL
   reason of its own and a fact about the request, so no snapshot carries it. It is asked after the
   lapsed-lease sweep and before § 3's latch, the blindness proof and the bounds reads.
 - An `apply` must set every fan its lease covers, or it is refused before anything is read.
-- A refused `apply` undoes what it engaged, and when that leaves the lease holding some of its fans
-  beside others handed back or never engaged, level 6 ends the lease whole
-  (`FanRestoreCause.applyRefused`) and the lease core hands every fan back. One that leaves every fan
-  held, or none, leaves the lease standing, as before.
+- A refused `apply` undoes what it engaged, and level 6 ends the lease whole
+  (`FanRestoreCause.applyRefused`), the lease core handing every fan back, **unless every fan it
+  covers is still engaged, or none is on account.** A fan whose hand-back was refused is kept on
+  account, but it is not held: a hand-back can throw after its mode write landed, as when
+  `F<n>Md = 0` is accepted and `Ftst = 0` refused, so of two kept fans one may be manual and the
+  other automatic under a key still set. A lease left with a kept fan therefore ends too, and no
+  re-apply follows under it; re-adopting a kept fan is dormant until 1d (`docs/TESTING.md`). Only
+  an undo that hands every fan back, or a refusal before any fan was engaged, leaves the lease
+  standing with nothing held.
 
 Every other path ends a lease whole already: its release, expiry and connection death, § 3's
-revocation, § 5's terminal action, § 4, § 6 and § 7. Two of § 5's hand-backs are of one fan while
-the lease is still listed, and each is bounded by an end of the whole lease: a held fan § 5 yields
-to a latched § 3, whose cycle revokes every lease, or whose own lease has lapsed, which the TTL
-sweep ends. A fan the system takes back while another is held is the system's act, not a hand-back,
-and § 5's terminal action ends that lease whole once its re-assert budget is spent. A restore the
-firmware refuses still leaves its fan in the durable register beside fans that went back, as above:
-the lease has ended, and that is the terminal state, not a lease kept. The app draws no per-fan
-control meanwhile; its control for all fans is unchanged. *Tested by:* `EveryFanLeaseTests`,
-`LeaseApplierTests`' item 0 and `LeaseApplierWholeLeaseTests`.
+revocation, § 5's terminal action, § 4, § 6 and § 7. Four of § 5's acts hand back one fan while
+the lease is still listed, and each is bounded by an end of the whole lease:
+
+- a held fan § 5 yields to a latched § 3, whose cycle revokes every lease;
+- a fan whose own lease has lapsed, which the TTL sweep ends;
+- the undo of § 5's own re-engagement, when that engagement fails after a write: Aeolus's own act,
+  putting back the mode the system had chosen moments before under the same key. § 5 keeps the fan
+  and retries; the re-assert budget, which a re-apply under the same lease cannot reset, bounds it,
+  and the terminal action then ends the lease whole;
+- the terminal action's own hand-back of the fan, followed at once by its revocation of the lease.
+
+A fan the system takes back while another is held is the system's act, not a hand-back, and § 5's
+terminal action ends that lease whole once its re-assert budget is spent. A restore the firmware
+refuses still leaves its fan in the durable register beside fans that went back, as above: the
+lease has ended, and that is the terminal state, not a lease kept. That includes a refused
+`Ftst = 0`: the clear stays owed until the firmware accepts one, so every later per-fan restore
+writes it again, and a fan whose clear is refused on every attempt is abandoned into the register
+rather than reported handed back (#678). The app draws no per-fan control meanwhile; its control
+for all fans is unchanged. *Tested by:* `EveryFanLeaseTests`, `LeaseApplierTests`' item 0,
+`LeaseApplierWholeLeaseTests`, `ForceKeyClearRetryTests` and `WritePlaneContractTests`.
 
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
