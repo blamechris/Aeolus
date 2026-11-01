@@ -1,4 +1,4 @@
-# run-watch: the run-1 watcher
+# run-watch: the run-1 watcher, its load driver and its record restart
 
 A read-only operator's instrument for the first supervised fan write. It reads the run's capture
 files and the helper's log stream, evaluates the abort rules of the run-1 amendment to
@@ -8,6 +8,11 @@ no-context rules), and **tells the operator aloud**. The operator acts on what i
 It is not a safety mechanism, and nothing in the helper depends on it. If it misses an abort, the
 operator, the helper's own mechanisms, the hold's length and § 3's ceiling remain. If it alerts
 falsely, that costs a session.
+
+This directory also holds the other two operator tools for run 1: [`run_load.py`](#the-load-driver-run_loadpy),
+the CPU load that bounds itself, and [`restart-record.sh`](#the-record-restart-restart-recordsh), which
+starts the record again after a power cycle. Neither is the watcher, neither is part of its
+confinement below, and neither can write to a fan.
 
 ## What it never does
 
@@ -156,6 +161,55 @@ grep ' GATE rest-clock=' ~/aeolus-captures/run1/watch.log | tail -n 1
 These are `Mac16,5` figures like the rest, and the gates read the files the rules read. A replay
 writes the same lines (stamped by the capture), which is how they are tested against P1.
 
+## The load driver (`run_load.py`)
+
+P1's sixteen-way busy loop (`sh -c 'while :; do :; done'`, one per worker), in one script that
+**bounds itself, traps INT, TERM and HUP, and kills only its own workers, each by its own PID**. The
+coordinator can be lost mid-hold; a load only the coordinator can stop is a load nobody stops
+(the fixes' section C, critic S2). Python 3 standard library only, run as `python3 -I`, from its
+pinned directory (`~/aeolus-captures/bin/run-load-<sha>/`, a copy of this directory).
+
+```sh
+D=~/aeolus-captures/run1
+nohup /opt/homebrew/bin/python3 -I <dir>/run_load.py --mode 1b --dir "$D" >> "$D/load-1b.out" 2>&1 &
+nohup /opt/homebrew/bin/python3 -I <dir>/run_load.py --mode 1d --dir "$D" >> "$D/load-1d.out" 2>&1 &   # armed BEFORE `set`
+```
+
+| Mode | It does |
+|---|---|
+| `--mode 1b` | Starts **at once**, and stops itself **600 s** after the workers start: P1's measured exposure, which covers the engagement (about 56 s), the hold, the 120 s observation and 1b' |
+| `--mode 1d` | Is **armed before `fanctl set`**, and does nothing until it has read `started` from `set`'s `--json` file (`DIR/set-1d.ndjson`, the runbook's `tee` target) **and** `F0Tg` has read **5,777 RPM (within 1) for 10 s** in the fan sampler's ndjson; that moment is **t_L**. It **never starts later than `started` + 30 s**: if the 10 s is not in by then it starts nothing, writes a note to `load-1d.log` and exits 3. It stops itself **20 s after `F1Tg` leaves 0** (the first sample at or after t_L reading above 0, as the watcher reads it), or **80 s** after it started. If `started` has not come within 5 minutes of arming, or `set` ended (`failed`, `ended`) before it, there is no load and exit 3 |
+
+- **The owner's stop (L2): `kill -TERM $(cat ~/aeolus-captures/run1/load.pid)`.** `load.pid` is the driver's own PID, written when it starts (armed or running) and removed when it ends. TERM, INT or HUP stops the workers (SIGTERM, then SIGKILL after 2 s for any that ignore it), writes `CTX load-stop` **once every worker is gone**, and exits 0. It works armed too: the load never starts. `kill $(cat busy-<step>.pids)` also works, and is what L3's check reads.
+- **The files it writes, and no others:** `load.pid`; `busy-1b.pids` or `busy-1d.pids` (the workers' PIDs, one per line, each written as its worker starts, kept after the run for L3: `ps -o pid=,command= -p $(tr '\n' ',' < busy-1b.pids | sed 's/,$//')`); `load-<step>.log`; and its two `CTX` lines in `phases.log`.
+- **The `CTX` lines**, in the watcher's grammar, stamped as the runbook stamps (`%.3f` epoch seconds): `CTX load-start step=<1b|1d>` **before it forks anything** (if `phases.log` cannot take it, nothing is forked), and `CTX load-stop` after the workers are gone. If a worker survives SIGKILL it says so in the log, writes no `load-stop`, and exits 4: the load has not stopped, and L3 says which.
+- **One driver at a time.** If `load.pid` names a running process it refuses (exit 2) and touches nothing. A stale file from a dead driver is replaced.
+- **Bounds only shorten.** `--max-seconds` can lower a mode's bound (a rehearsal), never raise it. `--workers` is 1 to 32, default 16.
+- **Exit codes:** 0 ended (its bound, or asked to stop); 2 refused to start; 3 1d did not start (nothing was forked); 4 a worker survived SIGKILL; 1 an unexpected error (the workers are stopped first, whatever it was).
+- **What it does not do:** it opens no SMC connection, runs no `fanctl`, `sudo` or `launchctl`, and starts nothing but its workers. It does not kill by pattern. If the driver itself is killed with SIGKILL its workers are not stopped (nothing can trap that): `kill $(cat busy-<step>.pids)` is then the stop.
+- **Both clocks.** A bound is judged on the wall clock and the monotonic clock, and the later wins: the monotonic clock stands still while the Mac sleeps, and the wall clock can be set back.
+
+Tests: `test_run_load.py` (fake clock, fake workers, and the driver as a real process with `/bin/sleep` for workers, to see the signals work and a bystander left alone), run with the other unit tests. **`smoke_run_load.py` is the one real load**, two busy loops for two seconds, and runs on request: `python3 -I -m unittest discover -s . -p smoke_run_load.py`.
+
+## The record restart (`restart-record.sh`)
+
+After the ladder's power cycle (item 13) every recorder, the watcher and the coordinator's session
+are gone, and the check is read against a record. The coordinator restarts it when the owner
+reopens its session; **if the coordinator is lost, the owner runs this, staged in `~/aeolus-captures/bin/`
+and tested before run day**:
+
+```sh
+~/aeolus-captures/bin/restart-record.sh --watcher-sha <sha>
+```
+
+It makes `~/aeolus-captures/run1-<n>/` (`n` is the smallest free number, from 1; `mkdir` is atomic, and an existing directory is never written into) and starts into it, in order, with the runbook's own commands (PR-3, PR-5) and pinned paths: both samplers (`smc-sampler-5b0d191`, **checked against the pinned sha256 first**), the log stream (`process == "AeolusHelper"`), the record-only poll loop, the watcher (`/opt/homebrew/bin/python3 -I ~/aeolus-captures/bin/run-watch-<sha>/scripts/run-watch/run_watch.py`) and its companion. It writes the same `.pid` files (`fans-10hz`, `package-1hz`, `logstream`, `poll`, `watch`, `watcher-down`), prints the directory and the six PIDs, waits a second, and says which of them is not running (exit 1).
+
+**`CTX end` is the first line of the new `phases.log`**, stamped as the runbook stamps it, followed by a plain note that says why. A restart happens only after the forward writes have ended (items 10 and 13), so the new watcher starts in the teardown state: outside a hold a helper restart is a note, and a sampler's own stop line ends its source for rule 12, so that this record's own E-10 teardown is not heard as blind (#652's review, S2). Without it the second record's teardown would be `BLIND — NO GO`.
+
+Everything is checked before anything is made or started, and a failed check (exit 2) leaves nothing behind: the pinned sampler, its hash, the pinned watcher and companion, the interpreter, the captures directory. A sampler already running is a warning, not a refusal (this is not the restart after a power cycle, and you are about to have two records). It writes only into the new directory, signals nothing (`kill -0` only asks whether a PID it started is still there), and runs no `fanctl`, `sudo` or `launchctl`. Stop the second record as the first: `kill -INT` the samplers, then the companion, the watcher, the log stream and the poll, each by PID from that directory (the runbook's E-10).
+
+Tests: `test_restart_record.py`, with stub binaries in place of the sampler, `log`, the interpreter, `pgrep`, and the watcher's companion (no real recorder, and no real `say`, starts).
+
 ## Stopping it
 
 Everything is stopped **by PID**, at the end, **after the reinstall of the `main` helper**, and
@@ -204,8 +258,9 @@ polls (ndjson lines such as `{"t": 1761870020.0, "kind": "pressure", "level": 1}
 
 ```sh
 cd scripts/run-watch
-python3 -I -m unittest          # the unit tests; no captures needed
-python3 -I dryrun.py ~/aeolus-captures/P1 --work <scratch> --mutations <scratch>/mut [d1 d2 d3 d4 unit]
+python3 -I -m unittest          # the unit tests of all three tools; no captures needed
+python3 -I dryrun.py ~/aeolus-captures/P1 --work <scratch> --mutations <scratch>/mut [d1 d2 d3 d4 unit tools]
+python3 -I -m unittest discover -s . -p smoke_run_load.py    # the one real load: two busy loops, two seconds, on request
 ```
 
 The unit tests use the synthetic fixture in `fixtures/synthetic/` (regenerated by
@@ -226,6 +281,9 @@ compare record shapes with P1's skip when P1's captures are absent.
 - **d4** runs each injection against a copy of the watcher with that rule's check emptied. It must
   stay silent, and a control injection must still fire on the same copy.
 - **unit** runs the unit tests against the same mutated copies; every one must go red.
+- **tools** does the same for the load driver and the record restart: each guard is edited out of a
+  private copy, and its tests must go red. (The watcher's mutants never copy those tools, and
+  their tests, so the real load of the smoke test is never started by a sweep.)
 
 P1's captures are read and never copied. Mutated copies are written under `--mutations`, which
 must be outside the working tree, and only one sweep may run at a time.

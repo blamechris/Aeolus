@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The watcher's dry run: D1 to D4 of the run-1 gap rulings (section 3), re-runnable.
 
-    python3 -I dryrun.py <P1 capture dir> [--work DIR] [--mutations DIR] [d1 d2 d3 d4 unit]
+    python3 -I dryrun.py <P1 capture dir> [--work DIR] [--mutations DIR] [d1 d2 d3 d4 unit tools]
 
 D1  P1 replayed as captured raises no alert.
 D2  P1 plus synthetic CTX lines: no ABORT 11 (F1Tg leaves 0 and the check disarms), no ABORT 9
@@ -14,6 +14,9 @@ D3  Each injection (one violation in a copy of a P1 window, plus synthetic log l
 D4  Each injection against a copy of the watcher with that rule's check removed stays silent;
     each mutated copy is shown to run by a control injection that it still fires on.
 unit  The same mutated copies against the unit tests: every one must go red.
+tools The load driver's and the record restart's guards, one edit each, in a private copy of this
+      directory, against that tool's own tests: every one must go red. (Not part of the default
+      parts; the watcher's sweep never copies those tools, so it never runs their tests.)
 
 P1's captures are read, never copied into the repository and never written to. Everything this
 script writes goes under --work and --mutations, which must be outside the working tree. It runs
@@ -1157,6 +1160,282 @@ def unit_sweep(work, mutations, python):
 
 
 
+#: The load driver's and the record restart's guards, one edit each:
+#: (file, its tests, label, ((old text, new text), ...)). Every old text is found once in the file.
+TOOL_MUTANTS = [
+    ('run_load.py', 'test_run_load', 'ctx after the fork, not before',
+     (('        wall = self.ctx("load-start step=%s" % self.config.mode)\n'
+       '        self.load_started = True',
+       '        wall = self.clock.wall()\n        self.load_started = True'),
+      ('        self.log("workers: %s" % " ".join(str(w.pid) for w in self.workers))',
+       '        self.log("workers: %s" % " ".join(str(w.pid) for w in self.workers))\n'
+       '        wall = self.ctx("load-start step=%s" % self.config.mode)'))),
+    ('run_load.py', 'test_run_load', 'pids written after all forks, not as each starts',
+     (('                pids.write("%d\\n" % worker.pid)\n', ''),
+      ('        self.log("workers: %s"',
+       '        open(self.workers_path, "w").write("".join("%d\\n" % w.pid for w in self.workers))\n'
+       '        self.log("workers: %s"'))),
+    ('run_load.py', 'test_run_load', 'pids not written',
+     (('                pids.write("%d\\n" % worker.pid)\n', '                pass\n'),)),
+    ('run_load.py', 'test_run_load', '8 workers by default',
+     (('DEFAULT_WORKERS = 16', 'DEFAULT_WORKERS = 8'),)),
+    ('run_load.py', 'test_run_load', '1b bound 700 s',
+     (('BOUNDS = {"1b": 600.0,', 'BOUNDS = {"1b": 700.0,'),)),
+    ('run_load.py', 'test_run_load', '1d bound 90 s', (('"1d": 80.0}', '"1d": 90.0}'),)),
+    ('run_load.py', 'test_run_load', 'bound on the wall clock only',
+     (('return max(self.clock.wall() - self.wall0, self.clock.mono() - self.mono0)',
+       'return self.clock.wall() - self.wall0'),)),
+    ('run_load.py', 'test_run_load', 'bound on the monotonic clock only',
+     (('return max(self.clock.wall() - self.wall0, self.clock.mono() - self.mono0)',
+       'return self.clock.mono() - self.mono0'),)),
+    ('run_load.py', 'test_run_load', "bound from the driver's start, not the load's",
+     (('        self.wall0, self.mono0 = self.clock.wall(), self.clock.mono()\n'
+       '        self.log("load-start',
+       '        self.log("load-start'),
+      ('        code = EXIT_OK\n        try:\n            self.check_writable()',
+       '        code = EXIT_OK\n'
+       '        self.wall0, self.mono0 = self.clock.wall(), self.clock.mono()\n'
+       '        try:\n'
+       '            self.check_writable()'))),
+    ('run_load.py', 'test_run_load', 'SIGTERM never sent',
+     (('            if worker.poll() is None:\n                worker.terminate()',
+       '            if worker.poll() is None:\n                pass'),)),
+    ('run_load.py', 'test_run_load', 'SIGKILL never sent',
+     (('                worker.kill()\n        self.wait_for_workers()',
+       '                pass\n        self.wait_for_workers()'),)),
+    ('run_load.py', 'test_run_load', 'no wait after SIGTERM (grace 0)',
+     (('STOP_GRACE_SECONDS = 2.0', 'STOP_GRACE_SECONDS = 0.0'),)),
+    ('run_load.py', 'test_run_load', 'a reaped worker is signalled again',
+     (('            if worker.poll() is None:\n                worker.terminate()',
+       '            if True:\n                worker.terminate()'),)),
+    ('run_load.py', 'test_run_load', 'load-stop written with a worker still running',
+     (('            self.log("STILL RUNNING after SIGKILL: %s. No CTX load-stop was written." % '
+       'alive)\n'
+       '            return alive\n',
+       '            self.log("STILL RUNNING after SIGKILL: %s. No CTX load-stop was written." % '
+       'alive)\n'),)),
+    ('run_load.py', 'test_run_load', 'survivors do not change the exit code',
+     (('                if survivors:\n                    code = EXIT_SURVIVOR',
+       '                if False:\n                    code = EXIT_SURVIVOR'),)),
+    ('run_load.py', 'test_run_load', 'stop_load acts on a load that never started',
+     (('        if not self.load_started:\n'
+       '            return []\n'
+       '        for worker in self.workers:',
+       '        for worker in self.workers:'),)),
+    ('run_load.py', 'test_run_load', 'a second driver is allowed',
+     (('                if holder is not None and self.alive(holder):',
+       '                if False:'),)),
+    ('run_load.py', 'test_run_load', 'the pid file is removed whoever owns it',
+     (('        if self.owns_pid_file and self.read_pid(self.pid_path) == os.getpid():',
+       '        if self.owns_pid_file:'),)),
+    ('run_load.py', 'test_run_load', 'a missing directory is not refused',
+     (('        if not os.path.isdir(self.config.directory):', '        if False:'),)),
+    ('run_load.py', 'test_run_load', 'phases.log as a directory is not refused',
+     (('        if os.path.isdir(self.config.phases) or not os.access(',
+       '        if not os.access('),)),
+    ('run_load.py', 'test_run_load', '1d dwell 5 s',
+     (('DWELL_SECONDS = 10.0', 'DWELL_SECONDS = 5.0'),)),
+    ('run_load.py', 'test_run_load', '1d tolerance 3 rpm',
+     (('TARGET_TOLERANCE_RPM = 1.0', 'TARGET_TOLERANCE_RPM = 3.0'),)),
+    ('run_load.py', 'test_run_load', 'a sample gap does not restart the dwell',
+     (('SAMPLE_GAP_SECONDS = 2.0', 'SAMPLE_GAP_SECONDS = 200.0'),)),
+    ('run_load.py', 'test_run_load', 'a dip does not restart the dwell',
+     (('                    if target is None or abs(target - config.target_rpm) > '
+       'TARGET_TOLERANCE_RPM:\n'
+       '                        run_since = None',
+       '                    if target is None or abs(target - config.target_rpm) > '
+       'TARGET_TOLERANCE_RPM:\n'
+       '                        pass'),)),
+    ('run_load.py', 'test_run_load', 'the start window is 40 s',
+     (('START_WINDOW_SECONDS = 30.0', 'START_WINDOW_SECONDS = 40.0'),)),
+    ('run_load.py', 'test_run_load', 'a late dwell still starts the load',
+     (('if started is not None and due and now <= started + START_WINDOW_SECONDS:',
+       'if started is not None and due:'),)),
+    ('run_load.py', 'test_run_load', 'no arm timeout',
+     (('                if max(now - armed_wall, self.clock.mono() - armed_mono) >= '
+       'config.arm_timeout:',
+       '                if False:'),)),
+    ('run_load.py', 'test_run_load', 'arm timeout on the wall clock only',
+     (('max(now - armed_wall, self.clock.mono() - armed_mono) >= config.arm_timeout',
+       'now - armed_wall >= config.arm_timeout'),)),
+    ('run_load.py', 'test_run_load', 'a stale started counts',
+     (('if event is None or event.t < armed_wall - STALE_STARTED_SECONDS:', 'if event is None:'),)),
+    ('run_load.py', 'test_run_load', 'a failed set before started does not stop the arming',
+     (('elif event.event in ("failed", "ended") and started is None:', 'elif False:'),)),
+    ('run_load.py', 'test_run_load', 'the fan history is read',
+     (('Follow(config.fans, from_end=True)', 'Follow(config.fans, from_end=False)'),)),
+    ('run_load.py', 'test_run_load', 'the set file is followed by offset',
+     (('Whole(config.set_json)', 'Follow(config.set_json)'),)),
+    ('run_load.py', 'test_run_load', '1d stops 30 s after F1Tg leaves 0',
+     (('TAIL_SECONDS = 20.0', 'TAIL_SECONDS = 30.0'),)),
+    ('run_load.py', 'test_run_load', "a sample before t_L can be 'left 0'",
+     (('if sample is not None and sample.t >= t_l and sample.v.get("F1Tg", 0.0) > 0:',
+       'if sample is not None and sample.v.get("F1Tg", 0.0) > 0:'),)),
+    ('run_load.py', 'test_run_load', 'F1Tg at 0 counts as left 0',
+     (('sample.v.get("F1Tg", 0.0) > 0:', 'sample.v.get("F1Tg", 0.0) >= 0:'),)),
+    ('run_load.py', 'test_run_load', 'a dead record can start the load',
+     (('\n                       and now - last_t <= SAMPLE_GAP_SECONDS)', ')'),)),
+    ('run_load.py', 'test_run_load', 'a stop request while armed is ignored',
+     (('                if self.stop_signal is not None:\n'
+       '                    self.log("stop requested by SIG%s before',
+       '                if False:\n                    self.log("stop requested by SIG%s before'),)),
+    ('run_load.py', 'test_run_load', 'a stop request during the load is ignored',
+     (('        if self.stop_signal is not None:\n'
+       '            self.log("stop requested by SIG%s" % self.stop_signal)\n'
+       '            return False',
+       '        if False:\n            return False'),)),
+    ('run_load.py', 'test_run_load', 'no handler for HUP',
+     (('((signal.SIGINT, "INT"), (signal.SIGTERM, "TERM"), (signal.SIGHUP, "HUP"))',
+       '((signal.SIGINT, "INT"), (signal.SIGTERM, "TERM"))'),)),
+    ('run_load.py', 'test_run_load', 'no handler for INT',
+     (('((signal.SIGINT, "INT"), (signal.SIGTERM, "TERM"), (signal.SIGHUP, "HUP"))',
+       '((signal.SIGTERM, "TERM"), (signal.SIGHUP, "HUP"))'),)),
+    ('run_load.py', 'test_run_load', 'no handler for TERM',
+     (('((signal.SIGINT, "INT"), (signal.SIGTERM, "TERM"), (signal.SIGHUP, "HUP"))',
+       '((signal.SIGINT, "INT"), (signal.SIGHUP, "HUP"))'),)),
+    ('run_load.py', 'test_run_load', 'the handler names the wrong signal',
+     (('lambda *_args, name=name: self.request_stop(name)',
+       'lambda *_args, name=name: self.request_stop("INT")'),)),
+    ('run_load.py', 'test_run_load', 'the last signal is kept, not the first',
+     (('        if self.stop_signal is None:\n            self.stop_signal = name',
+       '        self.stop_signal = name'),)),
+    ('run_load.py', 'test_run_load', '--max-seconds can lengthen',
+     (('if max_seconds is not None and not 0 < max_seconds <= bound:',
+       'if max_seconds is not None and not 0 < max_seconds:'),)),
+    ('run_load.py', 'test_run_load', 'any number of workers',
+     (('if not 1 <= workers <= MAX_WORKERS:', 'if not 1 <= workers:'),)),
+    ('run_load.py', 'test_run_load', 'workers inherit stdin',
+     (('                    self.worker_argv, stdin=subprocess.DEVNULL, stdout=',
+       '                    self.worker_argv, stdout='),)),
+    ('run_load.py', 'test_run_load', 'CTX stamp to the second',
+     (('return "%.3f CTX %s\\n" % (wall, body)', 'return "%d CTX %s\\n" % (wall, body)'),)),
+    ('run_load.py', 'test_run_load', 'CTX load-start without step=',
+     (('self.ctx("load-start step=%s" % self.config.mode)',
+       'self.ctx("load-start %s" % self.config.mode)'),)),
+    ('run_load.py', 'test_run_load', 'CTX load-stop misspelt',
+     (('self.ctx("load-stop")', 'self.ctx("load stop")'),)),
+    ('run_load.py', 'test_run_load', 'the P1 worker command changed',
+     (('WORKER_ARGV = ("/bin/sh", "-c", "while :; do :; done")',
+       'WORKER_ARGV = ("/bin/sh", "-c", "while true; do :; done")'),)),
+    ('run_load.py', 'test_run_load', 'the pid file is not claimed',
+     (('            self.claim_pid_file()\n', '            pass\n'),)),
+    ('restart-record.sh', 'test_restart_record', 'CTX end written after the recorders, not before',
+     (('echo "$STAMP CTX end" > "$DIR/phases.log"\n', ''),
+      ('echo $! > "$DIR/watcher-down.pid"\n',
+       'echo $! > "$DIR/watcher-down.pid"\necho "$STAMP CTX end" > "$DIR/phases.log"\n'))),
+    ('restart-record.sh', 'test_restart_record', 'no plain note after CTX end',
+     (('echo "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because',
+       ': "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because'),)),
+    ('restart-record.sh', 'test_restart_record', 'CTX armed, not CTX end',
+     (('echo "$STAMP CTX end" > ', 'echo "$STAMP CTX armed" > '),)),
+    ('restart-record.sh', 'test_restart_record', 'the pinned sampler hash is not checked',
+     (('[ "$GOT" = "$SAMPLER_SHA256" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record', "the log stream's process clause dropped",
+     ((' AND process == "AeolusHelper"\'', "'"),)),
+    ('restart-record.sh', 'test_restart_record', 'the fan sampler at 2 Hz',
+     (('--interval=0.1 --keys', '--interval=0.5 --keys'),)),
+    ('restart-record.sh', 'test_restart_record', 'the package sampler at 0.5 Hz',
+     (('--interval=1 > "$DIR/package-1hz.ndjson"', '--interval=2 > "$DIR/package-1hz.ndjson"'),)),
+    ('restart-record.sh', 'test_restart_record', 'a key missing from the fan sampler',
+     (('F0Tg,F1Tg,F0Ac,F1Ac >', 'F0Tg,F1Tg,F0Ac >'),)),
+    ('restart-record.sh', 'test_restart_record', 'the watcher without -I',
+     (('"$PYTHON" -I "$WATCH_DIR/run_watch.py"', '"$PYTHON" "$WATCH_DIR/run_watch.py"'),)),
+    ('restart-record.sh', 'test_restart_record', "the watcher watches the first record's directory",
+     (('--dir "$DIR" >> "$DIR/watch.log"', '--dir "$CAPTURES/run1" >> "$DIR/watch.log"'),)),
+    ('restart-record.sh', 'test_restart_record', "the watcher's pid file under another name",
+     (('echo $! > "$DIR/watch.pid"', 'echo $! > "$DIR/watcher.pid"'),)),
+    ('restart-record.sh', 'test_restart_record', 'an existing directory is reused',
+     (('while ! mkdir "$CAPTURES/run1-$N" 2>/dev/null; do',
+       'while ! mkdir -p "$CAPTURES/run1-$N" 2>/dev/null; do'),)),
+    ('restart-record.sh', 'test_restart_record', 'the numbering starts at 2',
+     (('N=1\nwhile', 'N=2\nwhile'),)),
+    ('restart-record.sh', 'test_restart_record',
+     'a process that is not running does not change the exit status',
+     (('    STATUS=1\n', '    STATUS=0\n'),)),
+    ('restart-record.sh', 'test_restart_record', 'every process is reported running',
+     (('if kill -0 "$PID" 2>/dev/null; then', 'if true; then'),)),
+    ('restart-record.sh', 'test_restart_record', 'the watcher sha is not validated',
+     (('  *[!0-9a-zA-Z._-]*) die "--watcher-sha may hold only letters, digits, \'.\', \'_\' and '
+       '\'-\'" ;;',
+       '  *[!0-9a-zA-Z._-]*) ;;'),)),
+    ('restart-record.sh', 'test_restart_record', 'the sampler need not be executable',
+     (('[ -x "$SAMPLER" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record', 'the watcher need not be there',
+     (('[ -f "$WATCH_DIR/run_watch.py" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record', 'the companion need not be there',
+     (('[ -f "$WATCH_DIR/watcher-down.sh" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record', 'the interpreter need not be there',
+     (('[ -x "$PYTHON" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record', 'the captures directory need not be there',
+     (('[ -d "$CAPTURES" ] ||', 'true ||'),)),
+    ('restart-record.sh', 'test_restart_record',
+     'a CTX line that cannot be stamped is written anyway',
+     (('  *) rmdir "$DIR"; die "could not stamp the CTX line" ;;', '  *) ;;'),)),
+    ('restart-record.sh', 'test_restart_record', 'a running sampler is not warned about',
+     (('if [ -n "$RUNNING" ]; then', 'if false; then'),)),
+    ('restart-record.sh', 'test_restart_record', 'no wait before the liveness check',
+     (('\nsleep 1\nSTATUS=0', '\nsleep 0\nSTATUS=0'),)),
+]
+
+
+def tool_text(filename, edits):
+    """The tool's source with every edit applied; each old text must be in it exactly once."""
+    with open(os.path.join(HERE, filename), encoding="utf-8") as handle:
+        text = handle.read()
+    for old, new in edits:
+        if text.count(old) != 1:
+            raise LookupError("%s: %r occurs %d times" % (filename, old[:60], text.count(old)))
+        text = text.replace(old, new)
+    return text
+
+
+def check_tool_mutations():
+    """Every tool mutation applied in memory before anything runs, as `check_mutations` does."""
+    stale = []
+    for filename, _, label, edits in TOOL_MUTANTS:
+        try:
+            tool_text(filename, edits)
+        except LookupError as error:
+            stale.append("  %s: %s" % (label, error))
+    if stale:
+        raise SystemExit("stale tool mutations:\n%s" % "\n".join(stale))
+    return len(TOOL_MUTANTS)
+
+
+def tools_sweep(mutations):
+    """Each tool mutation in a private copy of this directory, against that tool's tests alone.
+    Every one must go red; none of these runs the smoke test (which is not a `test_*` module)."""
+    print("tools  the load driver's and the record restart's guards: every one must go red")
+    print()
+    print("| mutation | tests failed | result |")
+    print("|---|---|---|")
+    allok = True
+    with mutate.Sweep(mutations) as sweep:
+        for index, (filename, module, label, edits) in enumerate(TOOL_MUTANTS):
+            target = os.path.join(sweep.directory, "tool-%d" % index)
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(HERE, target, ignore=shutil.ignore_patterns("__pycache__"))
+            with open(os.path.join(target, filename), "w", encoding="utf-8") as handle:
+                handle.write(tool_text(filename, edits))
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-I", "-m", "unittest", "discover", "-s", ".", "-p", module + ".py"],
+                    cwd=target, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, timeout=180, check=False)
+                text = result.stdout.decode("utf-8", "replace")
+                ran = any(line.startswith("Ran ") for line in text.splitlines())
+                failed = [l.split(" ")[1] for l in text.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
+                ok = ran and result.returncode != 0 and bool(failed)
+            except subprocess.TimeoutExpired:  # a test that hangs is not green, but it should fail fast
+                failed, ok = ["(hung for 180 s)"], True
+            allok = allok and ok
+            print("| %s: %s | %d: %s | %s |" % (
+                filename, label, len(failed), ", ".join(dict.fromkeys(failed[:2])) + (" ..." if len(failed) > 2 else ""),
+                "red" if ok else "STILL GREEN"))
+            shutil.rmtree(target, ignore_errors=True)
+    print()
+    return allok
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("p1", help="the P1 capture directory (read only)")
@@ -1175,6 +1454,9 @@ def main():
     if "d4" in args.parts or "unit" in args.parts:
         print("mutations: all %d applied to the watcher's text before anything runs" % check_mutations(watcher))
         print()
+    if "tools" in args.parts:
+        print("tool mutations: all %d applied to the tools' text before anything runs" % check_tool_mutations())
+        print()
     for part in args.parts:
         if part == "d1":
             results[part] = d1(p1, args.work, watcher)
@@ -1186,6 +1468,8 @@ def main():
             results[part] = d4(p1, args.work, watcher, args.mutations)
         elif part == "unit":
             results[part] = unit_sweep(args.work, args.mutations, sys.executable)
+        elif part == "tools":
+            results[part] = tools_sweep(args.mutations)
         else:
             raise SystemExit("unknown part %r" % part)
         print()
