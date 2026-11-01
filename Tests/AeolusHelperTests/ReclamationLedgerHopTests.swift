@@ -49,7 +49,7 @@ struct ReclamationLedgerHopTests {
     /// step lands in the hop and § 5 re-asserts it.
     @Test("A first command attempted during the ledger hop waits for the gate")
     func aFirstCommandDuringTheLedgerHopWaitsForTheGate() async throws {
-        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 4_400)], parkingSafetyHops: true)
         let ledgerHops = try #require(machine.ledgerHops)
         let standIn = LevelSixStandIn(machine)
         let lease = try await Self.atTheEndOfTheGrace(machine)
@@ -61,7 +61,7 @@ struct ReclamationLedgerHopTests {
                 await ledgerHops.isParked
             })
 
-        let step = observing { try await standIn.step(to: 2_400, of: permit, under: lease) }
+        let step = observing { try await standIn.step(to: 4_400, of: permit, under: lease) }
         #expect(
             await yieldUntil("the step to wait for the gate") {
                 machine.gate.waiting(onFan: 0) == 1
@@ -99,7 +99,7 @@ struct ReclamationLedgerHopTests {
     /// `reassertTarget(ofFan:under:)`. Run: red on the re-engage and the stand-down line.
     @Test("Past the gate's bound, a first command reported in the hop is decided on, not given up")
     func pastTheBoundAFirstCommandInTheHopIsSeen() async throws {
-        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 4_400)], parkingSafetyHops: true)
         let ledgerHops = try #require(machine.ledgerHops)
         let standIn = LevelSixStandIn(machine)
         let lease = try await Self.atTheEndOfTheGrace(machine)
@@ -114,7 +114,7 @@ struct ReclamationLedgerHopTests {
                 await ledgerHops.isParked
             })
 
-        await standIn.report(try await standIn.write(2_400, of: permit), under: lease)
+        await standIn.report(try await standIn.write(4_400, of: permit), under: lease)
         await ledgerHops.release()
         try await finished("the examination", sweep)
 
@@ -124,13 +124,13 @@ struct ReclamationLedgerHopTests {
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.restorer.causes.isEmpty, "a lease was revoked")
         #expect(await machine.leases.leaseCount == 1)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
         #expect(
             machine.safetyLog.lines(
                 containing: ReclamationExaminationGateTests.ungatedStandDown
             ).count == 1)
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)) == false)
-        #expect(await machine.commandedRPMs == [2_400], "§ 5 wrote without the gate")
+        #expect(await machine.commandedRPMs == [4_400], "§ 5 wrote without the gate")
         #expect(await machine.watchdog.fansUnderManualControl == [0])
         standIn.leave(stuck)
     }
@@ -148,7 +148,7 @@ struct ReclamationLedgerHopTests {
     func aTargetReportedDuringTheLedgerHopIsTheOneTheReassertWrites() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)], parkingSafetyHops: true)
         let ledgerHops = try #require(machine.ledgerHops)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try #require(await machine.leases.activeLease()).id
         await ledgerHops.parkNext(.markReclaimed)
         let sweep = observing { await machine.watchdog.cycle() }
@@ -158,16 +158,16 @@ struct ReclamationLedgerHopTests {
             })
 
         await machine.watchdog.commandedTarget(
-            CommandedTarget(fanIndex: 0, rpm: 2_600), under: lease)
+            CommandedTarget(fanIndex: 0, rpm: 4_600), under: lease)
         await ledgerHops.release()
         try await finished("the examination", sweep)
 
         #expect(
-            await machine.commandedRPMs == [2_600],
+            await machine.commandedRPMs == [4_600],
             "the re-assert wrote the copy's target, not the one reported during the hop")
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 2600 RPM, attempt 1 of").count == 1)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_600)
+            machine.safetyLog.lines(containing: "re-asserted 4600 RPM, attempt 1 of").count == 1)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_600)
         #expect(machine.safetyLog.lines(containing: "left fan 0 alone").isEmpty)
         #expect(await machine.restorer.causes.isEmpty, "a lease was revoked")
     }

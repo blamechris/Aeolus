@@ -305,7 +305,8 @@ struct SMCReadSchedulerTests {
         // Pins the constant, which is the only way to assert "unchanged" without a stored
         // baseline — #127's acceptance criteria ask for exactly that. A legitimate bump to 2
         // is therefore expected to turn this red: the reader should confirm the protocol
-        // really did change and move the number, not reach for the scheduler.
-        #expect(AeolusXPCVersion.current == 1)
+        // really did change and move the number, not reach for the scheduler. #670 did: the
+        // every-fan lease and the client floor change what `acquireLease` and `apply` mean.
+        #expect(AeolusXPCVersion.current == 2)
     }
 }

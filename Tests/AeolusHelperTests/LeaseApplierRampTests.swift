@@ -15,21 +15,21 @@ import Testing
 @Suite("Level 6's whole write and its ramp memory", .timeLimit(.minutes(1)))
 struct LeaseApplierRampTests {
 
-    /// **The acceptance.** Lease A applies 3,564 and is released; lease B applies 5,777, and its
-    /// first command is 5,777. Inside that command write the writer remembers nothing: the
-    /// engagement under lease B reset what lease A left.
+    /// **The acceptance.** Lease A applies 4,670 (75 %, above the client floor) and is released;
+    /// lease B applies 5,777, and its first command is 5,777. Inside that command write the writer
+    /// remembers nothing: the engagement under lease B reset what lease A left.
     ///
     /// **Mutations:** in `LeaseApplier.step`, write with `writer.command(towards: rpm, of: permit,
     /// since: .seconds(1))` instead of `hold`, and delete the reset at the engagement. Run: red,
-    /// 3,764 commanded. Delete only the reset at the engagement. Run: red on the memory inside the
-    /// write, 3,564.
-    @Test("A second lease's first command is 5,777 after 3,564")
+    /// 4,870 commanded. Delete only the reset at the engagement. Run: red on the memory inside the
+    /// write, 4,670.
+    @Test("A second lease's first command is 5,777 after 4,670")
     func aSecondLeasesFirstCommandIsWhole() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
         let levelSix = machine.levelSix(writingThrough: writes)
         let first = try await machine.lease(fans: [0]).id
-        try await levelSix.apply(fixed((0, 3_564)), under: first)
+        try await levelSix.apply(fixed((0, 4_670)), under: first)
         try await machine.leases.releaseLease(id: first, from: machine.holder)
         // The fixture's restorer records and writes nothing, so the release's restore is this.
         try await machine.plane.restoreToAutomatic(.fan(0))
@@ -41,7 +41,7 @@ struct LeaseApplierRampTests {
         }
         try await levelSix.apply(fixed((0, 5_777)), under: second)
 
-        #expect(await machine.commandedRPMs == [3_564, 5_777], "a fixed setting was ramped")
+        #expect(await machine.commandedRPMs == [4_670, 5_777], "a fixed setting was ramped")
         #expect(
             await remembered.seen == [nil],
             "lease B's engagement kept the target lease A left as its ramp origin")
@@ -70,10 +70,10 @@ struct LeaseApplierRampTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
 
-        #expect(await remembered.seen == [2_400], "fan 0 was never written, so nothing is tested")
+        #expect(await remembered.seen == [4_400], "fan 0 was never written, so nothing is tested")
         #expect(await machine.didRestore(fan: 0))
         #expect(
             await levelSix.writer.lastCommanded(ofFan: 0) == nil, "the undo kept the ramp memory")
@@ -87,7 +87,14 @@ struct LeaseApplierRampTests {
     ///
     /// **Mutation:** in `LeaseApplier.step`, reset the memory only after an engagement that
     /// returned, not after a re-adoption. Run: red, 2,400 remembered as the ramp origin.
-    @Test("A kept fan read as still the lease's has its ramp memory reset")
+    @Test(
+        "A kept fan read as still the lease's has its ramp memory reset",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aReAdoptedFansRampMemoryIsReset() async throws {
         let machine = ReclamationMachine(
             stages: [
@@ -104,12 +111,12 @@ struct LeaseApplierRampTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "fan 0 was handed back")
         #expect(
-            await levelSix.writer.lastCommanded(ofFan: 0) == 2_400,
+            await levelSix.writer.lastCommanded(ofFan: 0) == 4_400,
             "fan 0 kept no memory, so nothing is tested")
 
         await machine.plane.advance()
@@ -117,12 +124,12 @@ struct LeaseApplierRampTests {
         await writes.interfere(beforeCommandTarget: 3) {
             await remembered.record(await levelSix.writer.lastCommanded(ofFan: 0))
         }
-        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_500), (1, 4_600)), under: lease)
 
         #expect(machine.safetyLog.lines(containing: KeptFan.reAdopted).count == 1)
         #expect(
             await remembered.seen == [nil],
             "the re-adopted fan kept the target written before its refused hand-back as its origin")
-        #expect(await levelSix.writer.lastCommanded(ofFan: 0) == 2_000)
+        #expect(await levelSix.writer.lastCommanded(ofFan: 0) == 4_500)
     }
 }

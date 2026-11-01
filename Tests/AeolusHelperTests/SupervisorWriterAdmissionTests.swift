@@ -105,15 +105,16 @@ struct SupervisorWriterAdmissionTests {
     /// firing came first, and stage 3 is § 5's give-up.
     private static let stages = [nominal, .at(96), nominal, refusing]
 
-    /// Brings `machine` to stage 2. After a firing, a lease over fan 0 has been revoked through
-    /// § 3's handback in the lane and the latch has released; at rest, nothing has run.
+    /// Brings `machine` to stage 2. After a firing, a lease over both fans, as one must be since
+    /// #670, has been revoked through § 3's handback in the lane and the latch has released; at
+    /// rest, nothing has run.
     private static func prepare(_ machine: Machine, afterAFiring: Bool) async throws {
         guard afterAFiring else {
             await machine.firmware.advance()
             await machine.firmware.advance()
             return
         }
-        _ = try await machine.lease([0])
+        _ = try await machine.lease([0, 1])
         await machine.firmware.advance()
         let firing = await machine.calls { await machine.helper.thermalEmergency.cycle() }
         #expect(
@@ -180,18 +181,18 @@ struct SupervisorWriterAdmissionTests {
             leaseID = try await machine.lease([0, 1])
             try await helper.authority.apply(
                 [
-                    FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400)),
-                    FanSetting(fanIndex: 1, control: .fixed(rpm: 2_400)),
+                    FanSetting(fanIndex: 0, control: .fixed(rpm: 4_400)),
+                    FanSetting(fanIndex: 1, control: .fixed(rpm: 4_400)),
                 ], leaseID: leaseID, from: machine.holder)
         }
         Self.expectAtSupervisor(apply, "level 6's apply") {
-            $0 == .commandTarget(fan: 0, rpm: 2_400)
+            $0 == .commandTarget(fan: 0, rpm: 4_400)
         }
 
         await machine.firmware.setMode(.automatic, ofFan: 0)
         let reassert = await machine.calls { await helper.reclamationWatchdog.cycle() }
         Self.expectAtSupervisor(reassert, "§ 5's re-assert") {
-            $0 == .commandTarget(fan: 0, rpm: 2_400)
+            $0 == .commandTarget(fan: 0, rpm: 4_400)
         }
 
         await machine.firmware.advance()
@@ -234,8 +235,8 @@ struct SupervisorWriterAdmissionTests {
         let leaseID = try await machine.lease([0, 1])
         try await helper.authority.apply(
             [
-                FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400)),
-                FanSetting(fanIndex: 1, control: .fixed(rpm: 2_400)),
+                FanSetting(fanIndex: 0, control: .fixed(rpm: 4_400)),
+                FanSetting(fanIndex: 1, control: .fixed(rpm: 4_400)),
             ], leaseID: leaseID, from: machine.holder)
         #expect(
             await helper.reclamationWatchdog.fansUnderManualControl == [0, 1],
@@ -292,7 +293,7 @@ struct SupervisorWriterAdmissionTests {
     func theInstalledTeardownWritesAtSupervisor() async throws {
         let machine = await Machine(stages: [Self.nominal], clock: ManualClock())
         await machine.helper.bringUp()
-        _ = try await machine.lease([0])
+        _ = try await machine.lease([0, 1])
 
         let teardown = await machine.calls {
             await machine.signals.fire()
@@ -337,7 +338,7 @@ struct SupervisorWriterAdmissionTests {
         try await Self.prepare(machine, afterAFiring: afterAFiring)
         await machine.helper.bringUp()
         #expect(observer.isObserving, "bring-up installed no power observer")
-        _ = try await machine.lease([0])
+        _ = try await machine.lease([0, 1])
 
         let sleepAndWake = try await machine.calls {
             try await observer.deliver(.willSleep)

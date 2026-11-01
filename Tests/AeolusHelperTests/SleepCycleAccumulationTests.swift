@@ -88,11 +88,13 @@ struct SleepCycleAccumulationTests {
     /// `[[0]]` cannot satisfy, and it is a claim about *state* rather than about a counter —
     /// the fan each cycle actually left outstanding.
     ///
-    /// **Fan 1 is enumerated, never leased, and is what separates the seal from the register.**
-    /// Inside the sleep window fan 0 is refused `.handbackUnconfirmed` and fan 1 is refused
-    /// `.systemSleeping`, and both are asserted every cycle. A one-fan machine cannot tell
-    /// those apart — either refusal alone reads as "a lease was refused during a sleep" — which
-    /// is how a seal that never reopens and a register that never clears both look correct.
+    /// **The reason is what separates the seal from the register.** Inside the sleep window fan 0
+    /// is refused `.handbackUnconfirmed`, asserted as an equality every cycle: the grant asks the
+    /// register before the seal, so a register left unwritten answers `.systemSleeping` instead.
+    /// Until #670 a second fan, enumerated and never leased, was refused `.systemSleeping` beside
+    /// it; since then a lease covers every fan, so no fan is left out to show the seal, and the
+    /// machine has the one fan the lease covers. The mutations below were measured on the
+    /// two-fan machine; E and G are re-measured on this one in #670's pull request.
     ///
     /// **The supervisors run, so this goes through `bringUp()`**, exactly as the healthy-path
     /// multi-cycle test does. Nothing here asserts on the firmware's attempt log, which is what
@@ -130,9 +132,9 @@ struct SleepCycleAccumulationTests {
     /// **Mutation E — the register never written.** Reduce `recordUnconfirmedHandbacks()` to
     /// `return []`. Run: red on all three cycles' fan-0 refusal — which comes back
     /// `.systemSleeping` instead of `.handbackUnconfirmed` — and on `perCycle`
-    /// (`[Set([]), Set([]), Set([])]`). That substitution is exactly what fan 1 is here to
-    /// separate: a suite that asked only "was a lease refused inside the window?" would read the
-    /// seal's answer as the register's and pass. Measured green in
+    /// (`[Set([]), Set([]), Set([])]`). That substitution is exactly what the reason's equality is
+    /// here to separate: a suite that asked only "was a lease refused inside the window?" would
+    /// read the seal's answer as the register's and pass. Measured green in
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`.
     ///
     /// **Mutation G — the register written once per helper.** `guard !hasRecordedOnce else { return
@@ -160,7 +162,7 @@ struct SleepCycleAccumulationTests {
     /// same process — which is why the latch is per responder.
     @Test("Three wedged sleep cycles each record, refuse and clear the same fan")
     func threeWedgedCyclesEachRecordRefuseAndClearTheSameFan() async throws {
-        let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
+        let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 1))
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
         // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
@@ -173,7 +175,7 @@ struct SleepCycleAccumulationTests {
         // here is about that budget, so it is set beyond any stall.
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), reconciliationBudget: .seconds(3_600), fanCount: 2,
+            clock: SystemMonotonicClock(), reconciliationBudget: .seconds(3_600), fanCount: 1,
             safetyLog: log)
 
         await helper.bringUp()
@@ -349,21 +351,13 @@ struct SleepCycleAccumulationTests {
             the durable one is what #209 measured the exposure of.
             """)
 
-        // The two refusals of one window, asserted apart. Fan 0's is about the fan; fan 1's is
-        // about the machine, and it lifts on the wake.
+        // The window's refusal, about the fan: the register answers it, ahead of the seal's.
         await expectRefusal(
             .handbackUnconfirmed, from: helper.leases, fan: 0, cycle: cycle,
             because: """
                 the fan whose handback the budget gave up waiting for is leasable, or is \
-                refused with a reason that says the answer is still coming in a moment. It has \
-                already outlived the budget.
-                """)
-        await expectRefusal(
-            .systemSleeping, from: helper.leases, fan: 1, cycle: cycle,
-            because: """
-                a lease was granted over a fan on a machine that has already been told it may \
-                sleep — or refused for a reason belonging to another fan. § 4 has handed every \
-                fan back, so nothing will hand this one back.
+                refused with a reason that says the answer is still coming in a moment, or with \
+                the seal's. It has already outlived the budget.
                 """)
 
         // The restore § 4 stopped waiting for comes back. This is D33's first ending, and the

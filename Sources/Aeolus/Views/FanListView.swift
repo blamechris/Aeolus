@@ -25,6 +25,9 @@ import SwiftUI
 ///   beside what it already showed: its own line for a helper refusal (`FanRowModel.refusal`).
 /// - **The change-of-fan-set sentence** (`FanRowControlPresentation.changeOfFanSet`) is said once,
 ///   above the rows, whenever any row draws a control.
+/// - **No row draws one while the helper grants only every-fan leases** (#670): a fan's own Custom
+///   would be refused, and its own Auto would hand back every fan, so `drawsControl(_:)` answers
+///   `false` for every row and the control for all fans is the window's only control.
 ///
 /// ## The monitoring-mode line (#157)
 ///
@@ -132,9 +135,12 @@ struct FanListView: View {
         .frame(minWidth: 320)
     }
 
-    /// Whether a row with `control` draws any per-fan control, whatever the user is typing.
+    /// Whether a row with `control` draws any per-fan control, whatever the user is typing: never
+    /// while the helper grants only every-fan leases (`FanRowControlPresentation.isOffered`,
+    /// #670), so the change-of-fan-set sentence is not said either.
     static func drawsControl(_ control: FanRowControlPresentation.Inputs) -> Bool {
-        FanRowControlPresentation(control, field: .init()).drawsControl
+        FanRowControlPresentation.isOffered
+            && FanRowControlPresentation(control, field: .init()).drawsControl
     }
 
     private func controlSourceLine(_ text: ControlSourceDisplay.Text) -> some View {

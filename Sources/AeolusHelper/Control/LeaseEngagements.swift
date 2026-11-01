@@ -24,6 +24,11 @@ import Foundation
 /// refused undo of it — § 5's re-engage undone by its own driver, or its `restoreAndForget`. § 3
 /// confirms it and forgets the fan while the account stands, so a re-adoption registers the fan
 /// with § 3 again (`EngagementDriver.reAdopted(_:)`) before anything commands it.
+///
+/// **Dormant while #670's rule (a) holds.** A refused `apply` that leaves a fan `.handBackRefused`
+/// ends its lease whole (`notWhollyHeld(of:under:)`), so no re-apply reads a kept account: `read`'s
+/// arms and the re-adoption's registration are reached by no test, and `docs/TESTING.md` lists them
+/// with their mutations until run 1d lifts the rule.
 struct LeaseEngagements: Sendable {
 
     /// What level 6 holds of one fan under one lease.
@@ -46,6 +51,21 @@ struct LeaseEngagements: Sendable {
 
     /// The leases with a fan on account, for tests.
     var leases: Set<UUID> { Set(fans.keys) }
+
+    /// The fans of `covered` with an account under `lease`, unless every covered fan is
+    /// `.engaged` or none has an account; then `nil` (#670). Only `.engaged` is held: a
+    /// `.handBackRefused` fan's hand-back threw, which it can do after its mode write landed (a
+    /// refused `Ftst = 0` after an accepted `F<n>Md = 0`), so it may be on automatic control
+    /// already. Anything but every fan held or none is therefore a lease that may hold some of
+    /// its fans while others are back on automatic control: ADR 0014's U7 state, which level 6
+    /// ends whole. Two kept fans are such a lease too: one may be manual and the other automatic.
+    func notWhollyHeld(of covered: Set<Int>, under lease: UUID) -> Set<Int>? {
+        let accounts = covered.map { fans[lease]?[$0] }
+        if accounts.allSatisfy({ $0 == .engaged }) || accounts.allSatisfy({ $0 == nil }) {
+            return nil
+        }
+        return covered.filter { fans[lease]?[$0] != nil }
+    }
 
     /// An engagement of `index` under `lease` returned, or a kept fan was re-adopted.
     mutating func insert(_ index: Int, under lease: UUID) {

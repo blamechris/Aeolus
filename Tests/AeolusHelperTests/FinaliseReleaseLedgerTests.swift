@@ -314,7 +314,7 @@ struct FinaliseReleaseLedgerTests {
         let helper = Self.composed(over: scripted, fanCount: 2, log: log)
         await helper.bindSafetyRegistries()
         let first = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [1]), from: ConnectionID())
+            LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
         try await HelperRestorerTests.engage(fan: 1, in: helper, under: first.id)
         try await Self.cycleToTheTerminalAction(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 1), "the setup kept no mark on fan 1")

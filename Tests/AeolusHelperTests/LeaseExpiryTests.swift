@@ -116,7 +116,8 @@ struct LeaseExpiryTests {
     func timeAsleepCountsAgainstTheTimeToLive() async throws {
         let clock = TestClock()
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer, clock: clock)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer, clock: clock)
 
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1], timeToLive: 120), from: ConnectionID())

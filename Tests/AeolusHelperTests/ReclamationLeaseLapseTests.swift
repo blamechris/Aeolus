@@ -184,7 +184,13 @@ struct ReclamationLeaseLapseTests {
     ///
     /// **Mutation:** make `LeaseTable.covers(_:under:liveAt:)` ignore `fan` — any fan of a live
     /// entry answers. Run: red on the refusal and the registry.
-    @Test("A live lease over another fan does not entitle this one")
+    @Test(
+        "A live lease over another fan does not entitle this one",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func aLeaseOverAnotherFanDoesNotEntitleThisOne() async throws {
         let fans: [Int: ScriptedControlPlane.FanCondition] = [
             0: .held(at: 2_400), 1: .held(at: 2_400),

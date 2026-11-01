@@ -34,10 +34,19 @@ enum AvailabilityFixture {
     static func refusalForGrant(
         over fan: Int, from leases: LeaseAuthority
     ) async -> ManualControlAvailability.Reason {
+        await refusalForGrant(overFans: [fan], from: leases)
+    }
+
+    /// `refusalForGrant(over:from:)` over `fans`: every fan of a machine with more than one, as a
+    /// grant must name since #670. It answers the first refusal in the grant's order among them,
+    /// so a test compares it with the snapshot's reason for the one fan it is about.
+    static func refusalForGrant(
+        overFans fans: [Int], from leases: LeaseAuthority
+    ) async -> ManualControlAvailability.Reason {
         do {
             _ = try await leases.acquireLease(
-                LeaseFixture.request(fans: [fan]), from: ConnectionID())
-            Issue.record("the grant path granted a lease over fan \(fan) rather than refusing")
+                LeaseFixture.request(fans: fans), from: ConnectionID())
+            Issue.record("the grant path granted a lease over fans \(fans) rather than refusing")
             return .unknown("granted")
         } catch let fault as AeolusXPCFault {
             guard case .manualControlUnavailable(let reason) = fault else {

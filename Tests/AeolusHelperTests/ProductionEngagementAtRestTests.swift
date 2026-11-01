@@ -64,7 +64,7 @@ struct ProductionEngagementAtRestTests {
         let mark = machine.firmware.log.entries.count
 
         let refused = await ProductionWriteMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         #expect(refused != nil, "\(failure): the apply whose floor failed was answered applied")
@@ -97,17 +97,17 @@ struct ProductionEngagementAtRestTests {
     func twoFansEngageAtRestInOneLease() async throws {
         let machine = await ProductionWriteMachine(
             unlock: .heldUntilForced(stepsToYield: 1), stoppedByApple: [0, 1])
-        let lease = try await machine.lease(fans: [0, 1])
+        let lease = try await machine.lease()
         let mark = machine.firmware.log.entries.count
 
         let answer = await ProductionWriteMachine.answer {
-            try await machine.apply(rpm: 2_400, fans: [0, 1], under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         #expect(answer == nil, "the apply was answered \(String(describing: answer))")
         let held = FirmwareLog.Answer.threw(.firmware(code: 0x82))
         let floor = FirmwareSMC.flt(rpm: 1_350)
-        let target = FirmwareSMC.flt(rpm: 2_400)
+        let target = FirmwareSMC.flt(rpm: 4_400)
         let one: [UInt8] = [0x01]
         let writes = machine.firmware.log.entries.dropFirst(mark).filter(\.isWrite)
         #expect(

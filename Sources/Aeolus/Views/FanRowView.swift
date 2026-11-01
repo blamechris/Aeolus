@@ -12,7 +12,9 @@ import SwiftUI
 /// reaches `perform(_:)`, which calls one of the closures `FanListView` hands it. Those read the
 /// screen again and ask the root (`FanRowControlActions`). The `Monitor` build draws none of it,
 /// and the control adds no reason of its own to the row's refusal line or to the control for all
-/// fans.
+/// fans. **No build draws it while the helper grants only every-fan leases** (#670,
+/// `FanRowControlPresentation.isOffered`): the row shows its readings, and the control for all
+/// fans above the list is the only control.
 ///
 /// The field is labelled as a target, never beside the actual reading as if it were one, and
 /// shows the driver's target, never the snapshot's (`CLAUDE.md` rule 6).
@@ -52,7 +54,7 @@ struct FanRowView: View {
             if let refusal = row.refusal {
                 refusalLine(refusal)
             }
-            if presentation.drawsControl {
+            if FanRowControlPresentation.isOffered, presentation.drawsControl {
                 controlRow(presentation)
             }
             keyedValueRow(label: "Actual", display: row.actual)

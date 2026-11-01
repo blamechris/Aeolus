@@ -57,8 +57,10 @@ struct ReclamationRegistryAccessTests {
     /// Every type a `Registry` method may take. Value types, so nothing handed in can run code
     /// against the registry while a transition is mutating it — a function type, a generic
     /// parameter and a `typealias` for either are all absent from this set.
+    /// `FanControlEnvelope` since PR #676: the bounds a registration admits and a re-assert's
+    /// fresh read, compared and never written through. A value, not a closure or a permit.
     private static let registryParameterTypes: Set<String> = [
-        "Int", "UUID", "Bool", "UInt64", "CommandedTarget", "FanControlState",
+        "Int", "UUID", "Bool", "UInt64", "CommandedTarget", "FanControlState", "FanControlEnvelope",
     ]
 
     /// **Mutations:** declare `var held` without `private`; add `private var extra = 0`. Run: red

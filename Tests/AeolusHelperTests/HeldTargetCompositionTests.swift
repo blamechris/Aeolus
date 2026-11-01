@@ -65,8 +65,8 @@ struct HeldTargetCompositionTests {
     func aReclaimedFanStatesNoTargetUntilTheReassertConverges() async throws {
         let machine = await LevelSixMachine()
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 3_000, under: lease)
-        #expect(try await Self.fan(0, of: machine).targetRPM == 3_000, "no target after apply")
+        try await machine.apply(rpm: 5_000, under: lease)
+        #expect(try await Self.fan(0, of: machine).targetRPM == 5_000, "no target after apply")
 
         // The system takes the fan: nothing in Aeolus wrote this, so nothing records an attempt.
         await machine.firmware.setMode(.automatic, ofFan: 0)
@@ -89,7 +89,7 @@ struct HeldTargetCompositionTests {
         #expect(!converged.isReclaimedBySystem, "the converged cycle left the mark")
         #expect(converged.mode == .manualFixed)
         #expect(
-            converged.targetRPM == 3_000,
+            converged.targetRPM == 5_000,
             "checkpoint 3: \(String(describing: converged.targetRPM)) after the re-assert held")
         #expect(try await machine.helper.authority.snapshot().activeLease?.id == lease)
     }
@@ -104,7 +104,14 @@ struct HeldTargetCompositionTests {
     ///
     /// **Mutation:** in `LeaseApplier.undo`, delete the `manualControlHandedBack(fanAt:under:)`
     /// notice. Run: red, the kept fan 0 stated at 2,400.
-    @Test("A kept fan states no target, and a re-adopted one states its own")
+    @Test(
+        "A kept fan states no target, and a re-adopted one states its own",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanStatesNoTargetAndAReAdoptedOneItsOwn() async throws {
         let cool = LeaseFixture.nominalDieTemperatures
         let machine = await LevelSixMachine(
@@ -121,7 +128,7 @@ struct HeldTargetCompositionTests {
 
         let refused = await LevelSixMachine.answer {
             try await machine.helper.authority.apply(
-                Self.settings([0: 2_400, 1: 2_400]), leaseID: lease, from: machine.holder)
+                Self.settings([0: 4_400, 1: 4_400]), leaseID: lease, from: machine.holder)
         }
         #expect(refused != nil, "the apply that keeps the fans was answered applied")
         #expect(
@@ -137,11 +144,11 @@ struct HeldTargetCompositionTests {
 
         let reApplied = await LevelSixMachine.answer {
             try await machine.helper.authority.apply(
-                Self.settings([0: 2_000, 1: 2_100]), leaseID: lease, from: machine.holder)
+                Self.settings([0: 5_000, 1: 5_100]), leaseID: lease, from: machine.holder)
         }
         #expect(reApplied == nil, "the re-apply was answered \(String(describing: reApplied))")
-        #expect(try await Self.fan(0, of: machine).targetRPM == 2_000)
-        #expect(try await Self.fan(1, of: machine).targetRPM == 2_100)
+        #expect(try await Self.fan(0, of: machine).targetRPM == 5_000)
+        #expect(try await Self.fan(1, of: machine).targetRPM == 5_100)
     }
 
     /// The snapshot asks § 5 once, after the lease view and only when it reports a lease, and
@@ -191,30 +198,30 @@ struct HeldTargetCompositionTests {
                 holder, fanAt: fan, live: true, since: registry.generation(ofFan: fan))
         }
         _ = registry.command(CommandedTarget(fanIndex: 0, rpm: 3_000), ofFan: 0)
-        _ = registry.command(CommandedTarget(fanIndex: 1, rpm: 4_000), ofFan: 1)
+        _ = registry.command(CommandedTarget(fanIndex: 1, rpm: 5_000), ofFan: 1)
 
         #expect(registry.recordedTargets(under: lease) == [0: 3_000])
-        #expect(registry.recordedTargets(under: other) == [1: 4_000])
+        #expect(registry.recordedTargets(under: other) == [1: 5_000])
         #expect(registry.recordedTargets(under: UUID()).isEmpty)
     }
 
     // MARK: - § 3's latch (#426's review)
 
-    /// **P1.** § 3 latches with fan 0 held at 1,400 under a live lease, and a snapshot is taken
+    /// **P1.** § 3 latches with fan 0 held at 4,800 under a live lease, and a snapshot is taken
     /// inside `fire`, after its maximum has landed and before its restore. The lease is still
-    /// listed, because `fire` revokes it only after its last fan; § 5 still records 1,400; `F0Md`
+    /// listed, because `fire` revokes it only after its last fan; § 5 still records 4,800; `F0Md`
     /// reads manual; nothing is marked. Only the latch withholds the target, and the snapshot
     /// states none beside `isThermalEmergencyActive`, while the fan is held at 5,777.
     ///
     /// **Mutation:** delete `heldTarget`'s guard on `thermalEmergencyActive`. Run: red here, the
-    /// snapshot states 1,400.
+    /// snapshot states 4,800.
     @Test("No target is stated while § 3's latch holds the fan at maximum")
     func noTargetWhileTheLatchHoldsTheFanAtMaximum() async throws {
         let machine = await LevelSixMachine(
             during: .commandWrite,
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures), .at(96)])
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 1_400, under: lease)
+        try await machine.apply(rpm: 4_800, under: lease)
         let seen = SnapshotSeen()
         await machine.writes.interfere {
             await seen.record(try? await machine.helper.authority.snapshot())
@@ -224,7 +231,7 @@ struct HeldTargetCompositionTests {
         await machine.helper.thermalEmergency.cycle()
 
         #expect(await machine.writes.didFire, "§ 3's maximum never landed")
-        #expect(await Self.commanded(fan: 0, on: machine) == [1_400, 5_777])
+        #expect(await Self.commanded(fan: 0, on: machine) == [4_800, 5_777])
         let snapshot = try #require(await seen.snapshot, "the snapshot inside § 3's bridge threw")
         try Self.expectWithheldByTheLatchAlone(fan: 0, in: snapshot, under: lease)
     }
@@ -234,7 +241,7 @@ struct HeldTargetCompositionTests {
     /// target for fan 0, which is held at 5,777 in manual under the lease that is still listed.
     ///
     /// **Mutation:** delete `heldTarget`'s guard on `thermalEmergencyActive`. Run: red here, fan 0
-    /// stated at 1,400.
+    /// stated at 4,800.
     @Test("No target is stated for a fan § 3 could not restore while it bridges the next")
     func noTargetForAFanSectionThreeCouldNotRestore() async throws {
         let refusing = ScriptedControlPlane.Stage.nominal(
@@ -246,7 +253,7 @@ struct HeldTargetCompositionTests {
         let lease = try await machine.lease(fans: [0, 1])
         let applied = await LevelSixMachine.answer {
             try await machine.helper.authority.apply(
-                Self.settings([0: 1_400, 1: 1_400]), leaseID: lease, from: machine.holder)
+                Self.settings([0: 4_800, 1: 4_800]), leaseID: lease, from: machine.holder)
         }
         #expect(applied == nil, "the apply was answered \(String(describing: applied))")
         let seen = SnapshotSeen()
@@ -259,7 +266,7 @@ struct HeldTargetCompositionTests {
         await machine.helper.thermalEmergency.cycle()
 
         #expect(await machine.writes.didFire, "§ 3 never reached fan 1")
-        #expect(await Self.commanded(fan: 0, on: machine) == [1_400, 5_777])
+        #expect(await Self.commanded(fan: 0, on: machine) == [4_800, 5_777])
         let snapshot = try #require(await seen.snapshot, "the snapshot inside § 3's bridge threw")
         try Self.expectWithheldByTheLatchAlone(fan: 0, in: snapshot, under: lease)
     }

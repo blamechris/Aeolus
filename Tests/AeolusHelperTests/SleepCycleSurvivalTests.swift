@@ -62,6 +62,11 @@ struct SleepCycleSurvivalTests {
     /// records `[.fan(0), .everyFan]` before `release()` and `[.fan(0), .everyFan, .everyFan]`
     /// after it — cycle 1's keystone arriving third, once its own per-fan restore finally lands.
     ///
+    /// **One fan since #670**, which ended the separator below: a lease covers every fan, so no fan
+    /// is left out of it to read the teardown's seal, and the machine has the one fan the lease
+    /// covers. What the separator told apart is now told by fan 0's reason alone, asserted as an
+    /// equality after each wake, which a stuck seal (`.systemSleeping`) fails. Until #670:
+    ///
     /// **Fan 1 is enumerated, never leased until the last act, and is the separator.** After the
     /// second wake it is refused `.releaseInProgress` — both cycles' teardowns are still running
     /// inside the machine-wide restore seal — and granted once they return, so a stuck seal
@@ -141,7 +146,7 @@ struct SleepCycleSurvivalTests {
     /// edit to drop as noise.
     @Test("A handback that never returns is still refused after a second wake")
     func aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake() async throws {
-        let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
+        let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 1))
         let observer = ScriptedPowerObserver()
         let log = RecordedLog()
         // The wall clock (#411): the claim rests on the 50 ms budget firing while the handback is
@@ -150,7 +155,7 @@ struct SleepCycleSurvivalTests {
         // the budget answer first (#542).
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50),
-            clock: SystemMonotonicClock(), fanCount: 2,
+            clock: SystemMonotonicClock(), fanCount: 1,
             safetyLog: log)
 
         await helper.bindSafetyRegistries()
@@ -230,32 +235,16 @@ struct SleepCycleSurvivalTests {
             """)
     }
 
-    /// Fan 1 is refused by the machine-wide restore seal, then the parked restore finally lands
-    /// and clears the register — two wakes and two sleeps after it was written — and fan 1 is
-    /// granted.
-    ///
-    /// Fan 1 first, because it is the separator, and since #364 a reason rather than a grant:
-    /// with the sleep seal lifted twice and fan 0 still refused, fan 1's `.releaseInProgress` says
-    /// the teardowns are what is still running — not fan 0's register, and not a seal that never
-    /// reopened, which would answer `.systemSleeping`. Then the wedge lets go, which is D33's
-    /// first ending arriving very late — and it still clears, so a slow machine has not lost a
-    /// fan for the life of the process — and fan 1 is granted once nothing is restoring.
+    /// The parked restore finally lands and clears the register — two wakes and two sleeps after
+    /// it was written — and the fan is granted once nothing is restoring. That is D33's first
+    /// ending arriving very late, and it still clears, so a slow machine has not lost a fan for
+    /// the life of the process. Until #670 a second, unleased fan was asked first, as the separator
+    /// this suite's documentation describes.
     private static func expectTheLateRestoreStillClearsIt(
         _ helper: HelperComposition<CycleWedgingRestorePlane>,
         _ plane: CycleWedgingRestorePlane,
         deliveries: [Task<Void, Never>]
     ) async {
-        let refusal = await #expect(throws: AeolusXPCFault.self) {
-            _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [1]), from: ConnectionID())
-        }
-        #expect(
-            refusal == .manualControlUnavailable(reason: .releaseInProgress),
-            """
-            after two wakes fan 1 came back \(String(describing: refusal)). It was never leased \
-            and its handback never issued, so what refuses it is the two teardowns still running \
-            (#364); `.systemSleeping` would mean a seal that stopped reopening refused fan 0 above.
-            """)
 
         // One release frees both cycles' parked restores — cycle 1's per-fan `.fan(0)` and cycle
         // 2's keystone `.everyFan`, for the reason the test's doc comment gives. The wedge was
@@ -281,17 +270,17 @@ struct SleepCycleSurvivalTests {
         await #expect(
             throws: Never.self,
             """
-            fan 1 could not be leased once both teardowns had returned. Its handback was never \
-            issued and it was never leased, so what is left to refuse it is a seal that stopped \
-            reopening, or a teardown seal that was never closed.
+            fan 0 could not be leased once both teardowns had returned and its restore had \
+            landed, so what is left to refuse it is a register the restore did not clear, a seal \
+            that stopped reopening, or a teardown seal that was never closed.
             """
         ) {
             _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [1]), from: ConnectionID())
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
         }
         #expect(
             await helper.leases.leaseCount == 1,
-            "fan 1's lease was not granted once both teardowns had returned")
+            "fan 0's lease was not granted once both teardowns had returned")
     }
 
     /// One `.willSleep` whose handback is parked forever: delivered on a task of its own,

@@ -18,31 +18,31 @@ struct GovernedFanWriterHoldTests {
         try commandableFan(index, declaring: .nominal)
     }
 
-    /// **A held target is written whole, whatever was written before.** 3,564 is remembered from an
+    /// **A held target is written whole, whatever was written before.** 4,670 is remembered from an
     /// earlier write, and holding 5,777 writes 5,777, once.
     ///
     /// **Mutation:** make `hold` return `try await command(towards: goal, of: fan, since:
-    /// .seconds(1))`. Run: red, 3,764 written.
+    /// .seconds(1))`. Run: red, 4,870 written.
     @Test("A held target is one write of the goal, not a step towards it")
     func aHeldTargetIsWrittenWhole() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal])
         let writer = GovernedFanWriter(plane: plane)
-        _ = try await writer.command(towards: 3_564, of: try fan(), since: .seconds(1))
+        _ = try await writer.command(towards: 4_670, of: try fan(), since: .seconds(1))
 
         let held = try await writer.hold(5_777, of: try fan())
 
         #expect(held.rpm == 5_777, "a fixed setting was written as a governed step")
         #expect(
             await plane.attempts == [
-                .commandTarget(fan: 0, rpm: 3_564), .commandTarget(fan: 0, rpm: 5_777),
+                .commandTarget(fan: 0, rpm: 4_670), .commandTarget(fan: 0, rpm: 5_777),
             ])
         #expect(await writer.lastCommanded(ofFan: 0) == 5_777)
     }
 
     /// § 2 binds a held target as it binds every write: above the declared maximum is the
-    /// maximum, and zero is the floor, never a stop. Structural rather than mutable here, since a
-    /// target can only be minted through `CommandableFan.target(for:)`; the test is what says the
-    /// whole write goes through it.
+    /// maximum, and zero is never a stop. Structural rather than mutable here, since a target can
+    /// only be minted through `CommandableFan.target(for:)`; the test is what says the whole write
+    /// goes through it. Zero lands on the client floor since #670, which is above § 2's floor.
     @Test("A held target is clamped into the envelope, and never 0 RPM")
     func aHeldTargetIsClamped() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal])
@@ -51,7 +51,38 @@ struct GovernedFanWriterHoldTests {
         #expect(try await writer.hold(99_999, of: try fan()).rpm == 5_777)
         let floor = try await writer.hold(0, of: try fan()).rpm
         #expect(floor > 0)
-        #expect(floor == max(1_350, FanSafetyLimits.minimumManualRPM))
+        #expect(floor > max(1_350, FanSafetyLimits.minimumManualRPM))
+        #expect(floor == 4_227.55, "1,350 + 0.65 × 4,427, the client floor")
+    }
+
+    /// (b) of #670: a held target below the fan's client floor is written at the floor, and what is
+    /// written is what `hold` returns and remembers, so § 5 records it and the snapshot reports it
+    /// (`CLAUDE.md` rule 6). The app's 50 % preset, 3,564 on these bounds, is below the floor's
+    /// 4,227.55 and is written at it; 75 % and 100 % are above it and pass unchanged.
+    ///
+    /// **Mutation:** in `hold`, write `fan.target(for: goal)`. Run: red, 2,000 and 3,564 written.
+    /// **Mutation:** in `CommandableFan.clientTarget(for:)`, return `clamped` unconditionally.
+    /// Run: red, the same.
+    @Test("A held target below the client floor is written at it, the 50 % preset with it")
+    func aHeldTargetBelowTheFloorIsRaised() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .nominal])
+        let writer = GovernedFanWriter(plane: plane)
+        let envelope = try fan().envelope
+
+        let raised = try await writer.hold(2_000, of: try fan())
+        #expect(raised.rpm == 4_227.55)
+        #expect(await writer.lastCommanded(ofFan: 0) == 4_227.55)
+
+        for percent in [50.0, 75, 100] {
+            let preset = envelope.target(forPercent: percent).rpm
+            let held = max(preset, 4_227.55)
+            #expect(try await writer.hold(preset, of: try fan()).rpm == held, "\(percent) %")
+        }
+        #expect(
+            await plane.attempts == [
+                .commandTarget(fan: 0, rpm: 4_227.55), .commandTarget(fan: 0, rpm: 4_227.55),
+                .commandTarget(fan: 0, rpm: 4_670), .commandTarget(fan: 0, rpm: 5_777),
+            ])
     }
 
     /// What the plane put on the wire is what `hold` returns and remembers, never the goal: the
@@ -75,7 +106,7 @@ struct GovernedFanWriterHoldTests {
     /// A refused hold did not land, so the memory keeps the last target that did.
     ///
     /// **Mutation:** in `hold`, assign `lastCommandedRPM[fan.index] = goal` before the write. Run:
-    /// red, 3,000 remembered.
+    /// red, 5,500 remembered.
     @Test("A refused hold leaves the remembered target where it was")
     func aRefusedHoldRemembersNothing() async throws {
         let plane = ScriptedControlPlane(
@@ -85,12 +116,12 @@ struct GovernedFanWriterHoldTests {
                 ScriptedControlPlane.Stage(writes: .refused(reason: "firmware said no")),
             ])
         let writer = GovernedFanWriter(plane: plane)
-        _ = try await writer.hold(2_000, of: try fan())
+        _ = try await writer.hold(5_000, of: try fan())
         await plane.advance()
 
         await #expect(throws: FanControlPlaneError.self) {
-            _ = try await writer.hold(3_000, of: try fan())
+            _ = try await writer.hold(5_500, of: try fan())
         }
-        #expect(await writer.lastCommanded(ofFan: 0) == 2_000)
+        #expect(await writer.lastCommanded(ofFan: 0) == 5_000)
     }
 }

@@ -60,7 +60,7 @@ struct ManualControlAvailabilityClearanceTests {
     /// ruling and not a self-consistent edit.
     enum Tag: CaseIterable {
         case writePathNotBuilt, boundsImplausible, reclaimedBySystem, leaseHeldByAnotherClient
-        case selfRenewalNotBuilt, releaseInProgress, handbackUnconfirmed
+        case selfRenewalNotBuilt, leaseMustCoverEveryFan, releaseInProgress, handbackUnconfirmed
         case restoreToAutomaticUnconfirmed, restoreToAutomaticFailed, systemSleeping
         case noThermalTelemetry, supervisorBlind, foreignManualControl, unknown
 
@@ -71,6 +71,7 @@ struct ManualControlAvailabilityClearanceTests {
             case .reclaimedBySystem: self = .reclaimedBySystem
             case .leaseHeldByAnotherClient: self = .leaseHeldByAnotherClient
             case .selfRenewalNotBuilt: self = .selfRenewalNotBuilt
+            case .leaseMustCoverEveryFan: self = .leaseMustCoverEveryFan
             case .releaseInProgress: self = .releaseInProgress
             case .handbackUnconfirmed: self = .handbackUnconfirmed
             case .restoreToAutomaticUnconfirmed: self = .restoreToAutomaticUnconfirmed
@@ -90,6 +91,7 @@ struct ManualControlAvailabilityClearanceTests {
             case .reclaimedBySystem: return .reclaimedBySystem
             case .leaseHeldByAnotherClient: return .leaseHeldByAnotherClient
             case .selfRenewalNotBuilt: return .selfRenewalNotBuilt
+            case .leaseMustCoverEveryFan: return .leaseMustCoverEveryFan
             case .releaseInProgress: return .releaseInProgress
             case .handbackUnconfirmed: return .handbackUnconfirmed
             case .restoreToAutomaticUnconfirmed: return .restoreToAutomaticUnconfirmed
@@ -110,7 +112,8 @@ struct ManualControlAvailabilityClearanceTests {
                 .supervisorBlind, .systemSleeping, .unknown:
                 return .pending
             case .writePathNotBuilt, .boundsImplausible, .leaseHeldByAnotherClient,
-                .selfRenewalNotBuilt, .noThermalTelemetry, .reclaimedBySystem:
+                .selfRenewalNotBuilt, .leaseMustCoverEveryFan, .noThermalTelemetry,
+                .reclaimedBySystem:
                 return .silent
             }
         }
@@ -143,18 +146,19 @@ struct ManualControlAvailabilityClearanceTests {
             isReclaimedBySystem: false, manualControlAvailability: availability)
     }
 
-    @Test("The three classes cover all fourteen reasons, each exactly once")
+    @Test("The three classes cover all fifteen reasons, each exactly once")
     func everyReasonIsClassifiedOnce() {
         let all = Self.durable + Self.pending + Self.silent
-        #expect(all.count == 14)
-        #expect(Set(all).count == 14)
+        #expect(all.count == 15)
+        #expect(Set(all).count == 15)
         // `Reason.init(wireValue:)` is total, so a reason the vocabulary grows is not in this
         // table until someone puts it here; the exhaustive switches in
         // `ManualControlAvailability.clearance` and in `Tag.init(_:)` are what stop the code
         // compiling until it has been decided.
         let known: Set<String> = [
             "writePathNotBuilt", "boundsImplausible", "reclaimedBySystem",
-            "leaseHeldByAnotherClient", "selfRenewalNotBuilt", "releaseInProgress",
+            "leaseHeldByAnotherClient", "selfRenewalNotBuilt", "leaseMustCoverEveryFan",
+            "releaseInProgress",
             "handbackUnconfirmed", "restoreToAutomaticUnconfirmed", "restoreToAutomaticFailed",
             "systemSleeping", "noThermalTelemetry", "supervisorBlind", "foreignManualControl",
             "fromTheFuture",

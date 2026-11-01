@@ -34,6 +34,12 @@ struct LeaseApplierAccountEndTests {
     /// registered and commanded.
     @Test(
         "A kept fan whose fresh engagement is handed back loses its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """),
         arguments: [false, true])
     func aKeptFanWhoseFreshEngagementIsHandedBackLosesItsAccount(_ sighted: Bool) async throws {
         let kept = try await KeptFan.onAutomatic(temperatures: Self.cool)
@@ -43,7 +49,7 @@ struct LeaseApplierAccountEndTests {
 
         await plane.setRawMode(0, ofFan: 0)
         let handedBack = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
         await plane.setRawMode(nil, ofFan: 0)
         #expect(
@@ -61,7 +67,7 @@ struct LeaseApplierAccountEndTests {
         await plane.setMode(.manual, ofFan: 0)
         let writesBefore = await plane.keyWrites.count
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(
@@ -83,7 +89,14 @@ struct LeaseApplierAccountEndTests {
     ///
     /// **Mutation:** in `LeaseEngagements.read`, keep the account on `.superseded`, the rule the
     /// correctness review proposed. Run: red, another program's fan adopted and commanded.
-    @Test("A kept fan whose later step is superseded loses its account")
+    @Test(
+        "A kept fan whose later step is superseded loses its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanWhoseLaterStepIsSupersededLosesItsAccount() async throws {
         let kept = try await KeptFan.onAutomatic(
             of: [0, 1], unlock: .heldUntilForced(stepsToYield: 2))
@@ -98,7 +111,7 @@ struct LeaseApplierAccountEndTests {
             try? await plane.restoreToAutomatic(.fan(1))
         }
         let superseded = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(
@@ -109,7 +122,7 @@ struct LeaseApplierAccountEndTests {
 
         await plane.setMode(.manual, ofFan: 0)
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(
@@ -126,13 +139,20 @@ struct LeaseApplierAccountEndTests {
     ///
     /// **Mutation:** in `LeaseEngagements.read`, leave the account for a `.notAutomatic` with any
     /// other value. Run: red, the later raw `1` re-adopted and commanded.
-    @Test("A kept fan seen holding another value loses its account")
+    @Test(
+        "A kept fan seen holding another value loses its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanSeenHoldingAnotherValueLosesItsAccount() async throws {
         let kept = try await KeptFan.inManual()
         let machine = kept.machine
         await machine.plane.setRawMode(2, ofFan: 0)
         let foreign = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
         #expect(
             foreign as? AeolusXPCFault
@@ -141,7 +161,7 @@ struct LeaseApplierAccountEndTests {
 
         await machine.plane.setRawMode(nil, ofFan: 0)
         let later = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_200)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_200)), under: kept.lease)
         }
 
         #expect(
@@ -159,7 +179,14 @@ struct LeaseApplierAccountEndTests {
     /// **Mutation:** in `LeaseEngagements.read`, end the account on `.failedBeforeFirstWrite` too,
     /// the rule the completeness review proposed. Run: red, Aeolus's own fan answered
     /// `foreignManualControl` once the SMC recovered.
-    @Test("A kept fan whose first step could not read it keeps its account")
+    @Test(
+        "A kept fan whose first step could not read it keeps its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanWhoseFirstStepCouldNotReadItKeepsItsAccount() async throws {
         let kept = try await KeptFan.inManual(
             then: [ScriptedControlPlane.Stage(unreadableModes: [0]), .nominal()])
@@ -168,7 +195,7 @@ struct LeaseApplierAccountEndTests {
         let writesBefore = await machine.plane.keyWrites.count
 
         let unread = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
         #expect(
             unread as? AeolusXPCFault == .helperFailed(detail: LeaseApplyRules.Detail.unexpected),
@@ -177,7 +204,7 @@ struct LeaseApplierAccountEndTests {
 
         await machine.plane.advance()
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
 
         #expect(reApplied == nil, "Aeolus's own fan was answered \(reApplied as Any)")

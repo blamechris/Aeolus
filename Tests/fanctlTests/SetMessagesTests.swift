@@ -20,7 +20,7 @@ struct SetMessagesTests {
     @Test("One fan reads as one sentence with the way out at its end")
     func oneFan() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(75))])
-        let lines = SetMessages.startLines(hold)
+        let lines = SetMessages.startLines(hold, snapshot: Self.confirming(hold))
         #expect(
             lines == [
                 "Holding fan 0 at 75% (4670 RPM target; firmware 1350–5777 RPM) for 30m under "
@@ -36,7 +36,7 @@ struct SetMessagesTests {
                 try Shared.plan(1, .percent(0), minimum: 0, maximum: 3000),
             ],
             seconds: 90)
-        let lines = SetMessages.startLines(hold)
+        let lines = SetMessages.startLines(hold, snapshot: Self.confirming(hold))
         try #require(lines.count == 2)
         #expect(
             lines[0].hasPrefix("Holding fan 0 at 3000 RPM target (firmware 1350–5777 RPM) for 90s"))
@@ -311,5 +311,56 @@ struct SetMessagesTests {
             #expect(
                 !message.contains("now reports"), "a loss never says a clean ending's closing line")
         }
+    }
+}
+
+// MARK: - A target the helper raised (#670)
+
+extension SetMessagesTests {
+
+    /// The helper holds no client target below a fan's client floor until run 2 (#670): 20% of
+    /// `Mac16,5`'s range is 2235 RPM, and the helper holds 4227.55. The start line leads with the
+    /// helper's target and names the speed asked for as not held; it never says "fan 0 at 20%" or
+    /// "2235 RPM target" over a fan held at 4227.55 (`CLAUDE.md` rule 6).
+    ///
+    /// **Mutation:** in `SetMessages.startLines`, make `if let held, held != plan.commandedRPM`
+    /// read `if let held, false, held != plan.commandedRPM`, so the line names the speed sent
+    /// whatever the snapshot holds. Run: red, on all four expectations.
+    @Test("A target the helper raised is named as the helper's, beside the one asked for")
+    func raisedTarget() throws {
+        let hold = Shared.hold(
+            [try Shared.plan(0, .percent(20)), try Shared.plan(1, .rpm(2000))], seconds: 60)
+        let lines = SetMessages.startLines(
+            hold, snapshot: Self.confirming(hold, held: [0: 4_227.55, 1: 4_227.55]))
+        try #require(lines.count == 2)
+        #expect(
+            lines[0].hasPrefix(
+                "Holding fan 0 at 4227.55 RPM target (the helper's, not the 2235 RPM that 20% "
+                    + "asked for; firmware 1350–5777 RPM) for 1m under lease "),
+            "\(lines[0])")
+        #expect(
+            lines[1].hasPrefix(
+                "Holding fan 1 at 4227.55 RPM target (the helper's, not the 2000 RPM asked for; "
+                    + "firmware 1350–5777 RPM) for 1m under lease "),
+            "\(lines[1])")
+        #expect(!lines.joined().contains("2235 RPM target"))
+        #expect(!lines.joined().contains("fan 0 at 20%"))
+    }
+
+    /// The snapshot that confirmed `hold`: its lease, and each covered fan manual with a held
+    /// target, the speed that was sent unless `held` names another.
+    private static func confirming(
+        _ hold: SetCommand.Hold, held: [Int: Double] = [:]
+    ) -> SystemSnapshot {
+        Fixtures.snapshot(
+            hold.plans.map { plan in
+                FanState(
+                    index: plan.index, actualRPM: .measured(1351),
+                    minimumRPM: .measured(plan.envelope.declaredMinimumRPM),
+                    maximumRPM: .measured(plan.envelope.declaredMaximumRPM),
+                    targetRPM: held[plan.index] ?? plan.commandedRPM, mode: .manualFixed,
+                    isReclaimedBySystem: false, manualControlAvailability: .available)
+            },
+            lease: Fixtures.lease)
     }
 }

@@ -94,6 +94,12 @@ struct LeaseApplierIssuedWriteTests {
     /// fan neither undone nor kept.
     @Test(
         "A read-back that fails after its mode write keeps the account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """),
         arguments: LostReadBack.allCases)
     func aReadBackThatFailsAfterTheModeWriteKeepsTheAccount(_ lost: LostReadBack) async throws {
         let fans: [Int: ScriptedControlPlane.FanCondition] = [0: .automatic(at: 1_800)]

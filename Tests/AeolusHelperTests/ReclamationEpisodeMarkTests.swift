@@ -69,10 +69,10 @@ struct ReclamationEpisodeMarkTests {
         let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
         let machine = ReclamationMachine(plane: plane, fans: [0: condition], interfering: sensing)
         let lease = try await machine.lease(fans: [0]).id
-        let permit = try commandableFan(0, declaring: .held(at: 2_400))
+        let permit = try commandableFan(0, declaring: .held(at: 4_400))
         try await machine.watchdog.manualControlEngaged(permit, under: lease)
         await machine.watchdog.commandedTarget(
-            CommandedTarget(fanIndex: 0, rpm: 2_400), under: lease)
+            CommandedTarget(fanIndex: 0, rpm: 4_400), under: lease)
         await sensing.interfere { [machine] in
             #expect(
                 await machine.ledger.isReclaimed(fanAt: 0),
@@ -122,12 +122,12 @@ struct ReclamationEpisodeMarkTests {
         let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
         let machine = ReclamationMachine(
             plane: plane, fans: [0: .held(at: 1_800)], interfering: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try #require(await machine.leases.activeLease()).id
         let permit = try commandableFan(0, declaring: .held(at: 1_800))
         await sensing.interfere { [machine] in
             await ReclamationReassertViewTests.reapply(
-                machine, under: lease, permit: permit, rpm: 2_400)
+                machine, under: lease, permit: permit, rpm: 4_400)
         }
 
         await machine.watchdog.cycle()
@@ -136,7 +136,7 @@ struct ReclamationEpisodeMarkTests {
         #expect(
             machine.safetyLog.lines(containing: "§ 5 found it at its envelope read").count == 1,
             "the re-apply did not stand the re-assert down")
-        #expect(await machine.commandedRPMs == [2_400], "the re-assert wrote over the re-apply")
+        #expect(await machine.commandedRPMs == [4_400], "the re-assert wrote over the re-apply")
         #expect(machine.safetyLog.lines(containing: "re-asserted").isEmpty)
         #expect(
             await machine.ledger.isReclaimed(fanAt: 0),
@@ -155,9 +155,9 @@ struct ReclamationEpisodeMarkTests {
         await machine.watchdog.cycle()
 
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 2400 RPM, attempt 2 of").count == 1,
+            machine.safetyLog.lines(containing: "re-asserted 4400 RPM, attempt 2 of").count == 1,
             "the attempt the stand-down spent was given back, or the short cycle refilled it")
-        #expect(await machine.commandedRPMs == [2_400, 2_400])
+        #expect(await machine.commandedRPMs == [4_400, 4_400])
     }
 
     /// **A blind cycle does not close the episode.** Fan 0 is commanded 2,400 RPM and the
@@ -175,11 +175,11 @@ struct ReclamationEpisodeMarkTests {
     func aBlindCycleDoesNotCloseTheEpisode() async throws {
         let machine = ReclamationMachine(
             stages: [.nominal(), .blind(), .nominal()], fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try #require(await machine.leases.activeLease()).id
         let permit = try commandableFan(0, declaring: .held(at: 1_800))
         await machine.watchdog.cycle()
-        #expect(await machine.commandedRPMs == [2_400], "the re-assert did not land")
+        #expect(await machine.commandedRPMs == [4_400], "the re-assert did not land")
         await machine.plane.advance()
         await machine.watchdog.cycle()
         #expect(
@@ -219,11 +219,11 @@ struct ReclamationEpisodeMarkTests {
     @Test("A re-asserted fan still ramping to its target is not reported reclaimed")
     func aReassertedFanStillRampingIsNotReportedReclaimed() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
 
         await machine.watchdog.cycle()
         #expect(await machine.ledger.isReclaimed(fanAt: 0))
-        #expect(await machine.commandedRPMs == [2_400], "the re-assert did not land")
+        #expect(await machine.commandedRPMs == [4_400], "the re-assert did not land")
 
         await machine.watchdog.cycle()
         #expect(
@@ -240,7 +240,7 @@ struct ReclamationEpisodeMarkTests {
             "the shortfall was not reported once, at its dwell")
         #expect(machine.safetyLog.lines(containing: Self.resolved).count == 1)
         #expect(await machine.ledger.causes.isEmpty)
-        #expect(await machine.commandedRPMs == [2_400], "a held target was re-asserted again")
+        #expect(await machine.commandedRPMs == [4_400], "a held target was re-asserted again")
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.leases.activeLease() != nil)
     }
@@ -269,9 +269,9 @@ struct ReclamationEpisodeMarkTests {
         reading: PrimaryConverged
     ) async throws {
         let condition: ScriptedControlPlane.FanCondition =
-            reading == .ramping ? .ramping(target: 2_400, actual: 1_000) : .held(at: 2_400)
+            reading == .ramping ? .ramping(target: 4_400, actual: 1_000) : .held(at: 4_400)
         let machine = ReclamationMachine(fans: [0: condition])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let cycles = ReclamationLimits.actualDwellCycles + 1
 
         for cycle in 1...cycles {
@@ -302,7 +302,7 @@ struct ReclamationEpisodeMarkTests {
     func aCycleThatCannotReadTheFanLeavesItsMark() async throws {
         let machine = ReclamationMachine(
             stages: [.nominal(), .blind()], fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         await machine.watchdog.cycle()
         #expect(await machine.ledger.isReclaimed(fanAt: 0), "§ 5 never marked the fan")
         await machine.plane.advance()
@@ -341,7 +341,7 @@ struct ReclamationEpisodeMarkTests {
     func aShortCycleDoesNotRefillTheReassertBudget() async throws {
         let budget = ReclamationLimits.reassertAttemptBudget
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
 
         for _ in 0..<budget {
             await machine.plane.setMode(.automatic, ofFan: 0)
@@ -352,7 +352,7 @@ struct ReclamationEpisodeMarkTests {
         }
 
         #expect(await machine.didRestore(fan: 0) == false, "the budget ran out early")
-        #expect(await machine.commandedRPMs == Array(repeating: 2_400, count: budget))
+        #expect(await machine.commandedRPMs == Array(repeating: 4_400, count: budget))
         #expect(machine.safetyLog.lines(containing: Self.resolved).count == budget)
         #expect(
             machine.safetyLog.lines(containing: "has turned at").count == budget,

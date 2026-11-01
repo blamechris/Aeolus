@@ -331,8 +331,9 @@ enum SMCWriteTurns {
     /// empties the engaged set and decides the force key — then every planned write, each one zero
     /// bytes of the size the preparation step recorded (`restorePayload(for:)`), each attempted
     /// whatever the others answered (`RestorePlan.attemptEvery`), throwing only after all of them.
-    /// **No read**: the keystone takes no trusted data (ADR 0007), and an absent key is never in
-    /// the plan to be written.
+    /// An `Ftst = 0` answered accepted pays the clear the ledger's flag says is owed, and no other
+    /// answer does (#678). **No read**: the keystone takes no trusted data (ADR 0007), and an
+    /// absent key is never in the plan to be written.
     static func keystone(
         _ scope: FanRestoreScope, ledger: PlaneWriteLedger, log: PlaneWriteLog,
         on channel: isolated any SMCWriteChannel
@@ -354,6 +355,7 @@ enum SMCWriteTurns {
                 throw FanControlPlaneError.firmwareRefusedControl(
                     detail: "\(key)'s restore answered \(describe(answer))")
             }
+            if case .forceKey = planned { ledger.recordForceKeyCleared() }
         }
     }
 

@@ -74,7 +74,8 @@ struct XPCDeclarationFingerprintTests {
     /// in the diff — rather than the silent omission this table closes, and it stays a
     /// review obligation.
     static let pinHistory: [Int: Set<String>] = [
-        1: v1Signatures
+        1: v1Signatures,
+        2: v2Signatures,
     ]
 
     /// The shape v1 declares. A version's entry is a `let` of its own so that adding the
@@ -88,6 +89,11 @@ struct XPCDeclarationFingerprintTests {
         "func apply(settings: Data, leaseID: String, reply: @escaping @Sendable (Error?) -> Void)",
         "func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)",
     ]
+
+    /// The shape v2 declares: v1's, unchanged (#670). v2 changes what two messages mean —
+    /// `acquireLease` refuses a request narrower than every fan, and `apply` holds a target below
+    /// a fan's client floor at the floor — and no declaration, so its entry is v1's signatures.
+    private static let v2Signatures: Set<String> = v1Signatures
 
     /// The record for the version the contract currently advertises.
     static func pinnedSignatures() throws -> Set<String> {

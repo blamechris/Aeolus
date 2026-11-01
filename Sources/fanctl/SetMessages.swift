@@ -31,17 +31,37 @@ enum SetMessages {
     /// One line per fan, then the way out. The last line carries it so a single fan reads as
     /// one sentence: `Holding fan 0 at 75% (4670 RPM target; firmware 1350–5777 RPM) for 30m
     /// under lease <id>. Ctrl-C returns it to automatic sooner.`
-    static func startLines(_ hold: Hold) -> [String] {
+    ///
+    /// **The target named is the one the helper holds**, from `snapshot`, the snapshot that
+    /// confirmed the hold. The helper may hold a fan above the speed that was sent: until run 2
+    /// it raises any client target below a fan's client floor to the floor (#670). The line then
+    /// leads with the helper's target and names the one asked for as not held, so it never
+    /// reports a target nothing is honouring (`CLAUDE.md` rule 6). `started` follows a snapshot
+    /// in which every covered fan carries a held target (`SetCommand.loss`), so a fan without one
+    /// is not reached here; the speed that was sent stands in for it if one ever is.
+    static func startLines(_ hold: Hold, snapshot: SystemSnapshot) -> [String] {
         let duration = SetArguments.describe(seconds: hold.durationSeconds)
         var lines = hold.plans.map { plan -> String in
             let firmware =
                 "firmware \(Formatting.number(plan.envelope.declaredMinimumRPM))–"
                 + "\(Formatting.number(plan.envelope.declaredMaximumRPM)) RPM"
-            let target = "\(Formatting.number(plan.commandedRPM)) RPM target"
+            let sent = "\(Formatting.number(plan.commandedRPM)) RPM"
+            let held = snapshot.fans.first { $0.index == plan.index }?.targetRPM
             let speed: String
-            switch plan.requested {
-            case .percent(let percent): speed = "\(percent)% (\(target); \(firmware))"
-            case .rpm: speed = "\(target) (\(firmware))"
+            if let held, held != plan.commandedRPM {
+                let asked: String
+                switch plan.requested {
+                case .percent(let percent): asked = "the \(sent) that \(percent)% asked for"
+                case .rpm: asked = "the \(sent) asked for"
+                }
+                speed =
+                    "\(Formatting.number(held)) RPM target (the helper's, not \(asked); "
+                    + "\(firmware))"
+            } else {
+                switch plan.requested {
+                case .percent(let percent): speed = "\(percent)% (\(sent) target; \(firmware))"
+                case .rpm: speed = "\(sent) target (\(firmware))"
+                }
             }
             return "Holding fan \(plan.index) at \(speed) for \(duration) under lease "
                 + "\(hold.leaseID.uuidString)."

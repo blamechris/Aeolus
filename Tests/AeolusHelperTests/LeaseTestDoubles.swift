@@ -334,7 +334,7 @@ enum LeaseFixture {
     /// by no test. A test about what a lease line says, or that none was written, passes a
     /// `LeaseLog(recording:)` of its own (#569).
     static func authority(
-        enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
+        enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(indices: [0]),
         restorer: any FanRestoring = RecordingFanRestorer(),
         writeCapability: any FanWriteCapabilityReporting = writePathBuilt(),
         telemetry: any SightednessProving = sightedTelemetry(),

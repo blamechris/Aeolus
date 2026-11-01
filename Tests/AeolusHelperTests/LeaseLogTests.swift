@@ -133,6 +133,9 @@ struct LeaseLogTests {
         },
         Row(name: "refusedNoWritePath", level: .info) { $0.refusedNoWritePath(connection) },
         Row(name: "refusedSelfRenewal", level: .info) { $0.refusedSelfRenewal(connection) },
+        Row(name: "refusedNarrowerThanEveryFan", level: .notice) {
+            $0.refusedNarrowerThanEveryFan(connection, missing: fans)
+        },
         Row(name: "refusedForeignManualControl", level: .notice) {
             $0.refusedForeignManualControl(connection, fans: fans, reason: reason)
         },

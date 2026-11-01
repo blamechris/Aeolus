@@ -115,7 +115,7 @@ struct ThermalCycleLaneRoutingTests {
         #expect(Self.admissions(reconciliation) == [.supervisor], "§ 6: \(reconciliation)")
 
         var leaseID = UUID()
-        let grant = try await machine.calls { leaseID = try await machine.lease([0]) }
+        let grant = try await machine.calls { leaseID = try await machine.lease([0, 1]) }
         #expect(grant.contains { $0.attempt == .readEnvelope(fan: 0) }, "the grant read no bounds")
         #expect(grant.contains { $0.attempt == .readControlState(fan: 0) })
         #expect(
@@ -127,8 +127,10 @@ struct ThermalCycleLaneRoutingTests {
 
         let apply = try await machine.calls {
             try await helper.authority.apply(
-                [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))], leaseID: leaseID,
-                from: machine.holder)
+                [
+                    FanSetting(fanIndex: 0, control: .fixed(rpm: 4_400)),
+                    FanSetting(fanIndex: 1, control: .fixed(rpm: 4_400)),
+                ], leaseID: leaseID, from: machine.holder)
         }
         #expect(apply.contains { $0.attempt == .engageManualControl(fan: 0) })
         #expect(Self.admissions(apply) == [.supervisor], "level 6: \(apply)")
@@ -142,7 +144,7 @@ struct ThermalCycleLaneRoutingTests {
         }
         #expect(release.contains { $0.attempt == .restoreToAutomatic(.fan(0)) })
         #expect(Self.admissions(release) == [.supervisor], "the release: \(release)")
-        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0, 1])
 
         let cycle = await machine.calls { await helper.thermalEmergency.cycle() }
         #expect(cycle.contains { $0.attempt == .readControlState(fan: 0) }, "no owed read-back")
@@ -161,15 +163,19 @@ struct ThermalCycleLaneRoutingTests {
 
     /// § 7's half of `onlySectionThreeTakesTheLane`: fan 1's handback is refused into the lease
     /// core's register, the firmware relents, and the panic verb's sweep hands it back and reads it
-    /// back — every call at `.supervisor`.
+    /// back — every call at `.supervisor`. Fan 0's goes with it since #670, whose lease covers
+    /// both fans.
     private static func drivePanicWithAnAbandonedHandback(on machine: Machine) async throws {
         await machine.firmware.advance()
-        let second = try await machine.lease([1])
+        let fanOneRestores = {
+            await machine.firmware.attempts.filter { $0 == .restoreToAutomatic(.fan(1)) }.count
+        }
+        let before = await fanOneRestores()
+        let second = try await machine.lease([0, 1])
         try await machine.helper.authority.releaseLease(id: second, from: machine.holder)
         #expect(
-            await machine.firmware.attempts.filter { $0 == .restoreToAutomatic(.fan(1)) }.count
-                == RestoreLimits.attemptBudget, "fan 1's handback was not refused into the register"
-        )
+            await fanOneRestores() - before == RestoreLimits.attemptBudget,
+            "fan 1's handback was not refused into the register")
 
         await machine.firmware.advance()
         let panic = try await machine.calls {
@@ -264,7 +270,7 @@ extension ThermalCycleLaneRoutingTests {
     @Test("The restorer is cause-blind: every cause restores at supervisor")
     func theRestorerIsCauseBlind() async throws {
         let machine = await Machine(stages: [Self.nominal], fans: 1)
-        #expect(FanRestoreCause.allCases.count == 8, "a cause was added; it is driven below")
+        #expect(FanRestoreCause.allCases.count == 9, "a cause was added; it is driven below")
 
         for cause in FanRestoreCause.allCases {
             let calls = await machine.calls {

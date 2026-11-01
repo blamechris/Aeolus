@@ -30,6 +30,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.reclaimedBySystem),
             .unavailable(.leaseHeldByAnotherClient),
             .unavailable(.selfRenewalNotBuilt),
+            .unavailable(.leaseMustCoverEveryFan),
             .unavailable(.releaseInProgress),
             .unavailable(.handbackUnconfirmed),
             .unavailable(.restoreToAutomaticUnconfirmed),
@@ -93,6 +94,23 @@ struct ManualControlAvailabilityTests {
         #expect(decoded != .unavailable(.unknown("handbackUnconfirmed")))
         #expect(decoded != .unavailable(.releaseInProgress))
         #expect(decoded != .unavailable(.restoreToAutomaticFailed))
+    }
+
+    /// #670's refusal arrives as itself, and its text says what a client must do: ask for every
+    /// fan. A client of protocol 1 decodes it as `.unknown`, a refusal, but since #670 the helper
+    /// serves no such client (`AeolusXPCVersion.minimumSupported` is 2): what `acquireLease` and
+    /// `apply` mean changed, and a v1 client would report a target the helper does not hold.
+    @Test("leaseMustCoverEveryFan arrives as itself, and says to ask for every fan")
+    func leaseMustCoverEveryFanDecodesToItsOwnCase() throws {
+        let decoded = try decode(#"{"state":"unavailable","reason":"leaseMustCoverEveryFan"}"#)
+        #expect(decoded == .unavailable(.leaseMustCoverEveryFan))
+        #expect(decoded != .unavailable(.unknown("leaseMustCoverEveryFan")))
+        #expect(decoded != .unavailable(.leaseHeldByAnotherClient))
+        let reason = ManualControlAvailability.Reason.leaseMustCoverEveryFan
+        #expect(reason.wireValue == "leaseMustCoverEveryFan")
+        #expect(reason.userFacingSummary.contains("every fan together or of none"))
+        #expect(reason.recoveryAdvice.contains("every fan at once"))
+        #expect(reason.recoveryAdvice.contains("fanctl set all"))
     }
 
     /// #303's case arrives as itself, and not as any of the three reasons a client would act

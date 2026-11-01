@@ -28,6 +28,9 @@ extension ReclamationWatchdog {
     /// and the "no envelope → restore, not command" failure path with it. ADR 0008's context is the
     /// same defect: a comment telling an editor that load-bearing code was redundant. The field is
     /// gone rather than re-documented, because there is nothing to reuse if nothing is kept.
+    /// What is kept since PR #676 is the permit's bounds, as a value to compare the re-assert's
+    /// fresh read against (`admittedBounds`): the fresh read is then what decides whether to write
+    /// at all, and still the only permit a re-assert writes through.
     ///
     /// ## Built once per registration, per lease
     ///
@@ -57,6 +60,11 @@ extension ReclamationWatchdog {
         /// and an extension in this file, so a second assignment here would compile: the
         /// write-site count in `ReclamationHeldFanAccessTests` reads this file for one.
         private var storedCommanded: CommandedTarget?
+        /// The bounds of the permit this fan was last registered under, the envelope its held
+        /// target was admitted under. Never written through: a re-assert whose fresh read
+        /// declares other `F<n>Mn` or `F<n>Mx`, by exact value, writes nothing and gives the fan
+        /// up (ADR 0014's minimal-run amendment, item 7's re-ruling; PR #676's Codex 3).
+        var admittedBounds: FanControlEnvelope?
         /// Cycles in a row that could not read this fan. Reset by any successful read.
         var consecutiveReadFailures = 0
         /// Cycles in a row the actual speed has been short of the commanded target. Reset

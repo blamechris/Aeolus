@@ -152,8 +152,8 @@ struct ProductionLaneLoadTests {
     func aFiringUnderLoadStaysInItsLane(_ outstanding: Int) async throws {
         let machine = await Self.machine()
         let leases = machine.helper.leases
-        let held = try await machine.lease(fans: [0, 1])
-        try await machine.apply(rpm: 2_400, fans: [0, 1], under: held)
+        let held = try await machine.lease()
+        try await machine.apply(rpm: 4_400, under: held)
         machine.clock.advance(by: .seconds(Lease.defaultTimeToLive + 1))
 
         await machine.firmware.setDefaultWrite(.refuses(code: 0x85))
@@ -226,7 +226,7 @@ struct ProductionLaneLoadTests {
     @Test("§ 3 keeps completing cycles in its lane while an engagement polls under load")
     func sectionThreeCyclesDuringAPoll() async throws {
         let machine = await Self.machine(unlock: .heldUntilForced(stepsToYield: 6))
-        let lease = try await machine.lease(fans: [0])
+        let lease = try await machine.lease()
         let stop = Stop()
         let eventMark = machine.observer.events.count
         let logMark = machine.firmware.log.entries.count
@@ -236,7 +236,7 @@ struct ProductionLaneLoadTests {
             await machine.scheduler.queuedTurns(at: .supervisor) >= 10
         }
 
-        let applying = observing { try await machine.apply(rpm: 2_400, under: lease) }
+        let applying = observing { try await machine.apply(rpm: 4_400, under: lease) }
         var completed = 0
         while await !applying.isFinished.isSet, !Task.isCancelled {
             if await machine.helper.thermalEmergency.cycle() { completed += 1 }

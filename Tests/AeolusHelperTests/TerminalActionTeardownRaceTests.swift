@@ -153,7 +153,8 @@ struct TeardownRaceGraph: Sendable {
             writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: LeaseFixture.log)
         let parking = ParkingFanRestorer(over: restorer)
         let leases = LeaseFixture.authority(
-            restorer: parking, thermalEmergency: latch, clock: clock)
+            enumeration: ScriptedFanEnumeration(indices: Set(fans)), restorer: parking,
+            thermalEmergency: latch, clock: clock)
         let hops = ParkableHeldLeases(leases)
         let telemetry = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
         let emergency = ThermalEmergency(

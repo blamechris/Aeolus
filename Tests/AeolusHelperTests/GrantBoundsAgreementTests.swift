@@ -100,7 +100,7 @@ struct GrantBoundsAgreementTests {
     /// `SleepSealAvailabilityTests.stepFiveOutranksTheSeal` stays green.
     ///
     /// The seal is set as `SystemPowerResponder` sets it, through `sealForSleep(generation:)`.
-    /// Fan 1's bounds are plausible, so its grant shows the seal holds.
+    /// Fan 1's bounds are plausible, so its snapshot shows the seal holds.
     ///
     /// **Mutation:** in `LeaseAuthority.acquireLease`, move `try await
     /// refuseIfBoundsImplausible(connection, wanting: wanting.subtracting(exempted))` below the
@@ -115,11 +115,13 @@ struct GrantBoundsAgreementTests {
         #expect(try await Self.shownReason(ofFanAt: 0, in: helper) == .boundsImplausible)
 
         await helper.leases.sealForSleep(generation: 1)
+        // Read on the snapshot side: no grant names fan 1 alone since #670.
         #expect(
-            await Fixture.refusalForGrant(over: 1, from: helper.leases) == .systemSleeping,
+            try await Self.shownReason(ofFanAt: 1, in: helper) == .systemSleeping,
             "the sleep seal is not holding, so nothing here is about it")
 
-        let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        // Over both fans, as a grant must be (#670): fan 0's bounds are read above the marker.
+        let refused = await Fixture.refusalForGrant(overFans: [0, 1], from: helper.leases)
         let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
 
         #expect(refused == .boundsImplausible)

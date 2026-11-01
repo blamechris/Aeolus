@@ -49,7 +49,7 @@ extension LeaseApplierExaminationTests {
             await stillWaiting.record(machine.gate.waiting(onFan: 0) == 1)
         }
 
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
         let sweep = try #require(await sweeps.seen.first, "the engagement's last poll never came")
         try await finished("§ 5's examination once the step left", sweep)
 
@@ -59,7 +59,7 @@ extension LeaseApplierExaminationTests {
             "§ 5 ran out inside a lawful hold")
         #expect(await stillWaiting.seen == [true], "§ 5 was not waiting when the hold ended")
         await ReclamationExaminationGateTests.expectNotJudgedAReclamation(machine)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
         #expect(machine.gate.isIdle)
     }
 }

@@ -50,7 +50,13 @@ struct ApplyEndToEndTests {
         let fifty =
             envelope.lowestCommandableRPM
             + (envelope.highestCommandableRPM - envelope.lowestCommandableRPM) / 2
-        let expected = envelope.target(for: fifty).rpm
+        // No client target is held below the client floor, 65 % of the declared range (#670), and
+        // 50 % is below it, so the helper holds the floor and the snapshot says so.
+        let floor =
+            envelope.declaredMinimumRPM
+            + 0.65 * (envelope.declaredMaximumRPM - envelope.declaredMinimumRPM)
+        let expected = envelope.target(for: max(fifty, floor)).rpm
+        #expect(expected == floor, "50 % is not below the client floor on this envelope")
 
         // 2. Apply 50 %.
         let applied = await Self.fault {

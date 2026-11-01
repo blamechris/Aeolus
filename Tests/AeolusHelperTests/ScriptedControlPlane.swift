@@ -919,6 +919,9 @@ extension ScriptedFirmware {
         case .forceKey:
             keyWrites.append(.forceKey(0))
             if try lands(stage.forceKeyWrites ?? stage.writes) { setForceKey(false) }
+            // Answered accepted, landed or discarded: as B1's keystone, the clear owed is paid
+            // only on that answer (#678).
+            ledger.recordForceKeyCleared()
         }
     }
 }

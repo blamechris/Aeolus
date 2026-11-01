@@ -66,6 +66,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// rather than granting a lease whose backstop has never been watched to work.
         /// See [ADR 0007](../../docs/ADR/0007-safety-composition.md).
         case selfRenewalNotBuilt
+        /// The request did not name every fan the helper enumerated, and the helper grants a lease
+        /// only over all of them ([#670](https://github.com/blamechris/Aeolus/issues/670)). A fact
+        /// about the request, not about any fan, so no snapshot carries it. Durable for this build:
+        /// ADR 0014's U7 is lifted only by a hardware run (1d), `docs/SAFETY.md` § 1.
+        case leaseMustCoverEveryFan
         /// The fan is mid-handback: a previous lease has ended and its restore-to-automatic write
         /// has not completed yet, or a restore of every fan is still running — `docs/SAFETY.md`
         /// § 7's panic verb (`fanctl reset --all`, `fanctl auto`), or § 4's handback with no sleep
@@ -315,6 +320,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .reclaimedBySystem: return "reclaimedBySystem"
             case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
+            case .leaseMustCoverEveryFan: return "leaseMustCoverEveryFan"
             case .releaseInProgress: return "releaseInProgress"
             case .handbackUnconfirmed: return "handbackUnconfirmed"
             case .restoreToAutomaticUnconfirmed: return "restoreToAutomaticUnconfirmed"
@@ -337,6 +343,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.reclaimedBySystem.wireValue: self = .reclaimedBySystem
             case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
+            case Reason.leaseMustCoverEveryFan.wireValue: self = .leaseMustCoverEveryFan
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
             case Reason.handbackUnconfirmed.wireValue: self = .handbackUnconfirmed
             case Reason.restoreToAutomaticUnconfirmed.wireValue:

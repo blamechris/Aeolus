@@ -32,17 +32,17 @@ struct LeaseApplierReceiptTests {
         let lease = try await machine.lease(fans: [0]).id
         let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
         let levelSix = machine.levelSix(writingThrough: writes)
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
         await writes.interfere {
             await machine.plane.setMode(.automatic, ofFan: 0)
             await machine.watchdog.manualControlReleased(fanAt: 0)
         }
 
         let refused = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 3_000)), under: lease)
+            try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
         let afterTheRefusal = await machine.attempts.count
-        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_500)), under: lease)
 
         #expect(await writes.didFire)
         #expect(
@@ -53,7 +53,7 @@ struct LeaseApplierReceiptTests {
                 .engageManualControl(fan: 0)),
             "the next apply did not engage the fan again")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_500)
     }
 
     /// **`.notHeld` on a fan this `apply` engaged.** § 5 is told fan 0 was released while its
@@ -73,7 +73,7 @@ struct LeaseApplierReceiptTests {
 
         let refused = await LeaseApplierAnswerTests.answer {
             try await machine.levelSix(writingThrough: writes).apply(
-                fixed((0, 2_400)), under: lease)
+                fixed((0, 4_400)), under: lease)
         }
 
         #expect(await writes.didFire)
@@ -99,7 +99,7 @@ struct LeaseApplierReceiptTests {
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.unexpected)
         ) {
             try await machine.levelSix(writingThrough: writes).apply(
-                fixed((0, 2_400)), under: lease)
+                fixed((0, 4_400)), under: lease)
         }
         #expect(await machine.didRestore(fan: 0), "the newly engaged fan was not undone")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .automatic)
@@ -123,7 +123,7 @@ struct LeaseApplierReceiptTests {
         let witness = GateWitnessRole(machine.watchdog, gate: machine.gate)
         let levelSix = machine.levelSix(writingThrough: machine.plane, reclamation: witness)
 
-        try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
 
         let seen = await witness.seen
         #expect(

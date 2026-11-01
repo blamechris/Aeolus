@@ -197,9 +197,10 @@ struct ThermalEmergencyReportingTests {
 
     /// Every refusal § 3 raises is a fault case E2 already shipped. ADR 0007 promised no
     /// version bump for the whole of E5, and this is the assertion that keeps the promise
-    /// checkable in the change that consumes the vocabulary.
+    /// checkable in the change that consumes the vocabulary. #670 moved the number to 2 for
+    /// `acquireLease` and `apply`, not for anything § 3 raises, so the pin moves with it.
     @Test("AeolusXPCVersion is unchanged by the thermal emergency")
     func theProtocolVersionIsUnchanged() {
-        #expect(AeolusXPCVersion.current == 1)
+        #expect(AeolusXPCVersion.current == 2)
     }
 }

@@ -23,7 +23,7 @@ NDJSON), this document describes what is on `main` today, not what an earlier PR
 ```
 $ fanctl --version
 fanctl 0.0.0-dev
-XPC protocol 1 (protocol version this build supports; not a negotiated connection —
+XPC protocol 2 (protocol version this build supports; not a negotiated connection —
 see docs/ADR/0005-xpc-authorisation.md for the helper's own connect-time handshake)
 ```
 
@@ -330,6 +330,26 @@ examples are the shapes the end-to-end suites
 `FanctlSetTests.swift`) produce against the real helper session with a simulated fan authority. Replace them with captured output when someone
 records a run.
 
+### Every fan, and no target below the client floor (#670)
+
+Until a hardware run shows that a fan left on automatic control beside a held one is still managed
+(ADR 0014's U7, run 1d), the helper grants manual control of every fan together or of none. A lease
+request that leaves out a fan the helper enumerated is refused `leaseMustCoverEveryFan`, exit 4
+below, whose message says to ask for every fan at once; an `apply` must set every fan its lease
+covers, or it is refused before anything is read. `fanctl set all` is the all-fans form, and
+`fanctl set <n>` on a machine with more than one fan is that refusal.
+
+Until run 2, the helper also holds no client target below a fan's client floor, 65 % of the way
+from `F<n>Mn` to `F<n>Mx`: 4,227.55 RPM on `Mac16,5` (`docs/SAFETY.md` § 2 says why 65 %). A lower
+request is held at the floor, and the helper's snapshot reports the target it holds, so `fanctl
+status` shows the raised value, and so does `fanctl set`'s start line: `set all 50% --for 30m`
+says `Holding fan 0 at 4227.55 RPM target (the helper's, not the 3564 RPM that 50% asked for;
+firmware 1350–5777 RPM)`, never "at 50%". Its `--json` events already carried both,
+`commandedRPM` (sent) beside `observed.targetRPM` (held). 50 % is below the floor on that machine,
+in `set` and in the app's preset alike; 75 % (4,670) and 100 % are above it and are held as asked.
+`status` and `auto` take no lease and are unaffected; `auto` reads `leaseMustCoverEveryFan` as
+silent, since no snapshot carries it.
+
 ### Exit codes
 
 Stable, and a public contract: a script branches on the number without parsing text. A
@@ -401,7 +421,7 @@ Two things it deliberately does not infer:
 
 ```
 $ fanctl status
-Helper 0.0.0-dev, negotiated XPC protocol 1 (helper accepts 1–1; fanctl 0.0.0-dev speaks 1).
+Helper 0.0.0-dev, negotiated XPC protocol 2 (helper accepts 2–2; fanctl 0.0.0-dev speaks 2).
 Captured by the helper at 2026-09-21T14:13:20Z.
 
 Manual-control lease: none. No Aeolus client holds a manual-control lease.
@@ -423,7 +443,7 @@ always present, with `null` for "not present".
 ```json
 {
   "capturedAt" : "2026-09-21T14:13:20Z",
-  "clientProtocolVersion" : 1,
+  "clientProtocolVersion" : 2,
   "fans" : [
     {
       "actualRPM" : { "unavailableReason" : null, "value" : 1351 },
@@ -445,11 +465,11 @@ always present, with `null` for "not present".
   "helper" : {
     "build" : "0.0.0-dev",
     "capabilities" : [ ],
-    "maximumProtocolVersion" : 1,
-    "minimumProtocolVersion" : 1
+    "maximumProtocolVersion" : 2,
+    "minimumProtocolVersion" : 2
   },
   "lease" : null,
-  "protocolVersion" : 1,
+  "protocolVersion" : 2,
   "schema" : 1,
   "thermalEmergencyActive" : false
 }
@@ -520,7 +540,7 @@ A fan is **cleared** when its mode reads automatic and its availability does not
 |---|---|
 | `foreignManualControl`, `restoreToAutomaticFailed` | **9**, whatever the mode reads |
 | `releaseInProgress`, `handbackUnconfirmed`, `restoreToAutomaticUnconfirmed`, `supervisorBlind`, `systemSleeping`, an unrecognised reason | **8**, whatever the mode reads: the helper has not established the fan's mode, or a restore is outstanding. `supervisorBlind` is unknown, not manual, so it is not 9 |
-| `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `noThermalTelemetry`, `reclaimedBySystem`, or none | The mode decides. `writePathNotBuilt` is every fan on today's helper, and `auto` against it exits 0 when all modes read automatic and no lease is listed |
+| `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `leaseMustCoverEveryFan`, `noThermalTelemetry`, `reclaimedBySystem`, or none | The mode decides. `writePathNotBuilt` is every fan on today's helper, and `auto` against it exits 0 when all modes read automatic and no lease is listed |
 
 A first snapshot with a fan the helper has not cleared is not the safe state, so the one request
 is sent: it carries the `restoreAbandoned` sweep, which is such a fan's only route out.
@@ -651,6 +671,11 @@ fanctl set 0 75% --for 30m            # fan 0 at 75% of its range for 30 minutes
 fanctl set all 3000rpm --for 2h       # every fan at 3000 RPM; refuses if any fan cannot
 fanctl set 1 100% --for 10s --json    # newline-delimited JSON events
 ```
+
+Until run 1d, a helper that enumerates more than one fan refuses the one-fan forms
+(`leaseMustCoverEveryFan`, exit 4), and until run 2 it holds a speed below a fan's client floor
+at the floor, so `3000rpm` is held at 4227.55 on `Mac16,5`: see
+[Every fan, and no target below the client floor](#every-fan-and-no-target-below-the-client-floor-670).
 
 **The grammar.** Anything malformed is a usage error, **64**, before any connection. What is
 well formed and does not fit this machine is **2**.
@@ -805,7 +830,8 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
 | 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, and 8 or 9 instead if the check found them; but 6 if a renewal had failed while it was outstanding), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed once the hold is under way (released and checked, and 8 or 9 instead if the check found them; before `started` it is 6, above). |
 | 64 | Malformed command line (above). |
 
-**Text.** At the start, one line per fan and the lease; then nothing on standard output while
+**Text.** At the start, one line per fan and the lease, naming the target the helper holds (the
+one asked for too, when the helper holds another); then nothing on standard output while
 holding; then one closing line saying why it ended and what the helper reports. The speed is a
 **target**: the fan's own speed is what the helper reports (`fanctl status`).
 
@@ -814,6 +840,11 @@ $ fanctl set 0 75% --for 30m
 Holding fan 0 at 75% (4670 RPM target; firmware 1350–5777 RPM) for 30m under lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. Ctrl-C returns it to automatic sooner.
 The hold ended: SIGINT was received. The helper accepted the release of lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. The helper now reports every fan automatic and no manual-control lease, in a snapshot it captured at 2026-10-07T23:24:57Z.
 ```
+
+That is a one-fan machine's run; on one with more fans it is `set all`, with a line for each. A
+speed the helper raised to the client floor names the helper's target first (#670):
+`Holding fan 0 at 4227.55 RPM target (the helper's, not the 2235 RPM that 20% asked for; firmware
+1350–5777 RPM) for 30m under lease …`.
 
 With `all`, each fan gets a line, the last of which carries the way out. No outcome other than 0
 says "the helper now reports" — a failure prints its diagnosis on standard error and nothing

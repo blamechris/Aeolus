@@ -219,9 +219,9 @@ actor LeaseAuthority: HeldLeaseRole {
     /// The order of the steps is the design, so it is worth reading as one:
     ///
     /// 0. – 3. In this order: the build's own write capability, self-renewal, TTL and holder
-    ///    re-validation, then the suspension points (enumerate, sweep lapsed leases, § 3's
-    ///    latch, sightedness, foreign control, bounds). Why each sits where it does:
-    ///    handback-ledger.md § *"The order of `acquireLease`'s steps"*.
+    ///    re-validation, then the suspension points (enumerate, sweep lapsed leases, the
+    ///    every-fan check of #670, § 3's latch, sightedness, foreign control, bounds). Why each
+    ///    sits where it does: handback-ledger.md § *"The order of `acquireLease`'s steps"*.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -250,6 +250,13 @@ actor LeaseAuthority: HeldLeaseRole {
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()
+        // Every enumerated fan, or none (#670): the most durable refusal after the build's, and
+        // free, so first after the sweep. An index the machine lacks is `validateFanIndices`'.
+        let missing = enumerated.subtracting(request.fanIndices)
+        guard missing.isEmpty else {
+            log.refusedNarrowerThanEveryFan(connection, missing: missing)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .leaseMustCoverEveryFan)
+        }
         try await refuseIfThermalEmergencyActive(connection)
         try await refuseIfBlind(connection)
         let wanting = Set(request.fanIndices).intersection(enumerated)

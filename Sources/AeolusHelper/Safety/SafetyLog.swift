@@ -4,6 +4,7 @@
 // reviewable in one place (the § 5 block below records why widening `emit` was rejected).
 // `type_body_length` still binds each extension. D26, PR #199.
 
+import FanKit
 import Foundation
 import SMCCore
 import os
@@ -762,6 +763,23 @@ extension SafetyLog {
             a contest it is losing while reporting a speed nothing is honouring.
             """
         )
+    }
+
+    /// A re-assert read bounds other than the ones the fan's held target was admitted under, so
+    /// it wrote nothing and gave the fan up (ADR 0014's minimal-run amendment, item 7's
+    /// re-ruling). `.fault`: the bounds have never been seen to move, and a move is a read to fix.
+    func reclamationBoundsChanged(
+        fan: Int, admitted: FanControlEnvelope, read: FanControlEnvelope
+    ) {
+        emit(
+            .fault,
+            """
+            Reclamation on fan \(fan): its firmware bounds read \(read.declaredMinimumRPM)–\
+            \(read.declaredMaximumRPM) RPM, not the \(admitted.declaredMinimumRPM)–\
+            \(admitted.declaredMaximumRPM) RPM its target was admitted under, so § 5 wrote nothing \
+            and is handing the fan back and ending its lease: a target is not re-asserted under \
+            bounds that moved.
+            """)
     }
 
     /// A re-assert could not obtain a believable envelope, so it restored instead.
@@ -1928,6 +1946,19 @@ extension SafetyLog {
             ? "No engagement of its had returned, so its undo handed back no fan."
             : undone.joined(separator: " ")
         emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
+    }
+
+    /// The refused `apply` left its lease neither holding every fan nor none, so level 6 ended
+    /// it whole (#670). Written once the lease core answered that it revoked the lease. `.notice`,
+    /// beside the refusal's own line: the client is told the refusal, and this is where `log
+    /// show` says why its lease went with it.
+    func controlLoopEndedNotWhollyHeldLease(held: Set<Int>, covering covered: Set<Int>) {
+        emit(
+            .notice,
+            "Level 6 still had fan(s) \(held.sorted()) of a lease over \(covered.sorted()) on "
+                + "account after a refused apply, not every fan of it held, so it ended the lease "
+                + "and the lease core hands every one of its fans back: no fan of a lease is held "
+                + "while another may be on automatic control (#670).")
     }
 
     /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off

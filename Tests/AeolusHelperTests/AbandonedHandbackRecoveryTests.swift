@@ -55,6 +55,7 @@ struct AbandonedHandbackRecoveryTests {
     ) async throws -> (leases: LeaseAuthority, firmware: RecoverableRefusal) {
         let firmware = RecoverableRefusal(refusing: refusing)
         let leases = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: Set(leasing)),
             restorer: BoundedFanRestorer(attempting: firmware, log: LeaseFixture.log),
             foreignControl: foreignControl)
         let connection = ConnectionID()
@@ -79,13 +80,14 @@ struct AbandonedHandbackRecoveryTests {
         await leases.confirmAcceptedHandbacks()
     }
 
-    /// The durable refusal, asked for as a client would meet it.
-    private static func expectRefused(_ leases: LeaseAuthority, fan: Int) async {
+    /// The durable refusal, asked for as a client would meet it: over `fans`, every fan the
+    /// machine has, as a lease must be since #670.
+    private static func expectRefused(_ leases: LeaseAuthority, fans: [Int]) async {
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed)
         ) {
             _ = try await leases.acquireLease(
-                LeaseFixture.request(fans: [fan]), from: ConnectionID())
+                LeaseFixture.request(fans: fans), from: ConnectionID())
         }
     }
 
@@ -112,7 +114,7 @@ struct AbandonedHandbackRecoveryTests {
     @Test("A fan abandoned, then handed back on § 7's pass, is leasable again")
     func aConfirmedRestoreOnThePanicPassMakesTheFanLeasableAgain() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
 
         // The firmware comes good. Nothing informs the lease core; § 7's pass asks it again,
         // which is the only way this process can find out.
@@ -177,7 +179,7 @@ struct AbandonedHandbackRecoveryTests {
             refusal was lifted anyway — on a write that did not throw, which is not a fan in \
             automatic (#291).
             """)
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
     }
 
     /// The half that keeps the clear honest: a pass the firmware refuses again changes nothing.
@@ -218,7 +220,7 @@ struct AbandonedHandbackRecoveryTests {
             control of a fan whose mode nothing has confirmed — CLAUDE.md rule 6, reached by \
             treating a call that returned as a write that landed.
             """)
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
         #expect(await firmware.breachedCeiling == false)
     }
 
@@ -237,11 +239,9 @@ struct AbandonedHandbackRecoveryTests {
         await Self.panicPass(leases)
 
         #expect(await leases.fansWithAbandonedHandbacks == [1])
-        _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: ConnectionID())
-        #expect(await leases.leaseCount == 1)
-        // Refused ahead of the live lease over fan 0, by the durable-first ordering
-        // `acquireLease`'s straight-line region documents.
-        await Self.expectRefused(leases, fan: 1)
+        // Fan 1's refusal stands alone: a lease over every fan, as one must be since #670, is
+        // refused for it. Fan 0's lift is the register above; no lease over fan 0 alone exists.
+        await Self.expectRefused(leases, fans: [0, 1])
         #expect(await firmware.breachedCeiling == false)
     }
 
@@ -272,7 +272,7 @@ struct AbandonedHandbackRecoveryTests {
             the teardown lifted the refusal itself, which means it read the fan back — or \
             trusted the write — before returning to a caller whose keystone waits on it.
             """)
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
     }
 
     /// The delta review of #291: a fan owed a read-back whose *next* restore is refused is no
@@ -298,7 +298,7 @@ struct AbandonedHandbackRecoveryTests {
             fan 0's latest restore was refused and the durable refusal was lifted anyway, on \
             a read-back owed for the earlier acceptance.
             """)
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
     }
 
     /// #291 review finding 3: a read that throws is not a read that says automatic.
@@ -323,7 +323,7 @@ struct AbandonedHandbackRecoveryTests {
         #expect(
             await leases.fansWithAbandonedHandbacks == [0],
             "fan 0's read-back threw and the refusal was lifted anyway")
-        await Self.expectRefused(leases, fan: 0)
+        await Self.expectRefused(leases, fans: [0])
     }
 
     // MARK: - The handback window over a sweep with two sources
@@ -351,7 +351,13 @@ struct AbandonedHandbackRecoveryTests {
     /// **Mutation:** the other order, the per-entry loop first and the register after it. Run:
     /// red on `fansMidHandback`, which is `[1]`; the refusal stays green, which is why it is not
     /// the only assertion.
-    @Test("Every fan in § 7's sweep is inside the handback window before the first restore")
+    @Test(
+        "Every fan in § 7's sweep is inside the handback window before the first restore",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): no lease over fan 1 can be \
+            granted beside a register that holds fan 0. Re-enable when run 1d lifts the rule.
+            """))
     func everyFanInThePanicSweepIsInsideTheHandbackWindow() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
 

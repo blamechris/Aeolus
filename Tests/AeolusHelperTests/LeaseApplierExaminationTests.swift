@@ -32,7 +32,7 @@ struct LeaseApplierExaminationTests {
         let hops = try #require(machine.leaseHops)
         let lease = try await machine.lease(fans: [0]).id
         let levelSix = machine.levelSix()
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
 
         try await finished("the control cycle", observing { await machine.watchdog.cycle() })
         await Gate.expectNotJudgedAReclamation(machine)
@@ -40,13 +40,13 @@ struct LeaseApplierExaminationTests {
         await hops.parkNextAnswer()
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(await yieldUntil("the lease check to park") { await hops.isParked })
-        let step = observing { try await levelSix.apply(fixed((0, 2_000)), under: lease) }
+        let step = observing { try await levelSix.apply(fixed((0, 5_000)), under: lease) }
         #expect(
             await yieldUntil("the step to wait for the gate, or to land without it") {
                 if machine.gate.waiting(onFan: 0) == 1 { return true }
                 return await step.isFinished.isSet
             })
-        #expect(await machine.commandedRPMs == [2_400], "the step landed inside the examination")
+        #expect(await machine.commandedRPMs == [4_400], "the step landed inside the examination")
         await hops.release()
         try await finished("the examination", sweep)
         try await finished("the step", step)
@@ -54,8 +54,8 @@ struct LeaseApplierExaminationTests {
         await Gate.expectNotJudgedAReclamation(machine)
         try await finished("the next cycle", observing { await machine.watchdog.cycle() })
         await Gate.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_400, 2_000], "§ 5 wrote over the step")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.commandedRPMs == [4_400, 5_000], "§ 5 wrote over the step")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(machine.gate.isIdle)
     }
 
@@ -67,7 +67,7 @@ struct LeaseApplierExaminationTests {
         let lease = try await machine.lease(fans: [0]).id
         let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
         let levelSix = machine.levelSix(writingThrough: writes)
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
         let readInsideTheStep = Sightings<Bool>()
         let sweeps = Sightings<ObservableWork<Void>>()
         await writes.interfere {
@@ -82,7 +82,7 @@ struct LeaseApplierExaminationTests {
                 await machine.attempts.dropFirst(afterTheWrite).contains(.readControlState(fan: 0)))
         }
 
-        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        try await levelSix.apply(fixed((0, 5_000)), under: lease)
         let sweep = try #require(await sweeps.seen.first, "the write moment never came")
         try await finished("the examination once the step was reported", sweep)
 
@@ -90,8 +90,8 @@ struct LeaseApplierExaminationTests {
             await readInsideTheStep.seen == [false],
             "§ 5 read the fan between the write and its report")
         await Gate.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_400, 2_000], "§ 5 re-asserted the old target")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.commandedRPMs == [4_400, 5_000], "§ 5 re-asserted the old target")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
     }
 
     /// **The first step after registration.** Fan 0 is engaged and registered, and its first
@@ -109,7 +109,7 @@ struct LeaseApplierExaminationTests {
         let levelSix = machine.levelSix()
         await ledgerHops.parkNext(.clearReclaimed)
 
-        let step = observing { try await levelSix.apply(fixed((0, 2_400)), under: lease) }
+        let step = observing { try await levelSix.apply(fixed((0, 4_400)), under: lease) }
         #expect(
             await yieldUntil("the registration's clear to park") { await ledgerHops.isParked })
         await hops.parkNextAnswer()
@@ -126,26 +126,28 @@ struct LeaseApplierExaminationTests {
         try await finished("the examination", sweep)
 
         await Gate.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_400])
+        #expect(await machine.commandedRPMs == [4_400])
         #expect(machine.gate.isIdle)
     }
 
-    /// **#383's ramp item, held as thirteen re-applies.** A6 builds no loop that steps on its own,
-    /// so a `fanctl set` from 50 to 100 percent is thirteen re-applies 200 RPM apart, each landing
-    /// while § 5 holds the fan in its lease check: phase-locked to the sweep, the worst phase there
-    /// is. None is judged a reclamation and the terminal action never comes; without the gate the
-    /// budget is spent by the fourth and the lease is revoked mid-ramp.
-    @Test("Thirteen re-applies phase-locked to § 5's sweep never reach the terminal action")
-    func thirteenPhaseLockedReAppliesNeverReachTheTerminalAction() async throws {
+    /// **#383's ramp item, held as seven re-applies.** A6 builds no loop that steps on its own,
+    /// so a `fanctl set` from just above the client floor to 100 percent is seven re-applies 200
+    /// RPM apart, each landing while § 5 holds the fan in its lease check: phase-locked to the
+    /// sweep, the worst phase there is. None is judged a reclamation and the terminal action never
+    /// comes; without the gate the budget is spent by the fourth and the lease is revoked
+    /// mid-ramp. It was thirteen from 3,177 RPM until #670 held every target at or above 3,563.5,
+    /// and eleven from 3,577 until the client floor moved to 4,227.55.
+    @Test("Seven re-applies phase-locked to § 5's sweep never reach the terminal action")
+    func sevenPhaseLockedReAppliesNeverReachTheTerminalAction() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)], parkingLeaseHops: true)
         let hops = try #require(machine.leaseHops)
         let lease = try await machine.lease(fans: [0]).id
         let levelSix = machine.levelSix()
-        var rpm = 3_177.0
+        var rpm = 4_377.0
         try await levelSix.apply(fixed((0, rpm)), under: lease)
 
         var refused: [String] = []
-        for _ in 1...13 {
+        for _ in 1...7 {
             rpm += 200
             await hops.parkNextAnswer()
             let sweep = observing { await machine.watchdog.cycle() }
@@ -173,7 +175,7 @@ struct LeaseApplierExaminationTests {
         #expect(await machine.restorer.causes.isEmpty, "a lease was revoked mid-ramp")
         #expect(refused.isEmpty, "a re-apply was refused: \(refused)")
         await Gate.expectNotJudgedAReclamation(machine)
-        let ramp = Array(stride(from: 3_177.0, through: 5_777, by: 200))
+        let ramp = Array(stride(from: 4_377.0, through: 5_777, by: 200))
         #expect(await machine.commandedRPMs == ramp)
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_777)
     }
@@ -192,14 +194,14 @@ struct LeaseApplierExaminationTests {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)], parkingLeaseHops: true)
         let levelSix = machine.levelSix()
         let lease = try await machine.lease(fans: [0]).id
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
 
-        try await Self.writeAroundTheGate(2_600, in: machine, by: levelSix, under: lease)
+        try await Self.writeAroundTheGate(4_600, in: machine, by: levelSix, under: lease)
 
         #expect(machine.safetyLog.levels(containing: Gate.detected) == [.fault])
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 2600 RPM, attempt 1 of").count == 1)
-        #expect(await machine.commandedRPMs == [2_400, 2_600, 2_600])
+            machine.safetyLog.lines(containing: "re-asserted 4600 RPM, attempt 1 of").count == 1)
+        #expect(await machine.commandedRPMs == [4_400, 4_600, 4_600])
         #expect(
             await machine.didRestore(fan: 0) == false, "one false fault reached the terminal action"
         )
@@ -220,15 +222,15 @@ struct LeaseApplierExaminationTests {
             parkingLeaseHops: true)
         let levelSix = machine.levelSix()
         let lease = try await machine.lease(fans: [0]).id
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400)), under: lease)
 
-        try await Self.writeAroundTheGate(2_600, in: machine, by: levelSix, under: lease)
+        try await Self.writeAroundTheGate(4_600, in: machine, by: levelSix, under: lease)
 
         #expect(await machine.ledger.isReclaimed(fanAt: 0), "§ 5 judged the system's target held")
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 2600 RPM, attempt 1 of").count == 1)
+            machine.safetyLog.lines(containing: "re-asserted 4600 RPM, attempt 1 of").count == 1)
         #expect(await machine.commandedRPMs.allSatisfy { $0 != 1_800 })
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_600)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_600)
     }
 
     /// Writes `rpm` with level 6's writer and reports it, outside the gate, while § 5's sweep holds
@@ -268,13 +270,13 @@ struct LeaseApplierExaminationTests {
         let sectionFive = InterferingFanStateSensing(plane, during: .restoreWrite)
         let machine = ReclamationMachine(
             plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sectionFive)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try await machine.leaseID()
         let levelSix = machine.levelSix(writingThrough: plane)
         let applied = Sightings<ObservableWork<Void>>()
         let waited = Sightings<Bool>()
         await sectionFive.interfere(beforeEngageStep: 2) {
-            let apply = observing { try await levelSix.apply(fixed((0, 2_000)), under: lease) }
+            let apply = observing { try await levelSix.apply(fixed((0, 5_000)), under: lease) }
             await applied.record(apply)
             _ = await yieldUntil("level 6 to wait for the gate, or to engage without it") {
                 if machine.gate.waiting(onFan: 0) == 1 { return true }
@@ -291,7 +293,7 @@ struct LeaseApplierExaminationTests {
         #expect(
             try await plane.firmwareMode(ofFan: 0) == .manual,
             "an engagement undid the other: the fan is on automatic")
-        #expect(machine.safetyLog.lines(containing: "re-asserted 2400 RPM").count == 1)
+        #expect(machine.safetyLog.lines(containing: "re-asserted 4400 RPM").count == 1)
         #expect(
             machine.safetyLog.lines(containing: "wrote nothing more").isEmpty
                 && machine.safetyLog.lines(containing: Gate.leftToItsEngagement).isEmpty,
@@ -300,6 +302,6 @@ struct LeaseApplierExaminationTests {
         #expect(
             answered as? AeolusXPCFault
                 == .manualControlUnavailable(reason: .foreignManualControl))
-        #expect(await machine.commandedRPMs == [2_400], "level 6 wrote over § 5's engagement")
+        #expect(await machine.commandedRPMs == [4_400], "level 6 wrote over § 5's engagement")
     }
 }

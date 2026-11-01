@@ -67,16 +67,17 @@ struct SleepGrantSealTests {
         return reason
     }
 
-    /// Whether a grant over `fan` is granted now, recording why when it is not.
+    /// Whether a grant over `fans` is granted now, recording why when it is not. Every fan of the
+    /// machine, as a grant must name since #670.
     private static func grants(
-        _ fan: Int, in helper: HelperComposition<ScopeParkingPlane>, because what: String
+        _ fans: [Int], in helper: HelperComposition<ScopeParkingPlane>, because what: String
     ) async -> Bool {
         do {
             _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [fan]), from: ConnectionID())
+                LeaseFixture.request(fans: fans), from: ConnectionID())
             return true
         } catch {
-            Issue.record("\(what), and a grant over fan \(fan) was refused: \(error)")
+            Issue.record("\(what), and a grant over fans \(fans) was refused: \(error)")
             return false
         }
     }
@@ -88,15 +89,21 @@ struct SleepGrantSealTests {
     /// says the same. Once it returns, a grant goes through. #364's acceptance.
     ///
     /// Two arguments, because the teardown has two halves. With no lease the keystone is what
-    /// parks, and fan 0 is asked. With a lease over fan 0 taken after the wake, the sweep parks on
-    /// fan 0's restore, and fan 1 — which the sweep does not cover — is asked. The budget is long
-    /// enough never to answer, so nothing here depends on the acknowledgement.
+    /// parks. With a lease taken after the wake, the sweep parks on fan 0's restore. A grant over
+    /// both fans is asked either way, as one must be since #670, and the snapshot is read for fan 0
+    /// unleased and fan 1 leased. The budget is long enough never to answer, so nothing here
+    /// depends on the acknowledgement.
+    ///
+    /// **Since #670 the lease covers both fans**, so the leased sweep holds fan 1 mid-handback as
+    /// well, and its own guard refuses the grant beside the seal's. The second mutation below was
+    /// red on the leased argument because it asked about a fan the sweep left out, which no lease
+    /// can do until run 1d lifts the rule; it is not claimed for this test until then.
     ///
     /// **Mutation:** in `allowSleepAfterHandback`, call `handBackEveryFan(reportingTo:)` bare,
     /// outside `sealingGrants`. Run: red on both arguments — "the grant path granted a lease".
-    /// **Mutation:** keep the call bare and wrap only the `.everyFan` `do`/`catch` in
+    /// **Mutation (before #670):** keep the call bare and wrap only the `.everyFan` `do`/`catch` in
     /// `handBackEveryFan` in `leases.sealingGrants`. Run: red on the leased argument only, which
-    /// is what the second argument is for. **Mutation:** delete `sealingGrants`' `defer`. Run: red
+    /// was what the second argument is for. **Mutation:** delete `sealingGrants`' `defer`. Run: red
     /// on the last grant only. **Mutation:** delete the `machineWideRestoreInFlight` rung from
     /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red on the
     /// agreement only.
@@ -114,7 +121,7 @@ struct SleepGrantSealTests {
         try await observer.deliver(.didWake)
         if leased {
             _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [0]), from: ConnectionID())
+                LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
         }
         let parked: FanRestoreScope = leased ? .fan(0) : .everyFan
         await helper.plane.park(parked)
@@ -127,14 +134,14 @@ struct SleepGrantSealTests {
         #expect(await helper.plane.restoreScopes == [parked], "the teardown parked elsewhere")
 
         let asked = leased ? 1 : 0
-        let refused = await Fixture.refusalForGrant(over: asked, from: helper.leases)
+        let refused = await Fixture.refusalForGrant(overFans: [0, 1], from: helper.leases)
         #expect(refused == .releaseInProgress)
         let shown = try await Self.shownReason(ofFanAt: asked, in: helper)
         #expect(
             shown == refused,
             """
-            the snapshot says \(shown) while a grant over the same fan is refused \(refused): a \
-            client is offered control the sleep handback's seal refuses.
+            the snapshot says \(shown) about fan \(asked) while a grant over both fans is refused \
+            \(refused): a client is offered control the sleep handback's seal refuses.
             """)
 
         await helper.plane.releaseAll()
@@ -144,7 +151,7 @@ struct SleepGrantSealTests {
         }
         _ = try await finished("the starved teardown to return once let through", teardown)
         #expect(
-            await Self.grants(asked, in: helper, because: "the starved teardown has returned"),
+            await Self.grants([0, 1], in: helper, because: "the starved teardown has returned"),
             "the seal outlived the teardown, so no lease can be granted for the process's life")
     }
 
@@ -207,7 +214,7 @@ struct SleepGrantSealTests {
 
         await helper.plane.releaseAll()
         _ = try await finished("the keystone to return once let through", sleep)
-        #expect(await Self.grants(0, in: helper, because: "the keystone has returned"))
+        #expect(await Self.grants([0], in: helper, because: "the keystone has returned"))
     }
 
     /// A sweep that outlives its wake: a lease over fan 0 whose restore parks, the budget lets
@@ -222,7 +229,13 @@ struct SleepGrantSealTests {
     /// **Mutation:** call `handBackEveryFan(reportingTo:)` bare. Run: red after the wake.
     /// **Mutation:** the declined-only wrap above. Run: red. **Mutation:** wrap only the
     /// `.everyFan` `do`/`catch`. Run: red — the sweep is parked with the gate open.
-    @Test("A sweep parked across its wake refuses a grant over a fan it does not cover")
+    @Test(
+        "A sweep parked across its wake refuses a grant over a fan it does not cover",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func aSweepThatOutlivesItsWakeRefusesAGrantOverAnotherFan() async throws {
         // Moved past the budget only once the restore is parked: `SystemPowerTests.expireBudget`'s
         // reason.
@@ -265,6 +278,6 @@ struct SleepGrantSealTests {
         #expect(
             await helper.plane.restoreScopes == [.fan(0), .everyFan],
             "the keystone did not follow the sweep, so this did not show what fan 1 would meet")
-        #expect(await Self.grants(1, in: helper, because: "the teardown has returned"))
+        #expect(await Self.grants([1], in: helper, because: "the teardown has returned"))
     }
 }

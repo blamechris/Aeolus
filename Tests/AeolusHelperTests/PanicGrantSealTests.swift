@@ -180,7 +180,13 @@ struct PanicGrantSealTests {
     ///
     /// **Mutation:** in `restoreAllToAutomatic`, move `await leases.releaseEveryLease()` out of
     /// the closure, above `sealingGrants`. Run: red — "the grant path granted a lease over fan 1".
-    @Test("A grant over a fan the panic sweep does not cover is refused while the sweep runs")
+    @Test(
+        "A grant over a fan the panic sweep does not cover is refused while the sweep runs",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func aGrantDuringThePanicSweepIsRefused() async throws {
         let helper = Self.composed(fanCount: 2)
         await helper.bindSafetyRegistries()
@@ -289,7 +295,8 @@ struct PanicGrantSealTests {
         await helper.plane.park(.everyFan)
         let panic = await Self.panicParked(in: helper)
 
-        let refused = await Fixture.refusalForGrant(over: 1, from: helper.leases)
+        // Over both fans, as a grant must be (#670): fan 1's refusal is above the seal's guard.
+        let refused = await Fixture.refusalForGrant(overFans: [0, 1], from: helper.leases)
         #expect(refused == .foreignManualControl)
         let shown = try await Self.shownReason(ofFanAt: 1, in: helper)
         #expect(
@@ -324,7 +331,8 @@ struct PanicGrantSealTests {
         let panic = await Self.panicParked(in: helper)
         #expect(await helper.plane.restoreScopes == [.everyFan], "the verb is parked elsewhere")
 
-        let blind = await Fixture.refusalForGrant(over: 1, from: helper.leases)
+        // Over both fans, as a grant must be (#670): fan 1's read is above the seal's guard.
+        let blind = await Fixture.refusalForGrant(overFans: [0, 1], from: helper.leases)
         #expect(blind == .supervisorBlind, "the grant never reached its read of fan 1")
         let shownBlind = try await Self.shownReason(ofFanAt: 1, in: helper)
         #expect(
@@ -333,10 +341,9 @@ struct PanicGrantSealTests {
             the snapshot says \(shownBlind) about a fan whose mode will not read, while the grant \
             refuses it \(blind): the seal's rung overwrote a refusal the grant makes before it.
             """)
-        let sealed = await Fixture.refusalForGrant(over: 0, from: helper.leases)
-        #expect(sealed == .releaseInProgress)
+        // No grant names fan 0 alone since #670, so its seal is read on the snapshot side only.
         #expect(
-            try await Self.shownReason(ofFanAt: 0, in: helper) == sealed,
+            try await Self.shownReason(ofFanAt: 0, in: helper) == .releaseInProgress,
             "the seal is not open, so this test is not asking about it")
 
         await helper.plane.releaseAll()

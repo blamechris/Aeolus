@@ -177,6 +177,13 @@ struct FanRowControlPresentation: Equatable {
     /// How far one stepper click moves the speed.
     static let stepRPM: Double = 100
 
+    /// Whether the main window draws any fan's own control (#670): `false` while the helper grants
+    /// a lease only over every fan. Custom on one fan would be refused `leaseMustCoverEveryFan`,
+    /// and Auto on one fan would hand back the whole lease, so neither is offered; the control for
+    /// all fans is. `FanListView.drawsControl(_:)` and `FanRowView` read it. The presentation
+    /// below is kept whole, for the day the helper's rule is lifted.
+    static let isOffered = false
+
     /// The sentence shown once beside the per-fan control (#154's ruling, Q2). Its wording is the
     /// maintainer's to settle at the live look.
     static let changeOfFanSet =

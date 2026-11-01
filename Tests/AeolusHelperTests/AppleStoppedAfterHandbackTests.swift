@@ -27,7 +27,7 @@ struct AppleStoppedAfterHandbackTests {
     @Test("Reconciliation confirms a handback that Apple then stops")
     func reconciliationConfirmsAHandbackAppleThenStops() async throws {
         let firmware = ScriptedControlPlane(
-            fans: [0: .held(at: 2_400), 1: .stoppedByApple],
+            fans: [0: .held(at: 4_400), 1: .stoppedByApple],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let reconciliation = LeaseFixture.reconciliation(
             over: AppleStopsAfterRestorePlane(wrapping: firmware),
@@ -60,7 +60,7 @@ struct AppleStoppedAfterHandbackTests {
             stages: [
                 .at(96, writes: .reverted), .at(44, writes: .reverted), .at(96, writes: .reverted),
             ],
-            fans: [0: .held(at: 2_400)])
+            fans: [0: .held(at: 4_400)])
         try await machine.engageManualControl(fan: 0)
         await machine.emergency.cycle()
         #expect(await machine.emergency.isHolding, "the first emergency never fired")
@@ -100,9 +100,9 @@ struct AppleStoppedAfterHandbackTests {
     func aHeldFanAppleStopsStatesNoTargetUntilReasserted() async throws {
         let machine = await LevelSixMachine()
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 3_000, under: lease)
+        try await machine.apply(rpm: 5_000, under: lease)
         let before = try #require(try await Self.fanZero(machine))
-        #expect(before.targetRPM == 3_000, "the apply stated no target, so nothing here is tested")
+        #expect(before.targetRPM == 5_000, "the apply stated no target, so nothing here is tested")
 
         await machine.firmware.setByApple(.stoppedByApple, ofFan: 0)
         let taken = try #require(try await Self.fanZero(machine))
@@ -117,7 +117,7 @@ struct AppleStoppedAfterHandbackTests {
         #expect(judged.mode == .manualFixed)
         #expect(judged.targetRPM == nil, "a target is stated beside § 5's mark")
         let reassert: [ScriptedControlPlane.KeyWrite] = [
-            .mode(fan: 0, value: 1), .target(fan: 0, rpm: 1_350), .target(fan: 0, rpm: 3_000),
+            .mode(fan: 0, value: 1), .target(fan: 0, rpm: 1_350), .target(fan: 0, rpm: 5_000),
         ]
         #expect(
             Array(await machine.firmware.keyWrites.dropFirst(writesBefore)) == reassert,
@@ -126,7 +126,7 @@ struct AppleStoppedAfterHandbackTests {
         await machine.helper.reclamationWatchdog.cycle()
         let converged = try #require(try await Self.fanZero(machine))
         #expect(!converged.isReclaimedBySystem)
-        #expect(converged.targetRPM == 3_000)
+        #expect(converged.targetRPM == 5_000)
     }
 
     /// `ReadOnlyFanReport.heldTarget(...)` over the decoded bytes themselves: Apple's `3` states no
@@ -139,13 +139,13 @@ struct AppleStoppedAfterHandbackTests {
             isReclaimedBySystem: false, manualControlAvailability: .available)
         func held(_ raw: Double) -> Double? {
             ReadOnlyFanReport.heldTarget(
-                of: fan, leasedFans: [0], recorded: [0: 2_400],
+                of: fan, leasedFans: [0], recorded: [0: 4_400],
                 observedMode: FirmwareFanMode(declaredByFirmware: raw),
                 thermalEmergencyActive: false)
         }
 
         #expect(held(3) == nil)
-        #expect(held(1) == 2_400)
+        #expect(held(1) == 4_400)
     }
 
     private static func fanZero(_ machine: LevelSixMachine) async throws -> FanState? {

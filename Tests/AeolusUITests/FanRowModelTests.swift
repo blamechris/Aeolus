@@ -155,7 +155,7 @@ struct FanRowModelTests {
     /// this target cannot import.
     enum Tag: CaseIterable {
         case writePathNotBuilt, boundsImplausible, reclaimedBySystem, leaseHeldByAnotherClient
-        case selfRenewalNotBuilt, releaseInProgress, handbackUnconfirmed
+        case selfRenewalNotBuilt, leaseMustCoverEveryFan, releaseInProgress, handbackUnconfirmed
         case restoreToAutomaticUnconfirmed, restoreToAutomaticFailed, systemSleeping
         case noThermalTelemetry, supervisorBlind, foreignManualControl, unknown
 
@@ -166,6 +166,7 @@ struct FanRowModelTests {
             case .reclaimedBySystem: self = .reclaimedBySystem
             case .leaseHeldByAnotherClient: self = .leaseHeldByAnotherClient
             case .selfRenewalNotBuilt: self = .selfRenewalNotBuilt
+            case .leaseMustCoverEveryFan: self = .leaseMustCoverEveryFan
             case .releaseInProgress: self = .releaseInProgress
             case .handbackUnconfirmed: self = .handbackUnconfirmed
             case .restoreToAutomaticUnconfirmed: self = .restoreToAutomaticUnconfirmed
@@ -185,6 +186,7 @@ struct FanRowModelTests {
             case .reclaimedBySystem: return .reclaimedBySystem
             case .leaseHeldByAnotherClient: return .leaseHeldByAnotherClient
             case .selfRenewalNotBuilt: return .selfRenewalNotBuilt
+            case .leaseMustCoverEveryFan: return .leaseMustCoverEveryFan
             case .releaseInProgress: return .releaseInProgress
             case .handbackUnconfirmed: return .handbackUnconfirmed
             case .restoreToAutomaticUnconfirmed: return .restoreToAutomaticUnconfirmed

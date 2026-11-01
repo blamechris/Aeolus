@@ -19,14 +19,15 @@ import Foundation
 ///    lapsed, never reaches the driver (item 1), and its faults are the client's answer.
 /// 2. The claim: one `apply` at a time, below.
 /// 3. The write capability, `.writePathNotBuilt`.
-/// 4. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, checked
-///    before anything is read or written.
+/// 4. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, and every
+///    fan the lease covers is set (#670), checked before anything is read or written.
 /// 5. Each fan, in index order, through `step(_:toFanAt:under:engaging:)`: its envelope read and
 ///    its permit, then its gate, and under that one hold the whole of its step.
 /// 6. Item 4: the lease and § 3's latch again, so the reply never says applied under a lease
 ///    that has ended or a latch that has set.
 ///
 /// A refusal in step 5 undoes what this `apply` engaged (`undo(_:under:)`), outside every gate,
+/// ends the lease whole unless that leaves every fan of it held or none (#670, `endNotWhollyHeld`),
 /// and is answered by item 5's table (`refusal(for:leaseID:from:)`).
 ///
 /// ## One hold per fan, one gate at a time, and the undo outside every gate
@@ -151,6 +152,9 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
         } catch {
             let kept = await undo(fans.engaged, under: lease)
             fans.sayRefused(because: error, keptByTheUndo: kept, to: log)
+            if let held = engagements.notWhollyHeld(of: record.fanIndices, under: lease) {
+                await endNotWhollyHeld(lease, holding: held, of: record.fanIndices)
+            }
             throw await refusal(for: error, leaseID: lease, from: connection)
         }
 
@@ -248,6 +252,20 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
         return kept
     }
 
+    /// Ends `lease` whole when a refused `apply` left it neither holding every fan of `covered`
+    /// nor none, `held` being the fans with an account (#670): the lease core hands every fan of
+    /// it back, so no fan stays held beside one on automatic control. Said only when this call
+    /// revoked it: a lease the TTL sweep, § 3 or a dropped connection ended during the undo is
+    /// answered `.gone` or `.expired`, and the line would claim an act level 6 did not perform.
+    private func endNotWhollyHeld(
+        _ lease: UUID, holding held: Set<Int>, of covered: Set<Int>
+    ) async {
+        guard let fan = held.min() else { return }
+        let ended = await leases.revokeLease(id: lease, forFan: fan, because: .applyRefused)
+        guard ended == .revoked else { return }
+        log.controlLoopEndedNotWhollyHeldLease(held: held, covering: covered)
+    }
+
     /// Item 5's answer to a refusal: `LeaseApplyRules.answer(to:)`, with the one row that needs the
     /// lease core asked here. A superseded step, a gate not granted, a lease that was not live, a
     /// report § 5 no longer held, or an `apply` in flight under another lease is
@@ -317,6 +335,7 @@ enum LeaseApplyRules {
         static let curve = "a curve setting is not honoured until the curve evaluator exists"
         static let uncovered = "a setting names a fan the lease does not cover"
         static let duplicate = "a setting names the same fan twice"
+        static let missing = "every fan the lease covers is set together: a setting is missing"
         static let yieldDidNotArrive =
             "the firmware did not yield the fan to manual control in time"
         static let firmwareRefused = "the firmware refused a write to the fan"
@@ -328,8 +347,12 @@ enum LeaseApplyRules {
     /// Item 0: each fan's goal, in index order, or `invalidParameter(name: "settings")`.
     ///
     /// Checked in this order: an empty list; then, setting by setting, `.automatic`, `.curve`, a
-    /// fan the lease does not cover, and a fan named twice. `.curve` has no evaluator until #17,
-    /// and `.automatic` is the lease's release, not a setting.
+    /// fan the lease does not cover, and a fan named twice; then a covered fan named by no setting.
+    /// `.curve` has no evaluator until #17, and `.automatic` is the lease's release, not a setting.
+    ///
+    /// **Every covered fan, or nothing** (#670): an `apply` that set some of a lease's fans would
+    /// engage them and leave the others on automatic control under the force key it wrote, ADR
+    /// 0014's U7, which the every-fan lease exists to keep out of reach until 1d observes it.
     static func goals(
         of settings: [FanSetting], coveredBy fans: Set<Int>
     ) throws -> [(fan: Int, rpm: Double)] {
@@ -346,6 +369,7 @@ enum LeaseApplyRules {
             guard goals[setting.fanIndex] == nil else { throw refused(Detail.duplicate) }
             goals[setting.fanIndex] = rpm
         }
+        guard goals.count == fans.count else { throw refused(Detail.missing) }
         return goals.sorted { $0.key < $1.key }.map { (fan: $0.key, rpm: $0.value) }
     }
 

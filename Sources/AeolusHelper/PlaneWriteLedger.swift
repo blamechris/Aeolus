@@ -55,8 +55,12 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
 ///   restored by index, and never shrinks: a machine-wide restore writes it whatever the
 ///   enumeration knew.
 /// - **The force-key flag** is set when this plane issues `Ftst = 1`, whatever the firmware
-///   answers, and cleared when a restore issues `Ftst = 0`: a clear is owed for every key write
-///   that may have landed (ADR 0014's B1 amendment).
+///   answers: a clear is owed for every key write that may have landed (ADR 0014's B1
+///   amendment). A `.fan(n)` restore's `Ftst = 0` pays it only once the firmware answers it
+///   accepted (`recordForceKeyCleared()`, #678): a refused or unanswered clear does not prove the
+///   register clear either, so the flag stays and the next `.fan(n)` restore with no engaged fan
+///   left — the teardown's, `BoundedFanRestorer`'s retry, § 3's — issues the clear again. A
+///   machine-wide restore drops it when issued, as it clears the key whatever the flag says.
 /// - **The declared sizes** are each restore key's, as the preparation step's key-info reads
 ///   answered: what a restore writes zeros of (`restorePayload(for:)`).
 ///
@@ -264,9 +268,15 @@ final class PlaneWriteLedger: Sendable {
             let clearsKey =
                 state.forceKeySet && state.engaged.isEmpty
                 && !state.inProgress.values.contains(current)
-            if clearsKey { state.forceKeySet = false }
             return RestorePlan(modeFans: [index], clearsForceKey: clearsKey, fanSetUnknown: false)
         }
+    }
+
+    /// A restore's `Ftst = 0` was answered accepted: the clear the flag says is owed is paid
+    /// (#678). Called by the plane inside the restore's turn, after the write's answer, so no
+    /// engagement's `Ftst = 1` can land between the clear and this record.
+    func recordForceKeyCleared() {
+        state.withLock { $0.forceKeySet = false }
     }
 
     /// Issues a machine-wide restore, inside its turn: every enumerated fan and every touched

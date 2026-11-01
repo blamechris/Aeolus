@@ -74,13 +74,15 @@ struct ProductionWriteMachine: Sendable {
         await helper.prepareWritePath()
     }
 
-    /// A lease over `fans`, acquired through the authority on `holder`.
-    func lease(fans: [Int] = [0]) async throws -> UUID {
+    /// A lease over `fans`, acquired through the authority on `holder`: both of `Mac16,5`'s fans
+    /// unless a test says otherwise, as a lease must name every fan since #670.
+    func lease(fans: [Int] = [0, 1]) async throws -> UUID {
         try await helper.authority.acquireLease(LeaseFixture.request(fans: fans), from: holder).id
     }
 
-    /// `apply` through the composed authority, as the session hands it a decoded message.
-    func apply(rpm: Double, fans: [Int] = [0], under lease: UUID) async throws {
+    /// `apply` through the composed authority, as the session hands it a decoded message: both
+    /// fans unless a test says otherwise, as an `apply` must set every fan its lease covers (#670).
+    func apply(rpm: Double, fans: [Int] = [0, 1], under lease: UUID) async throws {
         try await helper.authority.apply(
             fans.map { FanSetting(fanIndex: $0, control: .fixed(rpm: rpm)) }, leaseID: lease,
             from: holder)
