@@ -231,9 +231,10 @@ enum FanRestoreCause: Sendable, Hashable, CaseIterable {
     /// The client asked, on a connection that held the lease.
     case leaseReleased
 
-    /// Level 6 refused an `apply` that left part of its lease held and part on automatic control,
-    /// and ended the lease whole (#670): `LeaseApplier`, through `revokeLease(id:forFan:because:)`,
-    /// its one producer. A lease ended at the helper's hand, never the client's.
+    /// Level 6 refused an `apply` whose undo left the lease neither holding every fan nor none, a
+    /// kept fan counting as not held, and ended the lease whole (#670): `LeaseApplier`, through
+    /// `revokeLease(id:forFan:because:)`, its one producer. A lease ended at the helper's hand,
+    /// never the client's.
     case applyRefused
 
     /// The panic path: every lease dropped at once.

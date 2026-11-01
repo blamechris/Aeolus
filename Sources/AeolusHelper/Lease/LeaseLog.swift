@@ -202,7 +202,7 @@ struct LeaseLog: Sendable {
         case .connectionInvalidated: return "the holding connection died"
         case .leaseReleased: return "the client released the lease"
         case .applyRefused:
-            return "a refused apply left part of the lease held — #670, every fan or none"
+            return "a refused apply left the lease not wholly held — #670, every fan or none"
         case .allLeasesDropped: return "every lease was dropped"
         case .startupReconciliation:
             return "startup reconciliation found the fan in manual — docs/SAFETY.md § 6"
