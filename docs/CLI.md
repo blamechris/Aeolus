@@ -671,6 +671,11 @@ fanctl set all 3000rpm --for 2h       # every fan at 3000 RPM; refuses if any fa
 fanctl set 1 100% --for 10s --json    # newline-delimited JSON events
 ```
 
+Until run 1d, a helper that enumerates more than one fan refuses the one-fan forms
+(`leaseMustCoverEveryFan`, exit 4), and until run 2 it holds a speed below a fan's 50 % point at
+the point, so `3000rpm` is held at 3563.5 on `Mac16,5`: see
+[Every fan, and no target below the 50 % point](#every-fan-and-no-target-below-the-50--point-670).
+
 **The grammar.** Anything malformed is a usage error, **64**, before any connection. What is
 well formed and does not fit this machine is **2**.
 
@@ -824,7 +829,8 @@ handshake → snapshot → validate (2) → [clock read] → acquireLease (30 s,
 | 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart, a lost reply, an abandoned connection or no answer within the deadline, and 8 or 9 instead if the check found them; but 6 if a renewal had failed while it was outstanding), or was answered with a fault no other code names (`helperFailed`, `malformedPayload`, `handshakeRequired`, one this build does not recognise; released and checked, and 8 or 9 instead if the check found them); or the hold's own timer failed once the hold is under way (released and checked, and 8 or 9 instead if the check found them; before `started` it is 6, above). |
 | 64 | Malformed command line (above). |
 
-**Text.** At the start, one line per fan and the lease; then nothing on standard output while
+**Text.** At the start, one line per fan and the lease, naming the target the helper holds (the
+one asked for too, when the helper holds another); then nothing on standard output while
 holding; then one closing line saying why it ended and what the helper reports. The speed is a
 **target**: the fan's own speed is what the helper reports (`fanctl status`).
 
@@ -833,6 +839,11 @@ $ fanctl set 0 75% --for 30m
 Holding fan 0 at 75% (4670 RPM target; firmware 1350–5777 RPM) for 30m under lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. Ctrl-C returns it to automatic sooner.
 The hold ended: SIGINT was received. The helper accepted the release of lease 5334E7EF-7FB7-4C47-87F3-A261C0C50FF2. The helper now reports every fan automatic and no manual-control lease, in a snapshot it captured at 2026-10-07T23:24:57Z.
 ```
+
+That is a one-fan machine's run; on one with more fans it is `set all`, with a line for each. A
+speed the helper raised to the 50 % point names the helper's target first (#670):
+`Holding fan 0 at 3563.50 RPM target (the helper's, not the 2235 RPM that 20% asked for; firmware
+1350–5777 RPM) for 30m under lease …`.
 
 With `all`, each fan gets a line, the last of which carries the way out. No outcome other than 0
 says "the helper now reports" — a failure prints its diagnosis on standard error and nothing
