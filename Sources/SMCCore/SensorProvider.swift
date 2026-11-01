@@ -176,9 +176,10 @@ public struct SMCSensorProvider: SensorProvider {
     /// alone cannot detect undercounting — only the probe can.
     ///
     /// An index whose nonzero code `SMCKey` refuses goes into no reading and no discovered key
-    /// set. It counts as walked while the walk holds at most
+    /// set. It counts as walked while the walk found at least one key and holds at most
     /// `KeyTableWalk.maximumWalkedRefusedCodes` of them, and at the probe it counts as no key
-    /// (#623). See `KeyTableWalk.walkedCount`.
+    /// (#623). See `KeyTableWalk.walkedCount`. Discovery completes only when the cross-check
+    /// matches and the keys found could be a key table: `KeyTableWalk.keySetIsPlausible` (#628).
     public func readAll() async throws -> [SensorReading] {
         try await connection.open()
         let count = try await connection.keyCount()
@@ -200,13 +201,10 @@ public struct SMCSensorProvider: SensorProvider {
         var readings: [SensorReading] = []
         readings.reserveCapacity(count)
         var walk = KeyTableWalk(declaredCount: count)
-        var discoveredKeys: Set<SMCKey> = []
-        discoveredKeys.reserveCapacity(count)
 
         for index in 0..<count {
             let entry = await KeyTableEntry(lookingUp: index, in: keyAt)
             guard let key = walk.record(entry, at: index) else { continue }
-            discoveredKeys.insert(key)
             guard let value = try? await connection.read(key) else { continue }
             guard let scalar = try? value.scalar() else { continue }
 
@@ -230,14 +228,18 @@ public struct SMCSensorProvider: SensorProvider {
         // can name one, so none can be asked for and wrongly reported absent (#623).
         //
         // Only when the cross-check actually matches, though: if it does not,
-        // discoveredKeys is not the complete key set — some index inside 0..<count
+        // walk.keys is not the complete key set — some index inside 0..<count
         // went unanswered, or a key exists past the declared bound the walk never
         // looked at — and marking it complete anyway would let read(keys:) report a
         // false .keyNotFound for a key that is genuinely there but simply wasn't reached
-        // this time. An incomplete walk leaves knownKeys exactly as it was: unset if this
-        // is the first attempt, or whatever a previous complete walk established.
-        if crossCheck.matches {
-            await connection.markDiscoveryComplete(discoveredKeys)
+        // this time. And only when the keys could be a key table: agreeing counts say
+        // nothing about which keys were found, and a misread of READ_INDEX's reply can match
+        // with none of the machine's real keys, every one of which would then read as absent
+        // (#628, KeyTableWalk.keySetIsPlausible). An incomplete walk leaves knownKeys exactly
+        // as it was: unset if this is the first attempt, or whatever a previous complete walk
+        // established.
+        if crossCheck.matches && walk.keySetIsPlausible {
+            await connection.markDiscoveryComplete(walk.keys)
         }
 
         return readings
