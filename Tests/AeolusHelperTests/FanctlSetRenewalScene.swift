@@ -57,6 +57,15 @@ struct RenewalScene {
     /// its own; here only a wait for the helper moves it, and that is the keeper's job. So a run
     /// that has not finished in a moment is reported as that, and let go.
     ///
+    /// **A moment is ten seconds of the watchdog's own turns, not ten seconds on the wall.** On
+    /// CI's pool of one the tests of this target ran for 150 to 198 s (run 41341626972), as every
+    /// continuation waits its turn behind the rest of the suite. A single
+    /// `Task.sleep(for: .seconds(10))` is ready after ten wall seconds whether or not the pool has
+    /// given the run a turn in them, and would then report a run that was only waiting. A thousand
+    /// sleeps of ten milliseconds are ten seconds' worth of turns the pool gave the watchdog (a
+    /// little over ten, 12.5 s measured, when the pool is free): while it is away, the count
+    /// stands still.
+    ///
     /// **The recovery happens inside the watchdog child, before the group is left.** Leaving a
     /// task group waits for every child, and a child that waits on the command cannot finish
     /// until the command does: a recovery run after the group would never run, and a mutation
@@ -68,8 +77,10 @@ struct RenewalScene {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { _ = await running.value }
             group.addTask {
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled else { return }
+                for _ in 0..<1_000 {
+                    try? await Task.sleep(for: .milliseconds(10))
+                    guard !Task.isCancelled else { return }
+                }
                 let why =
                     "the run did not finish: the helper was still working on `apply` and nothing "
                     + "was waiting for it, so no renewal was ever sent and the clock stood still"
