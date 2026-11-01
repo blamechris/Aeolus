@@ -104,7 +104,14 @@ struct HeldTargetCompositionTests {
     ///
     /// **Mutation:** in `LeaseApplier.undo`, delete the `manualControlHandedBack(fanAt:under:)`
     /// notice. Run: red, the kept fan 0 stated at 2,400.
-    @Test("A kept fan states no target, and a re-adopted one states its own")
+    @Test(
+        "A kept fan states no target, and a re-adopted one states its own",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanStatesNoTargetAndAReAdoptedOneItsOwn() async throws {
         let cool = LeaseFixture.nominalDieTemperatures
         let machine = await LevelSixMachine(

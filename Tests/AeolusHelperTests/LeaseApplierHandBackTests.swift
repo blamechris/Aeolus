@@ -74,7 +74,14 @@ struct LeaseApplierHandBackTests {
     /// `LeaseApplier.undo`, `remove` a fan whose hand-back was refused instead of `keep`ing it.
     /// Run: red, the same. **Mutation:** delete the `controlLoopHandBackRefused` call. Run: red on
     /// the `.fault` line.
-    @Test("A kept fan still in manual is re-adopted on its re-apply without a mode write")
+    @Test(
+        "A kept fan still in manual is re-adopted on its re-apply without a mode write",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanStillInManualIsReAdoptedWithoutAWrite() async throws {
         let kept = try await KeptFan.inManual()
         let machine = kept.machine
@@ -115,7 +122,14 @@ struct LeaseApplierHandBackTests {
     ///
     /// **Mutation:** in `LeaseApplier.step`, skip the driver for `.handBackRefused` as for
     /// `.engaged`. Run: red, no engagement, the fan applied on automatic, and § 5's false mark.
-    @Test("A kept fan whose restore's mode write landed is engaged again on its re-apply")
+    @Test(
+        "A kept fan whose restore's mode write landed is engaged again on its re-apply",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanWhoseModeWriteLandedIsEngagedAgain() async throws {
         let fans: [Int: ScriptedControlPlane.FanCondition] = [0: .automatic(at: 1_800)]
         let plane = ScriptedControlPlane(

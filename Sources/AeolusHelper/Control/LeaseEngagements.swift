@@ -47,14 +47,19 @@ struct LeaseEngagements: Sendable {
     /// The leases with a fan on account, for tests.
     var leases: Set<UUID> { Set(fans.keys) }
 
-    /// The fans of `covered` with an account under `lease`, when some have one and some do not;
-    /// otherwise `nil` (#670). A fan with an account may be off automatic control, and one with
-    /// none was handed back or never engaged, so a mix is a lease holding some of its fans while
-    /// others are back on automatic control: ADR 0014's U7 state, which level 6 ends whole.
-    func partlyHeld(of covered: Set<Int>, under lease: UUID) -> Set<Int>? {
-        let held = covered.filter { fans[lease]?[$0] != nil }
-        guard !held.isEmpty, held != covered else { return nil }
-        return held
+    /// The fans of `covered` with an account under `lease`, unless every covered fan is
+    /// `.engaged` or none has an account; then `nil` (#670). Only `.engaged` is held: a
+    /// `.handBackRefused` fan's hand-back threw, which it can do after its mode write landed (a
+    /// refused `Ftst = 0` after an accepted `F<n>Md = 0`), so it may be on automatic control
+    /// already. Anything but every fan held or none is therefore a lease that may hold some of
+    /// its fans while others are back on automatic control: ADR 0014's U7 state, which level 6
+    /// ends whole. Two kept fans are such a lease too: one may be manual and the other automatic.
+    func notWhollyHeld(of covered: Set<Int>, under lease: UUID) -> Set<Int>? {
+        let accounts = covered.map { fans[lease]?[$0] }
+        if accounts.allSatisfy({ $0 == .engaged }) || accounts.allSatisfy({ $0 == nil }) {
+            return nil
+        }
+        return covered.filter { fans[lease]?[$0] != nil }
     }
 
     /// An engagement of `index` under `lease` returned, or a kept fan was re-adopted.

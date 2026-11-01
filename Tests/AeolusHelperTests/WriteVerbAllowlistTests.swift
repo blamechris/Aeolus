@@ -612,10 +612,10 @@ struct WriteVerbAllowlistTests {
             + "engaging: inout ApplyEngagements)",
         "LeaseApplier.swift: undo(_: [Int], under: UUID)",
         "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
-        // #670's end of a partly held lease: a log line and the lease core's
+        // #670's end of a lease not wholly held: the lease core's
         // `revokeLease(id:forFan:because:)`, whose restore is the keystone through its restorer.
         // It takes indices and a lease and reaches no writer of its own.
-        "LeaseApplier.swift: endPartlyHeld(_: UUID, holding: Set<Int>, of: Set<Int>)",
+        "LeaseApplier.swift: endNotWhollyHeld(_: UUID, holding: Set<Int>, of: Set<Int>)",
         // The role the authority reaches level 6 through (ADR 0014's A6 PR-3 amendment): the
         // same verb, as a requirement, with no permit. Its one conformer is `LeaseApplier`'s,
         // above, and `LeaseApplyingTripwireTests` holds that it is never widened.

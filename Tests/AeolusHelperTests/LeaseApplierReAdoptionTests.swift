@@ -23,7 +23,14 @@ struct LeaseApplierReAdoptionTests {
     ///
     /// **Mutation:** delete `await driver.reAdopted(permit)` from `LeaseApplier.step`. Run: red, no
     /// registration. **Mutation:** move it after `writer.hold`. Run: red, the command first.
-    @Test("A re-adopted fan is registered with § 3 again, before it is commanded")
+    @Test(
+        "A re-adopted fan is registered with § 3 again, before it is commanded",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aReAdoptedFanIsRegisteredWithTheEmergencyAgain() async throws {
         let order = Sightings<String>()
         let kept = try await KeptFan.inManual(recordingInto: order)
@@ -78,7 +85,14 @@ struct LeaseApplierReAdoptionTests {
     /// **Mutation:** in `LeaseApplier.undo`, `keep(0, …)` in place of the fan's own index. Run:
     /// red, fan 1 answered `foreignManualControl`. **Mutation:** the re-adoption's notice names
     /// fan 0 whatever the fan. Run: red, no notice names fan 1.
-    @Test("Both kept fans are re-adopted, each by its own index")
+    @Test(
+        "Both kept fans are re-adopted, each by its own index",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func bothKeptFansAreReAdoptedEachByItsOwnIndex() async throws {
         let machine = ReclamationMachine(
             stages: [
@@ -129,7 +143,14 @@ struct LeaseApplierReAdoptionTests {
     /// `LeaseEngagements.read`, `keep(0, …)` in place of the fan's own index. Run: red, fan 1
     /// answered `foreignManualControl`. Delete `LeaseApplyRules.answer(to:)`'s first arm. Run:
     /// red, the refusal answered `unexpected` instead of `notConfirmed`.
-    @Test("A driver undo refused on fan 1 keeps fan 1's account, answered by its cause")
+    @Test(
+        "A driver undo refused on fan 1 keeps fan 1's account, answered by its cause",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aDriverUndoRefusedOnFanOneKeepsFanOnesAccount() async throws {
         let kept = try await KeptFan.keptByTheDriver(fan: 1, of: [0, 1])
         let machine = kept.machine
@@ -156,7 +177,14 @@ struct LeaseApplierReAdoptionTests {
     ///
     /// **Mutation:** in `LeaseApplier.undo`, keep only a fan that still has an account. Run: red,
     /// Aeolus's own fan answered `foreignManualControl`.
-    @Test("A notHeld fan whose hand-back is refused is kept, and re-adopted")
+    @Test(
+        "A notHeld fan whose hand-back is refused is kept, and re-adopted",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aNotHeldFanWhoseHandBackIsRefusedIsKeptAndReAdopted() async throws {
         let kept = try await KeptFan.keptAfterNotHeld()
 
@@ -188,9 +216,9 @@ struct LeaseApplierReAdoptionTests {
         "A kept fan that § 3 forgot is registered with § 3 again before it is commanded",
         .disabled(
             """
-            Unreachable while a lease must cover every fan (#670): the scenario keeps one of two \
-            fans after a refused apply, and level 6 now ends that lease whole. Re-enable when \
-            run 1d lifts the rule.
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
             """))
     func aKeptFanTheEmergencyForgotIsRegisteredAgainBeforeItIsCommanded() async throws {
         let (machine, envelopes) = try await Self.fanZeroTakenBackDuringFanOnesEnvelopeRead()

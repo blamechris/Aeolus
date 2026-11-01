@@ -27,8 +27,8 @@ import Foundation
 ///    that has ended or a latch that has set.
 ///
 /// A refusal in step 5 undoes what this `apply` engaged (`undo(_:under:)`), outside every gate,
-/// ends the lease whole if that leaves part of it held (#670, `endPartlyHeld`), and is answered by
-/// item 5's table (`refusal(for:leaseID:from:)`).
+/// ends the lease whole unless that leaves every fan of it held or none (#670, `endNotWhollyHeld`),
+/// and is answered by item 5's table (`refusal(for:leaseID:from:)`).
 ///
 /// ## One hold per fan, one gate at a time, and the undo outside every gate
 ///
@@ -152,8 +152,8 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
         } catch {
             let kept = await undo(fans.engaged, under: lease)
             fans.sayRefused(because: error, keptByTheUndo: kept, to: log)
-            if let held = engagements.partlyHeld(of: record.fanIndices, under: lease) {
-                await endPartlyHeld(lease, holding: held, of: record.fanIndices)
+            if let held = engagements.notWhollyHeld(of: record.fanIndices, under: lease) {
+                await endNotWhollyHeld(lease, holding: held, of: record.fanIndices)
             }
             throw await refusal(for: error, leaseID: lease, from: connection)
         }
@@ -252,14 +252,18 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
         return kept
     }
 
-    /// Ends `lease` whole when a refused `apply` left it holding `held` and not the rest of
-    /// `covered` (#670): the lease core hands every fan of it back, so no fan stays held beside one
-    /// on automatic control. A lease already ended is answered `.gone` once `held`'s first fan's
-    /// handback has returned; the answer is not needed here.
-    private func endPartlyHeld(_ lease: UUID, holding held: Set<Int>, of covered: Set<Int>) async {
+    /// Ends `lease` whole when a refused `apply` left it neither holding every fan of `covered`
+    /// nor none, `held` being the fans with an account (#670): the lease core hands every fan of
+    /// it back, so no fan stays held beside one on automatic control. Said only when this call
+    /// revoked it: a lease the TTL sweep, § 3 or a dropped connection ended during the undo is
+    /// answered `.gone` or `.expired`, and the line would claim an act level 6 did not perform.
+    private func endNotWhollyHeld(
+        _ lease: UUID, holding held: Set<Int>, of covered: Set<Int>
+    ) async {
         guard let fan = held.min() else { return }
-        log.controlLoopEndedPartlyHeldLease(held: held, covering: covered)
-        _ = await leases.revokeLease(id: lease, forFan: fan, because: .applyRefused)
+        let ended = await leases.revokeLease(id: lease, forFan: fan, because: .applyRefused)
+        guard ended == .revoked else { return }
+        log.controlLoopEndedNotWhollyHeldLease(held: held, covering: covered)
     }
 
     /// Item 5's answer to a refusal: `LeaseApplyRules.answer(to:)`, with the one row that needs the

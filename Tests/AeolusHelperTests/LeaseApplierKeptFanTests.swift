@@ -59,7 +59,14 @@ struct LeaseApplierKeptFanTests {
     ///
     /// **Mutation:** make `EngagementRules.isEngagedMode` answer `rawMode != 0`. Run: red, the fan
     /// re-adopted and commanded.
-    @Test("A kept fan reading another raw value is answered foreignManualControl")
+    @Test(
+        "A kept fan reading another raw value is answered foreignManualControl",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanReadingAnotherRawValueIsForeign() async throws {
         let kept = try await KeptFan.inManual()
         let machine = kept.machine
@@ -98,7 +105,14 @@ struct LeaseApplierKeptFanTests {
     /// calling `keep`. Run: red on the re-apply, the same. **Mutation:** in
     /// `ApplyEngagements.sayRefused`, log `String(describing: error)` in place of the cause. Run:
     /// red, the notice's detail is the wrapper.
-    @Test("A driver undo the firmware refused keeps the fan's account for its re-apply")
+    @Test(
+        "A driver undo the firmware refused keeps the fan's account for its re-apply",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aDriverUndoTheFirmwareRefusedKeepsTheFansAccount() async throws {
         let machine = ReclamationMachine(
             stages: [.nominal(), .nominal(writes: .refused(reason: "F0Md refused")), .nominal()],
@@ -158,7 +172,14 @@ struct LeaseApplierKeptFanTests {
     ///
     /// **Mutation:** delete `apply`'s capability `guard`. Run: red, the fan re-adopted and
     /// commanded.
-    @Test("On a write path that is not built, a kept fan's re-apply answers writePathNotBuilt")
+    @Test(
+        "On a write path that is not built, a kept fan's re-apply answers writePathNotBuilt",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanOnAWritePathNotBuiltIsAnsweredAsBefore() async throws {
         let kept = try await KeptFan.inManual()
         kept.writes.report(.notBuilt)
@@ -272,8 +293,8 @@ struct KeptFan {
     /// answers `0`, and the firmware refuses the driver's undo, so it is in manual and kept. Fan
     /// `index` of `fans`, all leased and all applied, as an `apply` must set every fan since #670:
     /// a fan before `index` is engaged and commanded, and the refused `apply`'s undo of it meets
-    /// the firmware refusing, so it is kept too and the lease stands over fans all kept. The
-    /// firmware takes writes again once this returns.
+    /// the firmware refusing, so it is kept too. A kept fan is not held, so level 6 then ends the
+    /// lease whole (#670). The firmware takes writes again once this returns.
     static func keptByTheDriver(fan index: Int = 0, of fans: [Int] = [0]) async throws -> KeptFan {
         let machine = ReclamationMachine(
             stages: [
@@ -301,7 +322,9 @@ struct KeptFan {
 
     /// A fan whose report § 5 answered `.notHeld`, and whose hand-back the firmware then refused:
     /// § 5 is told fan 0 was released while its command lands, and the undo's restore is refused.
-    /// In manual, kept; the firmware takes writes again once this returns.
+    /// In manual, kept; the firmware takes writes again once this returns. A kept fan is not held,
+    /// so level 6 ends the lease whole (#670), and the refusal is answered by the lease core's
+    /// `leaseUnknown` for a lease that has gone, not `releaseInProgress`.
     static func keptAfterNotHeld() async throws -> KeptFan {
         let machine = ReclamationMachine(
             stages: [
@@ -317,7 +340,7 @@ struct KeptFan {
         let levelSix = machine.levelSix(writingThrough: writes)
 
         await #expect(
-            throws: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+            throws: AeolusXPCFault.leaseUnknown
         ) {
             try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }

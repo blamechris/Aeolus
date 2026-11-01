@@ -34,6 +34,12 @@ struct LeaseApplierAccountEndTests {
     /// registered and commanded.
     @Test(
         "A kept fan whose fresh engagement is handed back loses its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """),
         arguments: [false, true])
     func aKeptFanWhoseFreshEngagementIsHandedBackLosesItsAccount(_ sighted: Bool) async throws {
         let kept = try await KeptFan.onAutomatic(temperatures: Self.cool)
@@ -87,9 +93,9 @@ struct LeaseApplierAccountEndTests {
         "A kept fan whose later step is superseded loses its account",
         .disabled(
             """
-            Unreachable while a lease must cover every fan (#670): the scenario keeps one of two \
-            fans after a refused apply, and level 6 now ends that lease whole. Re-enable when \
-            run 1d lifts the rule.
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
             """))
     func aKeptFanWhoseLaterStepIsSupersededLosesItsAccount() async throws {
         let kept = try await KeptFan.onAutomatic(
@@ -133,7 +139,14 @@ struct LeaseApplierAccountEndTests {
     ///
     /// **Mutation:** in `LeaseEngagements.read`, leave the account for a `.notAutomatic` with any
     /// other value. Run: red, the later raw `1` re-adopted and commanded.
-    @Test("A kept fan seen holding another value loses its account")
+    @Test(
+        "A kept fan seen holding another value loses its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanSeenHoldingAnotherValueLosesItsAccount() async throws {
         let kept = try await KeptFan.inManual()
         let machine = kept.machine
@@ -166,7 +179,14 @@ struct LeaseApplierAccountEndTests {
     /// **Mutation:** in `LeaseEngagements.read`, end the account on `.failedBeforeFirstWrite` too,
     /// the rule the completeness review proposed. Run: red, Aeolus's own fan answered
     /// `foreignManualControl` once the SMC recovered.
-    @Test("A kept fan whose first step could not read it keeps its account")
+    @Test(
+        "A kept fan whose first step could not read it keeps its account",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aKeptFanWhoseFirstStepCouldNotReadItKeepsItsAccount() async throws {
         let kept = try await KeptFan.inManual(
             then: [ScriptedControlPlane.Stage(unreadableModes: [0]), .nominal()])

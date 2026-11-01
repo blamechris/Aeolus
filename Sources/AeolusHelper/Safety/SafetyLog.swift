@@ -1930,15 +1930,17 @@ extension SafetyLog {
         emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
     }
 
-    /// The refused `apply` left part of its lease held and part not, so level 6 ends the lease
-    /// whole (#670). `.notice`, beside the refusal's own line: the client is told the refusal, and
-    /// this is where `log show` says why its lease went with it.
-    func controlLoopEndedPartlyHeldLease(held: Set<Int>, covering covered: Set<Int>) {
+    /// The refused `apply` left its lease neither holding every fan nor none, so level 6 ended
+    /// it whole (#670). Written once the lease core answered that it revoked the lease. `.notice`,
+    /// beside the refusal's own line: the client is told the refusal, and this is where `log
+    /// show` says why its lease went with it.
+    func controlLoopEndedNotWhollyHeldLease(held: Set<Int>, covering covered: Set<Int>) {
         emit(
             .notice,
-            "Level 6 still held fan(s) \(held.sorted()) of a lease over \(covered.sorted()) after "
-                + "a refused apply, so it ended the lease and the lease core hands every one of "
-                + "its fans back: no fan of a lease is held while another is handed back (#670).")
+            "Level 6 still had fan(s) \(held.sorted()) of a lease over \(covered.sorted()) on "
+                + "account after a refused apply, not every fan of it held, so it ended the lease "
+                + "and the lease core hands every one of its fans back: no fan of a lease is held "
+                + "while another may be on automatic control (#670).")
     }
 
     /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off

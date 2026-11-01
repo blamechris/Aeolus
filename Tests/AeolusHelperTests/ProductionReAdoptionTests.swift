@@ -31,7 +31,14 @@ struct ProductionReAdoptionTests {
     /// **Mutation:** in `LeaseApplier.step`, `return` straight after `driver.reAdopted(permit)`,
     /// so a re-adopted fan is not commanded. Run: red here, at the re-apply's writes and fan 1's
     /// target register.
-    @Test("A kept fan re-adopted at a target of 0 is raised by its command in the same step")
+    @Test(
+        "A kept fan re-adopted at a target of 0 is raised by its command in the same step",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aReAdoptedFanAtTargetZeroIsRaised() async throws {
         let machine = await ProductionWriteMachine(stoppedByApple: [0, 1])
         let lease = try await machine.lease()

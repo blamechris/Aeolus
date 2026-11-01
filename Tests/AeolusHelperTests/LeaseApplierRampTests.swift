@@ -87,7 +87,14 @@ struct LeaseApplierRampTests {
     ///
     /// **Mutation:** in `LeaseApplier.step`, reset the memory only after an engagement that
     /// returned, not after a re-adoption. Run: red, 2,400 remembered as the ramp origin.
-    @Test("A kept fan read as still the lease's has its ramp memory reset")
+    @Test(
+        "A kept fan read as still the lease's has its ramp memory reset",
+        .disabled(
+            """
+            Unreachable while a refused apply that keeps a fan ends its lease whole (#670): no \
+            re-apply follows under that lease, so no kept fan is re-adopted. Re-enable when run \
+            1d lifts the rule.
+            """))
     func aReAdoptedFansRampMemoryIsReset() async throws {
         let machine = ReclamationMachine(
             stages: [
