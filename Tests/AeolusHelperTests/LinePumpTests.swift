@@ -51,8 +51,8 @@ struct LinePumpTests {
     /// is refused. Everything handed over is written, in order, once it is released.
     ///
     /// **Mutation:** write the line on the caller's thread (`drain()` in `enqueue`, whatever the
-    /// pump's mode). Run: red — the test thread parks in the first `enqueue`, and the time limit
-    /// ends the suite.
+    /// pump's mode). Run: red — the test thread parks in the first `enqueue`, nothing can release
+    /// it, and the writer lets go after `BlockedWriter.callerFailsafe`, so the assertions fail.
     @Test("Handing a line to a parked writer returns at once, and the lines wait their turn")
     func parkedWriter() async {
         let writer = BlockedWriter(parkingFromLine: 1)
@@ -126,6 +126,60 @@ struct LinePumpTests {
         pump.enqueue("after", at: Self.instant(2))
         #expect(pump.status.isIdle)
         #expect(writer.started == ["lost"], "nothing was written after the failure")
+    }
+
+    // MARK: - The writer these tests park
+
+    /// What ends a park is the test, and a clock only for a thread nothing could release. On CI's
+    /// pool of one three of these tests ran for 198 s (run 41341626972): a bound of ten seconds
+    /// had let the writer go long before they next looked at it.
+    ///
+    /// **Mutation:** put `BlockedWriter.failsafe` back to ten seconds. Run: red.
+    @Test("A parked writer outlasts the longest run the repository makes")
+    func aParkOutlastsTheRun() {
+        // `Test (release)` is limited to 30 minutes, the pool-of-one step to 10, and the command
+        // in docs/TESTING.md to 20. A run longer than the park would see it end under it.
+        #expect(BlockedWriter.failsafe >= 20 * 60)
+        #expect(BlockedWriter.failsafe > BlockedWriter.callerFailsafe)
+    }
+
+    /// A pump's thread is held by the test, not by the bound a caller's thread has.
+    ///
+    /// **Mutation:** pick the caller's bound whatever thread the write is on (`park` is
+    /// `.callerThread` in `BlockedWriter.write`). Run: red.
+    @Test("A write on the pump's own thread parks on the test's release, not the caller's bound")
+    func aPumpThreadParkIsNotACallerPark() async {
+        let writer = BlockedWriter(parkingFromLine: 1, failsafe: 60, callerFailsafe: 0.05)
+        let pump = LinePump(threaded: "test", write: writer.write)
+        defer {
+            writer.release()
+            pump.close()
+        }
+
+        pump.enqueue("held", at: Self.instant(0))
+
+        #expect(await Self.eventually { writer.isParked })
+        #expect(writer.lastPark == .pumpThread)
+    }
+
+    /// A write that parks a thread a task is running is the pump's guarantee broken, and nothing
+    /// can release it, so it lets go on its own.
+    ///
+    /// **This test holds its own pool thread** in that write, for 50 ms: no pool task releases
+    /// it, so it needs nothing from the pool and cannot exhaust it (docs/TESTING.md). The pump's
+    /// bound is five seconds, which is what a mutant that does not tell the two apart waits.
+    ///
+    /// **Mutation:** pick the pump's bound whatever thread the write is on (`park` is
+    /// `.pumpThread` in `BlockedWriter.write`). Run: red.
+    @Test("A write that parks a caller's thread is let go by the caller's bound")
+    func aCallerParkEnds() {
+        let writer = BlockedWriter(parkingFromLine: 1, failsafe: 5, callerFailsafe: 0.05)
+        defer { writer.release() }
+
+        let outcome = writer.write("held")
+
+        #expect(outcome == .delivered)
+        #expect(writer.lastPark == .callerThread)
     }
 
     // MARK: - Inline

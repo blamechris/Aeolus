@@ -15,15 +15,52 @@ import os
 /// parked, the **first half of the line it is parked on**, which is what a blocking `write(2)` of
 /// a long line leaves in a pipe. Releasing it completes the line.
 ///
-/// Every wait is bounded (ten seconds), so a test that forgets to release it leaves a thread
-/// that ends rather than one that lives as long as the process.
+/// ## What ends a park
+///
+/// **The test does.** A park that ended on a clock would end when the clock said, not when the
+/// test did, and a test waiting for its turn on the cooperative pool cannot say when that is. On
+/// CI's pool of one (run 41341626972) three tests that had parked a writer ran for 198 s, the
+/// whole step; a test that only wrote a line to a pipe and read it back was open for 174.6 s. The
+/// ten-second bound this type used to have let the writer go at ten, and when the tests next
+/// looked, it had finished its line and begun the next. So a park on the pump's own thread waits
+/// for `release()`, which every test calls from a `defer`, and has a bound (`failsafe`) only so
+/// that a thread nothing can release ends with the process: it is longer than any run
+/// (docs/TESTING.md, "The rule").
+///
+/// **The exception is a write that a task is running**, which is a write on a caller's thread:
+/// the regression `LinePump` exists to prevent. The thread that would call `release()` is the one
+/// that is parked, so nothing can release it, and it lets go after `callerFailsafe` so that the
+/// test fails on what it then sees and does not hang the process. A slow pool cannot trip that
+/// bound, because a correct pump never writes there.
+///
+/// **No pool thread is held while a pump's thread is parked**: the parked thread is the pump's
+/// own `Thread`, and the test only suspends.
 final class BlockedWriter: Sendable {
+
+    /// How long a write parked on a pump's own thread waits to be released: thirty minutes, the
+    /// longest limit any job in `ci.yml` has (`Test (release)`). The pool-of-one step is limited
+    /// to ten, and `docs/TESTING.md` runs it under twenty. The suite's `.timeLimit` is no guide:
+    /// it is a minute, and on a pool of one the tests it covers ran for up to 198 s.
+    static let failsafe: TimeInterval = 30 * 60
+
+    /// How long a write parked on a task's thread waits. Nothing can release it, so this is only
+    /// how long a regression takes to show.
+    static let callerFailsafe: TimeInterval = 10
 
     private struct State {
         var started: [String] = []
         var consumed = ""
         var isParked = false
         var isReleased = false
+        var lastPark: Park?
+    }
+
+    /// Whose thread a write parked, which is what picks its bound.
+    enum Park: Sendable, Equatable {
+        /// The pump's own `Thread`: only the test's `release()` ends it, or `failsafe`.
+        case pumpThread
+        /// A thread a task is running: the pump's guarantee was broken. Only `callerFailsafe`.
+        case callerThread
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -32,6 +69,8 @@ final class BlockedWriter: Sendable {
     private let failingFromLine: Int?
     private let outcomeWhenReleased: FileDescriptorWriter.Outcome
     private let delay: TimeInterval
+    private let pumpWait: TimeInterval
+    private let callerWait: TimeInterval
 
     /// - Parameters:
     ///   - parkingFromLine: The one-based number of the first line that parks, and every line
@@ -42,14 +81,21 @@ final class BlockedWriter: Sendable {
     ///     consumer that left while the line was waiting.
     ///   - delay: Seconds a line takes to write when it does not park: a reader that is slow
     ///     rather than stopped. Real time, and small.
+    ///   - failsafe: How long a park on a pump's thread waits for `release()`. For the tests of
+    ///     this type only; every other caller takes ``failsafe``.
+    ///   - callerFailsafe: The same for a park on a task's thread. For the tests of this type.
     init(
         parkingFromLine: Int? = 1, failingFromLine: Int? = nil,
-        outcomeWhenReleased: FileDescriptorWriter.Outcome = .delivered, delay: TimeInterval = 0
+        outcomeWhenReleased: FileDescriptorWriter.Outcome = .delivered, delay: TimeInterval = 0,
+        failsafe: TimeInterval = BlockedWriter.failsafe,
+        callerFailsafe: TimeInterval = BlockedWriter.callerFailsafe
     ) {
         self.parkingFromLine = parkingFromLine
         self.failingFromLine = failingFromLine
         self.outcomeWhenReleased = outcomeWhenReleased
         self.delay = delay
+        self.pumpWait = failsafe
+        self.callerWait = callerFailsafe
     }
 
     var write: LinePump.Write {
@@ -68,11 +114,15 @@ final class BlockedWriter: Sendable {
                 return .delivered
             }
             let half = line.index(line.startIndex, offsetBy: line.count / 2)
+            // A task running this write means it is on a caller's thread, where nothing can
+            // release it: a pump's thread is a `Thread` and runs no task.
+            let park: Park = withUnsafeCurrentTask { $0 != nil } ? .callerThread : .pumpThread
             state.withLock {
                 $0.consumed += String(line[..<half])
                 $0.isParked = true
+                $0.lastPark = park
             }
-            _ = gate.wait(timeout: .now() + 10)
+            _ = gate.wait(timeout: .now() + (park == .callerThread ? callerWait : pumpWait))
             state.withLock {
                 $0.isParked = false
                 if self.outcomeWhenReleased.isDelivered {
@@ -90,6 +140,9 @@ final class BlockedWriter: Sendable {
     }
 
     var isParked: Bool { state.withLock { $0.isParked } }
+
+    /// Whose thread the most recent park was on, or `nil` if none has happened.
+    var lastPark: Park? { state.withLock { $0.lastPark } }
 
     /// Every line the writer was given, whole.
     var started: [String] { state.withLock { $0.started } }

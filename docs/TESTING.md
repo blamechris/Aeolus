@@ -44,6 +44,14 @@ a release that **needs** a pool thread, unless it is the only test that does and
   a free thread, and the ceiling ends the process when it has none. A hold a `Thread` releases
   should fail safe sooner: nothing it waits for needs the pool, so it has no slow pool to
   outlast, and the 30, 10, 5 and 3 s failsafes in the tables below are the better design.
+- **Where the test releases a hold that is not a pool thread, the ceiling outlasts the run, not
+  the time limit.** On a pool of one every continuation waits its turn behind the rest of the
+  suite. In run 41341626972 the tests that had parked a `BlockedWriter` ran for 198 s, three
+  times their `.timeLimit` (a test that only wrote a line to a pipe and read it back was open for
+  174.6 s), and the writer's own ten-second bound let it go in the meantime. Nothing is wedged by
+  a long bound on the pump's `Thread`, and a short one is a race the test loses to the pool, so
+  `BlockedWriter.failsafe` is the longest job limit in `ci.yml`, 30 minutes. A write that a task runs is the exception (`callerFailsafe`, ten seconds): nothing can
+  release it, because the test that would is the thread parked.
 - **Put the release in a `defer`** when it is synchronous, so a test that fails before its own
   release leaves nothing parked.
 - **Poll with `Task.sleep`**, never by waiting on a semaphore that a pool task signals.
@@ -73,11 +81,15 @@ was read. What is *not* here suspends, which gives its thread back: `AsyncSignal
 | `CooperativePoolWidthTests.noTwoTasksHoldAThreadAtOnce` (only when `AEOLUS_EXPECT_POOL_OF_ONE=1`) | the pool threads of six tasks, each in `Thread.sleep` for 0.1 s | their own sleeps |
 | `SliceCountedWaitTests` (four) | the test's own pool thread, in `Thread.sleep` (at most 0.3 s) and semaphore waits | their own timeouts; one is signalled by a `Thread` after 0.1 s |
 | `IntegrationTests` signed-fixture tests (`AdHocSignedFixtures.codesign`) | the test's own pool thread, in `Process.waitUntilExit()` on `/usr/bin/codesign` | `codesign` exiting |
+| `FanctlOneShotOutputTests.statusToASlowReader` | the pool thread running `status --json`, in a blocking `write(2)` to a pipe with room for 300 bytes | the `SlowReader` `Thread`, which starts draining 50 ms in; else its cutoff (55 s, or 10 s after the writer closed) closes the pipe and the write gets `EPIPE` |
+| `FanctlOneShotOutputTests` (the two gone-reader tests), `FileDescriptorWriterTests.nonBlockingReaderLeaves`, `TestPipe.read` / `RealPipe.read` | the test's own pool thread: a `Thread.sleep` spin of at most 0.3 s, a `Thread.sleep` of 0.05 s, a `poll` of at most 2 s (a read with data waiting returns at once; the 2 s is a failing test's) | their own timeouts |
+| `LinePumpTests.aCallerParkEnds` | the test's own pool thread, parked in `BlockedWriter.write` | the writer's `callerFailsafe`, 50 ms in this test (ten seconds by default, which only a pump that writes on its caller's thread reaches) |
 
 **Not a pool thread (listed so nobody searches again):**
 
 | Where | Holds | Released by |
 |---|---|---|
+| `BlockedWriter` (`FanctlPumpDoubles`), under `LinePump(threaded:)`: `LinePumpTests`, `FanctlSetBlockedWriterTests`, `FanctlSetClosingStreamTests` | the pump's own `Thread`, parked in the writer | the test's `release()` (`PumpRig.release()`), in a `defer`, from a pool task; else a 30-minute failsafe, longer than any job (the rule above) |
 | `WedgedRoundTrip` (`WatchdogDoubles`), `ParkedRoundTrip` (`RoundTripTestSupport`) | a `Thread` the double starts | the test (`finish()` in a `defer` for `ParkedRoundTrip`); `WedgedRoundTrip` also has a 120 s failsafe |
 | `ScriptedProgressClock` (`LivenessWatchdogClockTests`) | the `Thread` the **test** starts (`aLateCompletionCannotPassAPhaseChange`) to call `recordCompletion()`: the clock parks whichever caller reaches its second read | the test's `clock.release()`; else a 30 s `signalled` wait |
 | `RoundBarrier` (`WatchdogEndingTests`) | two `Thread`s the test starts, each spinning in `sched_yield()` until both have arrived: a spin, not a wait | both arriving; else it gives up after 20 s |
