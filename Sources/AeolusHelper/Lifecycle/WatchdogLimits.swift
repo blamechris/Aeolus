@@ -163,10 +163,10 @@ enum WatchdogLimits {
     /// is left after it (ADR 0014 D5). No read.
     static let fanRestoreRoundTrips = 2
 
-    /// The longest turn any outstanding supervisor reader takes: a mode read, a write turn, or the
-    /// engaged step at rest — the larger of the bounds, as ADR 0014's P1′ amendment asks. It is
-    /// the longest single turn, and so the turn G's slot adds to the wait
-    /// (`WatchdogLimitsTests.theGateBoundCoversAWholeTurn`).
+    /// The longest turn, by round trips, that any outstanding supervisor reader takes: a mode
+    /// read, a write turn, or the engaged step at rest — the larger of the bounds, as ADR 0014's
+    /// P1′ amendment asks. It is the longest single turn by round trips, and so the turn G's slot
+    /// adds to the wait (`WatchdogLimitsTests.theGateBoundCoversAWholeTurn`).
     static let readerTurnRoundTrips = max(modeReadKeys, writeTurnRoundTrips, engagedStepRoundTrips)
 
     /// The longest turn an outstanding supervisor reader takes **other than an engaged step**: a

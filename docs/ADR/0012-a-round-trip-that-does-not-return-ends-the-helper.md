@@ -1059,7 +1059,7 @@ leans on asserted, by [`scripts/gate-wait-model/engaged_step.py`](../../scripts/
 ### Context
 
 ADR 0014's P1′ amendment (decision 4) raises a fan engaged at rest to its floor in the turn that
-reads back engaged. That turn is the longest a supervisor reader takes:
+reads back engaged. That turn is the longest a supervisor reader takes, by round trips:
 - eight round trips with `F<n>Tg`'s key info cached: the mode key's fresh info, the pre-state, the
   mode write, its read-back, the target's read, its fresh info, the floor's write and its read-back;
 - nine when the info is not cached. The preparation step takes it, and so does every grant's

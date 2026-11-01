@@ -730,7 +730,9 @@ preparation step and then reconciliation, and either can write toward automatic.
 - **In later sessions**, D9's reboot starts the installed branch helper before any recorder can
   run. Any toward-automatic write it makes is recorded in the helper's own log, and the gates apply
   to forward writes. *(Replaced by the run-1 amendment, item 10: every session installs its branch
-  build after the census and quiescence, and ends with the `main` build reinstalled and checked.)*
+  build after the census and quiescence. It ends with the `main` build reinstalled and checked, or,
+  where item 10's table ends otherwise, with the branch build installed and the case with the
+  architect.)*
 
 **The run: start 0, then four steps, all on fan 0.** *(Five since the P1′ amendment: 1d follows 1c.)*
 
@@ -4167,10 +4169,11 @@ says otherwise. Intel and M1/M2 stay `untested`.
      an alert cannot.
      - The helper acts on its own for abort 4 (the driver's undo), abort 5 past D (ADR 0012's
        watchdog), abort 7 (restart and reconciliation) and abort 8 (the lease's end).
-     - It ends no hold for aborts 1, 2, 3, 6, 9, 10, 11 or 12. § 3 acts only at its ceiling, far
-       above aborts 1 and 11. § 5 answers a change that abort 3 sees by re-asserting the hold,
-       which is a further write. Abort 10 is the state the engaged turn's floor rule prevents,
-       seen after it.
+     - It ends no hold for aborts 1, 2, 6, 9, 10, 11 or 12. § 3 acts only at its ceiling, far
+       above aborts 1 and 11. Abort 10 is the state the engaged turn's floor rule prevents, seen
+       after it. For abort 3, § 5 answers a change in the held fan by re-asserting it, a further
+       write. It ends the hold only when its re-assert budget runs out, by handing the fan back and
+       revoking the lease, and the maintainer does not wait for that.
    - *Why it never writes:* see the alternatives.
 5. **Abort 12 (new): the record goes blind during a hold.** The fan sampler writes no sample for
    2 s, or the package sampler none for 5 s, or the log stream or the watcher stops. Outside a
@@ -4261,7 +4264,8 @@ says otherwise. Intel and M1/M2 stay `untested`.
    - **The examination gate:** no line measures hold lengths, actor hops or timer lateness. Run 1
      records only whether the gate's fault lines appear, and
      `FanExaminationGate.examinationMargin` stays unmeasured.
-10. **A session ends with the `main`-build helper installed.** While the recorders still run, and
+10. **A session ends with the `main`-build helper installed, unless the table below ends it
+    otherwise.** While the recorders still run, and
     before the third-party fan utility's background item is switched back on (D9), the maintainer
     reinstalls a `main` `Full Release` build, which cannot write. That bundle was built, recorded
     and staged before the exclusion (item 2). After the reinstall, `e4-verify-running.sh` checks
@@ -4275,29 +4279,58 @@ says otherwise. Intel and M1/M2 stay `untested`.
     the P1′ amendment's "the branch has no client but run 1's operator" then holds by what is
     installed, not by what is remembered.
 
-    **The check, and what follows it.** Ten seconds after the `main` helper's first log line,
-    `Ftst` reads `0` and both modes read in Apple's set. The check alone decides. The branch
-    helper's exit restore writes only zeros, so whether the firmware accepted it does not change
-    the state the check reads.
-    - **The check passes:** the session ends with `main` installed. A refused exit restore is
-      recorded as U5b, and goes to the architect under D8's rule for a refused keystone. Nothing
-      is reinstalled for it.
-    - **The check fails:** the `main` helper cannot write, so `fanctl reset --all` and `bootout`
-      do nothing. Take these steps in order, each at most once, with the check after each:
-      1. Reinstall the branch build, whose preparation step and reconciliation restore at start.
-      2. If the check passes, reinstall `main`. If the check passes again, the session ends there.
-      3. Otherwise, take the ladder's sleep, then its power cycle (item 13).
-      4. If the check then passes with the branch build installed, reinstall `main` once more.
-    - **Any path that does not end with `main` installed and the check passing ends with the
-      branch build installed.** It is the only build that writes toward automatic, at every sleep,
-      exit and start. The third-party fan utility then stays off, nothing drives the helper, and
-      the case goes to the architect before the next session.
+    **The check, and what follows it.** The check is read 10 s after each step below: after the
+    helper's first log line for a reinstall, after the wake for a sleep, and after the record
+    restarts for a power cycle (item 13). It passes when `Ftst` reads `0` and both modes read in
+    Apple's set, and it alone decides. The last post-hold check before `CTX end` found the state in
+    Apple's set, and the branch helper's exit restore writes only zeros. So a refused exit restore
+    cannot move the state out of that set, and the check reads what is there either way.
+
+    No row runs twice, except that the branch build is installed at most twice (rows 2 and 6) and
+    `main` at most twice (row 1, then row 3 or row 5). The ladder, rows 4a and 4b, runs at most once.
+
+    | Row | Action | Check passes | Check fails |
+    |---|---|---|---|
+    | 1 | Reinstall `main`, and verify it against its record | End A | Row 2 |
+    | 2 | Reinstall the branch build, whose preparation step and reconciliation restore at start | Row 3 | Row 4a |
+    | 3 | Reinstall `main` again | End B | Row 6 |
+    | 4a | The ladder's sleep and wake, with the branch build installed | Row 5 if entered from row 2; End C if from row 6 | Row 4b |
+    | 4b | The ladder's power cycle (item 13) | Row 5 if entered from row 2; End C if from row 6 | End D |
+    | 5 | Reinstall `main` again | End B | Row 6 |
+    | 6 | Reinstall the branch build again, the one reinstall a step repeats | End C | Row 4a if the ladder has not run; otherwise End D |
+
+    | End | Installed | Check | Third-party fan utility | Who owns the case |
+    |---|---|---|---|---|
+    | A | `main` | passes | may go back on (the maintainer's choice) | nobody, unless the exit restore was refused: then the architect, as U5b, under D8's rule for a refused keystone |
+    | B | `main` | passes, after a failure | may go back on (the maintainer's choice) | the architect, before the next session: no write in this item explains the first failure |
+    | C | the branch build, with nothing driving it | passes | stays off | the architect, before the next session |
+    | D | the branch build, with nothing driving it | fails after the power cycle | stays off | the architect, at once. D8's ladder has no further step. A fan may be in manual with nothing watching it (#201's route), so the maintainer keeps the machine off sustained load until the case is ruled |
+
+    Any failed check in this item goes to the architect before the next session, whatever the end.
+    Where `main` cannot end with the check passing, the branch build is the end: it is the only
+    build that writes toward automatic, at every sleep, exit and start.
+
+    The paths, checkable against the tables:
+    - 1 pass → End A.
+    - 1 fail → 2 pass → 3 pass → End B.
+    - 1 fail → 2 pass → 3 fail → 6 pass → End C.
+    - 1 fail → 2 pass → 3 fail → 6 fail → 4a pass → End C.
+    - 1 fail → 2 pass → 3 fail → 6 fail → 4a fail → 4b pass → End C.
+    - 1 fail → 2 pass → 3 fail → 6 fail → 4a fail → 4b fail → End D.
+    - 1 fail → 2 fail → 4a pass → 5 pass → End B.
+    - 1 fail → 2 fail → 4a fail → 4b pass → 5 pass → End B.
+    - 1 fail → 2 fail → (4a or 4b) pass → 5 fail → 6 pass → End C.
+    - 1 fail → 2 fail → (4a or 4b) pass → 5 fail → 6 fail → End D, since the ladder has run.
+    - 1 fail → 2 fail → 4a fail → 4b fail → End D.
+
+    Every path ends within six steps.
 
 11. **1c's early end is the maintainer's to time.** He sends `fanctl reset --all` from the SSH
     session 10 s after `started` appears on his own screen, and no later than 20 s after it. The
     coordinator's call is a prompt, not the trigger.
     - If `set` exits on its duration first, no reset is sent. That is an operator miss, not a
-      failed step, and 1c is repeated once from its entry.
+      failed step, and 1c is repeated once from its entry. A second miss is a step that does not
+      pass (item 7), so 1d does not run that session.
     - A reset sent after `set` has exited is recorded as a machine-wide restore over automatic
       fans, and does not count as 1c.
 12. **1d's bounds.**
@@ -4309,7 +4342,8 @@ says otherwise. Intel and M1/M2 stay `untested`.
     - **The load starts no later than 30 s after `started`, and stops by itself 80 s after it
       starts.** Abort 11's 60 s, and the 20 s the pass holds after `F1Tg` leaves 0, then end inside
       the 120 s hold, so no verdict is read across the restore. A load not started by then is not
-      started, and 1d is repeated once from its entry: an operator miss, not a failed step.
+      started, and 1d is repeated once from its entry: an operator miss, not a failed step. A second
+      miss is a step that does not pass (item 7).
     - **1d's verdict, added:**
       - **Abort 11 after the restore has cleared `Ftst`:** not a U7 verdict. A fan 1 still stopped
         under load with `Ftst` cleared is U6's question; it is recorded and goes to the architect.
@@ -4372,7 +4406,7 @@ says otherwise. Intel and M1/M2 stay `untested`.
 - row 9's step response from rest takes more than 10 s to reach 80 % of the target;
 - the install rehearsal finds the approval lost, or the helper started unobserved;
 - "at rest" is not reached within 30 minutes;
-- a session ends with the branch build installed (item 10);
+- item 10 ends anywhere but End A;
 - 1d cannot reach its 41 °C entry at rest in two sessions;
 - 1c or 1d is repeated as an operator miss (items 11, 12).
 
