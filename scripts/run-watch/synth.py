@@ -85,8 +85,13 @@ def package_record(t, tick, hottest=42.0, extra=None):
         "suspendingNanoseconds": int(tick * 1e9), "tick": tick, "wallClockUTC": iso(t)}
 
 
-def stop_record(t, ticks):
-    return {"kind": "stop", "ticks": ticks, "wallClockUTC": iso(t)}
+def stop_record(ticks, final_nanoseconds=0):
+    """A sampler's own last line, in the keys of `SamplerStopRecord` (Tools/SMCSampler) and of the
+    stop lines in P1. It carries no wall-clock stamp: the watcher dates it by the file's last
+    sample."""
+    return {
+        "finalContinuousNanoseconds": final_nanoseconds,
+        "finalSuspendingNanoseconds": final_nanoseconds, "kind": "stop", "totalTicks": ticks}
 
 
 def log_timestamp(t):
@@ -117,7 +122,7 @@ class Run:
     def __init__(self, fans, packages, t0):
         self.fans, self.packages, self.t0 = fans, packages, t0
         self.log, self.ctx, self.polls = [], [], []
-        self.stops = {}  # "fans" / "package" -> seconds from t0 of a sampler's `stop` line
+        self.stops = {}  # "fans" / "package" -> seconds from t0 a sampler's `stop` line is written
 
     # ------------------------------------------------------------------ construction
 
@@ -295,15 +300,24 @@ class Run:
 
     # ------------------------------------------------------------------ serialisation
 
+    def _with_stop(self, which, records):
+        """The records as lines, with the sampler's `stop` line (if it has one) after the last
+        record stamped before it was written."""
+        lines, written = [], which not in self.stops
+        for record in records:
+            if not written and self._stamp(record) - self.t0 >= self.stops[which]:
+                lines.append(_line(stop_record(len(lines))))
+                written = True
+            lines.append(_line(record))
+        if not written:
+            lines.append(_line(stop_record(len(lines))))
+        return lines
+
     def fan_lines(self):
-        stop = [_line(stop_record(self.t0 + self.stops["fans"], len(self.fans)))] if (
-            "fans" in self.stops) else []
-        return [_line(start_record(FAN_KEYS, 0.1))] + [_line(r) for r in self.fans] + stop
+        return [_line(start_record(FAN_KEYS, 0.1))] + self._with_stop("fans", self.fans)
 
     def package_lines(self):
-        stop = [_line(stop_record(self.t0 + self.stops["package"], len(self.packages)))] if (
-            "package" in self.stops) else []
-        return [_line(start_record(PACKAGE_KEYS, 1))] + [_line(r) for r in self.packages] + stop
+        return [_line(start_record(PACKAGE_KEYS, 1))] + self._with_stop("package", self.packages)
 
     def log_lines(self):
         ordered = sorted(self.log, key=lambda r: r["timestamp"])

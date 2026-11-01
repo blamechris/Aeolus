@@ -74,12 +74,12 @@ One `echo` per line, stamped with `$(perl -MTime::HiRes=time -e 'printf "%.3f", 
 | Line | Written | The watcher does |
 |---|---|---|
 | `CTX armed` (optionally `pid=<n>`) | after start 0 passes | records the helper's PID (from the line, else the first `pgrep`). A PID change or a second preparation-step line afterwards is rule 7 |
-| `CTX step=<1a\|1b\|1b'\|1c\|1d> target=<rpm\|none> GO` | before the owner's `set` (1a, 1c, 1d), at GO (1b), or before the reset (1b') | opens the step; computes **B** (the mean of the hottest over the 10 s before the stamp) and logs it. `target=` must be a plain number of RPM above 0, or `none`: anything else (`5,777`, `5777rpm`, `nan`, `0`) is a spoken **BAD CONTEXT**, because rule 9 and the held-fan clause of rule 2 would otherwise be off without a word. A later valid step line ends it |
+| `CTX step=<1a\|1b\|1b'\|1c\|1d> target=<rpm\|none> GO` | before the owner's `set` (1a, 1c, 1d), at GO (1b), or before the reset (1b') | opens the step; computes **B** (the mean of the hottest over the 10 s before the stamp) and logs it. `target=` must be a plain number of RPM above 0, or `none`: anything else (`5,777`, `5777rpm`, `nan`, `0`) is a spoken **BAD CONTEXT**, because rule 9 and the held-fan clause of rule 2 would otherwise be off without a word. So is a step line with no `target=` field at all (`step=1b GO`, or a misspelt `targt=5777`); only `step=none` needs none. A later valid step line ends it |
 | `CTX load-start step=<1b\|1d>` | the first command of L1 | opens the **load window**: the 74 C limit begins, and B + 10 stops applying. For `1d` it also arms rule 11, with t_L at this stamp |
 | `CTX load-stop` | the first command of L2 | disarms rule 11. The load window does **not** end here: the machine leaves a load heat-soaked, and 1d's hold outlasts its load |
 | `CTX step=none` | after V passes | closes the step. The first one after `load-stop` also ends the load window (1b's own `step=none` comes while the load still runs, and does not) |
 | `CTX test-alert` | run day, once | raises a test alert, spoken once |
-| `CTX end` | after the last post-hold check passes, before the `main` reinstall | changes one thing: outside a hold, a helper PID change (or a second preparation-step line) is a note, not an alert, because the reinstall replaces the helper by design. Nothing else stands down |
+| `CTX end` | after the last post-hold check passes, before the `main` reinstall | outside a hold, a helper PID change (or a second preparation-step line) is a note, not an alert, because the reinstall replaces the helper by design. It also lets a sampler's own `stop` line end that sampler's source for rule 12, with no hold active (see *Stopping it*). It stands no check down by itself: in a hold every abort stays armed |
 
 ## What the alerts mean
 
@@ -97,7 +97,7 @@ Any abort called ends the session's forward writes (item 7).
 |---|---|---|
 | **Abort 1** | 1 | The hottest curated key is over 85 C at any time; or over 74 C in a load window (from `load-start` to the first `step=none` after `load-stop`); or over B + 10 C from a GO to `step=none`, in a step that no load window covers. A baseline taken at rest never applies again after a load in the same step |
 | **Abort 2** | 2 | A fan has been under 0.8 of its target for 10 s. An automatic fan (fan 1 always; fan 0 when no hold is active) against its `F<n>Tg` while that is above 0. The held fan 0 against the `CTX` target, counted from 10 s after `F0Tg` first reads it |
-| **Abort 3** | 3 | Something changed that nothing explains: `Ftst` changed with no `Wrote Ftst` within [-2 s, +0.5 s]; `F1Md` outside {0, 3}; `F0Md` outside {0, 3} for 2 s with no `Wrote F0Md` of that value near it; or, during a hold, `F0Tg` moved more than 1 RPM or `F0Md` left 1 with no `Wrote` of that key near it. `F0Md` = 1 during a hold is exempt and is not counted, so the 2 s starts when the hold ends: a restore that did not take is heard 2 s after it, however long the hold was, and a readback that lags it by under 2 s is not an alert. Each sample is explained only by a write in its own window [-2 s, +0.5 s], judged 2 s after the sample on log stamps: an old write cannot explain a later reading, and `Wrote F0Md = 0x0` does not explain a reading of 1 |
+| **Abort 3** | 3 | Something changed that nothing explains: `Ftst` changed with no `Wrote Ftst` within [-2 s, +0.5 s]; `F1Md` outside {0, 3}; `F0Md` outside {0, 3} for 2 s with no `Wrote F0Md` of that value near it; or, during a hold, `F0Tg` moved more than 1 RPM or `F0Md` left 1 with no `Wrote` of that key near it. `F0Md` = 1 during a hold is exempt and is not counted, so the 2 s starts when the hold ends: a restore that did not take is heard 2 s after it, however long the hold was, and a readback that lags it by under 2 s is not an alert (live too: a sample stamped before the restore line is in the hold even when it is read after the line). Each sample is explained only by a write in its own window [-2 s, +0.5 s], judged 2 s after the sample on log stamps: an old write cannot explain a later reading, and `Wrote F0Md = 0x0` does not explain a reading of 1 |
 | **Abort 4, verify** | 4 | An engagement was refused, the line says the restore landed, and the first sample after it agrees (`Ftst` 0, both modes in {0, 3}). **Verify; do not reset** (the undo has already run, and a reset on top of it is an unlabelled U5b test) |
 | **Abort 4, reset** | 4 | Anything else about a refused engagement: the hand-back was refused, `Could not undo the engagement`, the first sample disagrees, or 10 s passed with no verdict. **Reset** |
 | **Abort 5** | 5 | A `Wrote` call took 1 s or more. (Durations are read as floats: `5.3083e-05` is 53 microseconds.) Notes in the log, not alerts: a write at 20 ms or more, and at 50 ms or more ("forward writes end after this hold") |
@@ -110,9 +110,9 @@ Any abort called ends the session's forward writes (item 7).
 | **Abort 11, time** | 11 | 60 s after `load-start step=1d`, `F1Tg` still reads 0 (a warning at 45 s) |
 | **Abort 11, temperature** | 11 | After `load-start step=1d`, `F1Tg` still reads 0 and the hottest is 50 C or more. When `F1Tg` first leaves 0 the watcher logs how long it took and the hottest, and disarms |
 | **Abort 12** | 12 | During a hold the record has gone blind: no fan sample for 2 s, no package sample for 5 s, or the log stream's process is gone |
-| **Blind, no go** | 12 | The same, with no hold. Make no forward write until the record is whole again. No `CTX` line stands this rule down: a sampler's source ends only with that sampler's own `stop` line |
+| **Blind, no go** | 12 | The same, with no hold. Make no forward write until the record is whole again. No `CTX` line stands this rule down: a sampler's source ends only with that sampler's own `stop` line, and only if `CTX end` has been written and no hold is active. A stop line anywhere else is a `WARN` in `watch.log`, and the gap is heard as abort 12 (in a hold) or blind, no go |
 | **Helper fault** | - | A helper line of `messageType` `Fault`, at every stage of the run, `CTX end` included (a refused exit restore is the one that matters most at the end). The coordinator reads the line |
-| **Bad context** | - | A `CTX` line whose `target=` is not a number of RPM above 0 |
+| **Bad context** | - | A `CTX` line whose `target=` is not a number of RPM above 0, or a step line (other than `step=none`) with no `target=` field |
 | **No context** | - | `F0Md` reads 1 and no `CTX` step is open: the coordinator has not written one |
 | **Unparsed write** | 5 | A `Wrote` line whose duration cannot be read, so abort 5 cannot be judged |
 | **Watcher error** | - | A check raised an exception. The alert names the check. That check is not evaluated; the others still are. The traceback is in `watch.log` as one `ERROR` line (and again every thousandth time), not one per sample |
@@ -123,19 +123,33 @@ thresholds in force, the time since engage and since t_L, the pressure level, an
 
 ## Stopping it
 
-Everything is stopped **by PID**, at the end, **after the reinstall of the `main` helper**, in
-this order, so that no teardown step is heard as blind:
+Everything is stopped **by PID**, at the end, **after the reinstall of the `main` helper**, and
+only **after `CTX end`** has been written, in this order, so that no teardown step is heard as
+blind:
 
-1. `kill -INT` both samplers. Each writes its own `stop` line, and that line ends rule 12's wait
-   for its source. Nothing else does: `CTX end` does not.
+1. `kill -INT` both samplers. Each writes its own `stop` line, and, with `CTX end` written and no
+   hold active, that line ends rule 12's wait for its source. Nothing else does: `CTX end` alone
+   does not.
 2. The watcher-down loop, or it will say "watcher down" when the watcher goes.
 3. The watcher.
 4. The log stream and the poll.
 
 ```sh
-kill "$(cat ~/aeolus-captures/run1/watcher-down.pid)"
-kill "$(cat ~/aeolus-captures/run1/watch.pid)"
+D=~/aeolus-captures/run1
+kill -INT "$(cat "$D/fans-10hz.pid")" "$(cat "$D/package-1hz.pid")"
+kill "$(cat "$D/watcher-down.pid")"
+kill "$(cat "$D/watch.pid")"
+kill "$(cat "$D/logstream.pid")" "$(cat "$D/poll.pid")"
 ```
+
+(The PID files are the ones the runbook's recorders step writes.)
+
+**The samplers are stopped only after `CTX end`, never before it and never in a hold, because of
+rule 12.** A sampler that stops while the run is on, or while a hold is active, has left the record
+blind, and rule 12 must go on saying so: abort 12 in a hold, blind (no go) outside one. A stop
+line that arrives before `CTX end`, or in a hold, is therefore a `WARN` in `watch.log` and ends
+nothing. A `kill -INT` run early, or a pattern `pkill`, is exactly that, and a hold that runs on
+with its sampler gone must not be quiet.
 
 `SIGTERM` and `SIGINT` both end the watcher cleanly; its last log line is `watcher stopped`.
 

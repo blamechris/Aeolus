@@ -99,6 +99,12 @@ class ShapesMatchP1(unittest.TestCase):
                     a["readings"], b["readings"] = [a["readings"][0]], [b["readings"][0]]
                 self.assertEqual(a, b, (kind, made_path))
 
+    def test_a_stop_record_has_the_keys_of_the_real_one(self):
+        # The real stop line carries no wall-clock stamp. The watcher once read one that did, which
+        # no sampler writes, so it never saw a real sampler stop.
+        for real in (self.fans, self.package):
+            self.assertEqual(skeleton(first_record(real, "stop")), skeleton(synth.stop_record(1)))
+
     def test_a_sample_after_the_first_has_the_same_shape(self):
         with open(self.fans, encoding="utf-8") as handle:
             lines = [json.loads(l) for _, l in zip(range(5), handle) if l.startswith("{")]

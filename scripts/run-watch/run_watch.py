@@ -125,6 +125,7 @@ FanSample = namedtuple("FanSample", "t v")
 PackageSample = namedtuple("PackageSample", "t hottest f")
 LogLine = namedtuple("LogLine", "t level msg foreign")
 CtxLine = namedtuple("CtxLine", "t kind step target pid raw bad_target", defaults=(None,))
+MISSING_TARGET = "(no target= field)"  # the bad_target of a step line that has no target at all
 
 _ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$")
 _LOG_TS_RE = re.compile(
@@ -234,12 +235,15 @@ def parse_fan_line(raw):
     return FanSample(t, values)
 
 
-def parse_stop_line(raw):
-    """The time of a sampler's own `stop` line (its file's last), or None for any other line."""
+def is_stop_line(raw):
+    """Whether a line is a sampler's own `stop` line, the last of its file. The sampler writes it
+    on a clean exit (a signal, or `--count` reached) with the keys of `SamplerStopRecord`:
+    `kind`, `totalTicks`, `finalContinuousNanoseconds` and `finalSuspendingNanoseconds`. It has no
+    wall-clock stamp, so the caller dates it by the file's last sample: up to one sampling interval
+    before it was written, which orders it correctly against every other stream except a line
+    written within that interval of it."""
     record = _record(raw)
-    if record is None or record.get("kind") != "stop":
-        return None
-    return parse_iso_utc(record.get("wallClockUTC"))
+    return record is not None and record.get("kind") == "stop"
 
 
 def parse_package_line(raw):
@@ -302,10 +306,13 @@ def parse_ctx_line(raw, arrival=None):
     kind, step, target, pid, bad_target = tokens[0], fields.get("step"), None, None, None
     if kind.startswith("step="):
         kind = "step"
-    if fields.get("target", "none") != "none":
-        target = parse_rpm(fields["target"])
-        if target is None:
-            bad_target = fields["target"]
+    if "target" in fields:
+        if fields["target"] != "none":
+            target = parse_rpm(fields["target"])
+            if target is None:
+                bad_target = fields["target"]
+    elif kind == "step" and step != "none":  # `step=1b GO`, or a misspelt `targt=5777`
+        bad_target = MISSING_TARGET
     if fields.get("pid", "").isdigit():
         pid = int(fields["pid"])
     return CtxLine(t, kind, step, target, pid, m.group("body"), bad_target)
@@ -453,6 +460,7 @@ class Watcher:
         # derived from the helper's log
         self.hold_active = False
         self.hold_since = None
+        self.hold_end_t = None  # the stamp of the restore that last ended a hold
         self.engage_t = None
         self.restore_t = None
         self.clean_since = None
@@ -658,13 +666,17 @@ class Watcher:
     def check_r3_f0_mode(self, s):
         """Rule 3: F0Md outside {0, 3} for 2 s with no explaining line.
 
-        `F0Md = 1` while a hold is active is the hold, and is exempt: it does not count towards
-        the 2 s, so the clock starts when the hold ends, not when it began. A restore that did
-        not take is therefore heard 2 s after the restore, whether the hold lasted 30 s or 120.
-        A readback that lags the restore's stamp is absorbed by the same 2 s, so there is no
-        separate grace. Each out-of-set sample waits to be judged (`_judge_f0_modes`)."""
+        `F0Md = 1` in a hold is the hold, and is exempt: it does not count towards the 2 s, so
+        the clock starts when the hold ends, not when it began. A restore that did not take is
+        therefore heard 2 s after the restore, whether the hold lasted 30 s or 120. A readback
+        that lags the restore's stamp is absorbed by the same 2 s, so there is no separate grace.
+        A sample stamped before the restore line is in the hold even when it is read after the
+        line, as the sample just before the restore usually is live; otherwise it would start the
+        2 s early and the tolerance would be about 1.9 s. Each out-of-set sample waits to be
+        judged (`_judge_f0_modes`)."""
         mode = s.v.get("F0Md")
-        if mode is None or mode in SAFE_MODES or (mode == 1 and self.hold_active):
+        held = self.hold_active or (self.hold_end_t is not None and s.t < self.hold_end_t)
+        if mode is None or mode in SAFE_MODES or (mode == 1 and held):
             self.f0_unjudged.clear()
             self.level("r3-f0md", "ABORT 3", False)
             return
@@ -913,6 +925,8 @@ class Watcher:
                 self.hold_active = True
                 self.hold_since = self.hold_since or t
         elif data == "0x0":
+            if self.hold_active:
+                self.hold_end_t = t
             self.hold_active, self.hold_since = False, None
             if self.engage_t is not None:
                 self.restore_t, self.clean_since = t, None
@@ -970,20 +984,24 @@ class Watcher:
         elif kind == "end":
             self.ended = True
             self.info(
-                "CTX end: outside a hold, a helper restart is now a note; nothing else stands down")
+                "CTX end: outside a hold, a helper restart is now a note, and a sampler's stop line "
+                "now ends its source; nothing else stands down")
         else:
             self.note("unknown CTX line: %s" % c.raw[:120])
 
     def check_x_bad_context(self, c):
-        """A CTX line whose target cannot be read as RPM. An unreadable target would otherwise
-        leave rule 9 and the held-fan clause of rule 2 off with no word. It holds until a later
-        step line is valid, and is spoken."""
+        """A CTX line whose target cannot be read as RPM, or a step line (other than `step=none`)
+        with no target at all. Either would otherwise leave rule 9 and the held-fan clause of
+        rule 2 off with no word. It holds until a later step line is valid, and is spoken."""
         if c.kind == "step" or c.bad_target is not None:
             self.bad_target = c.bad_target
+        what = (
+            "the CTX step line has no target= field" if self.bad_target == MISSING_TARGET
+            else "the CTX target %r is not a number of RPM above 0" % (self.bad_target or "")[:40])
         self.level(
             "x-bad-context", "BAD CONTEXT", self.bad_target is not None,
-            "the CTX target %r is not a number of RPM above 0: rule 9 and the held-fan clause of "
-            "rule 2 are off until a valid CTX step line is written" % (self.bad_target or "")[:40])
+            "%s: rule 9 and the held-fan clause of rule 2 are off until a valid CTX step line is "
+            "written" % what)
 
     def on_pgrep(self, t, pids):
         self._bump(t)
@@ -1025,11 +1043,23 @@ class Watcher:
             self.note("pmset -g therm changed: %s" % " | ".join(text.split("\n"))[:300])
 
     def on_source_stop(self, name, t):
-        """A sampler's own `stop` line: that source is over, and is not a stalled recorder. This
-        is the only thing that ends rule 12's check for a source, whatever CTX says."""
+        """A sampler's own `stop` line. It ends that source (rule 12 stops waiting for it) only in
+        the teardown: after CTX end, with no hold active. A sampler that stops anywhere else (a
+        `kill -INT` run early, a pattern `pkill`) has left the record blind, and rule 12 goes on
+        saying so: ABORT 12 in a hold, BLIND — NO GO outside one. A source that has ended is
+        watched again as soon as its sampler writes another sample (`on_fan`, `on_package`)."""
         self._bump(t)
-        self.ended_sources.add(name)
-        self.info("%s file: its sampler wrote its stop line; rule 12 no longer waits for it" % name)
+        if self.ended and not self.hold_active:
+            self.ended_sources.add(name)
+            self.info(
+                "%s file: its sampler wrote its stop line after CTX end; rule 12 no longer waits "
+                "for it" % name)
+            return
+        where = "during a hold" if self.hold_active else "before CTX end"
+        self.note(
+            "%s file: its sampler wrote its stop line %s, so rule 12 still watches it and the gap "
+            "will be %s" % (name, where, "ABORT 12" if self.hold_active else "BLIND — NO GO"),
+            "WARN")
 
     def on_logstream(self, t, alive):
         self._bump(t)
@@ -1085,7 +1115,8 @@ class Watcher:
 
     def check_r12_blind(self):
         """Rule 12: the record has gone blind. During a hold it is an abort, otherwise a no-go. No
-        CTX line stands it down: a source ends only with its own sampler's stop line."""
+        CTX line stands it down: a source ends only with its own sampler's stop line, and that
+        only after CTX end with no hold active (`on_source_stop`)."""
         if self.now is None:
             return
         title = "ABORT 12" if self.hold_active else "BLIND — NO GO"
@@ -1241,18 +1272,15 @@ def load_events(paths, replay_polls=None):
         seq += 1
         events.append((t, PRIORITY[kind], seq, kind, payload))
 
-    for raw in read_lines(paths.get("fans")):
-        sample = parse_fan_line(raw)
-        if sample is not None:
-            add(sample.t, "fan", sample)
-        elif (stop := parse_stop_line(raw)) is not None:
-            add(stop, "fan_stop", stop)
-    for raw in read_lines(paths.get("package")):
-        sample = parse_package_line(raw)
-        if sample is not None:
-            add(sample.t, "package", sample)
-        elif (stop := parse_stop_line(raw)) is not None:
-            add(stop, "package_stop", stop)
+    for source, parse in (("fans", parse_fan_line), ("package", parse_package_line)):
+        last = None  # a stop line has no stamp of its own: it is dated by the sample before it
+        for raw in read_lines(paths.get(source)):
+            sample = parse(raw)
+            if sample is not None:
+                last = sample.t
+                add(sample.t, "fan" if source == "fans" else "package", sample)
+            elif last is not None and is_stop_line(raw):
+                add(last, STOP_KINDS[source], last)
     for raw in read_lines(paths.get("helper_log")):
         line = parse_log_line(raw)
         if line is not None:
@@ -1489,6 +1517,8 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: stopping.update(flag=True))
 
+    last_sample = {}  # per sampler's file, the stamp of its latest sample: a stop line's date
+
     def read_events(now, limit=Tail.CHUNK):
         events, seq = [], 0
         for name, tail in tails.items():
@@ -1496,13 +1526,15 @@ def run_live(args, spawn=_spawn, stop=None, wall=time.time, sleep=time.sleep):
             for raw in tail.read_new(limit):
                 parsed = parse(raw, now) if kind == "ctx" else parse(raw)
                 if parsed is None and name in STOP_KINDS:
-                    stop = parse_stop_line(raw)
-                    if stop is not None:
+                    if name in last_sample and is_stop_line(raw):
                         seq += 1
+                        stop = last_sample[name]
                         events.append((stop, PRIORITY[STOP_KINDS[name]], seq, STOP_KINDS[name], stop))
                     continue
                 if parsed is None or (kind == "ctx" and parsed.t is None):
                     continue
+                if name in STOP_KINDS:
+                    last_sample[name] = parsed.t
                 seq += 1
                 events.append((parsed.t, PRIORITY[kind], seq, kind, parsed))
         events.sort(key=lambda e: e[:3])

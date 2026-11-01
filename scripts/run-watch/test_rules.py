@@ -299,6 +299,66 @@ class Rule3Unexplained(unittest.TestCase):
         self.assertEqual(titles(w), ["ABORT 3"])
         self.assertTrue(2.0 <= first(w, "ABORT 3") - restore <= 4.5)
 
+    def readback_as_read(self, lag, delay=0.05):
+        """A hold restored at 30 s, whose F0Md still reads 1 for `lag` seconds after the restore's
+        stamp, with the events fed in the order the live loop meets them rather than the order of
+        their stamps: each fan sample is read `delay` after its stamp, the restore line 10 ms after
+        its. The sample stamped 30 ms before the restore is therefore read after the line, when no
+        hold is active any more. Returns (alert titles, seconds after the restore of the first)."""
+        t0, restore = 1000.0, 1030.0
+        watcher = rw.Watcher(rw.MemoryOutput())
+        watcher.start(t0)
+        watcher.on_ctx(rw.CtxLine(t0, "step", "1a", 3000.0, None, "step=1a target=3000 GO"))
+        watcher.on_log(rw.LogLine(t0 + 0.08, "Default", wrote("Ftst", "0x1"), False))
+        watcher.on_log(rw.LogLine(t0 + 0.10, "Default", wrote("F0Md", "0x1"), False))
+        events = []
+        for i in range(2, 400):
+            stamp = t0 + i * 0.1 - 0.03
+            values = {
+                "F0Md": 1 if stamp < restore + (1e9 if lag is None else lag) else 0,
+                "Ftst": 1 if stamp < restore else 0, "F0Tg": 3000.0, "F0Ac": 3000.0,
+                "F1Md": 0, "F1Tg": 0.0, "F1Ac": 0.0}
+            events.append((stamp + delay, "fan", rw.FanSample(stamp, values)))
+        for i in range(40):
+            events.append((t0 + i + 0.02, "package", rw.PackageSample(t0 + i, 42.0, {})))
+        events.append((restore + 0.01, "log", rw.LogLine(
+            restore, "Default", wrote("F0Md", "0x0"), False)))
+        events.append((restore + 0.011, "log", rw.LogLine(
+            restore + 0.03, "Default", wrote("Ftst", "0x0"), False)))
+        handlers = {"fan": watcher.on_fan, "package": watcher.on_package, "log": watcher.on_log}
+        wall = t0 + 0.2
+        for arrival, kind, payload in sorted(events, key=lambda e: e[0]):
+            while wall + 0.05 < arrival:
+                wall += 0.05
+                watcher.advance(wall)
+            handlers[kind](payload)
+            watcher.advance(arrival)
+        raised = [(r.t - restore, r.title) for r in watcher.raised]
+        return [title for _, title in raised], raised[0][0] if raised else None
+
+    def test_a_readback_that_lags_by_under_two_seconds_is_silent_in_the_order_the_loop_reads_it(self):
+        # Before, the sample stamped just before the restore was read after the restore line, with
+        # no hold active, so it was queued as an out-of-set reading and judged 2 s after its own
+        # stamp: a lag of 1.9 s was an abort, and the tolerance was about 1.9 s, not 2.
+        for lag in (0.7, 1.5, 1.8, 1.9, 1.95):
+            with self.subTest(lag=lag):
+                self.assertEqual(self.readback_as_read(lag)[0], [])
+
+    def test_a_readback_that_lags_by_over_two_seconds_is_an_abort_in_that_order_too(self):
+        # The first sample stamped at or after the restore is 70 ms after it (the samples are 30 ms
+        # before each tick), so it is 2 s old 2.07 s after the restore, which the loop's 50 ms grid
+        # reads as 2.1 s. Counted from the stale sample stamped before the restore it was 2.0 s.
+        for lag in (2.1, 2.5):
+            with self.subTest(lag=lag):
+                titles_, at = self.readback_as_read(lag)
+                self.assertEqual(titles_, ["ABORT 3"])
+                self.assertTrue(2.05 <= at <= 2.3, at)
+
+    def test_a_restore_that_did_not_take_is_still_heard_two_seconds_after_it_in_that_order(self):
+        titles_, at = self.readback_as_read(None)
+        self.assertEqual(titles_, ["ABORT 3"])
+        self.assertTrue(2.05 <= at <= 2.3, at)  # 2.1 s: see the test above
+
     def test_the_hold_itself_is_not_counted_towards_the_two_seconds(self):
         # a long hold with F0Md = 1 throughout, restored cleanly: nothing, at any length
         for hold in (30.0, 120.0):
@@ -326,6 +386,17 @@ class Rule3Unexplained(unittest.TestCase):
         self.assertIn("ABORT 3", titles(replay(reading(7.0))))
         # a write after the reading has run on for 2 s does not reach back to it either
         self.assertIn("ABORT 3", titles(replay(reading(13.6))))
+
+    def test_a_mode_write_stamped_after_the_reading_began_explains_it_only_within_half_a_second(self):
+        # F0Md reads 2 from 10 s to 13 s with no hold. The only `Wrote F0Md = 0x2` is stamped at
+        # 11.5 s, 1.5 s after the mode changed: the first sample, at 10.0 s, is explained by a
+        # write up to 10.5 s, and is not. Judged 2 s on, that is ABORT 3 at 12.0 s. A window that
+        # reached 2 s ahead of a sample, as the judging delay does, would explain every sample.
+        run = idle(30).add_ctx(5, "step=1a target=3000 GO").add_log(11.5, wrote("F0Md", "0x2"))
+        run.patch_fan(10, 13, F0Md=2)
+        w = replay(run)
+        self.assertEqual(set(titles(w)), {"ABORT 3"})
+        self.assertTrue(12.0 <= first(w, "ABORT 3") <= 12.2, first(w, "ABORT 3"))
 
     def test_during_a_hold_the_mode_may_not_leave_one_unwritten(self):
         run = idle(40).add_ctx(4.9, "step=1a target=3000 GO").add_log(5, wrote("F0Md", "0x1"))
@@ -714,8 +785,10 @@ class Rule12Blind(unittest.TestCase):
         self.assertEqual(set(titles(replay(run, mark_ended=False))), {"BLIND — NO GO"})
 
     def test_a_samplers_own_stop_line_ends_its_source_and_only_that_one(self):
-        # an event at 59 s keeps the clock running after the samplers' last samples
-        run = idle(60).drop(20, 60, "fans").add_stop("fans", 20.0).add_poll(59, "pressure", level=0)
+        # the teardown: CTX end, then each sampler is stopped. An event at 59 s keeps the clock
+        # running after the samplers' last samples
+        run = idle(60).add_ctx(10, "end").drop(20, 60, "fans").add_stop("fans", 20.0)
+        run.add_poll(59, "pressure", level=0)
         self.assertEqual(titles(replay(run, mark_ended=False)), [])
         both = run.copy().drop(20, 60, "package").add_stop("package", 20.0)
         self.assertEqual(titles(replay(both, mark_ended=False)), [])
@@ -724,10 +797,80 @@ class Rule12Blind(unittest.TestCase):
         self.assertEqual(set(titles(replay(other, mark_ended=False))), {"BLIND — NO GO"})
 
     def test_a_sampler_that_starts_again_after_its_stop_line_is_watched_again(self):
-        run = idle(80).drop(20, 40, "fans").add_stop("fans", 20.0).drop(60, 80, "fans")
+        run = idle(80).add_ctx(10, "end").drop(20, 40, "fans").add_stop("fans", 20.0)
+        run.drop(60, 80, "fans")
         w = replay(run, mark_ended=False)
         self.assertEqual(set(titles(w)), {"BLIND — NO GO"})
         self.assertTrue(61.9 <= first(w, "BLIND — NO GO") <= 62.3, first(w, "BLIND — NO GO"))
+
+
+class SamplerStopLine(unittest.TestCase):
+    """A sampler's own `stop` line ends its source for rule 12 only in the teardown: after
+    `CTX end`, with no hold active. A sampler that stops anywhere else (a `kill -INT` run early, a
+    pattern `pkill`) has left the record blind, and rule 12 must go on saying so: ABORT 12 in a
+    hold, BLIND — NO GO outside one. The fan sampler is the source with 2 s of slack, the package
+    sampler the one with 5 s."""
+
+    LATEST = {"fans": (31.9, 32.3), "package": (34.0, 34.4)}  # when the gap becomes an alert
+
+    def stopped(self, which, hold=False, end=None, at=30.0):
+        run = idle(80)
+        if hold:
+            run.hold(go=10, restore=None, target=3000)
+        if end is not None:
+            run.add_ctx(end, "end")
+        return replay(run.drop(at, 80, which).add_stop(which, at), mark_ended=False)
+
+    def assertGapIs(self, w, which, title):
+        self.assertEqual(set(titles(w)), {title})
+        low, high = self.LATEST[which]
+        self.assertTrue(low <= first(w, title) <= high, (which, first(w, title)))
+
+    def test_a_stop_line_in_a_hold_is_abort_12(self):
+        for which in ("fans", "package"):
+            with self.subTest(source=which):
+                w = self.stopped(which, hold=True)
+                self.assertGapIs(w, which, "ABORT 12")
+                self.assertTrue(any("stop line during a hold" in t for t in lines(w, "WARN")))
+
+    def test_a_stop_line_in_a_hold_after_ctx_end_is_still_abort_12(self):
+        for which in ("fans", "package"):
+            with self.subTest(source=which):
+                self.assertGapIs(self.stopped(which, hold=True, end=8), which, "ABORT 12")
+
+    def test_a_stop_line_before_ctx_end_with_no_hold_is_blind_no_go(self):
+        for which in ("fans", "package"):
+            with self.subTest(source=which):
+                w = self.stopped(which)
+                self.assertGapIs(w, which, "BLIND — NO GO")
+                self.assertTrue(any("stop line before CTX end" in t for t in lines(w, "WARN")))
+
+    def test_a_stop_line_after_ctx_end_with_no_hold_is_silent(self):
+        # the teardown
+        for which in ("fans", "package"):
+            with self.subTest(source=which):
+                w = self.stopped(which, end=10)
+                self.assertEqual(titles(w), [])
+                self.assertEqual(lines(w, "WARN"), [])
+                self.assertTrue(any("stop line after CTX end" in t for t in lines(w, "INFO")))
+
+    def test_the_teardown_after_a_hold_is_silent(self):
+        # the hold is restored at 40 s, CTX end at 50 s, both samplers stopped at 55 s. An event
+        # at 79 s keeps the clock running for 24 s after the samplers' last samples: without it
+        # the replay would end with them and nothing could ever be heard as blind.
+        run = idle(80).hold(go=10, restore=40, target=3000).add_ctx(50, "end")
+        run.drop(55, 80, "fans").add_stop("fans", 55.0)
+        run.drop(55, 80, "package").add_stop("package", 55.0)
+        w = replay(run.add_poll(79, "pressure", level=0), mark_ended=False)
+        self.assertEqual(titles(w), [])
+        self.assertEqual(lines(w, "WARN"), [])
+
+    def test_a_stop_line_while_a_hold_is_still_active_is_not_the_teardown(self):
+        # CTX end has been written, but the hold was never restored: the stop line is not honoured
+        run = idle(80).hold(go=10, restore=None, target=3000).add_ctx(50, "end")
+        run.drop(55, 80, "fans").add_stop("fans", 55.0)
+        w = replay(run, mark_ended=False)
+        self.assertEqual(set(titles(w)), {"ABORT 12"})
 
 
 class CtxEnd(unittest.TestCase):
@@ -800,9 +943,12 @@ class BadContext(unittest.TestCase):
     rule 2 without a word. It is a spoken alert instead."""
 
     def hold_with(self, text):
+        return self.hold_under("step=1b target=%s GO" % text)
+
+    def hold_under(self, ctx_body):
         # Apple demands 5500 RPM of fan 1 during the hold: ABORT 9 if the target is 5777
         run = idle(60).patch_fan(0, 60, F1Tg=5500.0, F1Ac=5500.0)
-        run.add_ctx(4.95, "step=1b target=%s GO" % text)
+        run.add_ctx(4.95, ctx_body)
         run.add_log(5.0, wrote("Ftst", "0x1")).add_log(5.03, wrote("F0Md", "0x1"))
         run.add_log(5.06, wrote("F0Tg", "0x0 0x0 0x80 0x3f"))
         return run.patch_fan(5.1, 60, Ftst=1, F0Md=1, F0Tg=5777.0, F0Ac=5777.0)
@@ -832,6 +978,30 @@ class BadContext(unittest.TestCase):
         self.assertEqual(w.take_speech(), ["bad context"])
         self.assertEqual(w.active_alerts(), [])
         self.assertTrue(any("BAD CONTEXT no longer holds" in text for text in lines(w, "CLEAR")))
+
+    def test_a_step_line_with_no_target_field_is_bad_context_too(self):
+        # `step=1b GO` or a misspelt `targt=5777` would leave rule 9 off with no word, as an
+        # unreadable target did. Only `step=none` needs no target.
+        for body in ("step=1b GO", "step=1b targt=5777 GO", "step=1b 5777 GO"):
+            with self.subTest(line=body):
+                w = replay(self.hold_under(body), speak=True)
+                self.assertEqual(titles(w), ["BAD CONTEXT"])
+                spoken = w.take_speech()
+                self.assertEqual(set(spoken), {"bad context"})
+                self.assertGreaterEqual(len(spoken), 3)  # and, while it holds, said again
+                self.assertEqual(w.active_alerts(), ["BAD CONTEXT"])
+                self.assertIn("no target= field", w.raised[0].detail)
+
+    def test_a_step_line_with_no_target_field_is_repeated_and_a_valid_line_ends_it(self):
+        w = replay(self.hold_under("step=1b GO").add_ctx(30, "step=1b target=6500 GO"), speak=True)
+        self.assertEqual(titles(w), ["BAD CONTEXT"])
+        self.assertEqual(w.active_alerts(), [])
+        # said when it begins (5 s) and again 15 s on, while it holds; the line at 30 s ends it
+        self.assertEqual(w.take_speech(), ["bad context", "bad context"])
+
+    def test_step_none_needs_no_target(self):
+        run = idle(30).add_ctx(5, "step=1b target=3000 GO").add_ctx(9, "step=none")
+        self.assertEqual(titles(replay(run)), [])
 
     def test_a_bad_target_on_any_ctx_line_is_heard(self):
         run = idle(30).add_ctx(5, "step=none target=abc")

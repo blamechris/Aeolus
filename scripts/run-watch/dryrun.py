@@ -164,8 +164,11 @@ def d1(p1, work, watcher):
     print("    warnings/notes  : %d / %d" % (len(lines_of(result, "WARN")), len(lines_of(result, "NOTE"))))
     print("    P1's hottest    : %.1f C; fan samples %d, package samples %d" % (
         max(p.hottest for p in pkgs), len(fans), len(pkgs)))
+    # P1's own stop lines carry no wall-clock stamp: both must still be recognised as stop lines
+    stops = sorted(e[3] for e in rw.load_events({"fans": p1.fans, "package": p1.package}) if e[3].endswith("_stop"))
+    print("    stop lines read : %s (the samplers' own, with no wall-clock stamp)" % (", ".join(stops) or "none"))
     print("    replay took     : %.1f s of wall time" % result["seconds"])
-    return len(alerts) == 0
+    return len(alerts) == 0 and stops == ["fan_stop", "package_stop"]
 
 
 def _p1_epoch(iso):
@@ -831,7 +834,8 @@ SEMANTIC = [
 
 #: Mutations the unit tests must kill, with no injection of their own (the unit sweep only):
 #: (label, how). The first four are the first review's surviving mutants (S1); the rest are the
-#: guards that round added or changed. Each edit is the exact text, found once in run_watch.py.
+#: guards the two rounds added or changed (N1, S-a, S-b and the readback nit are the delta
+#: review's). Each edit is the exact text, found once in run_watch.py.
 UNIT_ONLY = [
     ("S1 R2a: the held fan's 10 s spin-up allowance removed", (
         "text", "counted = self.tg_hit_t is not None and s.t >= self.tg_hit_t + HELD_SPINUP_SECONDS",
@@ -848,7 +852,7 @@ UNIT_ONLY = [
     ("B1: a sample is judged after 0.5 s, not 2 s (the readback's slack gone)", (
         "text", "delay = max(MODE_SECONDS, JUDGE_AFTER)", "delay = 0.5")),
     ("B1: the hold's F0Md = 1 is not exempt", (
-        "text", "or (mode == 1 and self.hold_active):", "or False:")),
+        "text", "or (mode == 1 and held):", "or False:")),
     ("B2: 74 C holds only while the load runs", (
         "text", "self.load_window and hottest > TEMP_LOADED", "self.load_active and hottest > TEMP_LOADED")),
     ("B2: B + 10 applies again in the window", (
@@ -861,7 +865,8 @@ UNIT_ONLY = [
     ("B2: a load-stop with no step open leaves the window", (
         "text", "if self.step is None:  # no step is open to carry", "if False:  # no step is open to carry")),
     ("S2 (ruling): the hold-blind `ended` guard back in rule 7", (
-        "text", "if self.ended and not self.hold_active:", "if self.ended:")),
+        "text", '        if self.ended and not self.hold_active:\n            self.note("after CTX end',
+        '        if self.ended:\n            self.note("after CTX end')),
     ("S2 (ruling): the `ended` guard back in rule 12", (
         "text", "        if self.now is None:\n            return\n        title = \"ABORT 12\"",
         "        if self.ended or self.now is None:\n            return\n        title = \"ABORT 12\"")),
@@ -871,6 +876,39 @@ UNIT_ONLY = [
     ("S2: a sampler's stop line is ignored", ("blank", "on_source_stop")),
     ("S2: a sampler that starts again stays over", (
         "text", 'self.ended_sources.discard("fans")', "pass")),
+    ("N1: a stop line ends its source whenever it comes", (
+        "text", "        if self.ended and not self.hold_active:\n            self.ended_sources.add(name)",
+        "        if True:\n            self.ended_sources.add(name)")),
+    ("N1: a stop line ends its source in a hold after CTX end", (
+        "text", "        if self.ended and not self.hold_active:\n            self.ended_sources.add(name)",
+        "        if self.ended:\n            self.ended_sources.add(name)")),
+    ("N1: a stop line ends its source before CTX end", (
+        "text", "        if self.ended and not self.hold_active:\n            self.ended_sources.add(name)",
+        "        if not self.hold_active:\n            self.ended_sources.add(name)")),
+    ("N1: a stop line is read only if it carries a wall-clock stamp (no sampler writes one)", (
+        "text", 'return record is not None and record.get("kind") == "stop"',
+        'return record is not None and record.get("kind") == "stop" and '
+        'parse_iso_utc(record.get("wallClockUTC")) is not None')),
+    ("N1: the replay does not read a sampler's stop line", (
+        "text", "elif last is not None and is_stop_line(raw):", "elif False:")),
+    ("S-a: rule 3's window for F0Md reaches 2 s ahead of the sample, not 0.5 s", (
+        "text", '"F0Md", mode, t - EXPLAIN_BEFORE, t + EXPLAIN_AFTER)',
+        '"F0Md", mode, t - EXPLAIN_BEFORE, t + JUDGE_AFTER)')),
+    ("S-a: rule 3's window for the other keys reaches 2 s ahead of the sample", (
+        "text", "lo, hi = t - EXPLAIN_BEFORE, t + EXPLAIN_AFTER", "lo, hi = t - EXPLAIN_BEFORE, t + JUDGE_AFTER")),
+    ("S-b: a step line with no target= field is accepted", (
+        "text", 'elif kind == "step" and step != "none":', "elif False:")),
+    ("S-b: step=none needs a target too", (
+        "text", 'elif kind == "step" and step != "none":', 'elif kind == "step":')),
+    ("S-b: a load-start line, which carries step=, is held to a target too", (
+        "text", 'elif kind == "step" and step != "none":', 'elif step is not None and step != "none":')),
+    ("nit: a sample stamped before the restore is not in the hold", (
+        "text", "held = self.hold_active or (self.hold_end_t is not None and s.t < self.hold_end_t)",
+        "held = self.hold_active")),
+    ("nit: a sample stamped up to 0.5 s after the restore is still in the hold", (
+        "text", "and s.t < self.hold_end_t)", "and s.t < self.hold_end_t + 0.5)")),
+    ("nit: any F0Md in the hold's span is exempt, not only 1", (
+        "text", "(mode == 1 and held)", "(held and mode is not None)")),
     ("S2: the live loop does not read a sampler's stop line", (
         "text", "if parsed is None and name in STOP_KINDS:", "if False and name in STOP_KINDS:")),
     ("S3: an unreadable target is not heard", ("blank", "check_x_bad_context")),
@@ -969,6 +1007,36 @@ def d4(p1, work, watcher, mutations):
     return allok
 
 
+#: Functions the unit sweep empties besides BLANKED's (each has its own unit tests, no injection).
+ALSO_BLANKED = (
+    "check_r4_escalate", "check_r4_verdict", "_track_restore", "_track_r11_release", "_judge_pending",
+    "_resolve_b", "_pump_speech")
+
+
+def check_mutations(watcher):
+    """Apply every mutation to the watcher's text, in memory, before anything runs. A mutation
+    whose anchor the tree has since changed would otherwise stop the unit sweep with a
+    LookupError after ten minutes and more. Returns how many were applied."""
+    with open(watcher, encoding="utf-8") as handle:
+        text = handle.read()
+    jobs = [("blank " + f, ("blank", f)) for f, _ in BLANKED]
+    jobs += [("blank " + f, ("blank", f)) for f in ALSO_BLANKED]
+    jobs += [("sem " + label, how) for label, how, _, _ in SEMANTIC] + UNIT_ONLY
+    stale = []
+    for label, how in jobs:
+        try:
+            changed = apply_mutation(how)(text)
+            compile(changed, "<mutant>", "exec")
+            if changed == text:
+                raise LookupError("changes nothing")
+        except (LookupError, SyntaxError) as error:
+            stale.append("  %s: %s" % (label, error))
+    if stale:
+        raise SystemExit("stale mutations (their anchors are not in %s):\n%s" % (
+            watcher, "\n".join(stale)))
+    return len(jobs)
+
+
 def unit_sweep(work, mutations, python):
     print("unit  the unit tests against each mutated copy: every one must go red")
     print()
@@ -977,7 +1045,7 @@ def unit_sweep(work, mutations, python):
     allok = True
     extra = [("sem-" + label, how) for label, how, _, _ in SEMANTIC] + UNIT_ONLY
     jobs = [("blank-" + f, ("blank", f)) for f, _ in BLANKED] + [
-        ("blank-" + f, ("blank", f)) for f in ("check_r4_escalate", "check_r4_verdict", "_track_restore", "_track_r11_release", "_judge_pending", "_resolve_b", "_pump_speech")]
+        ("blank-" + f, ("blank", f)) for f in ALSO_BLANKED]
     with mutate.Sweep(mutations) as sweep:
         for index, (label, how) in enumerate(jobs + extra):
             path = sweep.make("unit-%d" % index, apply_mutation(how))
@@ -1008,6 +1076,9 @@ def main():
     p1 = P1(args.p1)
     watcher = os.path.join(HERE, "run_watch.py")
     results = {}
+    if "d4" in args.parts or "unit" in args.parts:
+        print("mutations: all %d applied to the watcher's text before anything runs" % check_mutations(watcher))
+        print()
     for part in args.parts:
         if part == "d1":
             results[part] = d1(p1, args.work, watcher)

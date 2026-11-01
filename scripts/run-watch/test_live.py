@@ -78,7 +78,7 @@ class Clock:
         for which, seconds in run.stops.items():  # a sampler's own last line
             at = run.t0 + seconds
             self.queue["fans" if which == "fans" else "package"].append(
-                (at, synth._line(synth.stop_record(at, 0))))
+                (at, synth._line(synth.stop_record(0))))
         for key, path in self.paths.items():
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write("")
@@ -261,16 +261,56 @@ class LiveLoop(unittest.TestCase):
         self.assertGreater(watcher.fan_samples, 300)
         self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR "), 1)
 
-    def test_a_samplers_stop_line_ends_its_source_in_the_live_loop_too(self):
-        # the fan sampler is stopped at 20 s with its own stop line; the package sampler runs on
-        run = idle(60).drop(20, 60, "fans")
-        watcher, _, directory = live(run.copy().add_stop("fans", 20.0), synth.T0 + 5, synth.T0 + 45)
+    def test_a_samplers_stop_line_after_ctx_end_ends_its_source_in_the_live_loop_too(self):
+        # the teardown: CTX end, then the fan sampler is stopped at 20 s with its own stop line,
+        # while the package sampler runs on
+        run = idle(60).add_ctx(10, "end").drop(20, 60, "fans")
+        watcher, system, directory = live(
+            run.copy().add_stop("fans", 20.0), synth.T0 + 5, synth.T0 + 45)
         self.assertEqual(watcher.raised, [])
-        self.assertIn("fans file: its sampler wrote its stop line", read(
+        self.assertEqual(system.spoken(), [])
+        self.assertIn("fans file: its sampler wrote its stop line after CTX end", read(
             os.path.join(directory, "watch.log")))
         # without the stop line the same gap is blind
         watcher, _, _ = live(run, synth.T0 + 5, synth.T0 + 45)
         self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+
+    def test_a_stop_line_in_a_hold_is_abort_12_and_is_said(self):
+        # The sampler is stopped during a hold that is never restored. The stop line must not
+        # stand rule 12 down: before, the hold ran blind for about 280 s, until ABORT 8.
+        for which, latest in (("fans", 32.3), ("package", 34.4)):
+            with self.subTest(source=which):
+                run = idle(80).hold(go=10, restore=None, target=3000)
+                run.drop(30, 80, which).add_stop(which, 30.0)
+                watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+                self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+                self.assertLessEqual(watcher.raised[0].t - synth.T0, latest)
+                self.assertEqual(set(system.spoken()), {"abort 12"})
+                self.assertIn("stop line during a hold", read(os.path.join(directory, "watch.log")))
+
+    def test_a_stop_line_before_ctx_end_with_no_hold_is_blind_no_go_and_is_said(self):
+        for which, latest in (("fans", 32.3), ("package", 34.4)):
+            with self.subTest(source=which):
+                run = idle(80).drop(30, 80, which).add_stop(which, 30.0)
+                watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+                self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+                self.assertLessEqual(watcher.raised[0].t - synth.T0, latest)
+                self.assertEqual(set(system.spoken()), {"blind. no go"})
+                self.assertIn("stop line before CTX end", read(os.path.join(directory, "watch.log")))
+
+    def test_a_stop_line_in_a_hold_after_ctx_end_is_still_abort_12_and_is_said(self):
+        run = idle(80).hold(go=10, restore=None, target=3000).add_ctx(8, "end")
+        run.drop(30, 80, "fans").add_stop("fans", 30.0)
+        watcher, system, _ = live(run, synth.T0 + 5, synth.T0 + 50)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+        self.assertEqual(set(system.spoken()), {"abort 12"})
+
+    def test_a_stop_line_the_watcher_starts_after_is_read_from_the_history(self):
+        # a watcher (re)started at 45 s, after the teardown's stop line was written at 20 s
+        run = idle(60).add_ctx(10, "end").drop(20, 60, "fans").add_stop("fans", 20.0)
+        watcher, system, _ = live(run, synth.T0 + 45, synth.T0 + 55)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
 
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):

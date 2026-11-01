@@ -116,16 +116,30 @@ class LogLineTests(unittest.TestCase):
 
 class StopTests(unittest.TestCase):
     def test_a_samplers_stop_line(self):
-        line = json.dumps(synth.stop_record(synth.T0 + 5.0, 50))
-        self.assertAlmostEqual(rw.parse_stop_line(line), synth.T0 + 5.0, 3)
+        line = json.dumps(synth.stop_record(50))
+        self.assertTrue(rw.is_stop_line(line))
         self.assertIsNone(rw.parse_fan_line(line))  # it is not a sample
         self.assertIsNone(rw.parse_package_line(line))
 
+    def test_the_line_the_sampler_really_writes_has_no_wall_clock_stamp(self):
+        # The keys of `SamplerStopRecord` in Tools/SMCSampler/SMCSamplerCore.swift, and of the stop
+        # lines in P1. A reader that wanted a stamp would never recognise one, and a sampler's stop
+        # would go unseen: the teardown would be heard as blind.
+        raw = (b'{"finalContinuousNanoseconds":9,"finalSuspendingNanoseconds":9,'
+               b'"kind":"stop","totalTicks":3}')
+        self.assertTrue(rw.is_stop_line(raw))
+        self.assertEqual(
+            sorted(synth.stop_record(3)),
+            ["finalContinuousNanoseconds", "finalSuspendingNanoseconds", "kind", "totalTicks"])
+
     def test_nothing_else_is_one(self):
-        self.assertIsNone(rw.parse_stop_line(json.dumps(synth.fan_record(synth.T0, 1))))
-        self.assertIsNone(rw.parse_stop_line(json.dumps(synth.start_record(synth.FAN_KEYS, 0.1))))
-        self.assertIsNone(rw.parse_stop_line('{"kind":"stop"}'))
-        self.assertIsNone(rw.parse_stop_line("Filtering the log data"))
+        self.assertFalse(rw.is_stop_line(json.dumps(synth.fan_record(synth.T0, 1))))
+        self.assertFalse(rw.is_stop_line(json.dumps(synth.start_record(synth.FAN_KEYS, 0.1))))
+        self.assertFalse(rw.is_stop_line(
+            '{"continuousNanoseconds":1,"kind":"heartbeat","wallClockUTC":"2026-10-31T01:17:19.036Z"}'))
+        self.assertFalse(rw.is_stop_line('{"kind":"stopped"}'))
+        self.assertFalse(rw.is_stop_line("Filtering the log data"))
+        self.assertFalse(rw.is_stop_line(""))
 
 
 class WriteValueTests(unittest.TestCase):
@@ -161,7 +175,19 @@ class CtxTests(unittest.TestCase):
             self.assertEqual((c.target, c.bad_target), (None, text), text)
         c = rw.parse_ctx_line("1761870000.1 CTX step=1b' target=none GO")
         self.assertEqual((c.target, c.bad_target), (None, None))
-        self.assertEqual(rw.parse_ctx_line("1761870000.1 CTX step=1a GO").bad_target, None)
+
+    def test_a_step_line_with_no_target_field_is_refused_as_a_target_is(self):
+        # `step=1b GO` and a misspelt `targt=` leave rule 9 and the held-fan clause of rule 2 off
+        # exactly as `target=5,777` does, so they are as loud. Only `step=none` needs no target.
+        for body in ("step=1a GO", "step=1b targt=5777 GO", "step=1b 5777 GO", "step=1b'",
+                     "step= GO"):
+            c = rw.parse_ctx_line("1761870000.1 CTX " + body)
+            self.assertEqual((c.kind, c.target, c.bad_target), ("step", None, rw.MISSING_TARGET), body)
+        for body in ("step=none", "step=none target=none", "step=1b target=none GO",
+                     "step=1b' target=none GO", "load-start step=1d", "load-stop", "armed pid=7",
+                     "end", "test-alert"):
+            c = rw.parse_ctx_line("1761870000.1 CTX " + body)
+            self.assertIsNone(c.bad_target, body)
 
     def test_parse_rpm(self):
         self.assertEqual(rw.parse_rpm("5777"), 5777.0)
