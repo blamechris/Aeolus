@@ -201,6 +201,8 @@ struct LeaseLog: Sendable {
         case .leaseExpired: return "the lease expired — TTL, monotonic clock"
         case .connectionInvalidated: return "the holding connection died"
         case .leaseReleased: return "the client released the lease"
+        case .applyRefused:
+            return "a refused apply left part of the lease held — #670, every fan or none"
         case .allLeasesDropped: return "every lease was dropped"
         case .startupReconciliation:
             return "startup reconciliation found the fan in manual — docs/SAFETY.md § 6"
@@ -542,6 +544,19 @@ extension LeaseLog {
             self-renewing lease. Refused: restart plus startup reconciliation is the whole \
             of a self-renewing lease's safety story, and it is not hardware-verified yet \
             (ADR 0007).
+            """
+        )
+    }
+
+    /// A grant was refused because it did not name every enumerated fan (#670). `.notice`, so a
+    /// user who finds a per-fan request refused can see why in `log show`.
+    func refusedNarrowerThanEveryFan(_ connection: ConnectionID, missing: Set<Int>) {
+        emit(
+            .notice,
+            """
+            Connection \(connection.logDescription) asked for manual control without fan(s) \
+            \(Self.describe(missing)). Refused: a lease covers every fan or none, until a hardware \
+            run shows a fan left automatic beside held ones is safe (ADR 0014's U7, #670).
             """
         )
     }

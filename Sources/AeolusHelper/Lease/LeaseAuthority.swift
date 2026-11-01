@@ -250,6 +250,13 @@ actor LeaseAuthority: HeldLeaseRole {
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()
+        // Every enumerated fan, or none (#670): the most durable refusal after the build's, and
+        // free, so first after the sweep. An index the machine lacks is `validateFanIndices`'.
+        let missing = enumerated.subtracting(request.fanIndices)
+        guard missing.isEmpty else {
+            log.refusedNarrowerThanEveryFan(connection, missing: missing)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .leaseMustCoverEveryFan)
+        }
         try await refuseIfThermalEmergencyActive(connection)
         try await refuseIfBlind(connection)
         let wanting = Set(request.fanIndices).intersection(enumerated)

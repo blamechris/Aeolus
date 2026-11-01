@@ -47,6 +47,16 @@ struct LeaseEngagements: Sendable {
     /// The leases with a fan on account, for tests.
     var leases: Set<UUID> { Set(fans.keys) }
 
+    /// The fans of `covered` with an account under `lease`, when some have one and some do not;
+    /// otherwise `nil` (#670). A fan with an account may be off automatic control, and one with
+    /// none was handed back or never engaged, so a mix is a lease holding some of its fans while
+    /// others are back on automatic control: ADR 0014's U7 state, which level 6 ends whole.
+    func partlyHeld(of covered: Set<Int>, under lease: UUID) -> Set<Int>? {
+        let held = covered.filter { fans[lease]?[$0] != nil }
+        guard !held.isEmpty, held != covered else { return nil }
+        return held
+    }
+
     /// An engagement of `index` under `lease` returned, or a kept fan was re-adopted.
     mutating func insert(_ index: Int, under lease: UUID) {
         open(.engaged, for: index, under: lease)
