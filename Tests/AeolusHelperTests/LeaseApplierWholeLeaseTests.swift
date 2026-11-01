@@ -188,6 +188,48 @@ struct LeaseApplierWholeLeaseTests {
         #expect(await machine.restorer.restores == [.init(fans: [0, 1], cause: .applyRefused)])
     }
 
+    /// The mix of the test above, with the client's connection dropping while the undo hands fan
+    /// 0 back: the lease core has ended the lease before level 6 asks it to, answers `.gone`, and
+    /// level 6 writes no line saying it ended the lease, an act it did not perform. The lease core
+    /// handed the fans back once, under the connection's own cause.
+    ///
+    /// **Mutation:** in `LeaseApplier.endNotWhollyHeld`, delete `guard ended == .revoked else {
+    /// return }`. Run: red, the line claiming level 6 ended a lease the connection's end had.
+    @Test("A lease that ended during the undo is not said to be ended by level 6")
+    func aLeaseEndedDuringTheUndoIsNotClaimed() async throws {
+        let fans: [Int: ScriptedControlPlane.FanCondition] = [
+            0: .automatic(at: 1_800), 1: .automatic(at: 1_800),
+        ]
+        let plane = ScriptedControlPlane(
+            fans: fans,
+            stages: [
+                .nominal(),
+                .nominal(targetWrites: .refused(reason: "F1Tg refused")),
+                .nominal(writes: .refused(reason: "fan 1's restore refused")),
+            ])
+        let machine = ReclamationMachine(plane: plane, fans: fans)
+        let lease = try await machine.lease(fans: [0, 1]).id
+        let writes = NthWriteScriptingPlane(plane)
+        await writes.before(command: 2) { await plane.advance() }
+        await writes.before(restore: 2) {
+            await machine.endLease()
+            await plane.advance()
+        }
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        _ = await LeaseApplierAnswerTests.answer {
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
+        }
+
+        #expect(await writes.fired == ["command 2", "restore 2"], "the scenario never happened")
+        #expect(await machine.leases.leaseCount == 0)
+        let restores = await machine.restorer.restores
+        #expect(restores.map(\.cause) == [.connectionInvalidated], "\(restores)")
+        #expect(
+            machine.safetyLog.lines(containing: "so it ended the lease").isEmpty,
+            "level 6 claimed an end the connection's drop made")
+    }
+
     /// Two automatic fans, the second stage refusing every write.
     private static func twoFans() -> ReclamationMachine<ScriptedControlPlane> {
         ReclamationMachine(
