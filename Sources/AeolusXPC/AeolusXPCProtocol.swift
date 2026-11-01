@@ -377,7 +377,8 @@ import Foundation
 /// mechanism, because a safety mechanism that a peer can decline to advertise is a safety
 /// mechanism a peer can turn off, which `CLAUDE.md` rule 5 forbids by construction.
 public enum AeolusXPCVersion {
-    public static let current = 1
+    /// 2 since #670, for what `acquireLease` and `apply` mean (docs/SAFETY.md § 1 and § 2).
+    public static let current = 2
 
     /// The oldest client protocol version this helper still accepts.
     public static let minimumSupported = 1

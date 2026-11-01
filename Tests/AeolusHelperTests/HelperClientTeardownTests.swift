@@ -214,7 +214,9 @@ struct HelperClientTeardownTests {
     func aRefusedHandshakeLeavesNoReusableConnection() async throws {
         let harness = ClientListenerHarness(
             authority: RecordingFanAuthority(),
-            helperRange: ProtocolVersionRange(minimumSupported: 2, current: 3))
+            helperRange: ProtocolVersionRange(
+                minimumSupported: AeolusXPCVersion.current + 1,
+                current: AeolusXPCVersion.current + 2))
         let pinning = CountingClientPinning()
         let client = harness.client(pinning: pinning)
 

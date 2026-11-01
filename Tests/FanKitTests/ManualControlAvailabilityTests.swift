@@ -30,6 +30,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.reclaimedBySystem),
             .unavailable(.leaseHeldByAnotherClient),
             .unavailable(.selfRenewalNotBuilt),
+            .unavailable(.leaseMustCoverEveryFan),
             .unavailable(.releaseInProgress),
             .unavailable(.handbackUnconfirmed),
             .unavailable(.restoreToAutomaticUnconfirmed),
@@ -86,6 +87,22 @@ struct ManualControlAvailabilityTests {
     /// `.restoreToAutomaticFailed` reaches for a helper restart to clear a state a restart
     /// does not clear. Those are the two wrong actions decision D33 introduced the case to
     /// separate.
+    /// #670's refusal arrives as itself, and its text says what a client must do: ask for every
+    /// fan. An older client decodes it as `.unknown`, a refusal, which is what keeps the protocol
+    /// bump's `minimumSupported` at 1.
+    @Test("leaseMustCoverEveryFan arrives as itself, and says to ask for every fan")
+    func leaseMustCoverEveryFanDecodesToItsOwnCase() throws {
+        let decoded = try decode(#"{"state":"unavailable","reason":"leaseMustCoverEveryFan"}"#)
+        #expect(decoded == .unavailable(.leaseMustCoverEveryFan))
+        #expect(decoded != .unavailable(.unknown("leaseMustCoverEveryFan")))
+        #expect(decoded != .unavailable(.leaseHeldByAnotherClient))
+        let reason = ManualControlAvailability.Reason.leaseMustCoverEveryFan
+        #expect(reason.wireValue == "leaseMustCoverEveryFan")
+        #expect(reason.userFacingSummary.contains("every fan together or of none"))
+        #expect(reason.recoveryAdvice.contains("every fan at once"))
+        #expect(reason.recoveryAdvice.contains("fanctl set all"))
+    }
+
     @Test("handbackUnconfirmed arrives as itself, distinct from both of its neighbours")
     func handbackUnconfirmedDecodesToItsOwnCase() throws {
         let decoded = try decode(#"{"state":"unavailable","reason":"handbackUnconfirmed"}"#)

@@ -33,6 +33,9 @@ extension ManualControlAvailability.Reason {
         case .selfRenewalNotBuilt:
             return "A self-renewing lease was requested, and the helper's build did not implement "
                 + "one."
+        case .leaseMustCoverEveryFan:
+            return "The request did not name every fan, and the helper took manual control of "
+                + "every fan together or of none."
         case .releaseInProgress:
             return "A fan was mid-handback: a previous lease had ended and the write that returns "
                 + "it to automatic control had not completed, or a restore of every fan at once "

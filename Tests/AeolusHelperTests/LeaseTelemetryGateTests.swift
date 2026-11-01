@@ -175,7 +175,9 @@ struct LeaseTelemetryGateTests {
     /// ship inside v1.
     @Test("The blindness refusal needs no protocol bump")
     func theRefusalIsForwardTolerant() {
-        #expect(AeolusXPCVersion.current == 1)
+        // A v1 peer is still served (#670 moved `current` to 2 for another reason), and reads
+        // this reason as the case it names or, older still, as `.unknown`.
+        #expect(AeolusXPCVersion.minimumSupported == 1)
 
         let reason = ManualControlAvailability.Reason(wireValue: "noThermalTelemetry")
         #expect(reason == .noThermalTelemetry)

@@ -50,6 +50,9 @@ extension ManualControlAvailability.Reason {
         case .selfRenewalNotBuilt:
             return "A self-renewing lease was requested for this fan, and this build does not "
                 + "implement one."
+        case .leaseMustCoverEveryFan:
+            return "The helper takes manual control of every fan together or of none, and this "
+                + "request did not name every fan."
         case .releaseInProgress:
             return "This fan is mid-handback: a previous lease just ended and the write that "
                 + "returns it to automatic control has not completed yet, or a restore of every "
@@ -103,6 +106,9 @@ extension ManualControlAvailability.Reason {
             return "It becomes available again once that lease ends or is released."
         case .selfRenewalNotBuilt:
             return "Ask for a lease without self-renewal instead."
+        case .leaseMustCoverEveryFan:
+            return "Ask for every fan at once: `fanctl set all`, or a percentage in the app's "
+                + "control for all fans."
         case .releaseInProgress:
             return "Retry in a moment; this normally clears in milliseconds. If it does not "
                 + "clear within a few seconds, a restore has not returned; see docs/RECOVERY.md."

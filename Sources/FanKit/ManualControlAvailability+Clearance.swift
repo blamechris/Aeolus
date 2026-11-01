@@ -48,7 +48,8 @@ extension ManualControlAvailability {
     /// - **`silent`**: the reasons about manual control being *granted*, not about the fan:
     ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
     ///   `leaseHeldByAnotherClient` (a lease is judged from `SystemSnapshot.activeLease`),
-    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem` (which no helper
+    ///   `selfRenewalNotBuilt`, `leaseMustCoverEveryFan` (a fact about a request, which no snapshot
+    ///   carries), `noThermalTelemetry` and `reclaimedBySystem` (which no helper
     ///   on `main` publishes as an availability; `FanState.isReclaimedBySystem` carries the
     ///   fact). `available` is silent too: it says manual control could be taken, which is not a
     ///   statement about the mode.
@@ -74,6 +75,7 @@ extension ManualControlAvailability {
             .boundsImplausible,
             .leaseHeldByAnotherClient,
             .selfRenewalNotBuilt,
+            .leaseMustCoverEveryFan,
             .noThermalTelemetry,
             .reclaimedBySystem:
             return .silent

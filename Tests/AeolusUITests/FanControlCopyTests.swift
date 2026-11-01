@@ -70,6 +70,10 @@ struct FanControlCopyTests {
         case .selfRenewalNotBuilt:
             expected =
                 "A self-renewing lease was requested, and the helper's build did not implement one."
+        case .leaseMustCoverEveryFan:
+            expected =
+                "The request did not name every fan, and the helper took manual control of every "
+                + "fan together or of none."
         case .releaseInProgress:
             expected =
                 "A fan was mid-handback: a previous lease had ended and the write that returns it "

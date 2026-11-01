@@ -231,7 +231,9 @@ struct HelperClientTests {
         "A version mismatch is thrown as itself, carrying both ranges",
         arguments: [
             ProtocolVersionRange(minimumSupported: 0, current: 0),
-            ProtocolVersionRange(minimumSupported: 2, current: 3),
+            ProtocolVersionRange(
+                minimumSupported: AeolusXPCVersion.current + 1,
+                current: AeolusXPCVersion.current + 2),
         ])
     func versionMismatchCarriesBothRanges(helperRange: ProtocolVersionRange) async throws {
         let harness = ClientListenerHarness(
