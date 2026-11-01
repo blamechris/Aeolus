@@ -29,6 +29,7 @@ import glob
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -980,8 +981,54 @@ UNIT_ONLY = [
         "text", 'self._freeze_t0("CTX armed")', "pass")),
     ("gate T0: not frozen by a step line", (
         "text", 'self._freeze_t0("CTX step=%s" % c.step)', "pass")),
-    ("gate T0: armed before any window freezes nothing", (
-        "text", "            self.t0_freeze_pending = why\n", "            pass\n")),
+    ("gate T0: not frozen by CTX t0-freeze", (
+        "text", 'self._freeze_t0("CTX t0-freeze")', "pass")),
+    ("gate T0: a freeze with no complete window waits for the next one", (
+        "text", "        self.t0_frozen, self.t0_frozen_by = True, why\n        if window is not None:",
+        "        self.t0_frozen, self.t0_frozen_by = window is not None, why\n        if window is not None:")),
+    ("gate T0: a freeze with no complete window keeps the provisional figure", (
+        "text", "        self.t0, self.t0_n, self.t0_window = None, n, None  # a provisional figure goes with it",
+        "        self.t0_n = n  # a provisional figure goes with it")),
+    ("gate T0: a window with too few package samples is frozen", (
+        "text", "        if window is not None and n < GATE_T0_MIN_SAMPLES:", "        if False:")),
+    ("gate T0: CTX t0-freeze is an unknown line", (
+        "text", 'elif kind == "t0-freeze":', "elif False:")),
+    ("S1: on_fan calls the gate that follows the runs unguarded", (
+        "text", "self._gate_guard(self.check_gate_runs, sample)", "self.check_gate_runs(sample)")),
+    ("S1: on_ctx calls the gate that follows the CTX lines unguarded", (
+        "text", "self._gate_guard(self.track_gate_ctx, c, closing)", "self.track_gate_ctx(c, closing)")),
+    ("G7: a gate whose check raised keeps its last value on the STATUS line", (
+        "text", "            self.gate_failed[name] = True\n", "            pass\n")),
+    ("G7: a gate whose check recovered stays ERROR", (
+        "text", "            self.gate_failed[name] = False\n", "            pass\n")),
+    ("G7: only the last check a gate is made of can make it ERROR", (
+        "text", "any(self.gate_failed.get(c) for c in checks)", "self.gate_failed.get(checks[-1])")),
+    ("G7: the STATUS line carries no gates", (
+        "text", 'engaged, load, "?" if self.pressure is None else self.pressure, self.gate_states(),',
+        'engaged, load, "?" if self.pressure is None else self.pressure, "",')),
+    ("1d-entry: 42 C, not 41", (
+        "text", "GATE_1D_ENTRY_MAX = 41.0", "GATE_1D_ENTRY_MAX = 42.0")),
+    ("1d-entry: 41 C itself is too warm", (
+        "text", "elif self.hottest > GATE_1D_ENTRY_MAX:", "elif self.hottest >= GATE_1D_ENTRY_MAX:")),
+    ("1d-entry: being at rest is not needed", (
+        "text", '        if not self.rest_yes:\n            why = "at-rest"', '        if False:\n            why = "at-rest"')),
+    ("1d clock: after 1c it waits for at rest alone", (
+        "text", '"1d-entry" if closing == "1c" else "at-rest"', '"at-rest"')),
+    ("1d clock: after every step it waits for 1d's entry", (
+        "text", '"1d-entry" if closing == "1c" else "at-rest"', '"1d-entry"')),
+    ("1d clock: its lines do not say whom it waits for", (
+        "text", '"" if self.clock_gate == "at-rest" else " for=%s" % self.clock_gate', '""')),
+    ("clock: CTX end does not stop it", (
+        "text", 'self._stop_clock("CTX end")', "pass")),
+    ("clock: one starts after CTX end", (
+        "text", "        if self.clock_over:\n            return  # CTX end", "        if False:\n            return  # CTX end")),
+    ("clock: CTX end stops a clock that had met or expired", (
+        "text", '        if self.clock_state == "ticking":\n            self.gate(\n                "rest-clock", ("stopped"',
+        '        if self.clock_state is not None:\n            self.gate(\n                "rest-clock", ("stopped"')),
+    ("hottest key: a tie takes the later key", (
+        "text", "if hottest is None or number > hottest:", "if hottest is None or number >= hottest:")),
+    ("hottest key: the watcher does not keep it", (
+        "text", "self.hottest, self.hottest_key = p.hottest, p.key", "self.hottest = p.hottest")),
     ("gate rest: an open step is at rest", (
         "text", "elif self.step is not None or self.hold_active:", "elif self.hold_active:")),
     ("gate rest: a hold with no step open is at rest", (
@@ -1016,7 +1063,7 @@ UNIT_ONLY = [
     ("gate clock: 25 minutes, not 30", (
         "text", "GATE_CLOCK_SECONDS = 1800.0", "GATE_CLOCK_SECONDS = 1500.0")),
     ("gate clock: the gate holding does not meet it", (
-        "text", "        if self.rest_yes:\n            self.clock_state = \"met\"",
+        "text", "        if waiting_for:\n            self.clock_state = \"met\"",
         "        if False:\n            self.clock_state = \"met\"")),
     ("gate clock: a step that opens early abandons nothing", (
         "text", 'if self.clock_state in ("ticking", "expired"):', "if False:")),
@@ -1222,7 +1269,7 @@ TOOL_MUTANTS = [
        '        for worker in self.workers:',
        '        for worker in self.workers:'),)),
     ('run_load.py', 'test_run_load', 'a second driver is allowed',
-     (('                if holder is not None and self.alive(holder):',
+     (('                if self.alive(holder):',
        '                if False:'),)),
     ('run_load.py', 'test_run_load', 'the pid file is removed whoever owns it',
      (('        if self.owns_pid_file and self.read_pid(self.pid_path) == os.getpid():',
@@ -1239,11 +1286,9 @@ TOOL_MUTANTS = [
     ('run_load.py', 'test_run_load', 'a sample gap does not restart the dwell',
      (('SAMPLE_GAP_SECONDS = 2.0', 'SAMPLE_GAP_SECONDS = 200.0'),)),
     ('run_load.py', 'test_run_load', 'a dip does not restart the dwell',
-     (('                    if target is None or abs(target - config.target_rpm) > '
-       'TARGET_TOLERANCE_RPM:\n'
+     (('                    if target is None or not held_on_target(sample, target):\n'
        '                        run_since = None',
-       '                    if target is None or abs(target - config.target_rpm) > '
-       'TARGET_TOLERANCE_RPM:\n'
+       '                    if target is None or not held_on_target(sample, target):\n'
        '                        pass'),)),
     ('run_load.py', 'test_run_load', 'the start window is 40 s',
      (('START_WINDOW_SECONDS = 30.0', 'START_WINDOW_SECONDS = 40.0'),)),
@@ -1258,13 +1303,14 @@ TOOL_MUTANTS = [
      (('max(now - armed_wall, self.clock.mono() - armed_mono) >= config.arm_timeout',
        'now - armed_wall >= config.arm_timeout'),)),
     ('run_load.py', 'test_run_load', 'a stale started counts',
-     (('if event is None or event.t < armed_wall - STALE_STARTED_SECONDS:', 'if event is None:'),)),
+     (('if event is None or event.t < self.armed_wall - STALE_STARTED_SECONDS:', 'if event is None:'),)),
     ('run_load.py', 'test_run_load', 'a failed set before started does not stop the arming',
-     (('elif event.event in ("failed", "ended") and started is None:', 'elif False:'),)),
+     (('            elif event.event in CLOSING_EVENTS and self.closing is None:', '            elif False:'),)),
     ('run_load.py', 'test_run_load', 'the fan history is read',
      (('Follow(config.fans, from_end=True)', 'Follow(config.fans, from_end=False)'),)),
     ('run_load.py', 'test_run_load', 'the set file is followed by offset',
-     (('Whole(config.set_json)', 'Follow(config.set_json)'),)),
+     (('self.whole, self.armed_wall, self.clock = Whole(path), armed_wall, clock',
+       'self.whole, self.armed_wall, self.clock = Follow(path), armed_wall, clock'),)),
     ('run_load.py', 'test_run_load', '1d stops 30 s after F1Tg leaves 0',
      (('TAIL_SECONDS = 20.0', 'TAIL_SECONDS = 30.0'),)),
     ('run_load.py', 'test_run_load', "a sample before t_L can be 'left 0'",
@@ -1299,8 +1345,7 @@ TOOL_MUTANTS = [
      (('        if self.stop_signal is None:\n            self.stop_signal = name',
        '        self.stop_signal = name'),)),
     ('run_load.py', 'test_run_load', '--max-seconds can lengthen',
-     (('if max_seconds is not None and not 0 < max_seconds <= bound:',
-       'if max_seconds is not None and not 0 < max_seconds:'),)),
+     (('or max_seconds <= 0 or max_seconds > bound)', 'or max_seconds <= 0)'),)),
     ('run_load.py', 'test_run_load', 'any number of workers',
      (('if not 1 <= workers <= MAX_WORKERS:', 'if not 1 <= workers:'),)),
     ('run_load.py', 'test_run_load', 'workers inherit stdin',
@@ -1314,14 +1359,27 @@ TOOL_MUTANTS = [
     ('run_load.py', 'test_run_load', 'CTX load-stop misspelt',
      (('self.ctx("load-stop")', 'self.ctx("load stop")'),)),
     ('run_load.py', 'test_run_load', 'the P1 worker command changed',
-     (('WORKER_ARGV = ("/bin/sh", "-c", "while :; do :; done")',
-       'WORKER_ARGV = ("/bin/sh", "-c", "while true; do :; done")'),)),
+     (('P1_LOOP = ("/bin/sh", "-c", "while :; do :; done")',
+       'P1_LOOP = ("/bin/sh", "-c", "while true; do :; done")'),)),
     ('run_load.py', 'test_run_load', 'the pid file is not claimed',
      (('            self.claim_pid_file()\n', '            pass\n'),)),
-    ('restart-record.sh', 'test_restart_record', 'CTX end written after the recorders, not before',
-     (('echo "$STAMP CTX end" > "$DIR/phases.log"\n', ''),
+    ('restart-record.sh', 'test_restart_record',
+     'CTX end and its note written after the recorders, not before',
+     (('if ! echo "$STAMP CTX end" > "$DIR/phases.log"; then\n'
+       '  rm -f "$DIR/phases.log"\n'
+       '  rmdir "$DIR"\n'
+       '  die "could not write CTX end to $DIR/phases.log: nothing was started, and $DIR is '
+       'removed. A record without it would hear its own teardown as blind"\n'
+       'fi\n'
+       'echo "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because a restart happens '
+       'only after the forward writes have ended (ADR 0014 items 10 and 13); this record is the '
+       'teardown\'s" >> "$DIR/phases.log"\n', ''),
       ('echo $! > "$DIR/watcher-down.pid"\n',
-       'echo $! > "$DIR/watcher-down.pid"\necho "$STAMP CTX end" > "$DIR/phases.log"\n'))),
+       'echo $! > "$DIR/watcher-down.pid"\n'
+       'echo "$STAMP CTX end" > "$DIR/phases.log"\n'
+       'echo "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because a restart happens '
+       'only after the forward writes have ended (ADR 0014 items 10 and 13); this record is the '
+       'teardown\'s" >> "$DIR/phases.log"\n'))),
     ('restart-record.sh', 'test_restart_record', 'no plain note after CTX end',
      (('echo "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because',
        ': "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because'),)),
@@ -1374,6 +1432,134 @@ TOOL_MUTANTS = [
      (('if [ -n "$RUNNING" ]; then', 'if false; then'),)),
     ('restart-record.sh', 'test_restart_record', 'no wait before the liveness check',
      (('\nsleep 1\nSTATUS=0', '\nsleep 0\nSTATUS=0'),)),
+    # --- #665 round 1: a held fan, and nothing else
+    ('run_load.py', 'test_run_load', 'the dwell does not need mode 1',
+     (('    return mode == HELD_MODE and tg is not None and abs(tg - target) <= TARGET_TOLERANCE_RPM',
+       '    return tg is not None and abs(tg - target) <= TARGET_TOLERANCE_RPM'),)),
+    ('run_load.py', 'test_run_load', 'mode 3 counts as held',
+     (('HELD_MODE = 1.0  #', 'HELD_MODE = 3.0  #'),)),
+    ('run_load.py', 'test_run_load', 'a failed or ended set after started is ignored',
+     (('            elif event.event in CLOSING_EVENTS and self.closing is None:',
+       '            elif event.event in CLOSING_EVENTS and self.closing is None and self.started is None:'),)),
+    ('run_load.py', 'test_run_load', 'the load goes on after the hold has ended',
+     (('            if sets is not None:\n                sets.poll()', '            if False:\n                sets.poll()'),)),
+    ('run_load.py', 'test_run_load', 'the load is not given the set reader',
+     (('            return self.run_1d_load(fans, t_l, sets)', '            return self.run_1d_load(fans, t_l)'),)),
+    # --- the driver's inputs
+    ('run_load.py', 'test_run_load', 'started is taken at its own word (a future date stretches the window)',
+     (('                self.started_at = min(event.t, self.clock.wall())', '                self.started_at = event.t'),)),
+    ('run_load.py', 'test_run_load', "the target is --target-rpm even when started names one",
+     (('        return started.target\n\n    def run_1d', '        return flag\n\n    def run_1d'),)),
+    ('run_load.py', 'test_run_load', 'a started with no target gives no target',
+     (('        if started.target is None:\n            self.log("target %g RPM, from --target-rpm',
+       '        if False:\n            self.log("target %g RPM, from --target-rpm'),)),
+    ('run_load.py', 'test_run_load', "a started's fan with any index is read",
+     (('if isinstance(index, int) and not isinstance(index, bool) and index == 0:', 'if True:'),)),
+    ('run_load.py', 'test_run_load', "a started's fan with a boolean index is fan 0",
+     (('if isinstance(index, int) and not isinstance(index, bool) and index == 0:',
+       'if isinstance(index, int) and index == 0:'),)),
+    ('run_load.py', 'test_run_load', 'a commanded rpm of 0 or less is a target',
+     (('math.isfinite(value) and value > 0):', 'math.isfinite(value)):'),)),
+    ('run_load.py', 'test_run_load', 'a commanded rpm of infinity is a target',
+     (('math.isfinite(value) and value > 0):', 'value > 0):'),)),
+    ('run_load.py', 'test_run_load', 'a commanded rpm given as a boolean is a number',
+     (('isinstance(value, (int, float)) and not isinstance(value, bool) and (\n                    math.isfinite',
+       'isinstance(value, (int, float)) and (\n                    math.isfinite'),)),
+    ('run_load.py', 'test_run_load', 'nan passes the range check of a flag',
+     (('    if not _finite(value) or value < low or value > high:', '    if value < low or value > high:'),)),
+    ('run_load.py', 'test_run_load', '--max-seconds of nan or infinity is a number',
+     (('(not _finite(max_seconds) or max_seconds <= 0 or max_seconds > bound)', '(max_seconds <= 0 or max_seconds > bound)'),)),
+    ('run_load.py', 'test_run_load', 'a target of 0 is allowed',
+     (('TARGET_RPM_RANGE = (500.0, 12000.0)', 'TARGET_RPM_RANGE = (0.0, 12000.0)'),)),
+    ('run_load.py', 'test_run_load', 'a target of a billion RPM is allowed',
+     (('TARGET_RPM_RANGE = (500.0, 12000.0)', 'TARGET_RPM_RANGE = (500.0, 1e9)'),)),
+    ('run_load.py', 'test_run_load', 'an arm timeout of a year is allowed',
+     (('ARM_TIMEOUT_RANGE = (1.0, 3600.0)', 'ARM_TIMEOUT_RANGE = (1.0, 3.2e7)'),)),
+    ('run_load.py', 'test_run_load', 'an arm timeout of 0 is allowed',
+     (('ARM_TIMEOUT_RANGE = (1.0, 3600.0)', 'ARM_TIMEOUT_RANGE = (0.0, 3600.0)'),)),
+    # --- workers killed from outside
+    ('run_load.py', 'test_run_load', 'workers killed from outside are not noticed',
+     (('        if codes and all(code is not None for code in codes):', '        if False:'),)),
+    ('run_load.py', 'test_run_load', 'one dead worker ends the load',
+     (('        if codes and all(code is not None for code in codes):',
+       '        if codes and any(code is not None for code in codes):'),)),
+    ('run_load.py', 'test_run_load', 'workers are polled only up to the first live one',
+     (('        codes = [worker.poll() for worker in self.workers]\n        if codes and all(code is not None for code in codes):',
+       '        if self.workers and all(worker.poll() is not None for worker in self.workers):\n            codes = [worker.poll() for worker in self.workers]'),)),
+    # --- each worker bounds itself
+    ('run_load.py', 'test_run_load', 'the workers have no alarm',
+     ((""" return (PERL, "-e", "alarm %d; exec %s" % (seconds, ", ".join('"%s"' % a for a in loop)))""",
+       """ return (PERL, "-e", "exec %s" % ", ".join('"%s"' % a for a in loop))"""),)),
+    ('run_load.py', 'test_run_load', 'the alarm is the bound with no margin',
+     (('ALARM_MARGIN_SECONDS = 10  #', 'ALARM_MARGIN_SECONDS = 0  #'),)),
+    ('run_load.py', 'test_run_load', 'the alarm margin is a minute',
+     (('ALARM_MARGIN_SECONDS = 10  #', 'ALARM_MARGIN_SECONDS = 60  #'),)),
+    ('run_load.py', 'test_run_load', 'the alarm rounds the bound down',
+     (('int(math.ceil(bound_seconds))', 'int(bound_seconds)'),)),
+    ('run_load.py', 'test_run_load', 'a worker argument perl would read as code is accepted',
+     (('        if any(ch in argument for ch in ', '        if False and any(ch in argument for ch in '),)),
+    ('run_load.py', 'test_run_load', 'the worker is not perl',
+     (('PERL = "/usr/bin/perl"', 'PERL = "/usr/bin/env"'),)),
+    # --- load.pid
+    ('run_load.py', 'test_run_load', 'a pid file that names no process is replaced',
+     (('                if holder is None:\n                    raise Refused(', '                if False:\n                    raise Refused('),
+      ('                if self.alive(holder):', '                if holder is not None and self.alive(holder):'))),
+    ('run_load.py', 'test_run_load', 'a pid file being written is not waited for',
+     (('PID_FILE_WAIT_SECONDS = 1.0  #', 'PID_FILE_WAIT_SECONDS = 0.0  #'),)),
+    ('run_load.py', 'test_run_load', 'a pid the driver may not signal is a dead one',
+     (('        except PermissionError:\n            return True', '        except PermissionError:\n            return False'),)),
+    ('run_load.py', 'test_run_load', 'the pid file is made without O_EXCL',
+     (('os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)', 'os.O_CREAT | os.O_WRONLY, 0o644)'),)),
+    # --- guards that no test pinned
+    ('run_load.py', 'test_run_load', 'Follow keeps reading a file that was replaced',
+     (('status.st_ino != self.inode or status.st_size < self.handle.tell()', 'status.st_size < self.handle.tell()'),)),
+    ('run_load.py', 'test_run_load', 'Follow keeps reading a file that was truncated',
+     (('status.st_ino != self.inode or status.st_size < self.handle.tell()', 'status.st_ino != self.inode'),)),
+    ('run_load.py', 'test_run_load', 'Follow reads a rewritten file from where the old one began',
+     (('            self.close()\n            self.skip = 0\n', '            self.close()\n'),)),
+    ('run_load.py', 'test_run_load', 'no wait after SIGKILL',
+     (('        self.wait_for_workers()\n        alive = [w.pid for w in self.workers if w.poll() is None]',
+       '        alive = [w.pid for w in self.workers if w.poll() is None]'),)),
+    # --- --check-set
+    ('run_load.py', 'test_run_load', '--check-set leaves a file behind',
+     (('    return EXIT_OK\n\n\ndef main(',
+       '    with open(path + ".checked", "w") as handle:\n        handle.write("ok")\n    return EXIT_OK\n\n\ndef main('),)),
+    ('run_load.py', 'test_run_load', '--check-set is content with no started',
+     (('from this file\\n" % path)\n        return EXIT_NOT_STARTED', 'from this file\\n" % path)\n        return EXIT_OK'),)),
+    ('run_load.py', 'test_run_load', "--check-set names the flag as the source of a target started gave",
+     (('source: started.fans[0].commandedRPM\\n" % started.target)',
+       'source: started.fans[0].commandedRPM\\n" % target_rpm)'),)),
+    ('run_load.py', 'test_run_load', '--check-set reads the last started',
+     (('        if event.event == "started" and started is None:\n            started = event',
+       '        if event.event == "started":\n            started = event'),)),
+    ('run_load.py', 'test_run_load', '--check-set takes any other flag',
+     (('        if given:\n            parser.error(', '        if False:\n            parser.error('),)),
+    ('run_load.py', 'test_run_load', '--check-set takes any target',
+     (('            target_rpm = _within("--target-rpm", args.target_rpm, *TARGET_RPM_RANGE)',
+       '            target_rpm = args.target_rpm'),)),
+    ('run_load.py', 'test_run_load', 'a mode and a directory are optional',
+     (('    if args.mode is None or args.dir is None:\n        parser.error(', '    if False:\n        parser.error('),)),
+    # --- restart-record.sh
+    ('restart-record.sh', 'test_restart_record', 'a CTX end that cannot be written does not refuse',
+     (('if ! echo "$STAMP CTX end" > "$DIR/phases.log"; then',
+       'echo "$STAMP CTX end" > "$DIR/phases.log"\nif false; then'),)),
+    ('restart-record.sh', 'test_restart_record', 'a refused restart leaves its directory',
+     (('  rmdir "$DIR"\n  die "could not write CTX end', '  die "could not write CTX end'),)),
+    ('restart-record.sh', 'test_restart_record', 'the paste-ready log show is the last hour, not this boot',
+     (('--last boot > ', '--last 1h > '),)),
+    ('restart-record.sh', 'test_restart_record', "the paste-ready log show has no process filter",
+     ((r""" AND process == \"AeolusHelper\"' --info""", """' --info"""),)),
+    ('restart-record.sh', 'test_restart_record', 'the paste-ready check reads the first record',
+     ((r'q "tail -n 200 \"$DIR/fans-10hz.ndjson\"', r'q "tail -n 200 \"$CAPTURES/run1/fans-10hz.ndjson\"'),)),
+    ('restart-record.sh', 'test_restart_record', 'the paste-ready stop does not interrupt the samplers',
+     ((r'q "kill -INT \$(cat', r'q "kill \$(cat'),)),
+    ('restart-record.sh', 'test_restart_record', 'the paste-ready tail is on the first record',
+     ((r'q "tail -f \"$DIR/watch.log\""', r'q "tail -f \"$CAPTURES/run1/watch.log\""'),)),
+    ('restart-record.sh', 'test_restart_record', 'no note that the first record is from the previous boot',
+     (('echo "restart-record: NOTE: the PID files', ': "restart-record: NOTE: the PID files'),)),
+    ('restart-record.sh', 'test_restart_record', 'the paste-ready log show is run',
+     (('echo "restart-record: 2. the helper\'s own start',
+       '"$LOGCMD" show --last boot > /dev/null 2>&1\necho "restart-record: 2. the helper\'s own start'),)),
 ]
 
 
@@ -1401,6 +1587,16 @@ def check_tool_mutations():
     return len(TOOL_MUTANTS)
 
 
+def kill_group(process):
+    """SIGKILL the process group `process` leads (it was started with start_new_session), and so
+    everything its tests started that is still running. Ours by construction: the group is the one
+    we made, and nothing is looked up by name."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass  # nothing is left in it
+
+
 def tools_sweep(mutations):
     """Each tool mutation in a private copy of this directory, against that tool's tests alone.
     Every one must go red; none of these runs the smoke test (which is not a `test_*` module)."""
@@ -1416,17 +1612,26 @@ def tools_sweep(mutations):
             shutil.copytree(HERE, target, ignore=shutil.ignore_patterns("__pycache__"))
             with open(os.path.join(target, filename), "w", encoding="utf-8") as handle:
                 handle.write(tool_text(filename, edits))
+            # The mutant's tests run in a session of their own, and the whole group is killed when
+            # they end: a mutant that loses a stub's PID (a directory reused, a PID file not
+            # written) would leave a poll loop or a worker running for good, and a sweep leaked two.
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-m", "unittest", "discover", "-s", ".", "-p", module + ".py"],
+                cwd=target, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                result = subprocess.run(
-                    [sys.executable, "-I", "-m", "unittest", "discover", "-s", ".", "-p", module + ".py"],
-                    cwd=target, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, timeout=180, check=False)
-                text = result.stdout.decode("utf-8", "replace")
-                ran = any(line.startswith("Ran ") for line in text.splitlines())
-                failed = [l.split(" ")[1] for l in text.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
-                ok = ran and result.returncode != 0 and bool(failed)
-            except subprocess.TimeoutExpired:  # a test that hangs is not green, but it should fail fast
-                failed, ok = ["(hung for 180 s)"], True
+                try:
+                    output, _ = process.communicate(timeout=180)
+                    text = output.decode("utf-8", "replace")
+                    ran = any(line.startswith("Ran ") for line in text.splitlines())
+                    failed = [l.split(" ")[1] for l in text.splitlines() if l.startswith(("FAIL:", "ERROR:"))]
+                    ok = ran and process.returncode != 0 and bool(failed)
+                except subprocess.TimeoutExpired:  # a test that hangs is not green, but it should fail fast
+                    kill_group(process)
+                    process.communicate()
+                    failed, ok = ["(hung for 180 s)"], True
+            finally:
+                kill_group(process)
             allok = allok and ok
             print("| %s: %s | %d: %s | %s |" % (
                 filename, label, len(failed), ", ".join(dict.fromkeys(failed[:2])) + (" ..." if len(failed) > 2 else ""),

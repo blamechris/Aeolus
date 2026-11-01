@@ -314,7 +314,9 @@ compare record shapes with P1's skip when P1's captures are absent.
 - **unit** runs the unit tests against the same mutated copies; every one must go red.
 - **tools** does the same for the load driver and the record restart: each guard is edited out of a
   private copy, and its tests must go red. (The watcher's mutants never copy those tools, and
-  their tests, so the real load of the smoke test is never started by a sweep.)
+  their tests, so the real load of the smoke test is never started by a sweep.) Each mutant's tests
+  run in a session of their own, and the whole process group is killed on a timeout and after every
+  mutant, so a mutant that loses a stub's or a worker's PID cannot leave it behind.
 
 P1's captures are read and never copied. Mutated copies are written under `--mutations`, which
 must be outside the working tree, and only one sweep may run at a time.
