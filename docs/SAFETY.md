@@ -381,8 +381,10 @@ firmware at runtime.
   the lease's teardown and its three attempts; by § 3's bridge, since the driver registers the fan
   with § 3 before its undo; by § 4, § 6 and § 7; and by reconciliation at the next start. A helper
   that ends between the mode write and the raise has only the last of these: launchd restarts it
-  after any exit but a clean one (`KeepAlive`, `SuccessfulExit = false`), and its reconciliation
-  hands the fan back. The undo that is answered and not applied has the same bounds, except the
+  after any exit but a clean one (`KeepAlive`, `SuccessfulExit = false`: configured, and unverified
+  until rows 2 and 16, before run 2), and its reconciliation hands the fan back. In run 1, abort 7
+  and the maintainer's `fanctl reset --all` back it up.
+  The undo that is answered and not applied has the same bounds, except the
   re-apply and § 5, which never meet that fan because it is not kept: § 3 keeps the fan
   registered, owed a read-back, until it reads automatic. Under that route's own premise, every
   restore repeats the mode write the firmware ignored, so the lease's teardown, § 4, § 6, § 7,
