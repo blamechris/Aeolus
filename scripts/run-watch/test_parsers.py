@@ -89,10 +89,26 @@ class FileLineTests(unittest.TestCase):
         record["readings"][0].update(status="timeout", value=None)
         self.assertLess(rw.parse_package_line(json.dumps(record)).hottest, 51.5)
 
+    def test_the_hottest_sample_names_the_smc_key_that_read_it(self):
+        record = synth.package_record(synth.T0, 1, hottest=40.0)
+        self.assertEqual(rw.parse_package_line(json.dumps(record)).key, "TPD0")
+        by_key = {r["key"]: r for r in record["readings"]}
+        by_key["TRD7"].update(value=44.5)  # another key is the hottest now
+        self.assertEqual(rw.parse_package_line(json.dumps(record)).key, "TRD7")
+        self.assertEqual(rw.parse_package_line(json.dumps(record)).hottest, 44.5)
+        by_key["TRD7"].update(status="timeout", value=None)  # a key that did not read is not it
+        self.assertEqual(rw.parse_package_line(json.dumps(record)).key, "TPD0")
+        by_key["TPD1"].update(value=40.0)  # a tie: the first key to read it
+        by_key["TPD0"].update(value=40.0)
+        self.assertEqual(rw.parse_package_line(json.dumps(record)).key, "TPD0")
+        self.assertIsNone(rw.PackageSample(synth.T0, 42.0, {}).key)  # a sample made by hand has none
+
     def test_a_package_sample_with_no_temperature_has_no_hottest(self):
         record = synth.package_record(synth.T0, 1)
         record["readings"] = [r for r in record["readings"] if not r["key"].startswith("T")]
-        self.assertIsNone(rw.parse_package_line(json.dumps(record)).hottest)
+        sample = rw.parse_package_line(json.dumps(record))
+        self.assertIsNone(sample.hottest)
+        self.assertIsNone(sample.key)
 
 
 class LogLineTests(unittest.TestCase):

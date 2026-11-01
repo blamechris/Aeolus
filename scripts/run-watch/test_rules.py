@@ -872,6 +872,47 @@ class SamplerStopLine(unittest.TestCase):
         w = replay(run, mark_ended=False)
         self.assertEqual(set(titles(w)), {"ABORT 12"})
 
+    def test_a_hold_that_starts_after_the_teardown_stop_line_is_abort_12(self):
+        # #652's review S1. CTX end, then the fan sampler is stopped at 20 s: honoured, there is
+        # no hold. A hold then engages at 30 s and is never restored. The stop line is not the
+        # teardown of that hold, so rule 12 watches the fans again and the dead record is
+        # ABORT 12 the moment the hold is known, not never.
+        for which in ("fans", "package"):
+            with self.subTest(source=which):
+                run = idle(80).add_ctx(5, "end").drop(20, 80, which).add_stop(which, 20.0)
+                run.hold(go=30, restore=None, target=3000)
+                w = replay(run, mark_ended=False)
+                self.assertEqual(set(titles(w)), {"ABORT 12"})
+                self.assertTrue(30.0 <= first(w, "ABORT 12") <= 30.3, first(w, "ABORT 12"))
+        # the control: with no hold the same stop line stays honoured, so the guard is the hold
+        quiet = idle(80).add_ctx(5, "end").drop(20, 80, "fans").add_stop("fans", 20.0)
+        quiet.add_poll(79, "pressure", level=0)
+        self.assertEqual(titles(replay(quiet, mark_ended=False)), [])
+
+    def test_the_stop_line_and_the_engage_read_in_one_poll_are_ordered_by_their_stamps(self):
+        # #652's review S1, variant D. The engage is stamped 30.06 s and the sampler is stopped at
+        # 30.08 s, after it, but a stop line is dated by the file's last sample (30.0 s), so it
+        # sorts ahead of the engage and is honoured. The engage then re-arms rule 12.
+        run = idle(80).add_ctx(5, "end").drop(30.05, 80, "fans").add_stop("fans", 30.08)
+        run.hold(go=30.03, restore=None, target=3000)
+        w = replay(run, mark_ended=False)
+        self.assertEqual(set(titles(w)), {"ABORT 12"})
+        self.assertTrue(31.9 <= first(w, "ABORT 12") <= 32.3, first(w, "ABORT 12"))
+
+    def test_a_replay_says_that_it_raises_nothing_for_a_stop_line_it_warns_about(self):
+        # #652's review N-a. A replay ends every file at its last sample, so a stop line inside a
+        # hold warns and raises nothing: the warning must not promise an alert it will not send.
+        run = idle(80).hold(go=10, restore=None, target=3000)
+        run.drop(30, 80, "fans").add_stop("fans", 30.0)
+        replayed, live_like = replay(run), replay(run, mark_ended=False)
+        self.assertNotIn("ABORT 12", titles(replayed))
+        warned = [t for t in lines(replayed, "WARN") if "stop line during a hold" in t]
+        self.assertEqual(len(warned), 1)
+        self.assertIn("a replay ends every file at its last sample and raises nothing", warned[0])
+        self.assertNotIn("the gap will be", warned[0])
+        self.assertIn("a live watcher hears the gap as ABORT 12", warned[0])
+        self.assertEqual(set(titles(live_like)), {"ABORT 12"})
+
 
 class CtxEnd(unittest.TestCase):
     """`CTX end` changes one thing: outside a hold, a helper restart is a note. Nothing else

@@ -19,6 +19,13 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
+#: Files of the other tools that live in this directory (the load driver and the record restart).
+#: They are not the watcher: a mutant of the watcher leaves them out, so the unit sweep neither
+#: copies nor runs their tests (the load driver's smoke test starts real processes, and runs once).
+OTHER_TOOLS = (
+    "run_load.py", "test_run_load.py", "smoke_run_load.py", "restart-record.sh",
+    "test_restart_record.py")
+
 
 def blank_function(source, name):
     """`source` with the body of the one function called `name` replaced by `return`."""
@@ -78,7 +85,9 @@ class Sweep:
         if os.path.isdir(fixtures) and not os.path.isdir(os.path.join(target, "fixtures")):
             shutil.copytree(fixtures, os.path.join(target, "fixtures"))
         for name in sorted(os.listdir(HERE)):
-            if name.endswith(".sh"):
+            if name in OTHER_TOOLS:
+                continue
+            if name.endswith(".sh") or name == "README.md":  # a test reads the README
                 shutil.copy(os.path.join(HERE, name), os.path.join(target, name))
             if not name.endswith(".py") or name in ("mutate.py", "dryrun.py"):
                 continue

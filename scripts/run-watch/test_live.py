@@ -5,6 +5,7 @@ Nothing here starts a real process or says anything aloud. `FakeSystem` stands i
 fails the test whichever code path asked for it."""
 
 import contextlib
+import functools
 import hashlib
 import io
 import os
@@ -311,6 +312,190 @@ class LiveLoop(unittest.TestCase):
         watcher, system, _ = live(run, synth.T0 + 45, synth.T0 + 55)
         self.assertEqual(watcher.raised, [])
         self.assertEqual(system.spoken(), [])
+
+    def test_a_hold_after_the_teardown_stop_line_is_abort_12_and_is_said(self):
+        # #652's review S1, scenario B, in the live loop: the stop line after CTX end is honoured,
+        # then a hold engages at 30 s and is never restored.
+        run = idle(80).add_ctx(5, "end").drop(20, 80, "fans").add_stop("fans", 20.0)
+        run.hold(go=30, restore=None, target=3000)
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+        self.assertTrue(30.0 <= watcher.raised[0].t - synth.T0 <= 30.5, watcher.raised[0].t)
+        self.assertEqual(set(system.spoken()), {"abort 12"})
+        self.assertIn("fans file: its sampler wrote its stop line after CTX end", read(
+            os.path.join(directory, "watch.log")))
+
+    def run_over(self, directory, start, end):
+        """The live loop over files a test wrote itself, on a clock that moves when it sleeps."""
+        with open(os.path.join(directory, "logstream.pid"), "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % os.getpid())
+        args = types.SimpleNamespace(
+            dir=directory, out=directory, fans=None, package=None, helper_log=None, phases=None,
+            logstream_pid=None, mute=False)
+        state = {"t": start, "flag": False}
+
+        def sleep(seconds):
+            state["t"] += seconds
+            state["flag"] = state["t"] >= end
+
+        return rw.run_live(
+            args, spawn=FakeSystem(), stop=state, wall=lambda: state["t"], sleep=sleep)
+
+    def interrupted_sampler_files(self, directory):
+        """A fan sampler interrupted before its first tick: a start line and a stop line, and
+        no sample between them. The package file is an ordinary one."""
+        run = idle(60)
+        lines = {
+            "fans-10hz.ndjson": [synth._line(synth.start_record(synth.FAN_KEYS, 0.1)),
+                                 synth._line(synth.stop_record(0))],
+            "package-1hz.ndjson": run.package_lines(), "helper-log.ndjson": [], "phases.log": []}
+        for name, body in lines.items():
+            with open(os.path.join(directory, name), "w", encoding="utf-8") as handle:
+                handle.write("".join(line + "\n" for line in body))
+
+    def test_a_fan_file_with_only_a_start_and_a_stop_line_does_not_kill_the_live_loop(self):
+        # #652's review N-b. A stop line is dated by the sample before it, and here there is none.
+        # Read as a stop it would raise KeyError out of the loop and the watcher would die; read
+        # as what it is, the file simply has no samples, and the record is blind.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            watcher = self.run_over(directory, synth.T0 + 5, synth.T0 + 30)
+            self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+            self.assertEqual(watcher.error_counts, {})
+            self.assertEqual(watcher.fan_samples, 0)
+            self.assertIn(" watcher stopped", read(os.path.join(directory, "watch.log")))
+
+    def test_a_replay_of_a_fan_file_with_no_sample_before_its_stop_line_reads_no_stop(self):
+        # #652's review N-b, the replay's own guard: a stop line with no sample before it has no
+        # date, and must not become an event that cannot be sorted against the others.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            paths = {
+                "fans": os.path.join(directory, "fans-10hz.ndjson"),
+                "package": os.path.join(directory, "package-1hz.ndjson")}
+            events = rw.load_events(paths)
+            kinds = {e[3] for e in events}
+            self.assertEqual(kinds, {"package"})
+            self.assertGreater(len(events), 50)  # the package file is there to be sorted against
+
+    def test_the_gate_notes_are_in_the_log_and_never_said(self):
+        run = idle(200, hottest=40.0).add_ctx(125, "armed")
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 190)
+        log = read(os.path.join(directory, "watch.log"))
+        for name in ("at-rest=YES", "t0=40.00", "rest-clock=MET"):
+            self.assertIn(" GATE " + name, log)
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])
+        self.assertEqual(system.sounds(), [])
+        self.assertFalse(os.path.exists(os.path.join(directory, "ALERT")))
+
+    def test_a_gate_that_raises_is_logged_once_and_never_said(self):
+        # A bug in advice must not be heard as 'watcher error' in a hold, where it would send the
+        # operator to reset for a note he was never to act on. The rules after it still run.
+        run = idle(80).patch_hottest(30, 31, 90.0)
+        with mock.patch.object(rw.Watcher, "check_gate_rest", side_effect=ValueError("always")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)  # not one per sample
+        self.assertIn("ValueError: always", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_fan_that_raises_does_not_take_the_fan_rules_with_it(self):
+        # check_gate_runs runs first in on_fan. Raised unguarded, it would skip ABORT 3 for the
+        # sample whose `Ftst` changed with no `Wrote`, and be heard as 'watcher error'.
+        run = idle(60, hottest=40.0).patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 3"})  # `Ftst` changed, and changed back
+        self.assertEqual(set(system.spoken()), {"abort 3"})
+        self.assertNotIn("watcher error", system.spoken())
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+        self.assertGreater(watcher.fan_samples, 300)
+
+    def test_a_gate_check_in_on_ctx_that_raises_does_not_take_the_ctx_line_with_it(self):
+        # track_gate_ctx runs first in on_ctx. Raised unguarded, `load-start` would never open the
+        # load window, and 75 C in it would not be ABORT 1: the operator would hear 'watcher error'.
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        with mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("gate bug")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual([r.title for r in watcher.raised], ["ABORT 1"])
+        self.assertEqual(system.spoken(), ["abort 1"])
+        self.assertTrue(watcher.load_window)
+        log = read(os.path.join(directory, "watch.log"))
+        self.assertEqual(log.count(" ERROR gate check "), 1)
+        self.assertNotIn("WATCHER ERROR", log)
+
+    def test_both_gate_checks_raising_at_once_is_still_only_a_log_line(self):
+        run = idle(60, hottest=40.0).add_ctx(10, "load-start step=1b").patch_hottest(20, 22, 75.0)
+        run.patch_fan(30, 30.5, Ftst=1)
+        with mock.patch.object(rw.Watcher, "check_gate_runs", side_effect=ValueError("one")), \
+                mock.patch.object(rw.Watcher, "track_gate_ctx", side_effect=ValueError("two")):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 45)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 1", "ABORT 3"})
+        self.assertEqual(set(system.spoken()), {"abort 1", "abort 3"})
+        self.assertEqual(read(os.path.join(directory, "watch.log")).count(" ERROR gate check "), 2)
+
+    def flaky(self, name, start, end):
+        """The shipped gate check `name`, except that it raises from `start` to `end` seconds."""
+        original = getattr(rw.Watcher, name)
+
+        @functools.wraps(original)
+        def check(watcher, *args):
+            if synth.T0 + start <= watcher.now < synth.T0 + end:
+                raise ValueError("flaky")
+            return original(watcher, *args)
+
+        return mock.patch.object(rw.Watcher, name, check)
+
+    @staticmethod
+    def gates_at(directory, seconds):
+        """The `gates[...]` of the first STATUS line at or after `seconds` into the run."""
+        for line in read(os.path.join(directory, "watch.log")).splitlines():
+            if " STATUS " in line:
+                stamp = rw.parse_iso_utc(line.split(" ", 1)[0])
+                if stamp - synth.T0 >= seconds:
+                    inner = line.split("gates[", 1)[1].split("]", 1)[0]
+                    return dict(token.split("=", 1) for token in inner.split())
+        raise AssertionError("no STATUS line after %s s" % seconds)
+
+    def test_the_status_line_says_error_for_a_gate_whose_last_evaluation_raised(self):
+        # at-rest said YES at 120 s. From 150 s its check raises: the last GATE line is still YES,
+        # and the STATUS line must not repeat it. When the check recovers, so does the line.
+        run = idle(260, hottest=40.0).add_ctx(125, "armed")
+        with self.flaky("check_gate_rest", 150, 200):
+            watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 250)
+        before, during, after = (self.gates_at(directory, t) for t in (140, 160, 220))
+        self.assertEqual((before["at-rest"], before["1d-entry"]), ("YES", "YES"))
+        self.assertEqual((during["at-rest"], during["1d-entry"], during["rest-clock"]),
+                         ("ERROR", "ERROR", "ERROR"))
+        self.assertEqual((during["t0"], during["engaged"]), ("40.00(frozen)", "NO"))  # not theirs
+        self.assertEqual((after["at-rest"], after["1d-entry"]), ("YES", "YES"))
+        self.assertEqual(watcher.raised, [])
+        self.assertEqual(system.spoken(), [])  # and nothing is said, as for any gate
+
+    def test_each_gate_check_marks_the_gates_it_feeds(self):
+        feeds = {
+            "check_gate_runs": {"at-rest", "t0", "engaged", "1d-entry"},
+            "check_gate_t0": {"at-rest", "t0", "1d-entry"},
+            "check_gate_rest": {"at-rest", "rest-clock", "1d-entry"},
+            "check_gate_1d_entry": {"rest-clock", "1d-entry"},
+            "check_gate_engaged": {"engaged"},
+            "check_gate_clock": {"rest-clock"}}
+        for name, errored in feeds.items():
+            with self.subTest(check=name):
+                run = idle(100, hottest=40.0)
+                with self.flaky(name, 20, 1000):
+                    _, _, directory = live(run, synth.T0 + 5, synth.T0 + 90)
+                gates = self.gates_at(directory, 60)
+                self.assertEqual({g for g, v in gates.items() if v == "ERROR"}, errored)
+
+    def test_a_replay_of_a_gate_that_raises_is_not_swallowed_and_nothing_is_marked(self):
+        with self.flaky("check_gate_rest", 5, 1000), self.assertRaises(ValueError):
+            replay(idle(30))
 
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
