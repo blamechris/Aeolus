@@ -271,8 +271,10 @@ struct SnapshotAvailabilityTests {
         "An abandoned handback does not make the neighbour fan unavailable",
         .disabled(
             """
-            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
-            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            Written over a lease of fan 0 alone, which #670 refuses. The state stays reachable, \
+            an every-fan lease whose restore is refused for fan 0 only, but its meaning changed: \
+            fan 1's .available no longer predicts a grant, since a grant must cover fan 0 too. \
+            Re-enable when run 1d lifts the rule.
             """))
     func aHandbackRegisterIsReadPerFan() async throws {
         let helper = Fixture.composed(writes: Fixture.firmwareRefusesTheModeWrite, fanCount: 2)
