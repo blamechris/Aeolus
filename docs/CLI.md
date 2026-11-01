@@ -337,14 +337,17 @@ Until a hardware run shows that a fan left on automatic control beside a held on
 request that leaves out a fan the helper enumerated is refused `leaseMustCoverEveryFan`, exit 4
 below, whose message says to ask for every fan at once; an `apply` must set every fan its lease
 covers, or it is refused before anything is read. `fanctl set all` is the all-fans form, and
-`fanctl set <n>` on a machine with more than one fan is that refusal
-([#324](https://github.com/blamechris/Aeolus/pull/324) carries `set`).
+`fanctl set <n>` on a machine with more than one fan is that refusal.
 
 Until run 2, the helper also holds no client target below a fan's 50 % point, the midpoint of
 `[F<n>Mn, F<n>Mx]`: 3,563.5 RPM on `Mac16,5`. A lower request is held at the point, and the
-helper's snapshot reports the target it holds, so `fanctl status` shows the raised value. The app's
-50 % preset is 3,564 RPM on that machine and passes unchanged. `status` and `auto` take no lease and
-are unaffected; `auto` reads `leaseMustCoverEveryFan` as silent, since no snapshot carries it.
+helper's snapshot reports the target it holds, so `fanctl status` shows the raised value, and so
+does `fanctl set`'s start line: `set all 20% --for 30m` says `Holding fan 0 at 3563.50 RPM target
+(the helper's, not the 2235 RPM that 20% asked for; firmware 1350–5777 RPM)`, never "at 20%". Its
+`--json` events already carried both, `commandedRPM` (sent) beside `observed.targetRPM` (held). The
+app's 50 % preset is 3,564 RPM on that machine and passes unchanged. `status` and `auto` take no
+lease and are unaffected; `auto` reads `leaseMustCoverEveryFan` as silent, since no snapshot
+carries it.
 
 ### Exit codes
 

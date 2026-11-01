@@ -65,7 +65,7 @@ struct SetOutput: Sendable {
     func started(_ hold: SetCommand.Hold, snapshot: SystemSnapshot) {
         switch format {
         case .text:
-            for line in SetMessages.startLines(hold) { hand(line) }
+            for line in SetMessages.startLines(hold, snapshot: snapshot) { hand(line) }
         case .lines:
             hand(SetStartedEventJSON(at: Date(), hold: hold, snapshot: snapshot))
         case .document:
