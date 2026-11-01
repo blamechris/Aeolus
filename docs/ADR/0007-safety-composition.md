@@ -284,6 +284,7 @@ exactly that one.
   works" requires first being in manual. E5 therefore merges fully unit- and mock-tested with the
   hardware checklist *written*, and the gate on E3/E4 becomes: every E5 checklist row for that
   platform executes on hardware before that epic's PR merges.
+  *(Relaxed for E4 by ADR 0014's minimal-run amendment, item 7: runs 2–4 execute their rows after it.)*
 
 ## Assumptions and what would invalidate them
 
