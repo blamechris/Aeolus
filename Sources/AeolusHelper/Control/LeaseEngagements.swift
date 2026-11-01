@@ -24,6 +24,11 @@ import Foundation
 /// refused undo of it — § 5's re-engage undone by its own driver, or its `restoreAndForget`. § 3
 /// confirms it and forgets the fan while the account stands, so a re-adoption registers the fan
 /// with § 3 again (`EngagementDriver.reAdopted(_:)`) before anything commands it.
+///
+/// **Dormant while #670's rule (a) holds.** A refused `apply` that leaves a fan `.handBackRefused`
+/// ends its lease whole (`notWhollyHeld(of:under:)`), so no re-apply reads a kept account: `read`'s
+/// arms and the re-adoption's registration are reached by no test, and `docs/TESTING.md` lists them
+/// with their mutations until run 1d lifts the rule.
 struct LeaseEngagements: Sendable {
 
     /// What level 6 holds of one fan under one lease.

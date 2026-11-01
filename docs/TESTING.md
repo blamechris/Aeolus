@@ -188,3 +188,22 @@ table's shape. What it cannot do is put two targets' tests in one pool.
 `timeout` does not exist on macOS; `gtimeout` is from `brew install coreutils`. It ends
 `swift test` but not always its child: after a wedge, `swiftpm-testing-helper` can survive at 0%
 CPU with launchd as its parent. Find it with `ps` and kill it by its PID.
+
+## Guards dormant while #670's rules hold
+
+Until run 1d lifts #670's rule (a), level 6 ends a lease whole after a refused `apply` unless
+every fan it covers is still engaged or none is on account, so a refused `apply` that keeps a fan
+(`.handBackRefused`) is never followed by a re-apply under that lease. The guards below sit on that
+re-apply, which no test can reach. Each was killed by a test that is now `.disabled` with that
+reason; deleting the guard leaves the whole suite green. Re-enable the tests with the rule, and
+re-run each mutation then.
+
+| Guard | Mutation | Its killer, disabled |
+|---|---|---|
+| `LeaseEngagements.read` ends a kept fan's account on `.superseded` (PR #676's D1) | keep the account on `.superseded` | `LeaseApplierAccountEndTests`, "A kept fan whose later step is superseded loses its account" |
+| `LeaseEngagements.read` re-adopts a kept fan reading the engaged value, ends the account on any other, and keeps it on `.failedBeforeFirstWrite` | each of the three arms in turn, as `LeaseApplierAccountEndTests` names them | `LeaseApplierAccountEndTests`, `LeaseApplierKeptFanTests`, `LeaseApplierHandBackTests` |
+| `LeaseApplier.step` registers a re-adopted fan with § 3 (`driver.reAdopted(permit)`, PR #676's T3) | delete it | `LeaseApplierReAdoptionTests`, "A re-adopted fan is registered with § 3 again, before it is commanded" and "A kept fan that § 3 forgot is registered with § 3 again before it is commanded" |
+
+Two mutations were run on PR #676's fold to show the table is true: each guard in the first and
+third rows deleted, the whole `AeolusHelperTests` bundle run, and both left it green.
+
