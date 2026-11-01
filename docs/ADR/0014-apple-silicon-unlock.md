@@ -4424,6 +4424,43 @@ says otherwise. Intel and M1/M2 stay `untested`.
 
 **No `AeolusXPCVersion` bump:** nothing crosses the boundary. **Status stays Proposed.**
 
+## Amendment (2026-11-01, minimal run 1) — run 1 cut to what ships, and a merge gated by capability
+
+**Decided.**
+1. Run 1 is start 0, 1a, 1c, 1b, 1b′ and A, in that order, on `Mac16,5` under macOS 27.2.
+   - 1c holds for 60 s and ends 10–40 s after `started`, by `fanctl reset --all` from the local terminal.
+     It runs before 1b, so the abort action is seen ending a live hold at rest before the loaded step, and
+     it is the only supervised restore of `0` over Apple's `3`.
+   - A is the app's all-fans presets at rest: 50, 75 and 100 %, Auto, then 50 % and a quit. The watcher is
+     stopped, and the recorders run.
+2. 1d, abort 11 and row 18's other-session half leave run 1. Item 11's SSH clause and the Remote Login
+   provisions lapse.
+3. Item 6 is withdrawn: every alert in a hold is a reset.
+4. Item 10 keeps three rows: `main`, the branch build, the power cycle. After a `bootout`, no `launchctl`
+   start is used in the session.
+5. The install is the normal form only, practised `main` over `main` at the start of the same session.
+6. E4 merges after run 1 when the helper, on every machine:
+   - (a) grants a lease only over every enumerated fan, and never keeps some of a lease's fans while
+     handing others back, until U7 is recorded as observed holding;
+   - (b) clamps every client target up to the midpoint of `[F<n>Mn, F<n>Mx]`, until run 2 records holds
+     below demand.
+
+   This replaces D1's "the merge waits for the checklist" and takes P1′ item 9's second branch. #332 moves
+   to after the merge. A U5b refusal is decided before the merge.
+
+**Alternatives considered.**
+- *1d in the session.* It answers U7 with no code. Rejected: the owner moved it out, it is the riskiest
+  step, and it can end "not shown".
+- *The full surface at the merge.* § 3, § 4, § 6 and #201 have no hardware row, so a stuck target below
+  demand is a hot fan.
+- *Runs 2–4 first.* Months of waiting, for a surface the owner does not use.
+- *Clients only.* Rule 7.
+
+**Revisit if:** 1d records U7 (lift (a)); run 2 passes (lower (b)); A's second fan is refused; the session
+ends anywhere but End A; a recorded load drives Apple's demand above the 50 % point.
+
+**Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 U0, U1, U4, U5b, U6, U7, U10, U11, U13 and U14 are restated, and U16 and U17 added, by the P1′
