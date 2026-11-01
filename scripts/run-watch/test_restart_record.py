@@ -7,7 +7,11 @@ no real `say` can be started (the companion is a stub), and no process is killed
 
 The shipped script names its executables by absolute path, as the runbook's commands do. The tests
 run a copy of it with those few paths replaced, and check that each replacement matched exactly
-one place, so that the copy is the shipped script and not a rewrite of it."""
+one place, so that the copy is the shipped script and not a rewrite of it.
+
+The one thing the stubs do not replace is the record-only poll loop, which is a shell loop and
+would run for ever. In the copy it is bounded to about 20 s (four rounds), so that a test that
+loses its PID (a mutant that reuses a directory, say) leaves a loop that ends by itself."""
 
 import contextlib
 import hashlib
@@ -52,6 +56,14 @@ exec sleep 25
 """
 
 
+#: The poll loop as the runbook's PR-3 and the script have it, and the copy's: four rounds of five
+#: seconds. The shipped text is what test_it_pins_what_the_runbook_pins looks for.
+POLL_LOOP = ("while :; do date -u +%FT%TZ; sysctl -n vm.loadavg; notifyutil -g "
+             "com.apple.system.thermalpressurelevel; sleep 5; done")
+BOUNDED_POLL_LOOP = ("n=0; while [ $n -lt 4 ]; do date -u +%FT%TZ; sysctl -n vm.loadavg; notifyutil -g "
+                     "com.apple.system.thermalpressurelevel; sleep 5; n=$((n + 1)); done")
+
+
 def write(path, text, mode=0o755):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
@@ -64,6 +76,52 @@ def alive(pid):
     except ProcessLookupError:
         return False
     return True
+
+
+def shell_code(text):
+    """A shell script's code with its comments removed and its whitespace collapsed, and what is
+    quoted set aside: (the code, with every quoted span replaced by `"<n>"`, and the spans). A `#`
+    starts a comment only at the start of a word and outside quotes; a backslash and a newline are
+    a line continuation and are deleted, as the shell deletes them. So a command split over lines,
+    spaced with tabs, or mentioned in a comment or a string reads the way the shell reads it,
+    which a filter on lines does not."""
+    text = text.replace("\\\n", "")
+    code, spans, i, n = [], [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "'\"":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if ch == '"' and text[j] == "\\" else 1
+            spans.append(text[i + 1:j])
+            code.append('"<%d>"' % (len(spans) - 1))
+            i = j + 1
+        elif ch == "#" and (not code or code[-1] in " \t\n;&|("):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif ch in " \t\n":
+            if code and code[-1] != " ":
+                code.append(" ")
+            i += 1
+        else:
+            code.append(ch)
+            i += 1
+    return "".join(code).strip(), spans
+
+
+LAUNCH = re.compile(r'(?:^|[\s;&|(])nohup(?=\s)|(?<![&>])&(?![&>])')
+CTX_END_WRITE = re.compile(r'echo "<(\d+)>" (?<!>)>(?!>) "<(\d+)>"')
+
+
+def ctx_end_position(text):
+    """Where the script writes `CTX end` into phases.log, and where it first starts a process (a
+    `nohup`, or a command put in the background with `&`): (write, first launch, launches), each a
+    position in the normalised code, or None."""
+    code, spans = shell_code(text)
+    writes = [m.start() for m in CTX_END_WRITE.finditer(code)
+              if spans[int(m.group(1))] == "$STAMP CTX end" and spans[int(m.group(2))] == "$DIR/phases.log"]
+    launches = [m.start() for m in LAUNCH.finditer(code)]
+    return (writes[0] if len(writes) == 1 else None, launches[0] if launches else None, len(launches))
 
 
 class Staged(unittest.TestCase):
@@ -101,7 +159,8 @@ class Staged(unittest.TestCase):
             stub_hash = hashlib.sha256(handle.read()).hexdigest()
         for old, new in (('PYTHON="/opt/homebrew/bin/python3"', 'PYTHON="%s"' % self.python),
                          ('LOGCMD="/usr/bin/log"', 'LOGCMD="%s"' % self.logcmd),
-                         ('PGREP="/usr/bin/pgrep"', 'PGREP="%s"' % self.pgrep)) + (
+                         ('PGREP="/usr/bin/pgrep"', 'PGREP="%s"' % self.pgrep),
+                         (POLL_LOOP, BOUNDED_POLL_LOOP)) + (
                              (('PERL="/usr/bin/perl"', 'PERL="%s"' % perl),) if perl else ()):
             self.assertEqual(text.count(old), 1, old)
             text = text.replace(old, new)
@@ -202,6 +261,57 @@ class Restart(Staged):
         self.assertIn("CTX end written first", out)
         self.assertIn("teardown state (items 10 and 13)", out)
 
+    def test_it_prints_the_commands_to_paste_next_with_the_real_directory_and_runs_none_of_them(self):
+        out = self.restart().stdout.decode()
+        d = os.path.join(self.cap, "run1-1")
+        lines = out.splitlines()
+        wanted = [
+            'tail -f "%s/watch.log"' % d,
+            # ADR 0014 item 13: the helper's own start, which the power cycle runs before any
+            # recorder can, is read from `log show`; the process filter is the F1 trap's
+            "/usr/bin/log show --predicate 'subsystem == \"dev.aeolus.AeolusHelper\" AND process == "
+            "\"AeolusHelper\"' --info --debug --last boot > \"%s/helper-log-show.txt\"" % d,
+            # E-6's check, on the new fans file
+            'tail -n 200 "%s/fans-10hz.ndjson" | jq -s -c --argjson win 10 -f "%s/stage/jq/quiescence.jq"'
+            % (d, self.cap),
+            # E-10, in its order, for this directory
+            'kill -INT $(cat "%s/fans-10hz.pid" "%s/package-1hz.pid")' % (d, d),
+            'kill "$(cat "%s/watcher-down.pid")"' % d,
+            'kill "$(cat "%s/watch.pid")"' % d,
+            'kill $(cat "%s/logstream.pid" "%s/poll.pid")' % (d, d)]
+        for command in wanted:
+            self.assertIn(command, lines)
+        positions = [lines.index(c) for c in wanted]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(lines.count(wanted[0]), 1)
+        self.assertNotIn("run1/", "\n".join(wanted))  # never the first record's directory
+        # printed, not run: no `log show` reached the stub, the file it would make is not there, no
+        # kill was sent (the processes it started are alive), and no helper-log-show.txt exists
+        self.assertFalse([c for c in self.calls() if c.startswith("log show")])
+        self.assertFalse(os.path.exists(os.path.join(d, "helper-log-show.txt")))
+        self.assertTrue(all(alive(p) for p in self.pids("run1-1").values()))
+
+    def test_the_commands_name_the_directory_that_was_made_and_the_captures_given(self):
+        os.mkdir(os.path.join(self.cap, "run1-1"))
+        os.mkdir(os.path.join(self.cap, "run1-2"))
+        out = self.restart().stdout.decode()
+        self.assertIn('tail -f "%s/watch.log"' % os.path.join(self.cap, "run1-3"), out)
+        self.assertNotIn("run1-1/", out)
+        self.assertNotIn("run1-2/", out)
+
+    def test_it_says_that_the_first_records_pid_files_are_from_the_previous_boot(self):
+        out = self.restart().stdout.decode()
+        note = [l for l in out.splitlines() if l.startswith("restart-record: NOTE:")]
+        self.assertEqual(len(note), 1)
+        self.assertIn("%s/run1/" % self.cap, note[0])
+        self.assertIn("previous boot", note[0])
+        self.assertIn("Never signal them", note[0])
+
+    def test_the_commands_are_printed_even_when_a_process_did_not_stay_up(self):
+        result = self.restart(env=dict(self.env, STUB_FAIL="python"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('tail -f "%s/run1-1/watch.log"' % self.cap, result.stdout.decode())
+
     def test_the_next_free_number(self):
         for expected in ("run1-1", "run1-2"):
             self.assertEqual(self.restart().returncode, 0)
@@ -299,6 +409,18 @@ class Refuses(Staged):
         write(perl, "#!/bin/sh\necho garbage\n")
         self.assertRefused(self.restart(script=self.copy_of_script(perl=perl)), "could not stamp the CTX line")
 
+    def test_a_ctx_end_that_cannot_be_written_leaves_no_directory_and_starts_nothing(self):
+        # umask 0277 makes mkdir leave a directory no file can be made in
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'umask 0277; exec /bin/sh "$0" "$@"', self.script, "--watcher-sha", SHA,
+             "--captures", self.cap], stdin=subprocess.DEVNULL, capture_output=True, env=self.env,
+            timeout=60, check=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("could not write CTX end", result.stderr.decode())
+        self.assertIn("nothing was started", result.stderr.decode())
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.calls(), [])  # no recorder, no watcher, no companion
+
     def test_an_interpreter_that_is_not_there(self):
         os.remove(self.python)
         self.assertRefused(self.restart(), "pinned interpreter is not executable")
@@ -325,6 +447,50 @@ class TheScriptItself(unittest.TestCase):
                        "while :; do date -u +%FT%TZ; sysctl -n vm.loadavg; notifyutil -g "
                        "com.apple.system.thermalpressurelevel; sleep 5; done"):
             self.assertIn(pinned, self.text)
+
+    def test_the_ctx_end_write_comes_before_the_first_process_is_started(self):
+        # Static, and so not a race: the dynamic check above reads the file from inside a stub that
+        # is itself started a few milliseconds after the script moves on.
+        write, launch, launches = ctx_end_position(self.text)
+        self.assertIsNotNone(write, "the script does not write `CTX end` into phases.log exactly once")
+        self.assertIsNotNone(launch)
+        self.assertLess(write, launch)
+        self.assertEqual(launches, 12)  # six `nohup`s, and the six `&` that put them in the background
+
+    def test_the_scan_that_finds_it_reads_the_script_as_the_shell_does(self):
+        good = ('# nohup here is a comment\n'
+                'STAMP=1\n'
+                'echo "$STAMP CTX end" > "$DIR/phases.log"\n'
+                'echo "a note: nohup is only a word in it" >> "$DIR/phases.log"\n'
+                'nohup "$SAMPLER" > "$DIR/f" 2> "$DIR/e" < /dev/null &\n')
+        write, launch, _ = ctx_end_position(good)
+        self.assertTrue(write < launch)
+        for label, text in (
+                ("tabs and runs of spaces", good.replace('echo "$STAMP CTX end" > "$DIR/phases.log"',
+                                                          'echo\t"$STAMP CTX end"   \t>\t "$DIR/phases.log"')),
+                ("split over lines", good.replace('echo "$STAMP CTX end" > "$DIR/phases.log"',
+                                                  'echo "$STAMP CTX end" \\\n    > "$DIR/phases.log"')),
+                ("single quotes for the target", good.replace('"$DIR/phases.log"\necho "a note', "'$DIR/phases.log'\necho \"a note")),
+                ("a trailing comment", good.replace('> "$DIR/phases.log"\necho "a note',
+                                                    '> "$DIR/phases.log"  # CTX end first\necho "a note'))):
+            with self.subTest(label):
+                write, launch, _ = ctx_end_position(text)
+                self.assertIsNotNone(write, text)
+                self.assertTrue(write < launch)
+        late = ('nohup "$SAMPLER" < /dev/null &\n'
+                'echo "$STAMP CTX end" > "$DIR/phases.log"\n')
+        for label, text in (
+                ("after a nohup", late),
+                ("after a backgrounded command with no nohup", late.replace("nohup ", "")),
+                ("after a nohup whose name is split over a line", late.replace("nohup", "no\\\nhup")),
+                ("moved down with its note", good.split("echo \"$STAMP")[0] + good.split("\n")[-2] + "\n"
+                 + 'echo "$STAMP CTX end" > "$DIR/phases.log"\n'),
+                ("appended with >> (not the first line)", late.replace("> ", ">> ")),
+                ("missing", good.replace('echo "$STAMP CTX end" > "$DIR/phases.log"\n', "")),
+                ("written twice", good + 'echo "$STAMP CTX end" > "$DIR/phases.log"\n')):
+            with self.subTest(label):
+                write, launch, _ = ctx_end_position(text)
+                self.assertFalse(write is not None and launch is not None and write < launch, text)
 
     def test_the_help_prints_the_header_and_not_the_code(self):
         result = subprocess.run(["/bin/sh", SCRIPT, "--help"], capture_output=True, check=False)

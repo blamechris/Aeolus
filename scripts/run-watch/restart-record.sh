@@ -13,17 +13,21 @@
 # It makes <captures>/run1-<n>/ (n is the smallest free number, from 1), writes `CTX end` as the
 # first line of its phases.log, and starts, in this order, into it: both samplers, the log stream,
 # the record-only poll loop, the watcher and its companion. It writes the same .pid files as the
-# runbook's commands, prints the directory and the PIDs, and does nothing else. It reads, and
-# writes only into the new directory. It runs no fanctl, sudo or launchctl, and signals nothing
-# (`kill -0` only asks whether a PID it started is still there).
+# runbook's commands, prints the directory and the PIDs, and prints (only prints) the commands the
+# owner pastes next, with this directory filled in. It reads, and writes only into the new
+# directory. It runs no fanctl, sudo or launchctl, and signals nothing (`kill -0` only asks
+# whether a PID it started is still there).
 #
 # `CTX end` is first because a restart happens only after the forward writes have ended (items 10
 # and 13): the new watcher starts in the teardown state. Outside a hold a helper restart is then
 # a note, not an alert, and a sampler's own stop line ends its source for rule 12, so the
-# record's own E-10 teardown is not heard as blind (#652's review, S2).
+# record's own E-10 teardown is not heard as blind (#652's review, S2). If that line cannot be
+# written the script refuses, before any recorder starts: a record without it is the one
+# that would be heard as blind.
 #
 # Stop this record as the README of scripts/run-watch says (the runbook's E-10): by PID, the
-# samplers with `kill -INT` first.
+# samplers with `kill -INT` first. The PID files of run1/ (and of any earlier run1-<m>/) are from
+# the previous boot, and are never to be signalled.
 set -u
 
 SAMPLER_NAME="smc-sampler-5b0d191"
@@ -46,7 +50,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --watcher-sha) [ $# -ge 2 ] || die "--watcher-sha needs a value"; SHA="$2"; shift 2 ;;
     --captures) [ $# -ge 2 ] || die "--captures needs a value"; CAPTURES="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) die "unknown argument: $1 (usage: restart-record.sh --watcher-sha <sha> [--captures <dir>])" ;;
   esac
 done
@@ -91,7 +95,11 @@ case "$STAMP" in
   [0-9]*.[0-9][0-9][0-9]) ;;
   *) rmdir "$DIR"; die "could not stamp the CTX line" ;;
 esac
-echo "$STAMP CTX end" > "$DIR/phases.log"
+if ! echo "$STAMP CTX end" > "$DIR/phases.log"; then
+  rm -f "$DIR/phases.log"
+  rmdir "$DIR"
+  die "could not write CTX end to $DIR/phases.log: nothing was started, and $DIR is removed. A record without it would hear its own teardown as blind"
+fi
 echo "$(date -u +%FT%TZ) restart-record.sh: CTX end is first because a restart happens only after the forward writes have ended (ADR 0014 items 10 and 13); this record is the teardown's" >> "$DIR/phases.log"
 
 # The recorders (the runbook's PR-3).
@@ -124,4 +132,20 @@ for NAME in fans-10hz package-1hz logstream poll watch watcher-down; do
     STATUS=1
   fi
 done
+
+# What the owner pastes next, with this directory in it. Printed, and none of it is run here.
+q() { printf '%s\n' "$*"; }
+echo "restart-record: paste-ready, for $DIR (printed only: none of it has been run)"
+echo "restart-record: 1. the new watch.log, in T4:"
+q "tail -f \"$DIR/watch.log\""
+echo "restart-record: 2. the helper's own start in this boot, from log show (ADR 0014 item 13):"
+q "/usr/bin/log show --predicate 'subsystem == \"dev.aeolus.AeolusHelper\" AND process == \"AeolusHelper\"' --info --debug --last boot > \"$DIR/helper-log-show.txt\""
+echo "restart-record: 3. the check (E-6), read 10 to 12 s after this restart; pass is \"violations\":0:"
+q "tail -n 200 \"$DIR/fans-10hz.ndjson\" | jq -s -c --argjson win 10 -f \"$CAPTURES/stage/jq/quiescence.jq\""
+echo "restart-record: 4. to stop this record (E-10), in this order:"
+q "kill -INT \$(cat \"$DIR/fans-10hz.pid\" \"$DIR/package-1hz.pid\")"
+q "kill \"\$(cat \"$DIR/watcher-down.pid\")\""
+q "kill \"\$(cat \"$DIR/watch.pid\")\""
+q "kill \$(cat \"$DIR/logstream.pid\" \"$DIR/poll.pid\")"
+echo "restart-record: NOTE: the PID files in $CAPTURES/run1/ and in any earlier run1-<n>/ are from the previous boot. Their numbers may now be other processes. Never signal them."
 exit "$STATUS"

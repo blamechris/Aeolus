@@ -212,11 +212,13 @@ and tested before run day**:
 
 It makes `~/aeolus-captures/run1-<n>/` (`n` is the smallest free number, from 1; `mkdir` is atomic, and an existing directory is never written into) and starts into it, in order, with the runbook's own commands (PR-3, PR-5) and pinned paths: both samplers (`smc-sampler-5b0d191`, **checked against the pinned sha256 first**), the log stream (`process == "AeolusHelper"`), the record-only poll loop, the watcher (`/opt/homebrew/bin/python3 -I ~/aeolus-captures/bin/run-watch-<sha>/scripts/run-watch/run_watch.py`) and its companion. It writes the same `.pid` files (`fans-10hz`, `package-1hz`, `logstream`, `poll`, `watch`, `watcher-down`), prints the directory and the six PIDs, waits a second, and says which of them is not running (exit 1).
 
-**`CTX end` is the first line of the new `phases.log`**, stamped as the runbook stamps it, followed by a plain note that says why. A restart happens only after the forward writes have ended (items 10 and 13), so the new watcher starts in the teardown state: outside a hold a helper restart is a note, and a sampler's own stop line ends its source for rule 12, so that this record's own E-10 teardown is not heard as blind (#652's review, S2). Without it the second record's teardown would be `BLIND — NO GO`.
+It then **prints, and runs none of, the commands the owner pastes next**, with the real `run1-<n>` path in each: `tail -f` on the new `watch.log` (T4); the `log show` capture ADR item 13 requires (the helper's own start in this boot, which the power cycle ran before any recorder could, with the helper's process filter, `--last boot`, into `run1-<n>/helper-log-show.txt`); E-6's check on the new fans file (`quiescence.jq` with `win` 10; pass is `"violations":0`); and E-10's four stop commands for this directory, in order. It ends with a note that **`run1/`'s PID files (and any earlier `run1-<m>/`'s) are from the previous boot and are never to be signalled**: their numbers may now belong to the owner's Terminal, the coordinator, or this record's own watcher.
+
+**`CTX end` is the first line of the new `phases.log`**, stamped as the runbook stamps it, followed by a plain note that says why. If that line cannot be written the script **refuses** (exit 2, "could not write CTX end", the new directory removed) before any recorder starts: a record without it would hear its own teardown as blind. A restart happens only after the forward writes have ended (items 10 and 13), so the new watcher starts in the teardown state: outside a hold a helper restart is a note, and a sampler's own stop line ends its source for rule 12, so that this record's own E-10 teardown is not heard as blind (#652's review, S2). Without it the second record's teardown would be `BLIND — NO GO`.
 
 Everything is checked before anything is made or started, and a failed check (exit 2) leaves nothing behind: the pinned sampler, its hash, the pinned watcher and companion, the interpreter, the captures directory. A sampler already running is a warning, not a refusal (this is not the restart after a power cycle, and you are about to have two records). It writes only into the new directory, signals nothing (`kill -0` only asks whether a PID it started is still there), and runs no `fanctl`, `sudo` or `launchctl`. Stop the second record as the first: `kill -INT` the samplers, then the companion, the watcher, the log stream and the poll, each by PID from that directory (the runbook's E-10).
 
-Tests: `test_restart_record.py`, with stub binaries in place of the sampler, `log`, the interpreter, `pgrep`, and the watcher's companion (no real recorder, and no real `say`, starts).
+Tests: `test_restart_record.py`, with stub binaries in place of the sampler, `log`, the interpreter, `pgrep`, and the watcher's companion (no real recorder, and no real `say`, starts). The record-only poll loop is the one thing a stub does not replace; in the test copy it is bounded to about 20 s, so that a test that loses its PID leaves a loop that ends by itself. The order (`CTX end` before the first process is started) is also checked statically, on the script read as the shell reads it (comments gone, whitespace collapsed, quotes set aside), because the dynamic check reads the file from a stub started a few milliseconds later and cannot tell.
 
 ## Stopping it
 
@@ -239,7 +241,7 @@ kill "$(cat "$D/watch.pid")"
 kill "$(cat "$D/logstream.pid")" "$(cat "$D/poll.pid")"
 ```
 
-(The PID files are the ones the runbook's recorders step writes.)
+(The PID files are the ones the runbook's recorders step writes. After a power cycle, those in `run1/` are from the previous boot: signal the new record's, in `run1-<n>/`, and never `run1/`'s.)
 
 **The samplers are stopped only after `CTX end`, never before it and never in a hold, because of
 rule 12.** A sampler that stops while the run is on, or while a hold is active, has left the record
