@@ -897,6 +897,32 @@ A re-assert that cannot obtain an envelope **restores rather than commanding** �
 #126's acceptance criterion, and `FanControlPlane`'s §2 rule that the only action a
 fan with untrusted bounds is subject to is the bounds-free restore verb.
 
+## The cancellation exit refunds its attempt
+
+*From the comment on `reassert`'s cancellation guard, moved here when PR #676's bounds check
+needed the lines.*
+
+An earlier version of that comment argued the other way, that "restarting with one fewer
+attempt gives the fan back to automatic control sooner, which is the direction this mechanism
+fails in". Failing safe is not a licence to mis-attribute: the budget exists to stop Aeolus
+*fighting* firmware that discards its writes, and an attempt that never reached the wire is not
+a round of that fight. Refunding keeps the budget measuring the thing it was sized against.
+
+## A re-assert under bounds that moved writes nothing
+
+*PR #676, ADR 0014's minimal-run amendment, item 7's re-ruling (Codex 3).*
+
+The re-assert reads a fresh envelope, as above, and since PR #676 it also compares that read's
+`F<n>Mn` and `F<n>Mx`, by exact value, with the bounds of the permit the fan was last registered
+under (`HeldFan.admittedBounds`). When they differ it writes nothing, logs at `.fault` and takes
+the give-up path, `finaliseRelease`, which hands the fan back and ends the lease. It does not
+re-clamp the stored target into the new bounds, or raise it to the new client floor: § 5 would
+then write a value it never stored, and its next cycle, comparing the read-back with the stored
+target, would read its own write as a reclamation. Bounds have never been seen to move (one tuple
+across 10,570 rows on `Mac16,5`), the standing rule for one that does is "fix the read, do not
+debounce", and handing back is the keystone's direction, so a false fire costs a lease, not
+cooling.
+
 ## The two writes are not one step, and are not caught together
 
 *From the doc comment of `reassert(_:fanAt:attempt:)`.*

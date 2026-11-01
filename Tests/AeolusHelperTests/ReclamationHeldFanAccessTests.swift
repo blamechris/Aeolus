@@ -107,9 +107,12 @@ struct ReclamationHeldFanAccessTests {
 
     /// Every property of `HeldFan`, **as spelled**. `commanded` is a get-only view, and
     /// `storedCommanded` is the storage it reads. The rest are counters and stamps the record moves
-    /// itself, and the lease it was registered under.
+    /// itself, and the lease it was registered under. `admittedBounds` (PR #676) is the bounds of
+    /// the permit the fan was registered under, a value § 5's re-assert compares its fresh read
+    /// with and never writes through; the registration assigns it.
     private static let acknowledgedProperties: Set<String> = [
         "let lease",
+        "var admittedBounds",
         "var commanded",
         "private var storedCommanded",
         "var consecutiveReadFailures",

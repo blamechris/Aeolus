@@ -75,9 +75,9 @@ import Foundation
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md). What is
 ///   left below awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`,
 ///   `writer`, `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file
-///   without widening that state or adding a suspension point. The body is 344 code lines against
+///   without widening that state or adding a suspension point. The body is 349 code lines against
 ///   `type_body_length`'s error at 350, `examine(fanAt:inBound:)` 50 against
-///   `function_body_length`'s warning at 50, and the file 996 lines against `file_length`'s at
+///   `function_body_length`'s warning at 50, and the file 998 lines against `file_length`'s at
 ///   1000. New § 5 state belongs in `Registry`, tested as a value, and new behaviour in the
 ///   `EngagementDriver` ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not here.
 actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
@@ -206,7 +206,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
         let index = fan.index
         let generation = registry.generation(ofFan: index)
         let live = await leases.hasLiveLease(id: lease, coveringFan: index)
-        let registration = registry.register(lease, fanAt: index, live: live, since: generation)
+        let registration = registry.register(
+            lease, fanAt: index, live: live, since: generation, admitting: fan.envelope)
         guard case .accepted(let replacedEndedLease, let mayClearTheMark) = registration else {
             log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
             throw EngagementRefusal.leaseNotLive(fan: index)
@@ -628,6 +629,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
             reassertStopped(fanAt: index, heldUnder: lease, during: "its envelope read")
             return
         }
+        // Bounds that moved since the target was admitted: write nothing, give the fan up.
+        if let admitted = registry.boundsChanged(ofFan: index, reading: permit.envelope) {
+            log.reclamationBoundsChanged(fan: index, admitted: admitted, read: permit.envelope)
+            return await finaliseRelease(fanAt: index, heldUnder: lease, because: .systemReclaimed)
+        }
 
         // **A cancelled sweep does not take a fan off automatic control.** The other half of
         // #144's `stop()` shape: the in-flight guard on `cycle()` makes the *incoming* loop
@@ -661,12 +667,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
         // told the system took a fan Aeolus never once tried to take back, and loses control it
         // could have had.
         //
-        // An earlier version of this comment argued the other way, that "restarting with one
-        // fewer attempt gives the fan back to automatic control sooner, which is the
-        // direction this mechanism fails in". Failing safe is not a licence to mis-attribute:
-        // the budget exists to stop Aeolus *fighting* firmware that discards its writes, and
-        // an attempt that never reached the wire is not a round of that fight. Refunding
-        // keeps the budget measuring the thing it was sized against.
+        // Why failing safe does not argue the other way: reclamation-watchdog.md § *"The
+        // cancellation exit refunds its attempt"*.
         //
         // Decremented rather than assigned back to `attempt - 1`: the record is re-fetched
         // above but is not proven to be the same episode, and a decrement is correct for

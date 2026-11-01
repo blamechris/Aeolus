@@ -126,6 +126,21 @@ extension ReclamationWatchdog {
         ///   registered again under `lease` since its examination began: that engagement is
         ///   commanding it; or when the examination runs past the gate's bound, which writes
         ///   nothing away from automatic control.
+        /// The bounds `index`'s held target was admitted under, when `read` declares another
+        /// `F<n>Mn` or `F<n>Mx`, compared by exact value; otherwise `nil`. A re-assert answered
+        /// bounds writes nothing and gives the fan up (ADR 0014's minimal-run amendment, item 7's
+        /// re-ruling: bounds have never been seen to move, and a move is a read to fix, not a
+        /// value to re-clamp a stored target into).
+        func boundsChanged(
+            ofFan index: Int, reading read: FanControlEnvelope
+        ) -> FanControlEnvelope? {
+            guard let admitted = held[index]?.admittedBounds,
+                admitted.declaredMinimumRPM != read.declaredMinimumRPM
+                    || admitted.declaredMaximumRPM != read.declaredMaximumRPM
+            else { return nil }
+            return admitted
+        }
+
         func reassertTarget(ofFan index: Int, under lease: UUID) -> CommandedTarget? {
             guard let record = held[index], record.lease == lease, record.examinedInBound,
                 record.examinedAtGeneration == registrations[index, default: 0]
@@ -155,7 +170,8 @@ extension ReclamationWatchdog {
         ///
         /// - Returns: `.refused`, having touched nothing, or `.accepted`.
         mutating func register(
-            _ lease: UUID, fanAt index: Int, live: Bool, since generation: UInt64
+            _ lease: UUID, fanAt index: Int, live: Bool, since generation: UInt64,
+            admitting bounds: FanControlEnvelope
         ) -> Registration {
             guard live, registrations[index, default: 0] == generation, givenUp[index] != lease
             else { return .refused }
@@ -163,6 +179,7 @@ extension ReclamationWatchdog {
             let replacesEndedLease = existing != nil && existing?.lease != lease
             let midEpisode = existing?.lease == lease && existing?.episodeInFlight == true
             held[index] = HeldFan.registering(lease, over: existing)
+            held[index]?.admittedBounds = bounds
             registrations[index, default: 0] &+= 1
             return .accepted(replacedEndedLease: replacesEndedLease, mayClearTheMark: !midEpisode)
         }
