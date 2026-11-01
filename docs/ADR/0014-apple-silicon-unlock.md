@@ -4280,7 +4280,8 @@ says otherwise. Intel and M1/M2 stay `untested`.
     installed, not by what is remembered.
 
     **The check, and what follows it.** Every reinstall is verified against its record with
-    `e4-verify-running.sh`. The check is read 10 s after each step below: after the helper's
+    `e4-verify-running.sh`. A reinstall whose `e4-verify-running.sh` check fails counts as a
+    failed check. The check is read 10 s after each step below: after the helper's
     first log line for a reinstall, after the wake for a sleep, and after the record restarts for
     a power cycle (item 13). It passes when `Ftst` reads `0` and both modes read in Apple's set,
     and it alone decides. When the session's last post-hold check passed, the state was in
