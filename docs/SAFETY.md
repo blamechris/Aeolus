@@ -177,7 +177,7 @@ Custom, asks again for those fans (`LeaseDriver`, "One fan at a time"). The help
 is unchanged by this, and still covers a client that reads and holds on one connection.
 
 **Every fan, or none, until run 1d** ([#670](https://github.com/blamechris/Aeolus/issues/670);
-ADR 0014's minimal-run amendment, item 6 (a)). A fan left on automatic control beside one Aeolus
+ADR 0014's minimal-run amendment, item 7 (a)). A fan left on automatic control beside one Aeolus
 holds sits under the force key the engagement wrote, and whether Apple still manages it there is
 ADR 0014's U7, which no read the helper takes can see. Until run 1d records U7 as observed holding,
 the helper takes the maintainer's lease shape, and holds it on its own side (`CLAUDE.md` rule 7):
@@ -386,7 +386,7 @@ Every target speed is clamped to **`[max(F0Mn, 100), F0Mx]`**, using bounds read
 firmware at runtime.
 
 **No client target below the 50 % point, until run 2**
-([#670](https://github.com/blamechris/Aeolus/issues/670); ADR 0014's minimal-run amendment, item 6
+([#670](https://github.com/blamechris/Aeolus/issues/670); ADR 0014's minimal-run amendment, item 7
 (b)). Level 6's writer clamps a client's target as every write is clamped, and then raises one below
 the midpoint of `[F<n>Mn, F<n>Mx]` to that midpoint, through the same clamp
 (`CommandableFan.clientTarget(for:)`): rule 4's mechanism, narrowing the range. On `Mac16,5` the

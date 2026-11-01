@@ -80,7 +80,7 @@ extension CommandableFan {
 
     /// The 50 % point: the midpoint of `[F<n>Mn, F<n>Mx]` as this permit's read declared them
     /// (#670). No client target is written below it until run 2 records holds below Apple's
-    /// demand (ADR 0014's minimal-run amendment, item 6 (b)).
+    /// demand (ADR 0014's minimal-run amendment, item 7 (b)).
     var clientFloorRPM: Double {
         (envelope.declaredMinimumRPM + envelope.declaredMaximumRPM) / 2
     }
