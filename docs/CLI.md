@@ -23,7 +23,7 @@ NDJSON), this document describes what is on `main` today, not what an earlier PR
 ```
 $ fanctl --version
 fanctl 0.0.0-dev
-XPC protocol 1 (protocol version this build supports; not a negotiated connection —
+XPC protocol 2 (protocol version this build supports; not a negotiated connection —
 see docs/ADR/0005-xpc-authorisation.md for the helper's own connect-time handshake)
 ```
 
@@ -330,6 +330,22 @@ examples are the shapes the end-to-end suites
 `FanctlSetTests.swift`) produce against the real helper session with a simulated fan authority. Replace them with captured output when someone
 records a run.
 
+### Every fan, and no target below the 50 % point (#670)
+
+Until a hardware run shows that a fan left on automatic control beside a held one is still managed
+(ADR 0014's U7, run 1d), the helper grants manual control of every fan together or of none. A lease
+request that leaves out a fan the helper enumerated is refused `leaseMustCoverEveryFan`, exit 4
+below, whose message says to ask for every fan at once; an `apply` must set every fan its lease
+covers, or it is refused before anything is read. `fanctl set all` is the all-fans form, and
+`fanctl set <n>` on a machine with more than one fan is that refusal
+([#324](https://github.com/blamechris/Aeolus/pull/324) carries `set`).
+
+Until run 2, the helper also holds no client target below a fan's 50 % point, the midpoint of
+`[F<n>Mn, F<n>Mx]`: 3,563.5 RPM on `Mac16,5`. A lower request is held at the point, and the
+helper's snapshot reports the target it holds, so `fanctl status` shows the raised value. The app's
+50 % preset is 3,564 RPM on that machine and passes unchanged. `status` and `auto` take no lease and
+are unaffected; `auto` reads `leaseMustCoverEveryFan` as silent, since no snapshot carries it.
+
 ### Exit codes
 
 Stable, and a public contract: a script branches on the number without parsing text. A
@@ -401,7 +417,7 @@ Two things it deliberately does not infer:
 
 ```
 $ fanctl status
-Helper 0.0.0-dev, negotiated XPC protocol 1 (helper accepts 1–1; fanctl 0.0.0-dev speaks 1).
+Helper 0.0.0-dev, negotiated XPC protocol 2 (helper accepts 1–2; fanctl 0.0.0-dev speaks 2).
 Captured by the helper at 2026-09-21T14:13:20Z.
 
 Manual-control lease: none. No Aeolus client holds a manual-control lease.
@@ -423,7 +439,7 @@ always present, with `null` for "not present".
 ```json
 {
   "capturedAt" : "2026-09-21T14:13:20Z",
-  "clientProtocolVersion" : 1,
+  "clientProtocolVersion" : 2,
   "fans" : [
     {
       "actualRPM" : { "unavailableReason" : null, "value" : 1351 },
@@ -445,11 +461,11 @@ always present, with `null` for "not present".
   "helper" : {
     "build" : "0.0.0-dev",
     "capabilities" : [ ],
-    "maximumProtocolVersion" : 1,
+    "maximumProtocolVersion" : 2,
     "minimumProtocolVersion" : 1
   },
   "lease" : null,
-  "protocolVersion" : 1,
+  "protocolVersion" : 2,
   "schema" : 1,
   "thermalEmergencyActive" : false
 }
@@ -520,7 +536,7 @@ A fan is **cleared** when its mode reads automatic and its availability does not
 |---|---|
 | `foreignManualControl`, `restoreToAutomaticFailed` | **9**, whatever the mode reads |
 | `releaseInProgress`, `handbackUnconfirmed`, `restoreToAutomaticUnconfirmed`, `supervisorBlind`, `systemSleeping`, an unrecognised reason | **8**, whatever the mode reads: the helper has not established the fan's mode, or a restore is outstanding. `supervisorBlind` is unknown, not manual, so it is not 9 |
-| `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `noThermalTelemetry`, `reclaimedBySystem`, or none | The mode decides. `writePathNotBuilt` is every fan on today's helper, and `auto` against it exits 0 when all modes read automatic and no lease is listed |
+| `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `leaseMustCoverEveryFan`, `noThermalTelemetry`, `reclaimedBySystem`, or none | The mode decides. `writePathNotBuilt` is every fan on today's helper, and `auto` against it exits 0 when all modes read automatic and no lease is listed |
 
 A first snapshot with a fan the helper has not cleared is not the safe state, so the one request
 is sent: it carries the `restoreAbandoned` sweep, which is such a fan's only route out.

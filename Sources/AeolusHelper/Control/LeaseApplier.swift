@@ -19,8 +19,8 @@ import Foundation
 ///    lapsed, never reaches the driver (item 1), and its faults are the client's answer.
 /// 2. The claim: one `apply` at a time, below.
 /// 3. The write capability, `.writePathNotBuilt`.
-/// 4. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, checked
-///    before anything is read or written.
+/// 4. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, and every
+///    fan the lease covers is set (#670), checked before anything is read or written.
 /// 5. Each fan, in index order, through `step(_:toFanAt:under:engaging:)`: its envelope read and
 ///    its permit, then its gate, and under that one hold the whole of its step.
 /// 6. Item 4: the lease and § 3's latch again, so the reply never says applied under a lease

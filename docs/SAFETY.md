@@ -176,6 +176,32 @@ releases the lease, which returns its fans to automatic control, and, while any 
 Custom, asks again for those fans (`LeaseDriver`, "One fan at a time"). The helper-side fix above
 is unchanged by this, and still covers a client that reads and holds on one connection.
 
+**Every fan, or none, until run 1d** ([#670](https://github.com/blamechris/Aeolus/issues/670);
+ADR 0014's minimal-run amendment, item 6 (a)). A fan left on automatic control beside one Aeolus
+holds sits under the force key the engagement wrote, and whether Apple still manages it there is
+ADR 0014's U7, which no read the helper takes can see. Until run 1d records U7 as observed holding,
+the helper takes the maintainer's lease shape, and holds it on its own side (`CLAUDE.md` rule 7):
+
+- `acquireLease` refuses a request that leaves out an enumerated fan, `leaseMustCoverEveryFan`, a
+  reason of its own and a fact about the request, so no snapshot carries it. It is asked after the
+  lapsed-lease sweep and before § 3's latch, the blindness proof and the bounds reads.
+- An `apply` must set every fan its lease covers, or it is refused before anything is read.
+- A refused `apply` undoes what it engaged, and when that leaves the lease holding some of its fans
+  beside others handed back or never engaged, level 6 ends the lease whole
+  (`FanRestoreCause.applyRefused`) and the lease core hands every fan back. One that leaves every fan
+  held, or none, leaves the lease standing, as before.
+
+Every other path ends a lease whole already: its release, expiry and connection death, § 3's
+revocation, § 5's terminal action, § 4, § 6 and § 7. Two of § 5's hand-backs are of one fan while
+the lease is still listed, and each is bounded by an end of the whole lease: a held fan § 5 yields
+to a latched § 3, whose cycle revokes every lease, or whose own lease has lapsed, which the TTL
+sweep ends. A fan the system takes back while another is held is the system's act, not a hand-back,
+and § 5's terminal action ends that lease whole once its re-assert budget is spent. A restore the
+firmware refuses still leaves its fan in the durable register beside fans that went back, as above:
+the lease has ended, and that is the terminal state, not a lease kept. The app draws no per-fan
+control meanwhile; its control for all fans is unchanged. *Tested by:* `EveryFanLeaseTests`,
+`LeaseApplierTests`' item 0 and `LeaseApplierWholeLeaseTests`.
+
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
 prevented in that mode too — what keeps the fans under control is a live supervised
@@ -358,6 +384,17 @@ document, not an omission.
 
 Every target speed is clamped to **`[max(F0Mn, 100), F0Mx]`**, using bounds read from the
 firmware at runtime.
+
+**No client target below the 50 % point, until run 2**
+([#670](https://github.com/blamechris/Aeolus/issues/670); ADR 0014's minimal-run amendment, item 6
+(b)). Level 6's writer clamps a client's target as every write is clamped, and then raises one below
+the midpoint of `[F<n>Mn, F<n>Mx]` to that midpoint, through the same clamp
+(`CommandableFan.clientTarget(for:)`): rule 4's mechanism, narrowing the range. On `Mac16,5` the
+point is 3,563.5 RPM, against P1's highest recorded demand of 3,455 on fan 0, so while § 3, § 4, § 6
+and reconciliation have no hardware row a hold fails loud rather than hot. Safety actors' writes and
+the engaged turn's floor write are unchanged, and the snapshot reports the target the helper holds,
+so a client shows the raised value. Run 2 lowers the point on its own record. *Tested by:*
+`GovernedFanWriterHoldTests`, `GovernedFanWriterTests` and `ClientFloorCompositionTests`.
 
 - **The firmware's bounds win.** A configuration file may narrow the usable range; it may
   never widen it, and it is never trusted over what the hardware reports.

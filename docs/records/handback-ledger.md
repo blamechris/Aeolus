@@ -422,8 +422,10 @@ something less true than what was available.
    others retries — past the other client's release, past the handback window — into this
    refusal in the end.
 
-   It is not the first refusal in the method, and that is not an inconsistency. Four refusals
-   run above the marker — `refuseIfThermalEmergencyActive`, `refuseIfBlind`,
+   It is not the first refusal in the method, and that is not an inconsistency. Five refusals
+   run above the marker — since [#670](https://github.com/blamechris/Aeolus/issues/670) the
+   every-fan check, a fact about the request read against the enumeration, then
+   `refuseIfThermalEmergencyActive`, `refuseIfBlind`,
    `refuseIfForeignManualControl(_:wanting:)` and, since
    [#270](https://github.com/blamechris/Aeolus/issues/270), `refuseIfBoundsImplausible(_:wanting:)`
    — because each needs a suspension point and everything in the region is below every await by
@@ -1065,7 +1067,10 @@ believes is asleep is not.
    as from a message.
 3. The suspension points: enumerating the machine's fans, then sweeping anything
    already lapsed — so the single-lease check below is made against live leases only,
-   and a previous lease's fans are back on automatic before new ones are taken — then
+   and a previous lease's fans are back on automatic before new ones are taken — then,
+   since [#670](https://github.com/blamechris/Aeolus/issues/670), refusing a request that
+   leaves out an enumerated fan (`leaseMustCoverEveryFan`): no suspension of its own, the most
+   durable answer after the build's, and asked after the sweep for the sweep's reason — then
    refusing if § 3 is latched, then proving the helper can still see a temperature at
    all, then asking § 6's baseline whether anything outside Aeolus is holding a
    requested fan, and finally — since [#270](https://github.com/blamechris/Aeolus/issues/270)
