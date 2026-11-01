@@ -43,7 +43,7 @@ struct SupervisedApplyBoundaryTests {
 
         await #expect(throws: Self.shuttingDown) {
             try await helper.authority.apply(
-                [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))],
+                [FanSetting(fanIndex: 0, control: .fixed(rpm: 4_400))],
                 leaseID: lease.id,
                 from: connection)
         }
@@ -72,11 +72,11 @@ struct SupervisedApplyBoundaryTests {
     @Test("On a build that cannot write, apply answers the same faults in the same order")
     func onANotBuiltPlaneApplyAnswersAsBefore() async throws {
         let firmware = ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
+            fans: [0: .automatic(at: 4_400)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let helper = await Self.notBuilt(over: firmware)
         let harness = AnonymousListenerHarness(authority: helper.authority)
-        let settings = try Self.settingsPayload(rpm: 2_400)
+        let settings = try Self.settingsPayload(rpm: 4_400)
         let unknown = UUID().uuidString
 
         let beforeHandshake = await harness.acknowledgementMessage { proxy, reply in
@@ -148,8 +148,8 @@ struct SupervisedApplyBoundaryTests {
         let lease = try await Self.handshakeAndLease(on: harness)
         let engagement = HopParking()
         await machine.writes.interfere(beforeEngageStep: 1) { await engagement.park() }
-        let first = try Self.settingsPayload(rpm: 2_400)
-        let second = try Self.settingsPayload(rpm: 2_600)
+        let first = try Self.settingsPayload(rpm: 4_400)
+        let second = try Self.settingsPayload(rpm: 4_600)
         let replies = OrderRecord<String>()
 
         let pending = harness.pipelinedAcknowledgements(
@@ -180,8 +180,8 @@ struct SupervisedApplyBoundaryTests {
             if case .commandTarget(fan: 0, let rpm) = attempt { return rpm }
             return nil
         }
-        #expect(commanded == [2_400, 2_600], "the firmware was commanded \(commanded)")
-        #expect(await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_600)
+        #expect(commanded == [4_400, 4_600], "the firmware was commanded \(commanded)")
+        #expect(await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 4_600)
     }
 
     // MARK: - Fixtures

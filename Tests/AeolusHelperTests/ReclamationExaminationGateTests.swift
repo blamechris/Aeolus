@@ -60,17 +60,17 @@ struct ReclamationExaminationGateTests {
     /// mark, the `.fault` and the re-assert.
     @Test("A step attempted during the lease check waits, and is not judged a reclamation")
     func aStepDuringTheLeaseCheckWaitsForTheGate() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)], parkingLeaseHops: true)
+        let machine = ReclamationMachine(fans: [0: .held(at: 4_400)], parkingLeaseHops: true)
         let hops = try #require(machine.leaseHops)
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try await Self.lease(machine)
         let permit = try standIn.permit()
 
         await hops.parkNextAnswer()
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(await yieldUntil("the lease check to park") { await hops.isParked })
-        let step = observing { try await standIn.step(to: 2_000, of: permit, under: lease) }
+        let step = observing { try await standIn.step(to: 4_000, of: permit, under: lease) }
         #expect(
             await yieldUntil("the step to wait for the gate") {
                 machine.gate.waiting(onFan: 0) == 1
@@ -79,13 +79,13 @@ struct ReclamationExaminationGateTests {
 
         await hops.release()
         try await finished("the examination", sweep)
-        #expect(try await finished("the step", step)??.rpm == 2_000)
+        #expect(try await finished("the step", step)??.rpm == 4_000)
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
 
         try await finished("the next cycle", observing { await machine.watchdog.cycle() })
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_000], "§ 5 wrote over the step")
+        #expect(await machine.commandedRPMs == [4_000], "§ 5 wrote over the step")
         #expect(machine.gate.isIdle)
     }
 
@@ -100,14 +100,14 @@ struct ReclamationExaminationGateTests {
     /// the leave just after the read. Run: red on "no read between the write and its report".
     @Test("A step written before § 5 reads, and reported after it arrived, is read reported")
     func aStepWrittenBeforeTheReadIsReadOnlyOnceReported() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
+        let machine = ReclamationMachine(fans: [0: .held(at: 4_400)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try await Self.lease(machine)
         let permit = try standIn.permit()
 
         let pass = try #require(await standIn.enter())
-        let written = try await standIn.write(2_000, of: permit)
+        let written = try await standIn.write(4_000, of: permit)
         let afterTheWrite = await machine.attempts.count
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(
@@ -127,8 +127,8 @@ struct ReclamationExaminationGateTests {
             await machine.attempts.dropFirst(afterTheWrite).contains(.readControlState(fan: 0)),
             "the examination never read the fan, so nothing here was judged")
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_000], "§ 5 re-asserted the old target")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.commandedRPMs == [4_000], "§ 5 re-asserted the old target")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
         #expect(machine.gate.isIdle)
     }
 
@@ -140,9 +140,9 @@ struct ReclamationExaminationGateTests {
     /// mark, the `.fault` and the re-assert: the reading predates the step.
     @Test("A step under way when the examination begins is read after it lands")
     func aStepUnderWayIsReadAfterItLands() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
+        let machine = ReclamationMachine(fans: [0: .held(at: 4_400)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try await Self.lease(machine)
         let permit = try standIn.permit()
 
@@ -152,12 +152,12 @@ struct ReclamationExaminationGateTests {
             await yieldUntil("the examination to wait for the gate") {
                 machine.gate.waiting(onFan: 0) == 1
             })
-        await standIn.report(try await standIn.write(2_000, of: permit), under: lease)
+        await standIn.report(try await standIn.write(4_000, of: permit), under: lease)
         standIn.leave(pass)
         try await finished("the examination", sweep)
 
         await Self.expectNotJudgedAReclamation(machine)
-        #expect(await machine.commandedRPMs == [2_000])
+        #expect(await machine.commandedRPMs == [4_000])
         #expect(machine.gate.isIdle)
     }
 
@@ -173,10 +173,10 @@ struct ReclamationExaminationGateTests {
     /// red on the wait for fan 1's gate, and on the read of fan 1 inside the step.
     @Test("§ 5 waits on the gate of the fan it examines, and on no other fan's")
     func eachExaminationWaitsOnItsOwnFansGate() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_400), 1: .held(at: 2_400)])
+        let machine = ReclamationMachine(fans: [0: .held(at: 4_400), 1: .held(at: 4_400)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        try await machine.hold(fan: 1, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
+        try await machine.hold(fan: 1, commanding: 4_400)
         let stepOnFanOne = try #require(await standIn.enter(fanAt: 1))
         let beforeTheSweep = await machine.attempts.count
 
@@ -216,9 +216,9 @@ struct ReclamationExaminationGateTests {
     /// without stamping. Run: red on the stand-down line, the re-engage and the command.
     @Test("§ 5 takes the gate before it stamps, so a step's registration is not inside it")
     func theGateIsTakenBeforeTheStamp() async throws {
-        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)])
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 4_400)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let lease = try await Self.lease(machine)
         let permit = try standIn.permit()
 
@@ -236,7 +236,7 @@ struct ReclamationExaminationGateTests {
             machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty,
             "a registration made before the examination stood its re-assert down")
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
-        #expect(await machine.commandedRPMs == [2_400], "§ 5 did not re-assert the reclaimed fan")
+        #expect(await machine.commandedRPMs == [4_400], "§ 5 did not re-assert the reclaimed fan")
     }
 
     // MARK: - Past the bound
@@ -256,7 +256,7 @@ struct ReclamationExaminationGateTests {
     func pastTheBoundADivergenceMarksAndWritesNothing() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let stuck = try #require(await standIn.enter())
 
         let sweep = observing { await machine.watchdog.cycle() }
@@ -305,7 +305,7 @@ struct ReclamationExaminationGateTests {
     func aCancelledWaitStillRefundsTheAttempt() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         let standIn = LevelSixStandIn(machine)
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
         let holder = try #require(await standIn.enter())
 
         for round in 1...ReclamationLimits.reassertAttemptBudget {
@@ -330,7 +330,7 @@ struct ReclamationExaminationGateTests {
             await machine.attempts.contains(.engageManualControl(fan: 0)),
             "the budget went on waits that wrote nothing, so § 5 gave fan 0 up")
         #expect(
-            machine.safetyLog.lines(containing: "re-asserted 2400 RPM, attempt 1 of").count == 1)
+            machine.safetyLog.lines(containing: "re-asserted 4400 RPM, attempt 1 of").count == 1)
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(machine.gate.isIdle)
     }

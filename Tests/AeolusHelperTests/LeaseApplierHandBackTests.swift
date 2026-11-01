@@ -21,8 +21,8 @@ struct LeaseApplierHandBackTests {
     private static let handBackRefused = "Could not hand fan 0 back after level 6's apply"
 
     /// **A hand-back that returned.** Fan 1's command is refused and the undo hands fans 0 and 1
-    /// back. A retry of fan 0 under the same lease engages it again, and is applied with the fan
-    /// in manual.
+    /// back. A retry under the same lease, over both fans as an `apply` must be since #670, engages
+    /// fan 0 again, and is applied with the fan in manual.
     ///
     /// **Mutation:** in `LeaseApplier.undo`, delete `engagements.remove(index, under: lease)`.
     /// Run: red, the retry writes to the automatic fan without engaging it, and is answered
@@ -42,13 +42,13 @@ struct LeaseApplierHandBackTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .automatic)
         await machine.plane.advance()
         let afterTheRefusal = await machine.attempts.count
 
-        try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
 
         #expect(
             await machine.attempts.dropFirst(afterTheRefusal).contains(
@@ -57,7 +57,7 @@ struct LeaseApplierHandBackTests {
         #expect(
             try await machine.plane.firmwareMode(ofFan: 0) == .manual,
             "the retry was answered applied while fan 0 is on automatic control")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
     }
 
     /// **A kept fan still in manual is re-adopted, with nothing written.** Fan 0 is engaged,
@@ -87,7 +87,7 @@ struct LeaseApplierHandBackTests {
         let writesBefore = await machine.plane.keyWrites.count
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
@@ -99,7 +99,7 @@ struct LeaseApplierHandBackTests {
                 == false,
             "the re-apply wrote the mode of a fan still in manual")
         #expect(machine.safetyLog.levels(containing: KeptFan.reAdopted) == [.notice])
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
     }
 
@@ -134,7 +134,7 @@ struct LeaseApplierHandBackTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(try await plane.firmwareMode(ofFan: 0) == .automatic, "the mode write did not land")
@@ -144,7 +144,7 @@ struct LeaseApplierHandBackTests {
         let writesBefore = await plane.keyWrites.count
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
@@ -165,6 +165,6 @@ struct LeaseApplierHandBackTests {
         #expect(
             KeptFan.writes(in: await machine.attempts.dropFirst(beforeTheCycle)).isEmpty,
             "§ 5's cycle wrote to a fan that was holding its target")
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
     }
 }

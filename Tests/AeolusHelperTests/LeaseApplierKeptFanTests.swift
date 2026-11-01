@@ -36,7 +36,7 @@ struct LeaseApplierKeptFanTests {
         await machine.plane.setMode(.manual, ofFan: 0)
 
         let answered = await LeaseApplierAnswerTests.answer {
-            try await machine.levelSix().apply(fixed((0, 2_400)), under: lease)
+            try await machine.levelSix().apply(fixed((0, 4_400)), under: lease)
         }
 
         #expect(
@@ -68,7 +68,7 @@ struct LeaseApplierKeptFanTests {
         let writesBefore = await machine.plane.keyWrites.count
 
         let answered = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
 
         #expect(
@@ -110,7 +110,7 @@ struct LeaseApplierKeptFanTests {
         let levelSix = machine.levelSix(writingThrough: writes)
 
         let refused = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }
 
         #expect(await writes.didFire, "the step was never refused")
@@ -136,7 +136,7 @@ struct LeaseApplierKeptFanTests {
         let attemptsBefore = await machine.attempts.count
         let writesBefore = await machine.plane.keyWrites.count
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
@@ -146,7 +146,7 @@ struct LeaseApplierKeptFanTests {
         #expect(
             await machine.plane.keyWrites.dropFirst(writesBefore).contains(.mode(fan: 0, value: 1))
                 == false)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
     }
 
@@ -165,7 +165,7 @@ struct LeaseApplierKeptFanTests {
         let attemptsBefore = await kept.machine.attempts.count
 
         await #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)) {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
         #expect(await kept.machine.attempts.count == attemptsBefore, "the re-apply touched the fan")
         #expect(kept.machine.safetyLog.lines(containing: KeptFan.reAdopted).isEmpty)
@@ -225,7 +225,7 @@ struct KeptFan {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire, "the command was never refused")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "the restore landed")
@@ -260,7 +260,7 @@ struct KeptFan {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire, "the command was never refused")
         #expect(try await plane.firmwareMode(ofFan: 0) == .automatic, "the restore's mode write")
@@ -270,7 +270,10 @@ struct KeptFan {
 
     /// A fan the driver could not hand back itself (#406): its mode write lands, its read-back
     /// answers `0`, and the firmware refuses the driver's undo, so it is in manual and kept. Fan
-    /// `index` of `fans`, all leased; the firmware takes writes again once this returns.
+    /// `index` of `fans`, all leased and all applied, as an `apply` must set every fan since #670:
+    /// a fan before `index` is engaged and commanded, and the refused `apply`'s undo of it meets
+    /// the firmware refusing, so it is kept too and the lease stands over fans all kept. The
+    /// firmware takes writes again once this returns.
     static func keptByTheDriver(fan index: Int = 0, of fans: [Int] = [0]) async throws -> KeptFan {
         let machine = ReclamationMachine(
             stages: [
@@ -283,8 +286,9 @@ struct KeptFan {
         await machine.plane.setRawMode(0, ofFan: index)
         let levelSix = machine.levelSix(writingThrough: writes)
 
+        let settings = fans.sorted().map { FanSetting(fanIndex: $0, control: .fixed(rpm: 4_400)) }
         let refusal = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((index, 2_400)), under: lease)
+            try await levelSix.apply(settings, under: lease)
         }
         #expect(refusal != nil, "the apply that should have kept fan \(index) was applied")
         #expect(await writes.didFire, "the step was never refused")
@@ -315,7 +319,7 @@ struct KeptFan {
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
         ) {
-            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire, "§ 5 was never told the fan was released")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "the hand-back landed")

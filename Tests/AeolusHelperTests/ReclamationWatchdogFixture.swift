@@ -98,7 +98,8 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         ledger = ReclamationLedger()
         restorer = RecordingFanRestorer()
         leases = LeaseFixture.authority(
-            restorer: restorer, thermalEmergency: latch, clock: leaseClock)
+            enumeration: ScriptedFanEnumeration(indices: Set(fans.keys)), restorer: restorer,
+            thermalEmergency: latch, clock: leaseClock)
         leaseHops = parkingLeaseHops ? ParkableHeldLeases(leases) : nil
         latchHops = parkingSafetyHops ? ParkableThermalLatch(latch) : nil
         ledgerHops = parkingSafetyHops ? ParkableReclamationLedger(ledger) : nil

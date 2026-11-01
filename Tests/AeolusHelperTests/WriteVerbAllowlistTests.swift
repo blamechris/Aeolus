@@ -191,7 +191,9 @@ struct WriteVerbAllowlistTests {
     ///   and `hold(_:of:)` its one whole write of a fixed setting (ADR 0014's A6 amendments),
     ///   clamped through the permit like every other.
     /// - `FanWriteAuthorisation.target(for:)` is the *producer*: it clamps into the permit's
-    ///   own envelope and stamps the permit's own index. It writes nothing.
+    ///   own envelope and stamps the permit's own index. It writes nothing. `clientTarget(for:)`
+    ///   is the same producer for level 6, raising a clamped speed below the permit's own 50 %
+    ///   point to it through `target(for:)` again (#670); it writes nothing either.
     /// - `ThermalEmergency.manualControlEngaged(_:)` stores a permit minted elsewhere, so the
     ///   emergency's maximum write needs no read while the machine is above ceiling.
     ///   `bridgeToMaximumThenRelease(_:)` is what spends it.
@@ -237,6 +239,7 @@ struct WriteVerbAllowlistTests {
         "SafetyWriters.swift: bridgeToMaximumThenRestore(of: CommandableFan)",
         "SafetyWriters.swift: engageManualControl(of: CommandableFan)",
         "FanWriteAuthorisation.swift: target(for: Double)",
+        "FanWriteAuthorisation.swift: clientTarget(for: Double)",
         "ThermalEmergency.swift: manualControlEngaged(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeToMaximumThenRelease(_: CommandableFan)",
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
@@ -609,6 +612,10 @@ struct WriteVerbAllowlistTests {
             + "engaging: inout ApplyEngagements)",
         "LeaseApplier.swift: undo(_: [Int], under: UUID)",
         "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
+        // #670's end of a partly held lease: a log line and the lease core's
+        // `revokeLease(id:forFan:because:)`, whose restore is the keystone through its restorer.
+        // It takes indices and a lease and reaches no writer of its own.
+        "LeaseApplier.swift: endPartlyHeld(_: UUID, holding: Set<Int>, of: Set<Int>)",
         // The role the authority reaches level 6 through (ADR 0014's A6 PR-3 amendment): the
         // same verb, as a requirement, with no permit. Its one conformer is `LeaseApplier`'s,
         // above, and `LeaseApplyingTripwireTests` holds that it is never widened.

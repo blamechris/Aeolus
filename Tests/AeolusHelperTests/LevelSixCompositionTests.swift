@@ -34,14 +34,14 @@ struct LevelSixCompositionTests {
         let engagement = HopParking()
         await machine.writes.interfere(beforeEngageStep: 1) { await engagement.park() }
 
-        let first = observing { try await machine.apply(rpm: 2_400, under: lease) }
+        let first = observing { try await machine.apply(rpm: 4_400, under: lease) }
         // Required, not expected: unparked, the apply below would park in the armed hook itself
         // and hold the test to its time limit.
         try #require(
             await yieldUntil("the authority's apply to park") { await engagement.isParked })
         let second = await LevelSixMachine.answer {
             try await machine.helper.leaseApplier.apply(
-                [FanSetting(fanIndex: 0, control: .fixed(rpm: 3_000))], leaseID: lease,
+                [FanSetting(fanIndex: 0, control: .fixed(rpm: 5_000))], leaseID: lease,
                 from: machine.holder)
         }
         await engagement.release()
@@ -53,7 +53,7 @@ struct LevelSixCompositionTests {
             an apply on the composition's level 6 was answered \(String(describing: second)) \
             while the authority's was in flight: they are not the same instance.
             """)
-        #expect(await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
     }
 
     // MARK: - What the composed level 6 reads
@@ -74,7 +74,7 @@ struct LevelSixCompositionTests {
         await machine.latchTheThermalEmergency()
 
         let answer = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         let writes = await machine.forwardWrites(after: before)
@@ -94,7 +94,7 @@ struct LevelSixCompositionTests {
         await machine.writes.interfere { await machine.latchTheThermalEmergency() }
 
         let answer = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         #expect(await machine.writes.didFire, "§ 3 never latched inside the command write")
@@ -118,7 +118,7 @@ struct LevelSixCompositionTests {
         machine.writes.report(.notBuilt)
 
         let answer = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         let writes = await machine.forwardWrites(after: before)
@@ -143,7 +143,7 @@ struct LevelSixCompositionTests {
         let machine = await LevelSixMachine(unlock: .heldUntilForced(stepsToYield: 1), clock: clock)
         let lease = try await machine.lease()
 
-        let applying = observing { try await machine.apply(rpm: 2_400, under: lease) }
+        let applying = observing { try await machine.apply(rpm: 4_400, under: lease) }
         let polled = await yieldUntil("level 6's poll to sleep on the composed clock") {
             clock.sleepers == 1
         }

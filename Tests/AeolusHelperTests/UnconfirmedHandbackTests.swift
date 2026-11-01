@@ -53,10 +53,11 @@ struct UnconfirmedHandbackTests {
     /// again after `.didWake` with the restore still parked; the second is what says the
     /// refusal is not the sleep seal wearing another name.
     ///
-    /// **Fan 1 is enumerated and never leased, so never unconfirmed**: the set is a subset of the
-    /// fans whose restore was issued, which one fan cannot tell from all. It was "grantable
-    /// throughout" until #364 held the machine-wide restore seal for § 4's whole teardown; it is
-    /// refused `.releaseInProgress` while that is parked — the #364 decision, not a test fix.
+    /// **One fan since #670**: a lease covers every fan, so no fan is left unleased to show the
+    /// set is a subset of the fans whose restore was issued. Until then fan 1 was enumerated and
+    /// never leased, and refused `.releaseInProgress` while the teardown was parked (#364). The
+    /// set is still asserted to be exactly `[0]`, so a register that named every fan the plane has
+    /// is still red here, on the fan this machine does not have.
     ///
     /// The lease's own fan is what wedges here, not the keystone, which is why `restoreScopes`
     /// is `[.fan(0)]` rather than `[.everyFan]` — the keystone is not reached until the wedge
@@ -67,10 +68,11 @@ struct UnconfirmedHandbackTests {
     /// **Mutation B:** delete the `guard unconfirmed.isEmpty` block from
     /// `LeaseAuthority.acquireLease`. Run: red.
     /// **Mutation C:** in `HandbackRegisters.recordUnconfirmedHandbacks()`, union every fan the
-    /// plane has, `Set(releasing.keys).union(0..<2)`, not `releasing.keys`. Run: red on fan 1.
+    /// plane has, `Set(releasing.keys).union(0..<2)`, not `releasing.keys`. Run, on the two-fan
+    /// machine before #670: red on fan 1. On this one it is red on the set's `[0]`.
     @Test("A wedged handback drops the lease first and leaves the fan unconfirmed")
     func aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed() async throws {
-        let plane = WedgedRestorePlane(SystemPowerTests.machine(fanCount: 2))
+        let plane = WedgedRestorePlane(SystemPowerTests.machine(fanCount: 1))
         let observer = ScriptedPowerObserver()
         let witness = AcknowledgementWitness()
         let log = RecordedLog()
@@ -79,7 +81,7 @@ struct UnconfirmedHandbackTests {
         let clock = ManualClock()
         let helper = SystemPowerTests.composed(
             plane: plane, observer: observer, budget: .milliseconds(50), clock: clock,
-            fanCount: 2, safetyLog: log)
+            fanCount: 1, safetyLog: log)
         observer.whenAcknowledging { [leases = helper.leases] in
             await witness.record(leaseCount: leases.leaseCount)
         }
@@ -117,8 +119,6 @@ struct UnconfirmedHandbackTests {
         try await observer.deliver(.didWake)
         await Self.expectUnconfirmed(helper.leases, fan: 0, whenAsking: "after the wake")
 
-        let fanOne = await AvailabilityFixture.refusalForGrant(over: 1, from: helper.leases)
-        #expect(fanOne == .releaseInProgress, "fan 1 after the wake came back \(fanOne)")
         #expect(
             await helper.leases.fansWithUnconfirmedHandbacks == [0],
             """
@@ -128,11 +128,11 @@ struct UnconfirmedHandbackTests {
             """)
         await Self.expectUnconfirmedIsMidHandback(helper.leases)
 
-        // Nothing is left parked behind the test, and fan 1 is granted once it has returned.
+        // Nothing is left parked behind the test, and fan 0 is granted once it has returned.
         await plane.release()
         await delivery.value
         _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [1]), from: ConnectionID())
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
     }
 
     /// A restore that lands late clears the refusal it left behind.

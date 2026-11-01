@@ -163,7 +163,13 @@ struct FanctlResetCorruptedStateTests {
     /// key stays set, while the command still prints the same acceptance.
     /// **Mutation:** move `await leases.confirmAcceptedHandbacks()` above the `.built` block.
     /// Run: red on the order — the read of fan 2 comes before `.everyFan`.
-    @Test("Every fan ends automatic and the force key clear, and the reply says accepted")
+    @Test(
+        "Every fan ends automatic and the force key clear, and the reply says accepted",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func corruptedStateEndsRestored() async throws {
         let lines = RecordedHelperLines()
         let helper = try await Self.corrupted(lines: lines)

@@ -332,7 +332,7 @@ struct StartupReconciliationTests {
         await helper.shutDown()
         let holder = ConnectionID()
         _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: holder)
+            LeaseFixture.request(fans: [0, 1]), from: holder)
 
         // E3's engage, simulated: the fan Aeolus holds goes into manual.
         await helper.plane.setMode(.manual, ofFan: 0)
@@ -341,7 +341,7 @@ struct StartupReconciliationTests {
             throws: AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         ) {
             _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [0]), from: ConnectionID())
+                LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
         }
     }
 
@@ -485,12 +485,11 @@ struct StartupReconciliationTests {
             throws: AeolusXPCFault.manualControlUnavailable(reason: .supervisorBlind)
         ) {
             _ = try await bounded.leases.acquireLease(
-                LeaseFixture.request(fans: [1]), from: ConnectionID())
+                LeaseFixture.request(fans: [0, 1, 2]), from: ConnectionID())
         }
-        // Fan 0 *was* read, and reads automatic. The refusal is per fan, not machine-wide:
-        // a budget that ran out must not cost a client the fans reconciliation did reach.
-        _ = try await bounded.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        // Fan 0 *was* read, and reads automatic: `unreconciledFans` above leaves it out, so the
+        // refusal is per fan and not machine-wide. A grant names every fan since #670, so no
+        // lease over fan 0 alone shows it any more.
     }
 }
 

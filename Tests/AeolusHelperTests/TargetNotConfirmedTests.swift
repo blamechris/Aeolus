@@ -16,13 +16,13 @@ import Testing
 struct TargetNotConfirmedTests {
 
     /// A permit for fan 0 at 2,400 RPM, through its declared envelope.
-    private static func target(_ rpm: Double = 2_400) throws -> AuthorisedFanTarget {
+    private static func target(_ rpm: Double = 4_400) throws -> AuthorisedFanTarget {
         try commandableFan(0, declaring: .held(at: 1_800)).target(for: rpm)
     }
 
     /// What `commandTarget` answered, or `nil` when it returned.
     private static func outcome(
-        of plane: ScriptedControlPlane, commanding rpm: Double = 2_400
+        of plane: ScriptedControlPlane, commanding rpm: Double = 4_400
     ) async throws -> (any Error)? {
         let target = try target(rpm)
         do {
@@ -56,10 +56,10 @@ struct TargetNotConfirmedTests {
         #expect(returned == nil, "a target held at its read-back threw \(returned as Any)")
         #expect(
             thrown as? FanControlPlaneError
-                == .targetNotConfirmed(index: 0, commandedRPM: 2_400, readBackRPM: 1_800),
+                == .targetNotConfirmed(index: 0, commandedRPM: 4_400, readBackRPM: 1_800),
             "a target not held at its read-back answered \(thrown as Any)")
         for plane in [reverted, notHeld] {
-            #expect(await plane.keyWrites == [.target(fan: 0, rpm: 2_400)])
+            #expect(await plane.keyWrites == [.target(fan: 0, rpm: 4_400)])
             #expect(
                 try await plane.readControlState(ofFan: 0).target == .rpm(1_800),
                 "the firmware kept a target it was scripted to discard")
@@ -96,7 +96,7 @@ struct TargetNotConfirmedTests {
     @Test("Item 5's table answers a target not confirmed as helperFailed, notConfirmed")
     func theAnswerRow() {
         let error = FanControlPlaneError.targetNotConfirmed(
-            index: 0, commandedRPM: 2_400, readBackRPM: 1_800)
+            index: 0, commandedRPM: 4_400, readBackRPM: 1_800)
 
         #expect(
             LeaseApplyRules.answer(to: error)
@@ -123,9 +123,9 @@ struct TargetNotConfirmedTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.notConfirmed)
         ) {
-            try await machine.levelSix().apply(fixed((0, 2_400)), under: lease)
+            try await machine.levelSix().apply(fixed((0, 4_400)), under: lease)
         }
-        #expect(await plane.keyWrites.contains(.target(fan: 0, rpm: 2_400)), "nothing commanded")
+        #expect(await plane.keyWrites.contains(.target(fan: 0, rpm: 4_400)), "nothing commanded")
         #expect(await machine.didRestore(fan: 0), "the fan was left off automatic control")
         #expect(try await plane.firmwareMode(ofFan: 0) == .automatic)
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
@@ -152,12 +152,12 @@ struct TargetNotConfirmedTests {
         arguments: unconfirmedCommands)
     func theReassertRoutesItAsARefusedCommand(_ stage: ScriptedControlPlane.Stage) async throws {
         let machine = ReclamationMachine(stages: [stage], fans: [0: .automatic(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 0, commanding: 4_400)
 
         await machine.watchdog.cycle()
 
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
-        #expect(await machine.commandedRPMs == [2_400])
+        #expect(await machine.commandedRPMs == [4_400])
         #expect(await machine.didRestore(fan: 0), "a fan was left holding a target nobody chose")
         #expect(machine.safetyLog.lines(containing: "could not command a target").count == 1)
         #expect(machine.safetyLog.lines(containing: "re-asserted").isEmpty)

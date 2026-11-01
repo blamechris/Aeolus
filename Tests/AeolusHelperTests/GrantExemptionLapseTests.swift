@@ -28,7 +28,14 @@ struct GrantExemptionLapseTests {
     /// `LeaseAuthority.acquireLease`. Run: red — "Granted a lease over fan 0".
     /// **Mutation:** in `refuseIfForeignManualControl(_:wanting:)`, return `[]` in place of
     /// `fans.intersection(held)`. Run: red, the same line.
-    @Test("A fan exempted mid-handback is not granted once its handback lands mid-grant")
+    @Test(
+        "A fan exempted mid-handback is not granted once its handback lands mid-grant",
+        .disabled(
+            """
+            Unreachable as written while a lease must cover every fan (#670): a handback covers \
+            every fan, so no grant exempts one fan and reads another. Re-enable when run 1d \
+            lifts the rule.
+            """))
     func anExemptionThatLapsesMidGrantIsRefused() async throws {
         let plane = ControlStateGatePlane(
             ScriptedControlPlane(
@@ -108,7 +115,14 @@ struct GrantExemptionLapseTests {
     ///
     /// **Mutation:** delete `try refuseIfExemptionLapsed(connection, exempted: exempted)` from
     /// `LeaseAuthority.acquireLease`. Run: red — "Granted a lease over fan 0".
-    @Test("A fan exempted mid-handback is not granted once its handback lands mid-bounds-read")
+    @Test(
+        "A fan exempted mid-handback is not granted once its handback lands mid-bounds-read",
+        .disabled(
+            """
+            Unreachable as written while a lease must cover every fan (#670): a handback covers \
+            every fan, so no grant exempts one fan and reads another. Re-enable when run 1d \
+            lifts the rule.
+            """))
     func anExemptionThatLapsesDuringTheBoundsReadIsRefused() async throws {
         let firmware = ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400), 1: .automatic(at: 2_400)],

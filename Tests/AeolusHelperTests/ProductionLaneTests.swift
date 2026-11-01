@@ -35,12 +35,12 @@ struct ProductionLaneTests {
     @Test("§ 3's writes are in the lane and level 6's, § 4's and § 7's at supervisor")
     func onlySectionThreesWritesAreInTheLane() async throws {
         let machine = await ProductionWriteMachine()
-        let lease = try await machine.lease(fans: [0])
+        let lease = try await machine.lease()
 
         var mark = machine.firmware.log.entries.count
-        try await machine.apply(rpm: 2_400, under: lease)
+        try await machine.apply(rpm: 4_400, under: lease)
         let levelSix = machine.admittedWrites(since: mark)
-        #expect(levelSix.map(\.key) == ["F0Md", "F0Tg"], "\(levelSix)")
+        #expect(levelSix.map(\.key) == ["F0Md", "F0Tg", "F1Md", "F1Tg"], "\(levelSix)")
         #expect(Self.admissions(machine, since: mark) == [.supervisor], "level 6: \(levelSix)")
 
         await machine.firmware.setCriticalTemperatures(96)
@@ -80,8 +80,8 @@ struct ProductionLaneTests {
     func afterAFiringEveryOtherPathIsAtSupervisor() async throws {
         let machine = await ProductionWriteMachine()
         let leases = machine.helper.leases
-        let lease = try await machine.lease(fans: [0])
-        try await machine.apply(rpm: 2_400, under: lease)
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 4_400, under: lease)
         await machine.firmware.setCriticalTemperatures(96)
         let mark = machine.firmware.log.entries.count
         await machine.helper.thermalEmergency.cycle()
@@ -101,8 +101,8 @@ struct ProductionLaneTests {
             (
                 "the TTL",
                 try await writes {
-                    let ttl = try await machine.lease(fans: [0])
-                    try await machine.apply(rpm: 2_400, under: ttl)
+                    let ttl = try await machine.lease()
+                    try await machine.apply(rpm: 4_400, under: ttl)
                     machine.clock.advance(by: .seconds(Lease.defaultTimeToLive + 1))
                     await leases.expireLapsedLeases()
                 }
@@ -110,8 +110,8 @@ struct ProductionLaneTests {
             (
                 "a release",
                 try await writes {
-                    let released = try await machine.lease(fans: [0])
-                    try await machine.apply(rpm: 2_400, under: released)
+                    let released = try await machine.lease()
+                    try await machine.apply(rpm: 4_400, under: released)
                     try await machine.helper.authority.releaseLease(
                         id: released, from: machine.holder)
                 }
@@ -119,8 +119,8 @@ struct ProductionLaneTests {
             (
                 "§ 5's revocation",
                 try await writes {
-                    let reclaimed = try await machine.lease(fans: [0])
-                    try await machine.apply(rpm: 2_400, under: reclaimed)
+                    let reclaimed = try await machine.lease()
+                    try await machine.apply(rpm: 4_400, under: reclaimed)
                     _ = await leases.revokeLease(
                         id: reclaimed, forFan: 0, because: .systemReclaimed)
                 }
@@ -135,7 +135,7 @@ struct ProductionLaneTests {
             (
                 "the signal teardown",
                 try await writes {
-                    _ = try await machine.lease(fans: [0])
+                    _ = try await machine.lease()
                     await machine.tearDown()
                 }
             ),
@@ -157,9 +157,9 @@ struct ProductionLaneTests {
     @Test("A release tells § 5 before its restore is requested, and holds the fan mid-handback")
     func aReleaseTellsSectionFiveFirst() async throws {
         let machine = await ProductionWriteMachine()
-        let lease = try await machine.lease(fans: [0])
-        try await machine.apply(rpm: 2_400, under: lease)
-        #expect(await machine.helper.reclamationWatchdog.fansUnderManualControl == [0])
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 4_400, under: lease)
+        #expect(await machine.helper.reclamationWatchdog.fansUnderManualControl == [0, 1])
         let ledger = try #require(
             Mirror(reflecting: machine.plane).children.first { $0.label == "ledger" }?.value
                 as? PlaneWriteLedger)
@@ -177,14 +177,15 @@ struct ProductionLaneTests {
         #expect(
             await machine.helper.reclamationWatchdog.fansUnderManualControl.isEmpty,
             "§ 5 was told after the restore was requested")
-        #expect(ledger.engagedFans == [0], "the restore was issued before its turn")
-        #expect(await machine.helper.leases.fansMidHandback == [0], "the fan left `releasing`")
+        #expect(ledger.engagedFans == [0, 1], "the restore was issued before its turn")
+        #expect(await machine.helper.leases.fansMidHandback == [0, 1], "a fan left `releasing`")
 
         await machine.firmware.releaseReads()
         _ = try await finished("the read", read)
         _ = try await finished("the release", release)
         #expect(await machine.helper.leases.fansMidHandback.isEmpty)
         #expect(await machine.firmware.register(smcKey("F0Md")) == [0])
+        #expect(await machine.firmware.register(smcKey("F1Md")) == [0])
     }
 
     /// § 3's own handback on the write plane, refused by the firmware on every attempt: the fan
@@ -192,15 +193,15 @@ struct ProductionLaneTests {
     @Test("A refused § 3 handback on the write plane is recorded abandoned")
     func aRefusedSectionThreeHandbackIsAbandoned() async throws {
         let machine = await ProductionWriteMachine()
-        let lease = try await machine.lease(fans: [0])
-        try await machine.apply(rpm: 2_400, under: lease)
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 4_400, under: lease)
         await machine.firmware.setDefaultWrite(Self.refused)
         await machine.firmware.setCriticalTemperatures(96)
 
         await machine.helper.thermalEmergency.cycle()
 
         #expect(await machine.helper.latch.isActive)
-        #expect(await machine.helper.leases.fansWithAbandonedHandbacks == [0])
+        #expect(await machine.helper.leases.fansWithAbandonedHandbacks == [0, 1])
         #expect(await machine.helper.reclamationWatchdog.fansUnderManualControl.isEmpty)
     }
 
@@ -239,8 +240,8 @@ struct ProductionLaneTests {
         }
 
         try check("at rest")
-        let lease = try await machine.lease(fans: [0])
-        try await machine.apply(rpm: 2_400, under: lease)
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 4_400, under: lease)
         await machine.firmware.setCriticalTemperatures(96)
         await machine.helper.thermalEmergency.cycle()
         #expect(await machine.helper.latch.isActive)

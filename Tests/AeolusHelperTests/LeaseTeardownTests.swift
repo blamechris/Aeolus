@@ -34,7 +34,8 @@ struct LeaseTeardownIndependenceTests {
     func timeToLiveActsAlone() async throws {
         let clock = TestClock()
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer, clock: clock)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer, clock: clock)
 
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1], timeToLive: 30), from: ConnectionID())
@@ -114,7 +115,8 @@ struct LeaseReleaseTests {
     @Test("Releasing a held lease drops it and restores its fans")
     func releaseDropsAndRestores() async throws {
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer)
         let connection = ConnectionID()
 
         let lease = try await authority.acquireLease(
@@ -147,7 +149,8 @@ struct LeaseReleaseTests {
     @Test("Dropping every lease restores every fan they covered")
     func everyLeaseIsDropped() async throws {
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer)
 
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
@@ -260,7 +263,13 @@ struct LeaseHandbackWindowTests {
     /// before the restore suspends, which is the whole reason the handback window exists.
     /// Granting fan 1 here is right, and the interlock's job is to be narrower than the
     /// window, not wider.
-    @Test("A different fan is grantable while another fan's handback is in flight")
+    @Test(
+        "A different fan is grantable while another fan's handback is in flight",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): no lease names fan 1 \
+            without fan 0. Re-enable when run 1d lifts the rule.
+            """))
     func unrelatedFanIsNotBlockedByTheHandback() async throws {
         let entered = AsyncSignal()
         let release = AsyncSignal()
@@ -315,12 +324,12 @@ struct LeaseHandbackGuardPlacementTests {
         let authority = LeaseFixture.authority(enumeration: enumeration, restorer: restorer)
 
         let holder = ConnectionID()
-        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
+        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0, 1]), from: holder)
 
         // The acquirer starts and parks inside the enumeration, before any handback exists.
         let newcomer = ConnectionID()
         let acquiring = Task {
-            try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: newcomer)
+            try await authority.acquireLease(LeaseFixture.request(fans: [0, 1]), from: newcomer)
         }
         try await gate.entered.wait()
 

@@ -91,7 +91,8 @@ struct GrantBoundsGateTests {
     @Test("One bounds read per requested fan Aeolus is not accountable for, in order")
     func oneReadPerRequestedFan() async throws {
         let reads = ParkableEnvelopeReading()
-        let leases = LeaseFixture.authority(envelopes: reads)
+        let leases = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), envelopes: reads)
 
         #expect(await Self.refusal(over: [1, 0], from: leases) == nil)
         #expect(await reads.requests == [0, 1])

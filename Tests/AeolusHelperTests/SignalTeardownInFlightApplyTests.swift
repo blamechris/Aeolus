@@ -37,14 +37,14 @@ struct SignalTeardownInFlightApplyTests {
         let engagement = HopParking()
         await machine.writes.interfere(beforeEngageStep: 1) { await engagement.park() }
 
-        let inFlight = observing { try await machine.apply(rpm: 2_400, under: lease) }
+        let inFlight = observing { try await machine.apply(rpm: 4_400, under: lease) }
         #expect(
             await yieldUntil("the first apply to park in its engagement") {
                 await engagement.isParked
             })
         await machine.helper.authority.controlGate.close()
         let arriving = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 3_000, under: lease)
+            try await machine.apply(rpm: 5_000, under: lease)
         }
         await engagement.release()
         let inFlightAnswer = await LevelSixMachine.answer {
@@ -58,7 +58,7 @@ struct SignalTeardownInFlightApplyTests {
             inFlightAnswer == nil,
             "the apply in flight was answered \(String(describing: inFlightAnswer))")
         #expect(
-            await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_400,
+            await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 4_400,
             "the apply refused for shutdown reached level 6, or the one in flight did not finish")
     }
 
@@ -102,7 +102,7 @@ struct SignalTeardownInFlightApplyTests {
         }
 
         let answer = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         let writes = await machine.firmware.keyWrites
@@ -136,7 +136,7 @@ struct SignalTeardownInFlightApplyTests {
     func aCommandInFlightAtTheExitWritesNoTarget() async throws {
         let machine = await LevelSixMachine()
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 2_400, under: lease)
+        try await machine.apply(rpm: 4_400, under: lease)
         let atExit = FirmwareAtExit()
         await machine.writes.interfere(beforeCommandTarget: 2) {
             await machine.helper.signalTeardown.run(stoppingSupervisorsWith: {
@@ -146,7 +146,7 @@ struct SignalTeardownInFlightApplyTests {
         }
 
         let answer = await LevelSixMachine.answer {
-            try await machine.apply(rpm: 3_000, under: lease)
+            try await machine.apply(rpm: 5_000, under: lease)
         }
 
         let afterExit = await atExit.attemptsAfter(on: machine.firmware)
@@ -154,16 +154,16 @@ struct SignalTeardownInFlightApplyTests {
         #expect(await machine.writes.didFire, "the teardown never ran inside the command")
         #expect(machine.journal.exitsNow == [.restored], "the teardown did not end the process")
         #expect(
-            afterExit.contains(.commandTarget(fan: 0, rpm: 3_000)),
+            afterExit.contains(.commandTarget(fan: 0, rpm: 5_000)),
             "the command was never attempted after the exit, so this proves nothing: \(afterExit)")
         #expect(
-            !writes.contains(.target(fan: 0, rpm: 3_000)),
+            !writes.contains(.target(fan: 0, rpm: 5_000)),
             "a target was written after the exit's keystone: \(writes)")
         #expect(try await machine.firmware.firmwareMode(ofFan: 0) == .automatic)
         #expect(answer == .leaseUnknown, "the apply was answered \(String(describing: answer))")
     }
 
-    /// § 3 between the two keystones. Fan 0 is engaged by an `apply` at 1,400 RPM, so § 3 has it
+    /// § 3 between the two keystones. Fan 0 is engaged by an `apply` at 3,800 RPM, so § 3 has it
     /// registered; then the machine runs hot, and the firmware refuses every mode write while it
     /// honours target writes. The release's hand-back and the first keystone are refused, and § 3,
     /// which runs until the supervisors stop, crosses the ceiling. Its bridge still commands the
@@ -173,7 +173,7 @@ struct SignalTeardownInFlightApplyTests {
     ///
     /// **Mutation:** make `SignalTeardown.run`'s first keystone `.forExit`, as both were before
     /// this was ruled. Run: red, at the maximum's target-write assertion: the seal refuses § 3's
-    /// bridge, and fan 0 ends at 1,400 RPM.
+    /// bridge, and fan 0 ends at 3,800 RPM.
     @Test("A thermal emergency before the supervisors stop still commands the maximum")
     func aThermalEmergencyBeforeTheSupervisorsStopStillCommandsTheMaximum() async throws {
         let machine = await LevelSixMachine(stages: [
@@ -184,7 +184,7 @@ struct SignalTeardownInFlightApplyTests {
                 targetWrites: .honoured),
         ])
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 1_400, under: lease)
+        try await machine.apply(rpm: 3_800, under: lease)
         await machine.firmware.advance()
         let atStop = FirmwareAtExit()
 
@@ -225,7 +225,7 @@ struct SignalTeardownInFlightApplyTests {
     ) async throws {
         let machine = await LevelSixMachine(unlock: unlock)
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 2_400, under: lease)
+        try await machine.apply(rpm: 4_400, under: lease)
         await machine.firmware.setMode(.automatic, ofFan: 0)
         let steps = await machine.firmware.attempts.filter { $0 == .engageManualControl(fan: 0) }
         let atExit = FirmwareAtExit()

@@ -104,11 +104,15 @@ struct LeaseRevocationOutwaitTests {
     /// `HandbackRegisters.isMidHandback(_:)`, which the guard inside `outwaitHandback(of:)`'s
     /// continuation asks. Run: red on `.finished`, and on the
     /// revocation's ceiling — fan 1's drain resumes only fan 1's waiters.
+    ///
+    /// Since #670 a lease covers every fan the machine has, so the machine here has one fan, fan
+    /// 1, and the revocation names fan 0, which it does not have.
     @Test("A revocation outwaits only the handback of the fan it names")
     func aGoneRevocationOutwaitsOnlyItsOwnFan() async throws {
         let clock = TestClock()
         let parking = ParkingFanRestorer(over: RecordingFanRestorer())
-        let authority = LeaseFixture.authority(restorer: parking, clock: clock)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [1]), restorer: parking, clock: clock)
         _ = try await authority.acquireLease(LeaseFixture.request(fans: [1]), from: ConnectionID())
         clock.advance(by: .seconds(Lease.defaultTimeToLive))
         await parking.armNext()

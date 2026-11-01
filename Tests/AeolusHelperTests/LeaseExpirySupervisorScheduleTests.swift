@@ -90,7 +90,7 @@ struct LeaseExpirySupervisorScheduleTests {
         // `TestClock` and `RecordingFanRestorer`; this test needs a clock it can interleave
         // with and a restorer that records when, not only what.
         let authority = LeaseAuthority(
-            enumeration: ScriptedFanEnumeration(),
+            enumeration: ScriptedFanEnumeration(indices: [0]),
             restorer: restorer,
             writeCapability: LeaseFixture.writePathBuilt(),
             telemetry: LeaseFixture.sightedTelemetry(),

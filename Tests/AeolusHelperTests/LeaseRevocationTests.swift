@@ -20,7 +20,8 @@ struct LeaseRevocationTests {
     @Test("Revoking one fan drops the whole lease and restores every fan it covered")
     func revocationTakesTheWholeLease() async throws {
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer)
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
 
@@ -32,11 +33,14 @@ struct LeaseRevocationTests {
     }
 
     /// The selector is a selector. A lease that does not cover the fan is untouched —
-    /// otherwise § 3 firing on one machine's fan would drop control of everything.
+    /// otherwise § 3 firing on one machine's fan would drop control of everything. Since #670 a
+    /// lease covers every fan the machine has, so the lease here is over a machine whose one fan
+    /// is fan 1, and fan 0 is one it does not have.
     @Test("A lease that does not cover the fan is left alone")
     func revocationIsSelective() async throws {
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [1]), restorer: restorer)
         _ = try await authority.acquireLease(
             LeaseFixture.request(fans: [1]), from: ConnectionID())
 
@@ -83,7 +87,8 @@ struct LeaseRevocationTests {
     @Test("Revoking a lease by ID revokes only that lease, whole")
     func revokeLeaseRevokesOnlyTheNamedLiveLeaseWhole() async throws {
         let restorer = RecordingFanRestorer()
-        let authority = LeaseFixture.authority(restorer: restorer)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), restorer: restorer)
         let lease = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
 

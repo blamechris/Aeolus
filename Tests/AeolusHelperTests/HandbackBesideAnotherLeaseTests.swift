@@ -105,6 +105,11 @@ struct HandbackBesideAnotherLeaseTests {
     /// source text, and so is `TeardownRegistrationGapTests`, whose acquirer is then granted.
     @Test(
         "A fan mid-handback reads release in progress beside the next lease, and is not cleared",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """),
         arguments: Ending.allCases)
     func aHandbackInFlightIsRestatedBesideTheNextLease(_ ending: Ending) async throws {
         let parked = try await Self.parkingTheHandback(ofLeaseOverFanZeroEnded: ending)

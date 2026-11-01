@@ -42,7 +42,9 @@ struct LeaseContractTests {
     /// The refusal is additive vocabulary, not a protocol change.
     @Test("Refusing self-renewal needs no protocol bump")
     func selfRenewalRefusalIsForwardTolerant() {
-        #expect(AeolusXPCVersion.current == 1)
+        // A v1 peer is still served (#670 moved `current` to 2 for another reason), and reads
+        // this reason as the case it names or, older still, as `.unknown`.
+        #expect(AeolusXPCVersion.minimumSupported == 1)
         let reason = ManualControlAvailability.Reason(wireValue: "selfRenewalNotBuilt")
         #expect(reason == .selfRenewalNotBuilt)
         // An older peer, which has never heard of it, renders it generically rather than
@@ -140,21 +142,23 @@ struct LeaseContractTests {
     /// own holder, so it is refused rather than misreported.
     @Test("A second connection cannot take control while one holds it")
     func onlyOneLeaseAtATime() async throws {
-        let authority = LeaseFixture.authority()
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
         _ = try await authority.acquireLease(
-            LeaseFixture.request(fans: [0]), from: ConnectionID())
+            LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         ) {
             _ = try await authority.acquireLease(
-                LeaseFixture.request(fans: [1]), from: ConnectionID())
+                LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
         }
         #expect(await authority.leaseCount == 1)
     }
 
-    /// The holder's own connection is refused a second lease too, over a fan its first does not
-    /// cover (#516). ADR 0015 D5's *Identity* rests on it: a grant goes only into an **empty**
+    /// The holder's own connection is refused a second lease too (#516), over every fan as each
+    /// lease must be since #670. ADR 0015 D5's *Identity* rests on it: a grant goes only into an
+    /// **empty**
     /// table, so a snapshot listing the app's lease was read after every earlier lease had been
     /// removed. The app's driver re-acquires on its own connection, which is the case
     /// `onlyOneLeaseAtATime` cannot reach: its two leases come from two connections, so a gate
@@ -163,18 +167,19 @@ struct LeaseContractTests {
     /// **Mutation:** in `LeaseAuthority.acquireLease`, make the guard
     /// `guard table.isEmpty || table.all.allSatisfy({ $0.connection == connection }) else {`.
     /// Run: red here, on the refusal and on the count; `onlyOneLeaseAtATime` stays green.
-    @Test("The holder's own connection is refused a second lease over another fan")
+    @Test("The holder's own connection is refused a second lease")
     func theHoldersOwnConnectionIsRefusedASecondLease() async throws {
-        let authority = LeaseFixture.authority()
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
         let holder = ConnectionID()
         let first = try await authority.acquireLease(
-            LeaseFixture.request(fans: [0]), from: holder)
+            LeaseFixture.request(fans: [0, 1]), from: holder)
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         ) {
             _ = try await authority.acquireLease(
-                LeaseFixture.request(fans: [1]), from: holder)
+                LeaseFixture.request(fans: [0, 1]), from: holder)
         }
         #expect(
             await authority.leaseCount == 1,
@@ -195,7 +200,7 @@ struct LeaseContractTests {
 
         clock.advance(by: .seconds(30))
         let second = try await authority.acquireLease(
-            LeaseFixture.request(fans: [1], timeToLive: 30), from: ConnectionID())
+            LeaseFixture.request(fans: [0], timeToLive: 30), from: ConnectionID())
 
         #expect(await authority.leaseCount == 1)
         #expect(await authority.activeLease()?.id == second.id)
@@ -258,7 +263,8 @@ struct LeaseContractTests {
     @Test("A granted lease reports the holder, the TTL, and a display expiry")
     func grantedLeaseDescribesItself() async throws {
         let wallClock = TestWallClock()
-        let authority = LeaseFixture.authority(wallClock: wallClock)
+        let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]), wallClock: wallClock)
 
         let lease = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1], timeToLive: 45, holder: "fanctl"),

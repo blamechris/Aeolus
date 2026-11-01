@@ -77,7 +77,7 @@ struct LeaseBindingRaceTests {
         let session = session(authority: LeaseFanAuthority(lease: authority))
         _ = await session.hello(payload: try helloPayload())
 
-        let payload = try leasePayload(fanIndices: [0])
+        let payload = try leasePayload(fanIndices: [0, 1])
         let acquiring = Task { await session.acquireLease(payload: payload) }
 
         // The acquisition is now suspended inside the enumeration, which is what makes this
@@ -136,12 +136,12 @@ struct LeaseBindingRaceTests {
         let connection = ConnectionID()
 
         _ = try await authority.acquireLease(
-            LeaseFixture.request(fans: [0]), from: connection)
+            LeaseFixture.request(fans: [0, 1]), from: connection)
 
         let second = Task { () -> (any Error)? in
             do {
                 _ = try await authority.acquireLease(
-                    LeaseFixture.request(fans: [1]), from: connection)
+                    LeaseFixture.request(fans: [0, 1]), from: connection)
                 return nil
             } catch {
                 return error

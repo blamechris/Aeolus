@@ -53,7 +53,9 @@ struct EngagementRig {
         self.plane = plane
         self.writes = writes
         self.fans = fans
-        leases = LeaseFixture.authority(thermalEmergency: latch, clock: clock.base)
+        leases = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: Set(fans)), thermalEmergency: latch,
+            clock: clock.base)
         let recording = log
         let composed = EngagementDriver(
             writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),

@@ -267,7 +267,13 @@ struct SnapshotAvailabilityTests {
     /// **Mutation:** in `firstRefusal(of:observedMode:given:reconciliation:)`, replace
     /// `leases.abandonedHandbacks.contains(index)` with
     /// `!leases.abandonedHandbacks.isEmpty`. Run: red on fan 1 while the test above stays green.
-    @Test("An abandoned handback does not make the neighbour fan unavailable")
+    @Test(
+        "An abandoned handback does not make the neighbour fan unavailable",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func aHandbackRegisterIsReadPerFan() async throws {
         let helper = Fixture.composed(writes: Fixture.firmwareRefusesTheModeWrite, fanCount: 2)
         try await Fixture.acquireAndRelease(fanAt: 0, in: helper)

@@ -207,7 +207,7 @@ struct ThermalEmergencyTests {
     /// reached by bookkeeping instead of by a write.
     @Test("The whole lease covering an affected fan is revoked")
     func theWholeLeaseIsRevoked() async throws {
-        let machine = ThermalMachine(stages: [.at(44), .at(96)])
+        let machine = ThermalMachine(stages: [.at(44), .at(96)], leaseCoreFans: [0, 1])
         try await machine.lease(fans: [0, 1])
         #expect(await machine.leases.leaseCount == 1)
         await machine.plane.advance()

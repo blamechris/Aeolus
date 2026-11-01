@@ -88,11 +88,16 @@ struct ThermalMachine {
     ///     the compiled default unless a test is about the downward-only rule.
     ///   - clock: the timeline the lease TTL and the sighting cache's age bound share. Only
     ///     a test that needs one of them to elapse supplies its own.
+    ///   - leaseCoreFans: the fans the lease core enumerates. Fan 0 alone by default, so the
+    ///     ordinary lease here, over fan 0, is over every fan, as a lease must be since #670; § 3
+    ///     judges the fans registered with it, and no scenario here turns on the lease core's
+    ///     count. A test leasing both fans says so.
     init(
         stages: [ScriptedControlPlane.Stage],
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .nominal, 1: .nominal],
         requestedCeilingCelsius: Double = ThermalCeiling.cpuCelsius,
-        clock: TestClock = TestClock()
+        clock: TestClock = TestClock(),
+        leaseCoreFans: Set<Int> = [0]
     ) {
         self.clock = clock
         plane = ScriptedControlPlane(fans: fans, stages: stages)
@@ -109,7 +114,8 @@ struct ThermalMachine {
             LeaseFixture.reconciliation(over: plane))
         self.handbackReadBack = handbackReadBack
         leases = LeaseFixture.authority(
-            restorer: restorer, telemetry: sightings, thermalEmergency: latch, clock: clock)
+            enumeration: ScriptedFanEnumeration(indices: leaseCoreFans), restorer: restorer,
+            telemetry: sightings, thermalEmergency: latch, clock: clock)
         emergency = ThermalEmergency(
             telemetry: emergencyTelemetry,
             sightings: sightings,

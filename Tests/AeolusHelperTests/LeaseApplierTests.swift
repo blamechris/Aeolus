@@ -39,7 +39,8 @@ struct LeaseApplierTests {
         let detail: String
     }
 
-    /// The five shapes item 0 refuses, each over a lease on fan 0 of a two-fan machine.
+    /// The six shapes item 0 refuses, each over a lease on both fans of a two-fan machine, as a
+    /// lease must be since #670. The uncovered fan is one the machine does not have, fan 2.
     static let refusals = [
         Refusal(
             description: "an empty list", settings: [], detail: LeaseApplyRules.Detail.noSettings),
@@ -54,16 +55,20 @@ struct LeaseApplierTests {
                     fanIndex: 0,
                     control: .curve(
                         FanCurve(
-                            points: [.init(temperatureCelsius: 40, rpm: 2_000)],
+                            points: [.init(temperatureCelsius: 40, rpm: 4_000)],
                             source: SensorGroup(sensorKeys: ["Tp01"]))))
             ],
             detail: LeaseApplyRules.Detail.curve),
         Refusal(
             description: "a fan the lease does not cover",
-            settings: fixed((0, 2_000), (1, 2_000)), detail: LeaseApplyRules.Detail.uncovered),
+            settings: fixed((0, 4_000), (1, 4_000), (2, 4_000)),
+            detail: LeaseApplyRules.Detail.uncovered),
         Refusal(
             description: "a fan named twice",
-            settings: fixed((0, 2_000), (0, 2_400)), detail: LeaseApplyRules.Detail.duplicate),
+            settings: fixed((0, 4_000), (0, 4_400)), detail: LeaseApplyRules.Detail.duplicate),
+        Refusal(
+            description: "a covered fan named by no setting",
+            settings: fixed((0, 4_000)), detail: LeaseApplyRules.Detail.missing),
     ]
 
     /// **Item 0.** Each is refused with `invalidParameter(name: "settings")` and its fixed detail,
@@ -72,10 +77,12 @@ struct LeaseApplierTests {
     /// **Mutations, one per guard, in `LeaseApplyRules.goals(of:coveredBy:)`:** delete the empty
     /// list's `guard`; make `.automatic` `continue`; make `.curve` `continue`; delete the coverage
     /// `guard`; delete the duplicate `guard`. Run: red on that argument each time, and on no other.
+    /// **Mutation (#670):** delete the `goals.count == fans.count` guard. Run: red on the missing
+    /// fan's argument alone: fan 0 is engaged and commanded while fan 1 is left on automatic.
     @Test("Item 0 refuses before anything is read or written", arguments: refusals)
     func itemZeroRefusesBeforeAnythingIsTouched(_ refusal: Refusal) async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)])
-        let lease = try await machine.lease(fans: [0]).id
+        let lease = try await machine.lease(fans: [0, 1]).id
 
         await #expect(throws: settingsRefused(refusal.detail)) {
             try await machine.levelSix().apply(refusal.settings, under: lease)
@@ -97,7 +104,7 @@ struct LeaseApplierTests {
 
         await #expect(throws: AeolusXPCFault.leaseNotHeldByThisConnection) {
             try await machine.levelSix().applier.apply(
-                fixed((0, 2_400)), leaseID: lease, from: ConnectionID())
+                fixed((0, 4_400)), leaseID: lease, from: ConnectionID())
         }
         await Self.expectNothingTouched(machine)
     }
@@ -112,12 +119,12 @@ struct LeaseApplierTests {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
 
-        try await machine.levelSix().apply(fixed((0, 2_400)), under: lease)
+        try await machine.levelSix().apply(fixed((0, 4_400)), under: lease)
 
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
-        #expect(await machine.commandedRPMs == [2_400])
+        #expect(await machine.commandedRPMs == [4_400])
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
         #expect(machine.gate.isIdle)
     }
 
@@ -133,13 +140,13 @@ struct LeaseApplierTests {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
         let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
-        await writes.misreport(commandedRPM: 2_001)
+        await writes.misreport(commandedRPM: 4_001)
 
-        try await machine.levelSix(writingThrough: writes).apply(fixed((0, 2_000)), under: lease)
+        try await machine.levelSix(writingThrough: writes).apply(fixed((0, 4_000)), under: lease)
 
         #expect(
             await machine.watchdog.lastCommanded(ofFan: 0)
-                == CommandedTarget(fanIndex: 0, rpm: 2_001))
+                == CommandedTarget(fanIndex: 0, rpm: 4_001))
     }
 
     /// **Item 3, after the write and never before.** Fan 0 is held at 2,000 under the lease, and a
@@ -154,15 +161,15 @@ struct LeaseApplierTests {
             fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
         let levelSix = machine.levelSix()
-        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_000)), under: lease)
         await machine.plane.advance()
 
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 3_000)), under: lease)
+            try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_000)
         #expect(
             await machine.watchdog.fansUnderManualControl == [0], "a fan engaged before was undone")
     }
@@ -182,7 +189,7 @@ struct LeaseApplierTests {
 
         await #expect(throws: AeolusXPCFault.leaseUnknown) {
             try await machine.levelSix(writingThrough: writes).apply(
-                fixed((0, 2_400)), under: lease)
+                fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire)
     }
@@ -200,7 +207,7 @@ struct LeaseApplierTests {
 
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             try await machine.levelSix(writingThrough: writes).apply(
-                fixed((0, 2_400)), under: lease)
+                fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(await machine.emergency.fansUnderManualControl.contains(0))
@@ -222,7 +229,7 @@ struct LeaseApplierTests {
 
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             try await machine.levelSix(writingThrough: writes).apply(
-                fixed((0, 2_400)), under: lease)
+                fixed((0, 4_400)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(await machine.didRestore(fan: 0) == false, "item 4's refusal undid the fan")
@@ -244,14 +251,14 @@ struct LeaseApplierTests {
             fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0, 1]).id
 
-        try await machine.levelSix().apply(fixed((1, 2_600), (0, 2_400)), under: lease)
+        try await machine.levelSix().apply(fixed((1, 4_600), (0, 4_400)), under: lease)
 
         let engaged = await machine.attempts.compactMap { attempt -> Int? in
             if case .engageManualControl(let fan) = attempt { return fan }
             return nil
         }
         #expect(engaged == [0, 1])
-        #expect(await machine.commandedRPMs == [2_400, 2_600])
+        #expect(await machine.commandedRPMs == [4_400, 4_600])
     }
 
     // MARK: - A shipped build
@@ -271,7 +278,7 @@ struct LeaseApplierTests {
     @Test("On a build that cannot write, apply fails at heldLease and never enters the gate")
     func onANotBuiltBuildApplyFailsAtHeldLease() async throws {
         let firmware = ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
+            fans: [0: .automatic(at: 4_400)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         // Frozen though nothing here is timed, so a copied test cannot leave the composition
         // on the wall clock by accident (#411).
@@ -291,7 +298,7 @@ struct LeaseApplierTests {
         }
 
         let connection = ConnectionID()
-        for settings in [fixed((0, 2_400)), [], fixed((0, 2_400), (0, 2_000))] {
+        for settings in [fixed((0, 4_400)), [], fixed((0, 4_400), (0, 4_000))] {
             let lease = UUID()
             let throughTheAuthority = await LeaseApplierAnswerTests.answer {
                 try await helper.authority.apply(settings, leaseID: lease, from: connection)

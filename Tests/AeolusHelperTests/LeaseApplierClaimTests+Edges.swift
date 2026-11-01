@@ -46,13 +46,13 @@ extension LeaseApplierClaimTests {
         await undo.onFirstHandBack {
             guard let lease = await newer.seen.first else { return }
             let answer = await LeaseApplierAnswerTests.answer {
-                try await levelSix.applier.apply(fixed((0, 3_000)), leaseID: lease, from: other)
+                try await levelSix.applier.apply(fixed((0, 5_000)), leaseID: lease, from: other)
             }
             await inside.record(answer.map { String(describing: $0) } ?? "applied")
         }
 
         let unwound = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: ended)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: ended)
         }
 
         #expect(await writes.didFire)
@@ -61,7 +61,7 @@ extension LeaseApplierClaimTests {
         let refused = String(
             describing: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress))
         #expect(seen == [refused], "B, inside A's undo, was answered \(seen)")
-        #expect(await machine.commandedRPMs == [2_400], "B wrote a target during A's undo")
+        #expect(await machine.commandedRPMs == [4_400], "B wrote a target during A's undo")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .automatic)
     }
 
@@ -82,15 +82,15 @@ extension LeaseApplierClaimTests {
         await writes.interfere(beforeEngageStep: 2) { await engagement.park() }
 
         let first = observing {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await yieldUntil("A to park in fan 1's engagement") { await engagement.isParked })
         let before = await machine.attempts.count
         let second = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 3_000)), under: lease)
+            try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
         let third = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 3_200)), under: lease)
+            try await levelSix.apply(fixed((0, 5_200)), under: lease)
         }
         let during = await machine.attempts.dropFirst(before)
         await engagement.release()
@@ -99,7 +99,7 @@ extension LeaseApplierClaimTests {
         #expect(second as? AeolusXPCFault == Self.inProgress, "B was answered \(second as Any)")
         #expect(third as? AeolusXPCFault == Self.inProgress, "C was answered \(third as Any)")
         #expect(during.isEmpty, "an entrant reached the firmware while A was in flight")
-        #expect(await machine.commandedRPMs == [2_400, 2_600])
+        #expect(await machine.commandedRPMs == [4_400, 4_600])
     }
 
     /// **Two applies arriving together admit exactly one.** Both start at once under one lease,
@@ -119,8 +119,8 @@ extension LeaseApplierClaimTests {
             let engagement = HopParking()
             await writes.interfere(beforeEngageStep: 1) { await engagement.park() }
 
-            let one = observing { try await levelSix.apply(fixed((0, 2_400)), under: lease) }
-            let two = observing { try await levelSix.apply(fixed((0, 3_000)), under: lease) }
+            let one = observing { try await levelSix.apply(fixed((0, 4_400)), under: lease) }
+            let two = observing { try await levelSix.apply(fixed((0, 5_000)), under: lease) }
             _ = await yieldUntil("one apply to engage, and the other to be answered or to queue") {
                 guard await engagement.isParked else { return false }
                 if machine.gate.waiting(onFan: 0) == 1 { return true }

@@ -40,12 +40,12 @@ struct LeaseApplierClaimTests {
         await writes.interfere(beforeEngageStep: 2) { await engagement.park() }
 
         let first = observing {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await yieldUntil("A to park in fan 1's engagement") { await engagement.isParked })
         let before = await machine.attempts.count
         let second = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 3_000)), under: lease)
+            try await levelSix.apply(fixed((0, 5_000)), under: lease)
         }
         let during = await machine.attempts.dropFirst(before)
         await machine.plane.advance()
@@ -65,7 +65,7 @@ struct LeaseApplierClaimTests {
                 == .helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused))
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .automatic)
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-        #expect(await machine.commandedRPMs == [2_400, 2_600], "B wrote a target")
+        #expect(await machine.commandedRPMs == [4_400, 4_600], "B wrote a target")
     }
 
     /// **B run to completion inside A's engagement.** B is started and finished from inside fan
@@ -85,19 +85,19 @@ struct LeaseApplierClaimTests {
         let inside = Sightings<String>()
         await writes.interfere(beforeEngageStep: 2) {
             let answer = await LeaseApplierAnswerTests.answer {
-                try await levelSix.apply(fixed((0, 3_000)), under: lease)
+                try await levelSix.apply(fixed((0, 5_000)), under: lease)
             }
             await inside.record(answer.map { String(describing: $0) } ?? "applied")
         }
 
-        try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+        try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
 
         #expect(await inside.seen == [String(describing: Self.applyInProgress)])
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 1)?.rpm == 2_600)
-        try await levelSix.apply(fixed((0, 3_000)), under: lease)
-        #expect(await machine.commandedRPMs == [2_400, 2_600, 3_000])
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 3_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 4_400)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 1)?.rpm == 4_600)
+        try await levelSix.apply(fixed((0, 5_000), (1, 5_000)), under: lease)
+        #expect(await machine.commandedRPMs == [4_400, 4_600, 5_000, 5_000])
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
     }
 
@@ -124,7 +124,7 @@ struct LeaseApplierClaimTests {
         await writes.interfere(beforeEngageStep: 2) { await engagement.park() }
 
         let unwinding = observing {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: ended)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: ended)
         }
         #expect(await yieldUntil("A to park in fan 1's engagement") { await engagement.isParked })
         try await machine.leases.releaseLease(id: ended, from: machine.holder)
@@ -138,13 +138,14 @@ struct LeaseApplierClaimTests {
         ).id
         let before = await machine.attempts.count
         let refused = await LeaseApplierAnswerTests.answer {
-            try await levelSix.applier.apply(fixed((0, 3_000)), leaseID: newer, from: other)
+            try await levelSix.applier.apply(fixed((0, 5_000)), leaseID: newer, from: other)
         }
         let during = await machine.attempts.dropFirst(before)
         await engagement.release()
         let unwound = await LeaseApplierAnswerTests.answer { try await finished("A", unwinding) }
 
-        try await levelSix.applier.apply(fixed((0, 3_000)), leaseID: newer, from: other)
+        try await levelSix.applier.apply(
+            fixed((0, 5_000), (1, 5_000)), leaseID: newer, from: other)
         try await finished("§ 5's cycle", observing { await machine.watchdog.cycle() })
 
         #expect(
@@ -153,7 +154,7 @@ struct LeaseApplierClaimTests {
         #expect(during.isEmpty, "B reached the firmware while A unwound: \(Array(during))")
         #expect(unwound as? AeolusXPCFault == .leaseUnknown)
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 3_000)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_000)
         #expect(await machine.ledger.isReclaimed(fanAt: 0) == false, "§ 5 marked L2's fan")
         #expect(machine.safetyLog.lines(containing: "Reclamation detected on fan 0").isEmpty)
     }
@@ -173,17 +174,17 @@ struct LeaseApplierClaimTests {
         let engagement = HopParking()
         await writes.interfere(beforeEngageStep: 1) { await engagement.park() }
 
-        let inFlight = observing { try await levelSix.apply(fixed((0, 2_400)), under: lease) }
+        let inFlight = observing { try await levelSix.apply(fixed((0, 4_400)), under: lease) }
         #expect(await yieldUntil("A to park in fan 0's engagement") { await engagement.isParked })
         let stranger = await LeaseApplierAnswerTests.answer {
             try await levelSix.applier.apply(
-                fixed((0, 3_000)), leaseID: lease, from: ConnectionID())
+                fixed((0, 5_000)), leaseID: lease, from: ConnectionID())
         }
         await engagement.release()
         try await finished("the apply in flight", inFlight)
 
         #expect(stranger as? AeolusXPCFault == .leaseNotHeldByThisConnection)
-        #expect(await machine.commandedRPMs == [2_400])
+        #expect(await machine.commandedRPMs == [4_400])
     }
 
     // MARK: - Every exit gives the claim up
@@ -237,7 +238,7 @@ struct LeaseApplierClaimTests {
 
         let ended = try await Self.end(exit, of: levelSix, in: machine, under: lease)
         let next = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(ended as? AeolusXPCFault == exit.answer, "\(exit) answered \(ended as Any)")
@@ -258,20 +259,20 @@ struct LeaseApplierClaimTests {
         }
         switch exit {
         case .writePathNotBuilt, .applied:
-            return await apply(fixed((0, 2_400)))
+            return await apply(fixed((0, 4_400)))
         case .itemZero:
             return await apply([])
         case .aStepRefused:
-            let answer = await apply(fixed((0, 2_400)))
+            let answer = await apply(fixed((0, 4_400)))
             await machine.plane.advance()
             return answer
         case .itemFour:
-            let answer = await apply(fixed((0, 2_400)))
+            let answer = await apply(fixed((0, 4_400)))
             _ = await machine.latch.release()
             return answer
         case .cancelled:
             let held = await machine.gate.enterForExamination(fanAt: 0)
-            let waiting = observing { try await levelSix.apply(fixed((0, 2_400)), under: lease) }
+            let waiting = observing { try await levelSix.apply(fixed((0, 4_400)), under: lease) }
             #expect(await yieldUntil("the step to wait") { machine.gate.waiting(onFan: 0) == 1 })
             waiting.task.cancel()
             let answer = await LeaseApplierAnswerTests.answer {

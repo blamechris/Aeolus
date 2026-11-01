@@ -31,7 +31,7 @@ struct ProductionExitTests {
         let mark = machine.firmware.log.entries.count
 
         let answer = await ProductionWriteMachine.answer {
-            try await machine.apply(rpm: 2_400, under: lease)
+            try await machine.apply(rpm: 4_400, under: lease)
         }
 
         #expect(await machine.writes.didFire, "the teardown never ran inside the engagement")
@@ -44,10 +44,10 @@ struct ProductionExitTests {
         #expect(answer == .leaseUnknown, "\(String(describing: answer))")
     }
 
-    /// The seal's command half over the production plane: fan 0 engaged and commanded, then a
-    /// re-apply's command parked before its turn while the teardown runs. The command reaches the
-    /// plane after the exit and writes no target: `.forExit` sealed it, and `admitCommand()` is its
-    /// turn's first statement.
+    /// The seal's command half over the production plane: both fans engaged and commanded, then a
+    /// re-apply's first command parked before its turn while the teardown runs. The command reaches
+    /// the plane after the exit and writes no target: `.forExit` sealed it, and `admitCommand()` is
+    /// its turn's first statement.
     ///
     /// **Mutation:** delete `try ledger.admitCommand()` from `SMCWriteTurns.command`. Run: red
     /// here,
@@ -56,13 +56,14 @@ struct ProductionExitTests {
     func aCommandInFlightAtTheExitWritesNoTarget() async throws {
         let machine = await ProductionWriteMachine()
         let lease = try await machine.lease()
-        try await machine.apply(rpm: 2_400, under: lease)
+        try await machine.apply(rpm: 4_400, under: lease)
         #expect(machine.forwardWrites(since: 0).contains { $0.hasPrefix("F0Tg") })
-        await machine.writes.interfere(beforeCommandTarget: 2) { await machine.tearDown() }
+        // The third command: the first `apply` commanded fans 0 and 1, so this is the re-apply's.
+        await machine.writes.interfere(beforeCommandTarget: 3) { await machine.tearDown() }
         let mark = machine.firmware.log.entries.count
 
         let answer = await ProductionWriteMachine.answer {
-            try await machine.apply(rpm: 3_000, under: lease)
+            try await machine.apply(rpm: 5_000, under: lease)
         }
 
         #expect(await machine.writes.didFire, "the teardown never ran inside the command")

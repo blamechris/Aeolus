@@ -31,7 +31,7 @@ struct LeaseApplierReAdoptionTests {
         await kept.writes.interfere(beforeCommandTarget: 2) { await order.record("command 0") }
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
@@ -94,7 +94,7 @@ struct LeaseApplierReAdoptionTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
@@ -103,7 +103,7 @@ struct LeaseApplierReAdoptionTests {
         let writesBefore = await machine.plane.keyWrites.count
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000), (1, 2_200)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000), (1, 4_200)), under: lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
@@ -121,12 +121,14 @@ struct LeaseApplierReAdoptionTests {
 
     /// **A driver undo refused on fan 1 keeps fan 1's account.** The driver's own undo of fan 1's
     /// engagement is refused, so the wrapper reaches the answer and is answered by its cause,
-    /// `notConfirmed`. Fan 1 is kept, and its re-apply re-adopts it.
+    /// `notConfirmed`. Fan 1 is kept, and fan 0, engaged before it and handed back by the refused
+    /// `apply`'s undo against the same refusing firmware, is kept too, so the lease stands (#670)
+    /// and the re-apply of both re-adopts both.
     ///
-    /// **Mutation:** in `LeaseEngagements.read`, `keep(0, …)` in place of the fan's own index. Run:
-    /// red, fan 1 answered `foreignManualControl`. **Mutation:** delete
-    /// `LeaseApplyRules.answer(to:)`'s first arm. Run: red, the refusal answered `unexpected`
-    /// instead of `notConfirmed`.
+    /// **Mutations, measured before #670 on an `apply` of fan 1 alone:** in
+    /// `LeaseEngagements.read`, `keep(0, …)` in place of the fan's own index. Run: red, fan 1
+    /// answered `foreignManualControl`. Delete `LeaseApplyRules.answer(to:)`'s first arm. Run:
+    /// red, the refusal answered `unexpected` instead of `notConfirmed`.
     @Test("A driver undo refused on fan 1 keeps fan 1's account, answered by its cause")
     func aDriverUndoRefusedOnFanOneKeepsFanOnesAccount() async throws {
         let kept = try await KeptFan.keptByTheDriver(fan: 1, of: [0, 1])
@@ -137,14 +139,14 @@ struct LeaseApplierReAdoptionTests {
             "the refused undo was not answered by its cause: \(kept.refusal as Any)")
         let notice = machine.safetyLog.lines(containing: "Level 6's apply was refused")
         #expect(
-            notice.allSatisfy { $0.contains("The hand-back of [1] was refused") }, "\(notice)")
+            notice.allSatisfy { $0.contains("The hand-back of [0, 1] was refused") }, "\(notice)")
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((1, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000), (1, 4_000)), under: kept.lease)
         }
 
         #expect(reApplied == nil, "Aeolus's own fan 1 was answered \(reApplied as Any)")
-        #expect(await machine.watchdog.fansUnderManualControl == [1])
+        #expect(await machine.watchdog.fansUnderManualControl == [0, 1])
     }
 
     /// **A `.notHeld` fan whose hand-back is refused is kept, and re-adopted.** § 5 is told fan 0
@@ -159,7 +161,7 @@ struct LeaseApplierReAdoptionTests {
         let kept = try await KeptFan.keptAfterNotHeld()
 
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await kept.levelSix.apply(fixed((0, 2_000)), under: kept.lease)
+            try await kept.levelSix.apply(fixed((0, 4_000)), under: kept.lease)
         }
 
         #expect(reApplied == nil, "Aeolus's own fan was answered \(reApplied as Any)")
@@ -182,7 +184,14 @@ struct LeaseApplierReAdoptionTests {
     ///
     /// **Mutation:** delete `await driver.reAdopted(permit)` from `LeaseApplier.step`. Run: red at
     /// the registry assertion, `atTheCommand == [[0]]`: fan 0 commanded with § 3's registry empty.
-    @Test("A kept fan that § 3 forgot is registered with § 3 again before it is commanded")
+    @Test(
+        "A kept fan that § 3 forgot is registered with § 3 again before it is commanded",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario keeps one of two \
+            fans after a refused apply, and level 6 now ends that lease whole. Re-enable when \
+            run 1d lifts the rule.
+            """))
     func aKeptFanTheEmergencyForgotIsRegisteredAgainBeforeItIsCommanded() async throws {
         let (machine, envelopes) = try await Self.fanZeroTakenBackDuringFanOnesEnvelopeRead()
         let lease = try await machine.leaseID()
@@ -195,7 +204,7 @@ struct LeaseApplierReAdoptionTests {
         let levelSix = machine.levelSix(writingThrough: writes, envelopes: envelopes)
 
         let first = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await envelopes.didFire, "fan 1's envelope read never failed")
         #expect(
@@ -212,7 +221,7 @@ struct LeaseApplierReAdoptionTests {
 
         await plane.setMode(.manual, ofFan: 0)
         let reApplied = await LeaseApplierAnswerTests.answer {
-            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+            try await levelSix.apply(fixed((0, 4_000)), under: lease)
         }
 
         #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")

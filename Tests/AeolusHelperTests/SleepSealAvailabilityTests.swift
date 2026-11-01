@@ -97,7 +97,13 @@ struct SleepSealAvailabilityTests {
     ///
     /// **Mutation:** in `firstRefusal`, make step 11 `if leases.sleepSealed, leases.lease == nil`.
     /// Run: red — the snapshot says `.available` — and red in the leased-bounds test below.
-    @Test("A free fan beside another client's lease reads the seal, as the grant refuses it")
+    @Test(
+        "A free fan beside another client's lease reads the seal, as the grant refuses it",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """))
     func aFreeFanBesideALeaseReadsSystemSleeping() async throws {
         let helper = Fixture.composed(fanCount: 2)
         await helper.bindSafetyRegistries()

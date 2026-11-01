@@ -266,7 +266,7 @@ struct SupervisedFanAuthorityTests {
             LeaseFixture.request(fans: [0]), from: connection)
 
         try await helper.authority.apply(
-            [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))],
+            [FanSetting(fanIndex: 0, control: .fixed(rpm: 4_400))],
             leaseID: lease.id,
             from: connection)
 
@@ -274,10 +274,10 @@ struct SupervisedFanAuthorityTests {
             try await helper.plane.firmwareMode(ofFan: 0) == .manual,
             "the authority answered applied and the fan is not in manual control")
         #expect(
-            await helper.plane.attempts.contains(.commandTarget(fan: 0, rpm: 2_400)),
+            await helper.plane.attempts.contains(.commandTarget(fan: 0, rpm: 4_400)),
             "no target was written for the setting the authority answered applied")
         #expect(
-            await helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_400,
+            await helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 4_400,
             "§ 5 holds no record of the target, so its next cycle watches nothing")
         #expect(
             await helper.thermalEmergency.fansUnderManualControl == [0],

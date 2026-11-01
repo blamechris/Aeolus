@@ -412,12 +412,10 @@ struct StartupReconciliationReadBackTests {
                 """)
         }
 
-        for index in [1, 2] {
-            guard case .unavailable(let reason) = expected[index] else { continue }
-            await #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: reason)) {
-                _ = try await helper.leases.acquireLease(
-                    LeaseFixture.request(fans: [index]), from: ConnectionID())
-            }
+        // Over every fan, as a grant must be since #670: refused for fans 1 and 2's reason.
+        await #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: .supervisorBlind)) {
+            _ = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [0, 1, 2]), from: ConnectionID())
         }
         await helper.shutDown()
     }

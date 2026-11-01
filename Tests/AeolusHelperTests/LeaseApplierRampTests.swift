@@ -70,10 +70,10 @@ struct LeaseApplierRampTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
 
-        #expect(await remembered.seen == [2_400], "fan 0 was never written, so nothing is tested")
+        #expect(await remembered.seen == [4_400], "fan 0 was never written, so nothing is tested")
         #expect(await machine.didRestore(fan: 0))
         #expect(
             await levelSix.writer.lastCommanded(ofFan: 0) == nil, "the undo kept the ramp memory")
@@ -104,12 +104,12 @@ struct LeaseApplierRampTests {
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
         ) {
-            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+            try await levelSix.apply(fixed((0, 4_400), (1, 4_600)), under: lease)
         }
         #expect(await writes.didFire)
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "fan 0 was handed back")
         #expect(
-            await levelSix.writer.lastCommanded(ofFan: 0) == 2_400,
+            await levelSix.writer.lastCommanded(ofFan: 0) == 4_400,
             "fan 0 kept no memory, so nothing is tested")
 
         await machine.plane.advance()
@@ -117,12 +117,12 @@ struct LeaseApplierRampTests {
         await writes.interfere(beforeCommandTarget: 3) {
             await remembered.record(await levelSix.writer.lastCommanded(ofFan: 0))
         }
-        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        try await levelSix.apply(fixed((0, 4_000), (1, 4_600)), under: lease)
 
         #expect(machine.safetyLog.lines(containing: KeptFan.reAdopted).count == 1)
         #expect(
             await remembered.seen == [nil],
             "the re-adopted fan kept the target written before its refused hand-back as its origin")
-        #expect(await levelSix.writer.lastCommanded(ofFan: 0) == 2_000)
+        #expect(await levelSix.writer.lastCommanded(ofFan: 0) == 4_000)
     }
 }

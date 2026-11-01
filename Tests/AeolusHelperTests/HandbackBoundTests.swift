@@ -233,13 +233,15 @@ struct HandbackBoundTests {
         }
     }
 
-    /// The refusal is per fan, not per machine: a sibling the firmware did take back stays
-    /// leasable. Without this, "durable" could be implemented as a latch that closes the
-    /// whole machine down the first time any restore fails.
+    /// The refusal is per fan, not per machine: a sibling the firmware did take back is not
+    /// recorded. Without this, "durable" could be implemented as a latch that closes the
+    /// whole machine down the first time any restore fails. Since #670 a lease names every fan, so
+    /// the sibling's standing is read off the register rather than off a lease over it alone.
     @Test("Only the fan that was given up on is refused", .timeLimit(.minutes(1)))
     func onlyTheAbandonedFanIsRefused() async throws {
         let attempting = PartiallyRefusingRestore(refusing: [1])
         let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
             restorer: BoundedFanRestorer(attempting: attempting, log: LeaseFixture.log))
         let connection = ConnectionID()
 
@@ -247,17 +249,14 @@ struct HandbackBoundTests {
             LeaseFixture.request(fans: [0, 1]), from: connection)
         try await authority.releaseLease(id: lease.id, from: connection)
 
-        let regranted = try await authority.acquireLease(
-            LeaseFixture.request(fans: [0]), from: connection)
-        #expect(await authority.leaseCount == 1)
-        try await authority.releaseLease(id: regranted.id, from: connection)
+        #expect(await authority.fansWithAbandonedHandbacks == [1], "fan 0 was given up on too")
         #expect(await attempting.breachedCeiling == false)
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed)
         ) {
             _ = try await authority.acquireLease(
-                LeaseFixture.request(fans: [1]), from: connection)
+                LeaseFixture.request(fans: [0, 1]), from: connection)
         }
     }
 
@@ -266,10 +265,18 @@ struct HandbackBoundTests {
     /// then meets this refusal anyway — the same argument the lease core already made for
     /// putting the concurrent-lease refusal ahead of `.releaseInProgress`, one rung further
     /// up.
-    @Test("The durable refusal outranks a lease another client holds", .timeLimit(.minutes(1)))
+    @Test(
+        "The durable refusal outranks a lease another client holds",
+        .disabled(
+            """
+            Unreachable while a lease must cover every fan (#670): the scenario needs a lease \
+            that leaves a fan out. Re-enable when run 1d lifts the rule.
+            """),
+        .timeLimit(.minutes(1)))
     func theDurableRefusalOutranksAConcurrentLease() async throws {
         let attempting = PartiallyRefusingRestore(refusing: [1])
         let authority = LeaseFixture.authority(
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
             restorer: BoundedFanRestorer(attempting: attempting, log: LeaseFixture.log))
         let holder = ConnectionID()
         let other = ConnectionID()
@@ -295,7 +302,9 @@ struct HandbackBoundTests {
     /// older client renders this generically rather than failing to decode.
     @Test("The durable reason needs no protocol bump")
     func theDurableReasonIsForwardTolerant() {
-        #expect(AeolusXPCVersion.current == 1)
+        // A v1 peer is still served (#670 moved `current` to 2 for another reason), and reads
+        // this reason as the case it names or, older still, as `.unknown`.
+        #expect(AeolusXPCVersion.minimumSupported == 1)
         let reason = ManualControlAvailability.Reason(wireValue: "restoreToAutomaticFailed")
         #expect(reason == .restoreToAutomaticFailed)
         #expect(
