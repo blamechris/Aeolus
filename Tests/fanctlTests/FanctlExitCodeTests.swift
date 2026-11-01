@@ -88,6 +88,7 @@ struct FanctlExitCodeTests {
         (.invalidParameter(name: "fanIndices", detail: "x"), .requestDoesNotFit),
         (.manualControlUnavailable(reason: .writePathNotBuilt), .manualControlRefused),
         (.manualControlUnavailable(reason: .foreignManualControl), .manualControlRefused),
+        (.manualControlUnavailable(reason: .leaseMustCoverEveryFan), .manualControlRefused),
         (.manualControlUnavailable(reason: .leaseHeldByAnotherClient), .heldByAnotherClient),
         (.leaseExpired, .controlLost),
         (.leaseUnknown, .controlLost),
@@ -106,6 +107,21 @@ struct FanctlExitCodeTests {
             #expect(failure.code == expected, "\(fault)")
             #expect(failure.message == fault.errorDescription)
         }
+    }
+
+    /// What a command that asks for some of the fans is told once the helper takes every fan or
+    /// none (#670): exit 4, and the reason's own summary and advice, which send the user to an
+    /// all-fans form. `fanctl set` (#324) classifies its refused acquire here, as every command
+    /// that talks to the helper does.
+    @Test("A lease that leaves a fan out is exit 4 and says to ask for every fan")
+    func aNarrowLeasesRefusalSaysToAskForEveryFan() {
+        let failure = HelperCommandFailure(
+            classifying: AeolusXPCFault.manualControlUnavailable(reason: .leaseMustCoverEveryFan),
+            during: .beforeControl)
+
+        #expect(failure.code == .manualControlRefused)
+        #expect(failure.message.contains("every fan together or of none"))
+        #expect(failure.message.contains("fanctl set all"))
     }
 
     /// `message` is what `HelperCommandOutput.fail` hands to the terminal, so a line break in
