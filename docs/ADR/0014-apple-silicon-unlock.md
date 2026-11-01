@@ -130,6 +130,7 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
   above the line follows that change.** Nothing at or below the line merges before the E4 gate.
 - **Reviewed before hardware, merged after it.** The branch gets its full review — a review panel
   and a Codex pass — before run 1. The merge waits for the checklist.
+  *(Replaced for E4 by the minimal-run amendment, item 7: the merge follows run 1, under (a) and (b).)*
 - **One permitted build-time variation.** Checklist row 8 runs on a throwaway commit that lowers
   § 3's ceiling through `ThermalEmergency`'s existing `requestedCeilingCelsius`.
   `ThermalCeiling.effective` clamps that value downward only, so the emergency fires a few degrees
@@ -648,6 +649,7 @@ and 6 are independent.
    1c. Row 18's last sentence — "This row also carries #104's corrupted-helper-state case" — is
    restated so that the scripted test carries that case (maintainer question 3 on #9). With both
    pieces merged, #104 closes.
+   *(1c now resets locally; row 18's other-session half has left run 1: the minimal-run amendment, item 2.)*
 
    With the restatements, nothing in #7's Done-when waits on the write path. #7 otherwise closes on
    its own rows and its own "Blocked by #6".
@@ -805,6 +807,7 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
 
 **Abort.** The maintainer runs `fanctl reset --all` at once on any of these: *(Except abort 4, which
 is verified first; and abort 12 is added: the run-1 amendment, items 5 and 6.)*
+*(Abort 4's exception is withdrawn: the minimal-run amendment, item 3.)*
 
 1. **A curated temperature** 10 °C above the hold's baseline, or above 85 °C. The target is at or
    above Apple's demand, so a rise means the fan is not doing what was written.
@@ -820,6 +823,7 @@ is verified first; and abort 12 is added: the run-1 amendment, items 5 and 6.)*
    restated.)*
 4. **A result or raw value outside D3's cases, or the budget expiring.** The helper undoes on its
    own; the maintainer verifies.
+   *(Withdrawn: the maintainer resets at once, as for every abort. The minimal-run amendment, item 3.)*
 5. **Any write round trip over 1 s.**
 6. **Thermal pressure above nominal.**
 7. **The helper exiting or restarting during a hold.**
@@ -894,6 +898,7 @@ every hold in run 1 aims there.
 **Before the merge:**
 
 - [#332](https://github.com/blamechris/Aeolus/issues/332);
+  *(Moved to after the merge: the minimal-run amendment, item 7.)*
 - [#270](https://github.com/blamechris/Aeolus/issues/270), the missing bounds gate on
   `acquireLease`. It is unreachable on `Mac16,5`, whose bounds are plausible, and its issue names
   E3/E4 as its gate. *(Taken by the #128/#270 amendment below.)*
@@ -952,6 +957,7 @@ Run 4 records raw values as a matter of course, once this project's own path is 
 ### D10 — Runs are ordered by thermal risk
 
 1. **Run 1:** fan 0 only, at or above Apple's demand — at rest, and under load at maximum (D8).
+   *(The minimal-run amendment, item 1, adds step A: both fans at rest, by D3 step 3's second-fan path.)*
 2. **Run 2:** both fans, below automatic (the declared minimum), under a moderate load for 5 min,
    with § 3 armed. *(P1's twelve-way load held Apple's demand at `F0Mn`, so "below automatic" is
    meaningful only under a heavier load: the P1′ amendment.)* It needs D8's before-run-2 list. It covers:
@@ -1032,9 +1038,11 @@ Each run's findings are recorded, and the branch revised, before the next.
     firmware refuses leaves its fan as it was, and the handback still acknowledges the sleep.)
   - Row 18's last sentence. The restatement: the corrupted-helper-state case is carried by D8's
     scripted integration test, and row 18 on hardware is 1c's SSH reset.
+    *(Now 1c's local reset; the other-session half has left run 1: the minimal-run amendment, item 2.)*
   - E5's "the unlock is re-run as part of the grant (ADR 0007)" (D6).
   - E5's "Manual hardware test checklist written and executed on Mac16,5". The restatement: the
     checklist is written, and executed as E3/E4's gate, per ADR 0007's Consequences.
+    *(Relaxed for E4's merge by the minimal-run amendment, item 7; runs 2–4 still execute their rows.)*
   - #104's "a manual hardware check", which is row 18's hardware half.
 
   **Whether firmware also resets the force key across sleep** no longer bears on correctness. It
@@ -4006,6 +4014,7 @@ on every machine (rule 9), but the evidence is that machine's only; Intel and M1
   waits on U7 (item 9). *(On `e4/bring-up` it is reachable: since #465 the plane's steps write, so
   a one-fan lease engaged at rest that writes `Ftst` reaches it. Run 1's 1d is its test, and the
   branch has no client but run 1's operator.)*
+  *(1d has left run 1. The minimal-run amendment, item 7 (a), refuses that lease until U7 is observed.)*
 - **1d's time clause cannot tell U7 failing from fan 0's cooling delaying Apple's start.** That
   outcome reads "not shown". #153's row 3, restated, holds fan 0 at its floor and has no such
   confound. It is a hold below Apple's demand, so it runs under run 2's preconditions.
@@ -4055,6 +4064,7 @@ on every machine (rule 9), but the evidence is that machine's only; Intel and M1
   stopped fan, and puts a state on the wire for a hypothesis 1d settles before merge.
 - *Restrict every hold to all fans now.* It removes `fanctl set <fan>`, ADR 0015 D5 and #153's
   per-fan Custom, on a hypothesis a two-minute step tests. It is U7's "If it fails" branch.
+  *(Adopted for E4's merge until U7 is observed holding: the minimal-run amendment, item 7 (a).)*
 - *Load 1a's own hold.* 1a holds at 50 %, which D8 rules out under load. It is the first write, so its
   restore and post-hold proof stay at rest.
 - *1d right after 1a.* 1d is the only step in which U7 failing leaves a fan stopped under load, so it
@@ -4365,6 +4375,7 @@ says otherwise. Intel and M1/M2 stay `untested`.
     `log show`. This applies to D8's recovery step 4 in any run, and to item 10.
 14. **Run 1 waits for its runbook.** It runs from a runbook revised to this amendment and reviewed.
     Where the two differ, this amendment governs.
+    *(It applies to the minimal-run amendment as well: that amendment, item 8.)*
 
 **What remains.**
 - The install procedure is the maintainer's and unverified on 27.2: stopping the `main` helper,
@@ -4373,6 +4384,7 @@ says otherwise. Intel and M1/M2 stay `untested`.
 - **Remote Login is the maintainer's machine setting, and he has decided (2026-10-31) to turn it on
   for run 1 only:** his account only, and off again right after the session. So 1c and 1d run.
   1c ends its hold with `fanctl reset --all` from an SSH session, which is row 18's hardware half.
+  *(Lapsed by the minimal-run amendment, item 2: 1c's reset is local, and 1d has left run 1.)*
   - The helper admits a client by code signature, not by session, so `ssh localhost` serves, with
     the app not running. No one has run it, so that stays an assumption until 1c does.
   - Without Remote Login, 1c would not run, and neither would 1d, which follows 1c by design.
@@ -4426,27 +4438,62 @@ says otherwise. Intel and M1/M2 stay `untested`.
 
 ## Amendment (2026-11-01, minimal run 1) — run 1 cut to what ships, and a merge gated by capability
 
+Cited elsewhere as the minimal-run amendment. Accepted by the maintainer, 2026-11-01.
+
+**Scope.** `Mac16,5`, macOS 27.2. Item 7's (a) and (b) are code on every machine (rule 9), but their
+evidence is that machine's only. A hardware claim from run 1 names `Mac16,5` on 27.2 alone, claims only
+what run 1's steps showed, and is the maintainer's to word. Intel and M1/M2 stay `untested` (rule 11).
+
 **Decided.**
-1. Run 1 is start 0, 1a, 1c, 1b, 1b′ and A, in that order, on `Mac16,5` under macOS 27.2.
+1. Run 1 is start 0, 1a, 1c, 1b, 1b′ and A, in that order.
    - 1c holds for 60 s and ends 10–40 s after `started`, by `fanctl reset --all` from the local terminal.
      It runs before 1b, so the abort action is seen ending a live hold at rest before the loaded step, and
      it is the only supervised restore of `0` over Apple's `3`.
    - A is the app's all-fans presets at rest: 50, 75 and 100 %, Auto, then 50 % and a quit. The watcher is
-     stopped, and the recorders run.
-2. 1d, abort 11 and row 18's other-session half leave run 1. Item 11's SSH clause and the Remote Login
-   provisions lapse.
-3. Item 6 is withdrawn: every alert in a hold is a reset.
-4. Item 10 keeps three rows: `main`, the branch build, the power cycle. After a `bootout`, no `launchctl`
-   start is used in the session.
-5. The install is the normal form only, practised `main` over `main` at the start of the same session.
-6. E4 merges after run 1 when the helper, on every machine:
+     stopped after `CTX end`, and the recorders run.
+2. 1d, abort 11 and row 18's other-session half leave run 1. The run-1 amendment's item 11 loses its SSH
+   clause, and that amendment's Remote Login provisions lapse. A second miss of 1c is recorded and the
+   run goes on to 1b: it is not "a step that does not pass", whatever the run-1 amendment's item 11 says.
+3. The run-1 amendment's item 6 is withdrawn: every alert in a hold is a reset, abort 4 included.
+4. Of the run-1 amendment's item 10 table, rows 1, 2 and 4b remain:
+   - row 1, reinstall `main`: pass → End A; fail → row 2;
+   - row 2, reinstall the branch build: pass → End C; fail → row 4b;
+   - row 4b, the power cycle (the run-1 amendment's item 13): pass → End C; fail → End D.
+
+   End B, the list of paths, "No row runs twice" and "Every path ends within six steps" are void. After a
+   `bootout`, nothing is started with `launchctl` in the session. If the ladder's check then passes, the
+   maintainer swaps `main` into `/Applications` and takes the power cycle as row 1's start, and the rows
+   run as above. D8's ladder is otherwise unchanged.
+5. Every install uses the normal form, on a loaded job: the staging guard (no `/Applications/Aeolus.staging`
+   exists); `ditto` of the staged bundle to that path; `mv` of the installed bundle out and the staged one
+   to `/Applications/Aeolus.app`; then `sudo launchctl kickstart -k system/com.blamechris.Aeolus.Helper`.
+   Practised `main` over `main` at the session's start; if that fails, run 1 does not start that session.
+6. In A, aborts 3, 9 and 12 do not apply, nor does the run-1 amendment's item 4 "to the final captures".
+   Both fans read `1`, they share a target, and the watcher is stopped on purpose. In their place, on a
+   fan below 80 % of its target for 10 s, the hottest curated 10 °C above its value at A's first click, or
+   anything unexpected, the maintainer chooses Auto. If, 10 s later, a lease is listed, `Ftst` is not `0`,
+   or a mode reads outside `{0, 3}`, he runs `fanctl reset --all` and then D8's ladder. The run-1
+   amendment's item 7 applies.
+7. E4 merges into `main` after run 1 passes:
+   - no abort, and the run-1 amendment's item 10 at End A;
+   - A's second fan engaged, under the key the first set;
+   - D8's "Decided on the result" applied, with a U5b refusal decided before the merge;
+   - the merge PR reviewed by a panel;
+   - the third-party fan utility gone from the machine before the merged build is installed.
+
+   The helper, on every machine:
    - (a) grants a lease only over every enumerated fan, and never keeps some of a lease's fans while
      handing others back, until U7 is recorded as observed holding;
    - (b) clamps every client target up to the midpoint of `[F<n>Mn, F<n>Mx]`, until run 2 records holds
      below demand.
 
-   This replaces D1's "the merge waits for the checklist" and takes P1′ item 9's second branch. #332 moves
-   to after the merge. A U5b refusal is decided before the merge.
+   This replaces D1's "the merge waits for the checklist". For E4 it also relaxes ADR 0007's gate, that
+   every E5 checklist row executes on hardware before the epic merges: the rows runs 2–4 own still
+   execute, and (b) is lowered only on run 2's record. It takes P1′ item 9's second branch, and its lease
+   shape was accepted by the maintainer, 2026-11-01. #332 moves to after the merge.
+8. The run-1 amendment's item 14 applies to this amendment as well: run 1 runs from a runbook revised to
+   it and reviewed. Where the runbook, or earlier text in this ADR, differs on a point this amendment
+   decides, this amendment governs.
 
 **Alternatives considered.**
 - *1d in the session.* It answers U7 with no code. Rejected: the owner moved it out, it is the riskiest
@@ -4456,10 +4503,11 @@ says otherwise. Intel and M1/M2 stay `untested`.
 - *Runs 2–4 first.* Months of waiting, for a surface the owner does not use.
 - *Clients only.* Rule 7.
 
-**Revisit if:** 1d records U7 (lift (a)); run 2 passes (lower (b)); A's second fan is refused; the session
-ends anywhere but End A; a recorded load drives Apple's demand above the 50 % point.
+**Revisit if:** U7 is recorded as observed holding (lift (a)); run 2 passes (lower (b)); A's second fan is
+refused; the session ends anywhere but End A; a recorded load drives Apple's demand above the 50 % point.
 
-**Status stays Proposed.**
+**`AeolusXPCVersion`:** this amendment crosses nothing. The PR that builds (a) adds a refusal reason, bumps
+the version, and says so. (b) clamps, and adds nothing to the wire. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 
