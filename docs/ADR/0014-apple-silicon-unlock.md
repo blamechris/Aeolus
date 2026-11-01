@@ -4304,7 +4304,7 @@ says otherwise. Intel and M1/M2 stay `untested`.
     | A | `main` | passes | may go back on (the maintainer's choice) | nobody, unless the exit restore was refused: then the architect, as U5b, under D8's rule for a refused keystone |
     | B | `main` | passes, after a failure | may go back on (the maintainer's choice) | the architect, before the next session: no write in this item explains the first failure |
     | C | the branch build, with nothing driving it | passes | stays off | the architect, before the next session |
-    | D | the branch build, with nothing driving it | fails after the power cycle | stays off | the architect, at once. D8's ladder has no further step. A fan may be in manual with nothing watching it (#201's route), so the maintainer keeps the machine off sustained load until the case is ruled |
+    | D | the branch build, with nothing driving it | fails, with the ladder run | stays off | the architect, at once. D8's ladder has no further step. A fan may be in manual with nothing watching it (#201's route), so the maintainer keeps the machine off sustained load until the case is ruled |
 
     Any failed check in this item goes to the architect before the next session, whatever the end.
     Where `main` cannot end with the check passing, the branch build is the end: it is the only
