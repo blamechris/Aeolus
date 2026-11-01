@@ -241,7 +241,10 @@ import Foundation
     /// Returns a JSON-encoded `SystemSnapshot`: every fan, every sensor, current lease.
     func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void)
 
-    /// Requests manual control of one or more fans.
+    /// Requests manual control of fans.
+    ///
+    /// **Since v2 (#670): every fan or none.** Until run 1d, a request that leaves out a fan the
+    /// helper enumerated is refused `ManualControlAvailability.Reason.leaseMustCoverEveryFan`.
     ///
     /// - Parameters:
     ///   - request: JSON-encoded `LeaseRequest`. Validated by the helper with
@@ -288,6 +291,11 @@ import Foundation
     /// Applies fan settings under an active lease. A refused re-apply may already have
     /// re-commanded fans an earlier `apply` engaged, so a refused client re-reads the snapshot,
     /// whose `targetRPM` is a fan's target only while the same snapshot shows it held (#410).
+    ///
+    /// **Since v2 (#670): every fan, and the target the helper holds.** The settings name every fan
+    /// the lease covers, or the `apply` is refused before anything is read. Until run 2, a target
+    /// below a fan's client floor, 65 % of its declared range, is held at the floor, so a client
+    /// reports the snapshot's `targetRPM`, never the value it sent.
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.
@@ -380,8 +388,11 @@ public enum AeolusXPCVersion {
     /// 2 since #670, for what `acquireLease` and `apply` mean (docs/SAFETY.md § 1 and § 2).
     public static let current = 2
 
-    /// The oldest client protocol version this helper still accepts.
-    public static let minimumSupported = 1
+    /// The oldest client protocol version this helper still accepts. 2 since #670: a client of
+    /// protocol 1 reports the target it sent, which the helper may now hold higher (`CLAUDE.md`
+    /// rule 6), so it is refused at `hello`. `restoreAllToAutomatic` needs no `hello`, so such a
+    /// client can still hand every fan back.
+    public static let minimumSupported = 2
 
     /// The pair a helper advertises in `HelloReply`.
     public static let supportedRange = ProtocolVersionRange(

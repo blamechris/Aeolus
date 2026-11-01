@@ -87,9 +87,19 @@ struct ManualControlAvailabilityTests {
     /// `.restoreToAutomaticFailed` reaches for a helper restart to clear a state a restart
     /// does not clear. Those are the two wrong actions decision D33 introduced the case to
     /// separate.
+    @Test("handbackUnconfirmed arrives as itself, distinct from both of its neighbours")
+    func handbackUnconfirmedDecodesToItsOwnCase() throws {
+        let decoded = try decode(#"{"state":"unavailable","reason":"handbackUnconfirmed"}"#)
+        #expect(decoded == .unavailable(.handbackUnconfirmed))
+        #expect(decoded != .unavailable(.unknown("handbackUnconfirmed")))
+        #expect(decoded != .unavailable(.releaseInProgress))
+        #expect(decoded != .unavailable(.restoreToAutomaticFailed))
+    }
+
     /// #670's refusal arrives as itself, and its text says what a client must do: ask for every
-    /// fan. An older client decodes it as `.unknown`, a refusal, which is what keeps the protocol
-    /// bump's `minimumSupported` at 1.
+    /// fan. A client of protocol 1 decodes it as `.unknown`, a refusal, but since #670 the helper
+    /// serves no such client (`AeolusXPCVersion.minimumSupported` is 2): what `acquireLease` and
+    /// `apply` mean changed, and a v1 client would report a target the helper does not hold.
     @Test("leaseMustCoverEveryFan arrives as itself, and says to ask for every fan")
     func leaseMustCoverEveryFanDecodesToItsOwnCase() throws {
         let decoded = try decode(#"{"state":"unavailable","reason":"leaseMustCoverEveryFan"}"#)
@@ -101,15 +111,6 @@ struct ManualControlAvailabilityTests {
         #expect(reason.userFacingSummary.contains("every fan together or of none"))
         #expect(reason.recoveryAdvice.contains("every fan at once"))
         #expect(reason.recoveryAdvice.contains("fanctl set all"))
-    }
-
-    @Test("handbackUnconfirmed arrives as itself, distinct from both of its neighbours")
-    func handbackUnconfirmedDecodesToItsOwnCase() throws {
-        let decoded = try decode(#"{"state":"unavailable","reason":"handbackUnconfirmed"}"#)
-        #expect(decoded == .unavailable(.handbackUnconfirmed))
-        #expect(decoded != .unavailable(.unknown("handbackUnconfirmed")))
-        #expect(decoded != .unavailable(.releaseInProgress))
-        #expect(decoded != .unavailable(.restoreToAutomaticFailed))
     }
 
     /// #303's case arrives as itself, and not as any of the three reasons a client would act

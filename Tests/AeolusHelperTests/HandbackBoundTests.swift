@@ -302,9 +302,10 @@ struct HandbackBoundTests {
     /// older client renders this generically rather than failing to decode.
     @Test("The durable reason needs no protocol bump")
     func theDurableReasonIsForwardTolerant() {
-        // A v1 peer is still served (#670 moved `current` to 2 for another reason), and reads
-        // this reason as the case it names or, older still, as `.unknown`.
-        #expect(AeolusXPCVersion.minimumSupported == 1)
+        // Additive vocabulary bumps nothing: #670 moved `current` and `minimumSupported` to 2
+        // for what `acquireLease` and `apply` mean, not for this reason, which a peer reads as the
+        // case it names or, older still, as `.unknown`.
+        #expect(AeolusXPCVersion.minimumSupported == 2)
         let reason = ManualControlAvailability.Reason(wireValue: "restoreToAutomaticFailed")
         #expect(reason == .restoreToAutomaticFailed)
         #expect(

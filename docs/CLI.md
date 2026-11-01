@@ -421,7 +421,7 @@ Two things it deliberately does not infer:
 
 ```
 $ fanctl status
-Helper 0.0.0-dev, negotiated XPC protocol 2 (helper accepts 1–2; fanctl 0.0.0-dev speaks 2).
+Helper 0.0.0-dev, negotiated XPC protocol 2 (helper accepts 2–2; fanctl 0.0.0-dev speaks 2).
 Captured by the helper at 2026-09-21T14:13:20Z.
 
 Manual-control lease: none. No Aeolus client holds a manual-control lease.
@@ -466,7 +466,7 @@ always present, with `null` for "not present".
     "build" : "0.0.0-dev",
     "capabilities" : [ ],
     "maximumProtocolVersion" : 2,
-    "minimumProtocolVersion" : 1
+    "minimumProtocolVersion" : 2
   },
   "lease" : null,
   "protocolVersion" : 2,
