@@ -312,6 +312,71 @@ class LiveLoop(unittest.TestCase):
         self.assertEqual(watcher.raised, [])
         self.assertEqual(system.spoken(), [])
 
+    def test_a_hold_after_the_teardown_stop_line_is_abort_12_and_is_said(self):
+        # #652's review S1, scenario B, in the live loop: the stop line after CTX end is honoured,
+        # then a hold engages at 30 s and is never restored.
+        run = idle(80).add_ctx(5, "end").drop(20, 80, "fans").add_stop("fans", 20.0)
+        run.hold(go=30, restore=None, target=3000)
+        watcher, system, directory = live(run, synth.T0 + 5, synth.T0 + 50)
+        self.assertEqual({r.title for r in watcher.raised}, {"ABORT 12"})
+        self.assertTrue(30.0 <= watcher.raised[0].t - synth.T0 <= 30.5, watcher.raised[0].t)
+        self.assertEqual(set(system.spoken()), {"abort 12"})
+        self.assertIn("fans file: its sampler wrote its stop line after CTX end", read(
+            os.path.join(directory, "watch.log")))
+
+    def run_over(self, directory, start, end):
+        """The live loop over files a test wrote itself, on a clock that moves when it sleeps."""
+        with open(os.path.join(directory, "logstream.pid"), "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % os.getpid())
+        args = types.SimpleNamespace(
+            dir=directory, out=directory, fans=None, package=None, helper_log=None, phases=None,
+            logstream_pid=None, mute=False)
+        state = {"t": start, "flag": False}
+
+        def sleep(seconds):
+            state["t"] += seconds
+            state["flag"] = state["t"] >= end
+
+        return rw.run_live(
+            args, spawn=FakeSystem(), stop=state, wall=lambda: state["t"], sleep=sleep)
+
+    def interrupted_sampler_files(self, directory):
+        """A fan sampler interrupted before its first tick: a start line and a stop line, and
+        no sample between them. The package file is an ordinary one."""
+        run = idle(60)
+        lines = {
+            "fans-10hz.ndjson": [synth._line(synth.start_record(synth.FAN_KEYS, 0.1)),
+                                 synth._line(synth.stop_record(0))],
+            "package-1hz.ndjson": run.package_lines(), "helper-log.ndjson": [], "phases.log": []}
+        for name, body in lines.items():
+            with open(os.path.join(directory, name), "w", encoding="utf-8") as handle:
+                handle.write("".join(line + "\n" for line in body))
+
+    def test_a_fan_file_with_only_a_start_and_a_stop_line_does_not_kill_the_live_loop(self):
+        # #652's review N-b. A stop line is dated by the sample before it, and here there is none.
+        # Read as a stop it would raise KeyError out of the loop and the watcher would die; read
+        # as what it is, the file simply has no samples, and the record is blind.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            watcher = self.run_over(directory, synth.T0 + 5, synth.T0 + 30)
+            self.assertEqual({r.title for r in watcher.raised}, {"BLIND — NO GO"})
+            self.assertEqual(watcher.error_counts, {})
+            self.assertEqual(watcher.fan_samples, 0)
+            self.assertIn(" watcher stopped", read(os.path.join(directory, "watch.log")))
+
+    def test_a_replay_of_a_fan_file_with_no_sample_before_its_stop_line_reads_no_stop(self):
+        # #652's review N-b, the replay's own guard: a stop line with no sample before it has no
+        # date, and must not become an event that cannot be sorted against the others.
+        with tempfile.TemporaryDirectory() as directory:
+            self.interrupted_sampler_files(directory)
+            paths = {
+                "fans": os.path.join(directory, "fans-10hz.ndjson"),
+                "package": os.path.join(directory, "package-1hz.ndjson")}
+            events = rw.load_events(paths)
+            kinds = {e[3] for e in events}
+            self.assertEqual(kinds, {"package"})
+            self.assertGreater(len(events), 50)  # the package file is there to be sorted against
+
     def test_a_replay_does_not_swallow_a_bug(self):
         with mock.patch.object(rw.Watcher, "check_r1_absolute", side_effect=ValueError("boom")):
             with self.assertRaises(ValueError):

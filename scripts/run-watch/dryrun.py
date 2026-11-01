@@ -911,6 +911,12 @@ UNIT_ONLY = [
         "text", "(mode == 1 and held)", "(held and mode is not None)")),
     ("S2: the live loop does not read a sampler's stop line", (
         "text", "if parsed is None and name in STOP_KINDS:", "if False and name in STOP_KINDS:")),
+    ("r3 S1: a hold that starts does not re-arm rule 12 for a source whose stop line was honoured", (
+        "text", "                    self.ended_sources.clear()\n", "")),
+    ("r3 N-b: the live loop reads a stop line that has no sample before it", (
+        "text", "if name in last_sample and is_stop_line(raw):", "if is_stop_line(raw):")),
+    ("r3 N-b: the replay reads a stop line that has no sample before it", (
+        "text", "elif last is not None and is_stop_line(raw):", "elif is_stop_line(raw):")),
     ("S3: an unreadable target is not heard", ("blank", "check_x_bad_context")),
     ("S3: a target of 0 is read as RPM", (
         "text", "return value if math.isfinite(value) and value > 0 else None",

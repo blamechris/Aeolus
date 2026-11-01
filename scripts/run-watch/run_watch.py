@@ -922,6 +922,9 @@ class Watcher:
                 if not self.hold_active:
                     self.tg_hit_t = None
                     self.r2_since[0] = self.r2_held_since = None
+                    # A stop line after CTX end ended its source, but a hold that begins now is
+                    # not the teardown: rule 12 watches both samplers again (#652's review S1).
+                    self.ended_sources.clear()
                 self.hold_active = True
                 self.hold_since = self.hold_since or t
         elif data == "0x0":
@@ -1057,8 +1060,10 @@ class Watcher:
             return
         where = "during a hold" if self.hold_active else "before CTX end"
         self.note(
-            "%s file: its sampler wrote its stop line %s, so rule 12 still watches it and the gap "
-            "will be %s" % (name, where, "ABORT 12" if self.hold_active else "BLIND — NO GO"),
+            "%s file: its sampler wrote its stop line %s, so rule 12 does not stand down for it: "
+            "a live watcher hears the gap as %s (a replay ends every file at its last sample and "
+            "raises nothing for it)" % (
+                name, where, "ABORT 12" if self.hold_active else "BLIND — NO GO"),
             "WARN")
 
     def on_logstream(self, t, alive):
