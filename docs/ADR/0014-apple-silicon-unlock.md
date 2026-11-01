@@ -406,9 +406,15 @@ in flight alone; every other restore waits as this says.)*
   from the SMC.
 - **A force-key flag.** It is set when this plane's `Ftst = 1` is accepted, and cleared when a
   restore **issues** `Ftst = 0`. *(Superseded in part by the B1 amendment: it is set when this plane
-  issues `Ftst = 1`, accepted, refused or unanswered — issued, not landed.)* Between the key's
-  write and the first fan joining, the engaged set is empty while the flag is set. So a
-  `.fan(n)` restore in that window — the undo of an engagement that never joined — clears the key,
+  issues `Ftst = 1`, accepted, refused or unanswered — issued, not landed.)* *(Amended by #678,
+  2026-11-01: a `.fan(n)` restore's `Ftst = 0` clears the flag only once the firmware answers it
+  accepted. By the same "issued, not landed", a refused or unanswered clear does not prove the
+  key clear, so the flag stays set and the next `.fan(n)` restore with no engaged fan left, the
+  teardown's, `BoundedFanRestorer`'s retry or § 3's, issues the clear again. A clear refused on
+  every attempt leaves its fan abandoned, in the durable register, not handed back. A
+  machine-wide restore still drops the flag when issued, as it clears the key whatever the flag
+  says.)* Between the key's write and the first fan joining, the engaged set is empty while the
+  flag is set. So a `.fan(n)` restore in that window — the undo of an engagement that never joined — clears the key,
   which is correct.
 - **Restore is the unlock reversed: every `F<n>Md = 0` in scope, then `Ftst = 0`.** Each write is
   issued in the force-key state in which its forward write was accepted. Clearing the key first

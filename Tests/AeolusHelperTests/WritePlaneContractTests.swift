@@ -36,6 +36,12 @@ struct WritePlaneContractTests {
         /// The production arm's round trips per scheduler turn since the harness was built; `nil`
         /// on the scripted arm, which has no turns to count.
         var roundTripsPerTurn: @Sendable () -> [Int]? = { nil }
+        /// The next `Ftst` write is refused, and the ones after it answered as before: the scripted
+        /// arm's next stage, the fake's one queued refusal. Called once per harness.
+        var refuseTheNextKeyWrite: @Sendable () async -> Void = {}
+        /// After `refuseTheNextKeyWrite`, the firmware takes key writes again: the scripted arm's
+        /// stage after that one; nothing on the fake, whose refusal was spent.
+        var takeKeyWritesAgain: @Sendable () async -> Void = {}
     }
 
     static let modeZero = smcKey("F0Md")
@@ -46,14 +52,20 @@ struct WritePlaneContractTests {
     ) async throws -> Harness {
         switch arm {
         case .scripted:
-            let stage = ScriptedControlPlane.Stage.nominal(
-                targetWrites: refusingTargets ? .refused(reason: "the firmware refused it") : nil)
+            let targets: ScriptedControlPlane.WriteBehaviour? =
+                refusingTargets ? .refused(reason: "the firmware refused it") : nil
+            let stage = ScriptedControlPlane.Stage.nominal(targetWrites: targets)
+            let refusingKey = ScriptedControlPlane.Stage.nominal(
+                targetWrites: targets, forceKeyWrites: .refused(reason: "Ftst refused"))
             let plane = ScriptedControlPlane(
-                fans: [0: .nominal, 1: .nominal], stages: [stage], unlock: unlock)
+                fans: [0: .nominal, 1: .nominal], stages: [stage, refusingKey, stage],
+                unlock: unlock)
             return Harness(
                 plane: plane, ledger: plane.ledger,
                 keyWrites: { await plane.keyWrites.map(Self.normalised) },
-                duringNextModeWrite: { effect in await plane.duringNextModeWrite(effect) })
+                duringNextModeWrite: { effect in await plane.duringNextModeWrite(effect) },
+                refuseTheNextKeyWrite: { await plane.advance() },
+                takeKeyWritesAgain: { await plane.advance() })
         case .smcPlane:
             let fixture = WritePlaneFixture(unlock: unlock)
             let mark = await fixture.prepared()
@@ -69,6 +81,9 @@ struct WritePlaneContractTests {
                 keyWrites: { fixture.writes(since: mark).map(Self.normalised) },
                 duringNextModeWrite: { effect in
                     await firmware.onAfter(.write(Self.modeZero), run: effect)
+                },
+                refuseTheNextKeyWrite: {
+                    await firmware.queueWrites(to: smcKey("Ftst"), [.refuses(code: 0x85)])
                 })
         }
     }
@@ -209,6 +224,41 @@ struct WritePlaneContractTests {
             await harness.keyWrites() == [
                 "F0Md=1", "Ftst=1", "F0Md=1", "F0Md=1", "F1Md=1", "F1Md=0", "F0Md=0", "Ftst=0",
             ], "\(arm)")
+    }
+
+    // MARK: - #678: a refused key clear stays owed
+
+    /// The last engaged fan's restore issues `Ftst = 0`, and the firmware refuses it. A refusal
+    /// does not prove the register clear, so the ledger keeps the clear owed, and the fan's next
+    /// restore (the teardown's, `BoundedFanRestorer`'s retry, § 3's) writes it again; only an
+    /// accepted clear pays it.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.issueRestore(fanAt:)`, drop the flag when the clear is
+    /// issued (`if clearsKey { state.forceKeySet = false }`). Run: red on both arms, the second
+    /// restore writing no `Ftst = 0`. **Mutation (production only):** delete
+    /// `ledger.recordForceKeyCleared()` from `SMCWriteTurns.keystone`. Run: red on the smcPlane
+    /// arm, the clear still owed after the firmware accepted it.
+    @Test(
+        "A refused key clear stays owed, and the fan's next restore writes it",
+        arguments: Arm.allCases)
+    func aRefusedKeyClearStaysOwed(_ arm: Arm) async throws {
+        let harness = try await Self.harness(arm, unlock: .heldUntilForced(stepsToYield: 1))
+        try await Self.engage(0, on: harness.plane)
+
+        await harness.refuseTheNextKeyWrite()
+        await #expect(throws: (any Error).self, "\(arm)") {
+            try await harness.plane.restoreToAutomatic(.fan(0))
+        }
+        #expect(harness.ledger.isForceKeySet, "the refused clear was taken as paid, \(arm)")
+
+        await harness.takeKeyWritesAgain()
+        try await harness.plane.restoreToAutomatic(.fan(0))
+
+        #expect(harness.ledger.isForceKeySet == false, "the accepted clear was not paid, \(arm)")
+        let written = await harness.keyWrites()
+        #expect(
+            written.drop { $0 != "F0Md=0" } == ["F0Md=0", "Ftst=0", "F0Md=0", "Ftst=0"],
+            "\(arm): \(written)")
     }
 
     // MARK: - W6: the bridge job
