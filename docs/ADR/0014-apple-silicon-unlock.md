@@ -3679,9 +3679,9 @@ after the sync of `main` through #637).
   break-even of about 20.5 ms (ADR 0012's 2026-10-31 amendment). The 81.4 ms this paragraph first
   gave (64 × 11.453 / 9; 91.6 ms at eight) took all nine round trips at one latency, another model,
   under which D_cycle itself breaks at about 14.1 ms, so comparing it with 86.98 ms mixed two
-  models. It erred safe. It is the longest by round trips, not by time. Under writes slower than
-  about 80 ms, `.everyFan`'s three-write restore (3W) outlasts it, and still fits 733.0 ms up to a W
-  of about 244 ms, above the 86.98 ms at which § 3's own writes bind.*
+  models. It erred safe. The engaged step is the longest by round trips, not by time. Under writes
+  slower than about 80 ms, `.everyFan`'s three-write restore (3W) outlasts it, and still fits
+  733.0 ms up to a W of about 244 ms, above the 86.98 ms at which § 3's own writes bind.*
 - **G, re-run at N = 12** (ADR 0012's 2026-10-31 amendment, which records it;
   `scripts/gate-wait-model/engaged_step.py`). Every queued reader at the engaged step fails G: four
   of the histories ADR 0012 counts closed pass it (874–892 round trips at eight). So the queue counts

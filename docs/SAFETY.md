@@ -380,11 +380,13 @@ firmware at runtime.
   by level 6's re-apply, which re-adopts and commands the fan in one step, and by § 5 after it; by
   the lease's teardown and its three attempts; by § 3's bridge, since the driver registers the fan
   with § 3 before its undo; by § 4, § 6 and § 7; and by reconciliation at the next start. The undo
-  that is answered and not applied has the same bounds bar the re-apply, which meets only a fan
-  whose undo was refused: § 3 keeps the fan registered, owed a read-back, until it reads automatic.
-  Under that route's own premise, every restore repeats the mode write the firmware ignored. Only
-  § 3's owed read-back and its target-write bridge to the maximum, whose effect with `Ftst` cleared
-  is unobserved, and a power cycle do not rest on it. Run 1 watches for it with aborts 7 and 10.
+  that is answered and not applied has the same bounds, except the re-apply and § 5, which never
+  meet that fan because it is not kept: § 3 keeps the fan registered, owed a read-back, until it
+  reads automatic. Under that route's own premise, every restore repeats the mode write the
+  firmware ignored, so the lease's teardown, § 4, § 6, § 7, reconciliation, `fanctl reset --all`
+  and `bootout` are further attempts, not independent bounds. Only § 3's owed read-back and its
+  target-write bridge to the maximum, whose effect with `Ftst` cleared is unobserved, and a power
+  cycle do not rest on it. Run 1 watches for it with aborts 7 and 10.
   ADR 0014's b2 amendment, "Settled by P1′", lists the routes. (A fan kept the same way under load
   is not stopped: it holds Apple's last target.)
 
