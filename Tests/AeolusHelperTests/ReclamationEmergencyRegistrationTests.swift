@@ -124,4 +124,37 @@ struct ReclamationEmergencyRegistrationTests {
         #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).isEmpty)
         #expect(machine.safetyLog.lines(containing: "re-assert of fan 0 was refused").isEmpty)
     }
+
+    /// PR #676's Codex finding 2, over two fans: fan 1 is held and fan 0 was taken back, and § 5's
+    /// re-engage of fan 0 runs out of budget after its mode write, so the driver hands fan 0 back
+    /// while the lease and fan 1 stay. That is Aeolus's own one-fan hand-back under a listed lease
+    /// (`docs/SAFETY.md` § 1), and it is bounded: § 5 keeps fan 0 and tries again, and once the
+    /// re-assert budget is spent the terminal action ends the lease whole. The budget is walked,
+    /// not compared with its constant.
+    @Test("A refused re-engage beside a held fan stands until the budget ends the lease whole")
+    func aRefusedReengageBesideAHeldFanIsBounded() async throws {
+        let fans: [Int: ScriptedControlPlane.FanCondition] = [
+            0: .automatic(at: 1_800), 1: .held(at: 4_400),
+        ]
+        let plane = ScriptedControlPlane(fans: fans, unlock: .neverYields)
+        let machine = ReclamationMachine(plane: plane, fans: fans)
+        try await machine.hold(fan: 0, commanding: 4_400)
+        try await machine.hold(fan: 1, commanding: 4_400)
+
+        await machine.watchdog.cycle()
+
+        #expect(await machine.leases.leaseCount == 1, "the first refusal ended the lease")
+        #expect(try await plane.firmwareMode(ofFan: 0) == .automatic)
+        #expect(try await plane.firmwareMode(ofFan: 1) == .manual)
+        #expect(await machine.watchdog.fansUnderManualControl == [0, 1], "§ 5 gave fan 0 up")
+
+        var cycles = 1
+        while await machine.leases.leaseCount == 1, cycles < 20 {
+            await machine.watchdog.cycle()
+            cycles += 1
+        }
+        #expect(await machine.leases.leaseCount == 0, "the lease outlived \(cycles) cycles")
+        #expect(cycles > 1, "the lease ended at the first refusal, not at the budget")
+        #expect(await machine.restorer.restores.map(\.fans) == [[0, 1]], "not ended whole")
+    }
 }
