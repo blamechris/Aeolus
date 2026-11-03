@@ -166,4 +166,4 @@ End on exactly one suggested next step. Do not write any file.
 4. **One next step** — end with a single concrete suggestion, not a menu. The user wanted "where did we leave off," not a backlog.
 5. **No attribution** — never add any AI/agent attribution to output.
 
-<!-- skill-templates: catchup 3f7f775 2026-07-30 -->
+<!-- skill-templates: catchup 3f7f775 2026-11-03 -->

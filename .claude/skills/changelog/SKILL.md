@@ -1,5 +1,5 @@
 ---
-description: "Generate release notes from what actually merged: collect the merged PRs and commits since the last release, group them into meaningful sections, and write t..."
+description: "Generate release notes from what actually merged: collect the merged PRs and commits since the last release, group them into meaningful sections, and write..."
 ---
 
 # /changelog
