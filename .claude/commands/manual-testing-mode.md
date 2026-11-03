@@ -227,4 +227,4 @@ assistant: ## Manual testing session: v0.6.11 (2026-04-26)
 Want me to open a PR for the fixes, or leave the branch local?
 ```
 
-<!-- skill-templates: manual-testing-mode a1368f4 2026-07-25 -->
+<!-- skill-templates: manual-testing-mode a1368f4 2026-11-03 -->

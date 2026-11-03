@@ -101,4 +101,4 @@ State the resolved range, the version/section written, the destination, and coun
 - **Idempotent on the file.** Re-running for the same version should replace that version's section, not append a duplicate.
 - **No attribution.** No AI/agent mentions in the changelog, commits, or release body — the entries describe the work, not who wrote them.
 
-<!-- skill-templates: changelog 3254376 2026-07-25 -->
+<!-- skill-templates: changelog 3254376 2026-11-03 -->

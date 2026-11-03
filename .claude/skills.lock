@@ -2,169 +2,185 @@
   "registry": "blamechris/skill-templates",
   "skills": {
     "agent-review": {
-      "hash": "5c35725",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "hash": "81d191b",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "catchup": {
       "hash": "3f7f775",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "changelog": {
       "hash": "3254376",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "check-pr": {
-      "hash": "193a3f5",
-      "installed": "2026-09-23",
-      "profileHash": "0939cb0",
+      "hash": "bcb8822",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "create-issue": {
-      "hash": "12b011f",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "hash": "881d289",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "create-pr": {
-      "hash": "12b011f",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "decompose-issue": {
-      "hash": "b4268c2",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "hash": "699a5ca",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "fix-ci": {
-      "hash": "3768ea6",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "hash": "bcb8822",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "learn": {
       "hash": "df2de5e",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "manual-testing-mode": {
       "hash": "a1368f4",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "merge": {
-      "hash": "98b6ad5",
-      "installed": "2026-08-19",
-      "profileHash": "d0531c0",
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "merge-gate": {
-      "hash": "85269c8",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "prime-directive": {
-      "hash": "193a3f5",
-      "installed": "2026-09-23",
-      "profileHash": "0939cb0",
+      "hash": "84fe5f4",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "project-audit": {
-      "hash": "8196307",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "hash": "600c374",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "session-lifecycle": {
-      "hash": "193a3f5",
-      "installed": "2026-09-23",
-      "profileHash": "0939cb0",
+      "hash": "bcb8822",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "skill": {
-      "hash": "7b4d37f",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "hash": "af9c1e4",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "skill-profile": {
-      "hash": "ea888eb",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "tackle-issues": {
-      "hash": "df774b0",
-      "installed": "2026-09-23",
-      "profileHash": "0939cb0",
+      "hash": "84fe5f4",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "tiered-delegation": {
       "hash": "8196307",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "visual-brief": {
-      "hash": "a85c799",
-      "installed": "2026-07-30",
-      "profileHash": "d0531c0",
+      "hash": "4a39c94",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "full-review": {
-      "hash": "193a3f5",
-      "installed": "2026-09-23",
-      "profileHash": "0939cb0",
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
+      "targets": [
+        "claude"
+      ]
+    },
+    "batch-merge": {
+      "hash": "37866a5",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
+      "targets": [
+        "claude"
+      ]
+    },
+    "unattended-merge": {
+      "hash": "bcb8822",
+      "installed": "2026-11-03",
+      "profileHash": "04d6517",
       "targets": [
         "claude"
       ]

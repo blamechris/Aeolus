@@ -101,7 +101,7 @@ Present the proposed breakdown to the user as a table and wait for confirmation:
 | 2 | type(scope): … | Files: src/c.ts; new test surface | medium |
 | 3 | type(scope): … | Migration + backfill | medium |
 
-**Labels each sub-issue will receive:** enhancement, parent:#${PARENT_NUM}, the parent's `area:*` label and milestone, plus `safety-critical` if the parent carries it and `needs-hardware` for anything CI cannot verify
+**Labels each sub-issue will receive:** enhancement, the parent's `area:*` label and milestone label, plus `safety-critical` if the parent carries it, plus any `--label` flags
 
 Approve to create these 3 sub-issues, or reply with changes (e.g. "merge 1 and 2", "drop 3", "add a sub-issue for X").
 ```
@@ -118,6 +118,10 @@ for SUB in "${PROPOSED_SUBS[@]}"; do
     --title "${SUB_TITLE}" \
     --label "${SUB_LABELS}" \
     --body "$(cat <<EOF
+## Context
+
+Filed from: #${PARENT_NUM}
+
 ## Summary
 
 ${SUB_DESCRIPTION}
@@ -235,4 +239,4 @@ Next: `/autonomous-dev-flow #${SUB_1} #${SUB_2} #${SUB_3}` to implement them, or
 - The parent already has a "Decomposed into" comment → use the existing sub-issues unless they're wrong.
 - The work spans multiple repos → that's a coordination problem, not a decomposition problem. Open issues in each repo separately.
 
-<!-- skill-templates: decompose-issue b4268c2 2026-07-25 -->
+<!-- skill-templates: decompose-issue 699a5ca 2026-11-03 -->
