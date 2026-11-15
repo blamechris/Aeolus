@@ -69,4 +69,4 @@ When only one tier exists, everything runs at the ceiling and this skill's value
 - A skill hard-coding a top-tier model, breaking sessions that run below it.
 - The orchestrator re-grepping what a delegated explorer is already searching, paying twice.
 
-<!-- skill-templates: tiered-delegation 8196307 2026-07-30 -->
+<!-- skill-templates: tiered-delegation 8196307 2026-11-03 -->

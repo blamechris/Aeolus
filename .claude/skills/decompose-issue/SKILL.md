@@ -105,7 +105,7 @@ Present the proposed breakdown to the user as a table and wait for confirmation:
 | 2 | type(scope): … | Files: src/c.ts; new test surface | medium |
 | 3 | type(scope): … | Migration + backfill | medium |
 
-**Labels each sub-issue will receive:** enhancement, parent:#${PARENT_NUM}, the parent's `area:*` label and milestone, plus `safety-critical` if the parent carries it and `needs-hardware` for anything CI cannot verify
+**Labels each sub-issue will receive:** enhancement, the parent's `area:*` label and milestone label, plus `safety-critical` if the parent carries it, plus any `--label` flags
 
 Approve to create these 3 sub-issues, or reply with changes (e.g. "merge 1 and 2", "drop 3", "add a sub-issue for X").
 ```
@@ -122,6 +122,10 @@ for SUB in "${PROPOSED_SUBS[@]}"; do
     --title "${SUB_TITLE}" \
     --label "${SUB_LABELS}" \
     --body "$(cat <<EOF
+## Context
+
+Filed from: #${PARENT_NUM}
+
 ## Summary
 
 ${SUB_DESCRIPTION}
@@ -145,7 +149,7 @@ EOF
 done
 ```
 
-Label set for each sub-issue:
+Build each sub-issue's label set and verify it (the next two blocks) **before** running the creation loop above, so `--label` only ever carries labels that exist:
 
 ```bash
 # Aeolus uses no complexity labels. Sub-issues inherit the parent epic's area
@@ -171,11 +175,22 @@ for extra in "${EXTRA_LABELS[@]}"; do
 done
 ```
 
-**Verify labels exist** before applying them. Skip any that don't exist in the repo rather than failing:
+**Verify labels exist** before applying them. Skip any that don't exist in the repo rather than failing. List the labels once, with `--limit 500`: `gh label list` returns only 30 by default, oldest first, so without it every label past the 30th reads as missing and is dropped from every sub-issue (#365). Match names case-insensitively, as GitHub does:
 
 ```bash
-EXISTING_LABELS=$(gh label list --json name -q '.[].name')
-# Filter SUB_LABELS to only those in EXISTING_LABELS
+# A failed listing stops here: reading it as "no labels exist" would file every sub-issue unlabeled.
+REPO_LABELS=$(gh label list --limit 500 --json name -q '.[].name') \
+  || { echo "REFUSE: could not list labels" >&2; exit 1; }
+KEPT=""
+while IFS= read -r LABEL; do
+  [ -n "$LABEL" ] || continue
+  if grep -qixF -- "$LABEL" <<< "$REPO_LABELS"; then
+    KEPT="${KEPT:+$KEPT,}$LABEL"
+  else
+    echo "Warning: '${LABEL}' label not found; creating sub-issues without it" >&2
+  fi
+done <<< "$(printf '%s\n' "$SUB_LABELS" | tr ',' '\n')"
+SUB_LABELS="$KEPT"
 ```
 
 ### 6. Comment on Parent and Cross-Link

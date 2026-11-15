@@ -285,4 +285,4 @@ This would modify /learn's own behavior -- edit the skill template directly inst
 Nothing persisted.
 ```
 
-<!-- skill-templates: learn df2de5e 2026-07-30 -->
+<!-- skill-templates: learn df2de5e 2026-11-03 -->
