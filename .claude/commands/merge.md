@@ -221,7 +221,7 @@ Report verified merged PRs and exact blockers from the ledger. For ordinary deve
 | #123 | feat: add feature | Merged |
 | #456 | fix: resolve crash | Skipped (conflict) |
 
-**Version:** v1.2.3 → v1.2.4
+**Version:** unchanged by the merge itself — Phase 2b verifies `MARKETING_VERSION` and `AeolusXPCVersion`; a version-bump PR reports `vX → vY`
 **Post-merge check:** `swift build` clean · `swift test` — N tests, N suites, green
 **XPC protocol:** unchanged (or: bumped to vN, called out in CHANGELOG.md)
 ```
@@ -262,4 +262,4 @@ Report verified merged PRs and exact blockers from the ledger. For ordinary deve
     dependency on `Configs/Signing.xcconfig`, which is gitignored and absent both on
     CI and for every outside contributor — fix the dependency, never add the file.
 
-<!-- skill-templates: merge 37866a5 2026-11-03 -->
+<!-- skill-templates: merge 2ea3022 2026-11-14 -->

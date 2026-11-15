@@ -50,8 +50,8 @@
       ]
     },
     "decompose-issue": {
-      "hash": "699a5ca",
-      "installed": "2026-11-03",
+      "hash": "ff2aa86",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
@@ -82,8 +82,8 @@
       ]
     },
     "merge": {
-      "hash": "37866a5",
-      "installed": "2026-11-03",
+      "hash": "2ea3022",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
@@ -98,8 +98,8 @@
       ]
     },
     "prime-directive": {
-      "hash": "84fe5f4",
-      "installed": "2026-11-03",
+      "hash": "0f0cc15",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
@@ -114,8 +114,8 @@
       ]
     },
     "session-lifecycle": {
-      "hash": "bcb8822",
-      "installed": "2026-11-03",
+      "hash": "0f0cc15",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
@@ -130,16 +130,16 @@
       ]
     },
     "skill-profile": {
-      "hash": "37866a5",
-      "installed": "2026-11-03",
+      "hash": "ff2aa86",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
       ]
     },
     "tackle-issues": {
-      "hash": "84fe5f4",
-      "installed": "2026-11-03",
+      "hash": "0f0cc15",
+      "installed": "2026-11-14",
       "profileHash": "04d6517",
       "targets": [
         "claude"
