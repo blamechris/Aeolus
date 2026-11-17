@@ -96,6 +96,9 @@ extension SystemSnapshot {
     /// helper never grants a lease over no fans (`AeolusXPCValidation.validateFanIndices`), so an
     /// empty list here is a caller's mistake.
     ///
+    /// If a snapshot lists a covered fan more than once, every entry with that index must show it
+    /// held (#474). Any entry that is reclaimed or not held is a loss.
+    ///
     /// - Parameters:
     ///   - leaseID: The lease the caller was granted. Compared by identity, never by holder: a
     ///     lease with the caller's holder string and another identifier is not this lease.
@@ -108,11 +111,16 @@ extension SystemSnapshot {
         }
         if isThermalEmergencyActive { return .thermalEmergency }
         for index in covered {
-            guard let fan = fans.first(where: { $0.index == index }) else {
+            let matching = fans.filter { $0.index == index }
+            guard !matching.isEmpty else {
                 return .fanNotReported(fan: index)
             }
-            if fan.isReclaimedBySystem { return .reclaimedBySystem(fan: index) }
-            guard let held = fan.targetRPM, held > 0 else { return .fanNotHeld(fan: index) }
+            if matching.contains(where: \.isReclaimedBySystem) {
+                return .reclaimedBySystem(fan: index)
+            }
+            for fan in matching {
+                guard let held = fan.targetRPM, held > 0 else { return .fanNotHeld(fan: index) }
+            }
         }
         return nil
     }
